@@ -12,12 +12,15 @@ let controlReady = false, controlPending = null, controlSequence = 0;
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false;
+let confirmation = null, uiGeneration = 0;
+let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
+const wakeSupported = window.isSecureContext && typeof navigator.wakeLock?.request === 'function';
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false };
+const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false, keepAwake: false };
 const followsViewport = () => displayPreferences.autoResolution;
 const fixedSize = () => controlsState.viewport?.fixed || { width: 1600, height: 3200 };
 let displayScale = 0, displayRevision = 0, scaleRevision = -1;
@@ -30,6 +33,7 @@ try {
       if (value.layout === 2) {
         displayPreferences.zoom = value.zoom;
         if (typeof value.autoResolution === 'boolean') displayPreferences.autoResolution = value.autoResolution;
+        if (typeof value.keepAwake === 'boolean') displayPreferences.keepAwake = value.keepAwake;
       }
     }
   }
@@ -38,10 +42,11 @@ function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    busy: inputBusy || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy, revision: displayRevision }, location.origin);
+    busy: inputBusy || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
+  renderWakeStatus();
   $('auto-resolution').checked = followsViewport();
   const fixed = fixedSize(), maximum = controlsState.viewport?.maximum;
   const needsRestart = maximum && (maximum.width < fixed.width || maximum.height < fixed.height);
@@ -74,6 +79,52 @@ function updateDisplayPreferences(change) {
   sendDisplayPreferences();
   scheduleViewport();
 }
+function wakeAllowed() {
+  return wakeSupported && displayPreferences.keepAwake && loggedIn && owned && !accessExpired && !document.hidden && !pageLeaving;
+}
+function renderWakeStatus() {
+  const active = screenLock && !screenLock.released;
+  const text = !wakeSupported ? '不支持亮屏' : !displayPreferences.keepAwake ? '保持亮屏' : active ? '亮屏已开启' : wakeOperation === 'request' ? '亮屏申请中' : wakeEligible ? '亮屏已暂停' : '亮屏待恢复';
+  $('awake-button').textContent = text;
+  $('awake-button').disabled = !wakeSupported;
+  $('awake-button').setAttribute('aria-pressed', String(displayPreferences.keepAwake));
+  $('awake-button').title = !wakeSupported ? '需要安全连接及支持 Screen Wake Lock 的浏览器' : active ? '点击关闭保持亮屏' : displayPreferences.keepAwake ? '系统可能已暂停亮屏；关闭后重新开启可重试' : '保持当前设备屏幕亮起；后台、锁屏或省电时可能暂停';
+  $('diag-awake').textContent = !wakeSupported ? '当前浏览器不支持保持亮屏' : active ? '保持亮屏中' : displayPreferences.keepAwake ? '已暂停，返回前台后尝试恢复' : '未开启保持亮屏';
+}
+async function releaseScreenLock(lock) {
+  try { if (!lock.released) await lock.release(); }
+  catch { if (!lock.released) { screenLock = lock; wakeFailed = true; } }
+}
+function syncScreenLock(retry = false) {
+  const eligible = wakeAllowed();
+  if (eligible !== wakeEligible) { wakeEligible = eligible; wakeGeneration++; if (eligible) wakeFailed = false; }
+  if (retry) wakeFailed = false;
+  if (screenLock?.released) screenLock = null;
+  if (!wakeOperation && !eligible && screenLock && !wakeFailed) {
+    const current = screenLock; screenLock = null; wakeOperation = 'release';
+    void releaseScreenLock(current).finally(() => { wakeOperation = null; syncScreenLock(); });
+  } else if (!wakeOperation && eligible && !screenLock && !wakeFailed) {
+    const generation = wakeGeneration; wakeOperation = 'request';
+    void (async () => {
+      try {
+        const current = await navigator.wakeLock.request('screen');
+        if (generation !== wakeGeneration || !wakeAllowed()) { await releaseScreenLock(current); return; }
+        if (current.released) { wakeFailed = true; return; }
+        screenLock = current;
+        current.addEventListener('release', () => {
+          if (screenLock !== current) return;
+          screenLock = null; wakeFailed = true; renderWakeStatus();
+        }, { once: true });
+      } catch { if (generation === wakeGeneration && wakeAllowed()) wakeFailed = true; }
+    })().finally(() => { wakeOperation = null; syncScreenLock(); });
+  }
+  renderWakeStatus();
+}
+$('awake-button').addEventListener('click', () => {
+  if (!wakeSupported) return;
+  updateDisplayPreferences({ keepAwake: !displayPreferences.keepAwake });
+  syncScreenLock(true);
+});
 $('fit-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 'fit' }));
 $('width-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 'width' }));
 $('actual-size-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 1 }));
@@ -114,7 +165,7 @@ function waitForViewport(actual, signal) {
 async function resizeViewport() {
   viewportTimer = null;
   if (!loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
-  if (!nativeIdle || inputPaused() || inputBusy || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || document.hidden) { scheduleViewport(1000); return; }
+  if (!nativeIdle || inputPaused() || inputBusy || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
   if (!followsViewport() && (controlsState.viewport.maximum.width < size.width || controlsState.viewport.maximum.height < size.height)) return;
@@ -153,6 +204,8 @@ function renderInputControls() {
   sendDisplayPreferences();
 }
 function renderConnection() {
+  if (confirmation && !confirmationValid(confirmation)) closeConfirmation();
+  syncScreenLock();
   let label;
   if (accessExpired) label = '访问验证已过期';
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
@@ -260,6 +313,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame() {
+  closeConfirmation();
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false;
   clearTimeout(switchTimer); transportSwitching = false;
   resetDirectControl();
@@ -305,6 +359,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  uiGeneration++; closeConfirmation();
   clearClipboard();
   inputController?.abort(); inputController = null; inputBusy = false; inputFeedback = false;
   controlsState = { available: false, maintenance: false, inputBusy: false };
@@ -385,6 +440,7 @@ async function claim() {
   await poll();
 }
 async function showWorkspace(user) {
+  uiGeneration++; closeConfirmation();
   loggedIn = true; csrf = user.csrf;
   accessExpired = false; panelState = 'online'; desktopReady = null;
   $('user-label').textContent = user.username;
@@ -405,6 +461,60 @@ async function action(button, work) {
   try { await work(); } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 }
+function confirmationValid(pending) {
+  if (!loggedIn || accessExpired || pending.generation !== uiGeneration) return false;
+  if (pending.kind === 'logout') return true;
+  if (pending.epoch !== frameEpoch || pending.frameState !== frameState || pending.owned !== owned) return false;
+  return pending.kind === 'reconnect' ? panelState === 'online' && navigator.onLine && !maintenancePending && !controlsState.maintenance : !inputBusy && canInput();
+}
+function closeConfirmation() {
+  confirmation = null;
+  if ($('action-confirmation').open) $('action-confirmation').close();
+  sendDisplayPreferences(); scheduleViewport();
+}
+function requestConfirmation(kind) {
+  if (confirmation || $('action-confirmation').open) return;
+  const pending = { kind, generation: uiGeneration, epoch: frameEpoch, frameState, owned };
+  if (!confirmationValid(pending)) return;
+  const copy = {
+    logout: ['退出当前登录？', '退出后需要重新登录。远程桌面和正在运行的任务会继续保留。', '确认退出'],
+    terminal: ['打开远程终端？', '将打开或切换到已有终端，改变当前桌面的窗口焦点。原有任务继续运行。', '确认打开终端'],
+    reconnect: ['重新连接桌面画面？', '将重新建立当前观看连接；如果桌面在其他页面打开，会接管到这里。远程桌面和任务继续运行。', '确认重新连接'],
+    interrupt: ['中断当前任务？', '将发送 Ctrl+C，可能终止当前正在执行的命令。请确认你确实需要中断。', '发送 Ctrl+C'],
+  }[kind];
+  if (!copy) return;
+  confirmation = pending;
+  $('confirmation-title').textContent = copy[0]; $('confirmation-description').textContent = copy[1]; $('accept-confirmation').textContent = copy[2];
+  $('action-confirmation').dataset.kind = kind;
+  $('action-confirmation').showModal(); $('cancel-confirmation').focus({ preventScroll: true });
+  sendDisplayPreferences();
+}
+$('cancel-confirmation').addEventListener('click', closeConfirmation);
+$('action-confirmation').addEventListener('pointerdown', event => {
+  if (event.target === $('action-confirmation')) { event.preventDefault(); $('cancel-confirmation').focus({ preventScroll: true }); }
+});
+$('action-confirmation').addEventListener('click', event => {
+  if (event.target === $('action-confirmation')) $('cancel-confirmation').focus({ preventScroll: true });
+});
+$('action-confirmation').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && document.activeElement !== $('accept-confirmation')) { event.preventDefault(); closeConfirmation(); }
+});
+$('action-confirmation').addEventListener('cancel', event => { event.preventDefault(); closeConfirmation(); });
+$('action-confirmation').addEventListener('close', () => { if (!$('action-confirmation').open) { confirmation = null; sendDisplayPreferences(); scheduleViewport(); } });
+$('accept-confirmation').addEventListener('click', () => {
+  const pending = confirmation;
+  if (!pending || !$('action-confirmation').open) return;
+  const valid = confirmationValid(pending);
+  closeConfirmation();
+  if (!valid) return;
+  if (pending.kind === 'logout') return void action($('logout-button'), async () => {
+    await api('/api/logout', { method: 'POST', body: {}, signal: AbortSignal.timeout(8000) });
+    if (pending.generation === uiGeneration) showLogin();
+  });
+  if (pending.kind === 'reconnect') return void action($('reconnect-button'), claim);
+  if (pending.kind === 'terminal') return void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话');
+  if (pending.kind === 'interrupt') void inputAction('/api/key', { key: 'Ctrl+C' }, '发送中断', 'Ctrl C 已发送');
+});
 function inputMessage(outcome, message) {
   inputFeedback = true;
   $('input-status').hidden = false;
@@ -439,19 +549,19 @@ $('login-form').addEventListener('submit', event => {
     catch (error) { $('login-error').textContent = error.message; }
   });
 });
-$('logout-button').addEventListener('click', () => void action($('logout-button'), async () => {
-  await api('/api/logout', { method: 'POST', body: {} });
-  showLogin();
-}));
+$('logout-button').addEventListener('click', () => requestConfirmation('logout'));
 $('takeover-button').addEventListener('click', () => void action($('takeover-button'), claim));
-$('reconnect-button').addEventListener('click', () => void action($('reconnect-button'), claim));
-$('terminal-button').addEventListener('click', () => void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话'));
+$('reconnect-button').addEventListener('click', () => requestConfirmation('reconnect'));
+$('terminal-button').addEventListener('click', () => requestConfirmation('terminal'));
 $('paste-button').addEventListener('click', () => {
   const text = $('mobile-input').value;
   if (!text) return inputMessage('rejected', '先输入要粘贴的文字');
   void inputAction('/api/paste', { text, target: $('paste-target').value }, '粘贴', '已粘贴。确认内容后，按 Enter 提交');
 });
-for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => void inputAction('/api/key', { key: button.dataset.key }, '发送按键', `${button.textContent.trim()} 已发送`));
+for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => {
+  if (button.dataset.key === 'Ctrl+C') return requestConfirmation('interrupt');
+  void inputAction('/api/key', { key: button.dataset.key }, '发送按键', `${button.textContent.trim()} 已发送`);
+});
 $('fullscreen-button').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(error => toast(error.message, true));
   else if ($('desktop-card').requestFullscreen) $('desktop-card').requestFullscreen().catch(error => toast(error.message, true));
@@ -720,7 +830,7 @@ window.addEventListener('message', event => {
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
-    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !controlsState.inputBusy && !controlsState.clipboardBusy;
     if (allowed) {
       transportSwitching = true;
       clearTimeout(switchTimer);
@@ -765,7 +875,9 @@ window.addEventListener('message', event => {
   else return;
   renderConnection();
 });
-document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });
+document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else closeConfirmation(); });
+window.addEventListener('pagehide', () => { pageLeaving = true; closeConfirmation(); syncScreenLock(); });
+window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
 
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});

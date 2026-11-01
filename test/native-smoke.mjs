@@ -48,6 +48,7 @@ async function eventually(probe) {
 try {
   let page = await connect();
   await page.getByRole('button', { name: '打开终端', exact: true }).click();
+  await page.getByRole('button', { name: '确认打开终端', exact: true }).click();
   await new Promise(resolve => setTimeout(resolve, 350));
   await page.getByLabel('要粘贴到桌面的文字').fill(`printf '%s\\n' '中文原生验证' > "$TRANSFER_DIR/${name}"`);
   await page.getByRole('button', { name: '粘贴文字' }).click();

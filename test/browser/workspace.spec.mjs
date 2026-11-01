@@ -36,6 +36,8 @@ test('login, Chinese input without automatic submit, files and logout work on a 
   expect((await download).suggestedFilename()).toBe('手机资料.txt');
   await page.getByRole('button', { name: '关闭文件中转' }).click();
   await page.getByRole('button', { name: '退出', exact: true }).click();
+  await expect(page.locator('#cancel-confirmation')).toBeFocused();
+  await page.getByRole('button', { name: '确认退出', exact: true }).click();
   await expect(page.getByRole('heading', { name: '进入工作空间' })).toBeVisible();
   expect(errors).toEqual([]);
 });
