@@ -6,7 +6,7 @@ const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
-const preferences = { zoom: 'fit', pan: false };
+const preferences = { zoom: 'fit', pan: false, blocked: true };
 let rfb, retry, stopping = false;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
@@ -45,10 +45,10 @@ function applyView() {
   if (rfb) {
     // Resize the local container through public APIs; remote pixels and input coordinates stay intact.
     rfb.scaleViewport = true;
-    if (rfb.viewOnly !== preferences.pan) rfb.viewOnly = preferences.pan;
+    if (rfb.viewOnly !== (preferences.pan || preferences.blocked)) rfb.viewOnly = preferences.pan || preferences.blocked;
   }
-  if (!preferences.pan) stopDrag();
-  panLayer.hidden = !preferences.pan;
+  if (!preferences.pan && !preferences.blocked) stopDrag();
+  panLayer.hidden = !preferences.pan && !preferences.blocked;
   layoutFrame = requestAnimationFrame(() => {
     if (manual) {
       viewport.scrollLeft = Math.max(0, Math.min(1, center.x)) * canvas.width * preferences.zoom - viewport.clientWidth / 2;
@@ -67,9 +67,10 @@ viewportObserver.observe(viewport);
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-desktop-options') return;
-  if (!(value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean') return;
+  if (!(value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
   preferences.zoom = value.zoom;
   preferences.pan = value.pan;
+  preferences.blocked = value.blocked;
   applyView();
 });
 
@@ -124,7 +125,7 @@ function connect() {
   rfb.scaleViewport = true;
   // Preserve a usable terminal size on phones; rotating the phone scales the view.
   rfb.resizeSession = false;
-  rfb.viewOnly = preferences.pan;
+  rfb.viewOnly = preferences.pan || preferences.blocked;
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
   rfb.addEventListener('connect', () => { status.hidden = true; lastReport = ''; applyView(); announce('connected'); });

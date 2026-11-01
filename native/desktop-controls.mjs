@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readPreferences, writePreferences, preferenceRevision, validatePreferences } from './preferences.mjs';
+import { validateInput, executeInput } from './input.mjs';
 
 const exec = promisify(execFile);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -48,8 +49,10 @@ export function createDesktopControls(config, dependencies = {}) {
     const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), [], { env, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
   });
-  let job = null, preparing = false, terminalChild = null;
-  const busy = () => preparing || job?.status === 'running';
+  let job = null, preparing = false, terminalChild = null, inputActive = false, lastInput = null;
+  const maintenance = () => preparing || job?.status === 'running';
+  const busy = () => maintenance() || inputActive;
+  const status = () => ({ available: true, maintenance: !!maintenance(), inputBusy: inputActive, input: lastInput ? { ...lastInput } : null });
   const saved = () => readPreferences(config.preferencesFile, config.defaultPreferences);
   async function geometry() {
     try {
@@ -71,9 +74,49 @@ export function createDesktopControls(config, dependencies = {}) {
       return { pid, command: command.slice(0, 64), cwd, resumeId, recoverable: command === 'bash' || !!resumeId };
     } catch { return null; }
   }
-  async function windows() {
-    try { return (await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$'])).split(/\s+/).filter(value => /^\d+$/.test(value)).slice(0, 8); }
+  async function windows(runner = run) {
+    try { return (await runner('xdotool', ['search', '--class', '^codex-on-cloud-terminal$'])).split(/\s+/).filter(value => /^\d+$/.test(value)).slice(0, 8); }
     catch { return []; }
+  }
+  async function openTerminal() {
+    const deadline = Date.now() + 4000;
+    const bounded = (command, args) => {
+      if (Date.now() >= deadline) throw new Error('terminal opening timed out');
+      return run(command, args, { timeout: Math.min(2000, deadline - Date.now()) });
+    };
+    const ids = await windows(bounded);
+    if (ids.length) {
+      try { await bounded('xdotool', ['windowactivate', '--sync', ids[0]]); }
+      catch { await bounded('xdotool', ['windowfocus', ids[0]]); }
+      return;
+    }
+    // An existing private tmux server belongs to the desktop, never create it here.
+    await bounded('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_pid}']);
+    if (terminalChild && terminalChild.exitCode === null && terminalChild.signalCode === null) throw new Error('terminal opening');
+    terminalChild = launch();
+    while (Date.now() < deadline) {
+      if ((await windows(bounded)).length) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('terminal did not open');
+  }
+  const performInput = dependencies.performInput || (body => body.action === 'terminal' ? openTerminal() : executeInput(body, env));
+  async function input(body) {
+    let value;
+    try { value = validateInput(body); } catch (error) { throw new ControlError(400, error.message); }
+    if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，本次输入未发送');
+    inputActive = true;
+    const current = { id: randomBytes(12).toString('hex'), action: value.action, status: 'running', startedAt: Date.now(), finishedAt: null };
+    lastInput = current;
+    try {
+      await performInput(value);
+      current.status = 'success';
+      return { ok: true, outcome: 'success', id: current.id };
+    } catch {
+      current.status = 'unknown';
+      const error = new ControlError(502, '输入结果未知，请先查看桌面确认，避免重复执行');
+      error.outcome = 'unknown'; throw error;
+    } finally { current.finishedAt = Date.now(); inputActive = false; }
   }
   async function get() {
     const preferences = saved();
@@ -168,5 +211,5 @@ export function createDesktopControls(config, dependencies = {}) {
       }
     });
   }
-  return { get, save, apply, terminal };
+  return { get, save, apply, terminal, input, status };
 }

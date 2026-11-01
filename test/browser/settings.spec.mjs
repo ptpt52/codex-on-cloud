@@ -37,7 +37,7 @@ test('save persists pending settings; only explicit confirmed apply restarts and
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveJSProperty('width', 1920);
     expect(app.managementStats.restarts).toBe(1); expect(app.managementStats.resumes).toBe(1);
-    expect(app.received.filter(call => ['/paste', '/key', '/terminal'].includes(call.url))).toHaveLength(0);
+    expect(app.inputCalls).toHaveLength(0);
   } finally { await app.close(); }
 });
 
@@ -59,7 +59,7 @@ test('terminal font and window actions preserve tasks and never submit terminal 
     await expect.poll(() => app.managementStats.restores).toBe(1);
     await expect(page.locator('#restore-terminal')).toBeEnabled();
     expect(app.managementStats.fontChanges).toBe(1); expect(app.managementStats.restarts).toBe(0); expect(app.managementStats.resumes).toBe(0);
-    expect(app.received.filter(call => ['/paste', '/key', '/terminal'].includes(call.url))).toHaveLength(0);
+    expect(app.inputCalls).toHaveLength(0);
     await page.locator('#desktop-width').fill('9999');
     await page.locator('#save-desktop-settings').click();
     expect(app.managementStats.saves).toBe(1);

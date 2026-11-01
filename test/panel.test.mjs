@@ -67,10 +67,8 @@ test('Chinese input crosses the authenticated helper without shell interpretatio
   const text = '请检查项目\n`touch /tmp/never` $(echo 原样文字)';
   const response = await app.request('/api/paste', { method: 'POST', body: { text, target: 'terminal' } });
   assert.equal(response.status, 200);
-  const calls = app.received.filter(item => item.url === '/paste');
-  assert.deepEqual(calls[0].body, { text, target: 'terminal' });
-  assert.equal(app.received.some(item => item.url === '/key'), false);
-  assert.equal(calls[0].headers.authorization, `Bearer ${app.config.agentSecret}`);
+  assert.deepEqual(app.inputCalls, [{ action: 'paste', text, target: 'terminal' }]);
+  assert.equal(app.received.some(item => ['/paste', '/key', '/terminal'].includes(item.url)), false);
 });
 
 test('streamed uploads and downloads preserve bytes and reject traversal/oversized requests', async t => {

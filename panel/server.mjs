@@ -59,6 +59,8 @@ export async function createPanel(config) {
   let owner = null;
   let loginBusy = 0;
   let healthCache = null;
+  let maintenancePending = false;
+  let closing = false;
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -86,6 +88,18 @@ export async function createPanel(config) {
     if (!owner || owner.viewer !== req.headers['x-viewer-id'] || owner.session !== session.hash) throw new HttpError(409, '桌面已在另一页面打开，请先接管');
     return session;
   };
+  async function ownedBody(req, limit) {
+    requireOwner(req);
+    const expected = owner;
+    const body = await jsonBody(req, limit);
+    requireOwner(req);
+    if (owner !== expected) throw new HttpError(409, '页面控制权已变化，请重新操作');
+    return body;
+  }
+  async function controlStatus() {
+    try { const status = await managerRequest(config, '/status', undefined, 1500); return { ...status, maintenance: maintenancePending || status.maintenance }; }
+    catch { return { available: false, maintenance: maintenancePending, inputBusy: false }; }
+  }
   function closeSockets(predicate) {
     for (const [socket, state] of sockets) if (predicate(state)) socket.destroy();
   }
@@ -157,8 +171,8 @@ export async function createPanel(config) {
     }
     if (path === '/api/state' && req.method === 'GET') {
       const session = requireSession(req);
-      const desktop = await desktopHealth();
-      return reply(res, 200, { desktop, mine: !!owner && owner.session === session.hash && owner.viewer === req.headers['x-viewer-id'] });
+      const [desktop, controls] = await Promise.all([desktopHealth(), controlStatus()]);
+      return reply(res, 200, { desktop, controls, mine: !!owner && owner.session === session.hash && owner.viewer === req.headers['x-viewer-id'] });
     }
     if (path === '/api/diagnostics' && req.method === 'GET') {
       requireSession(req);
@@ -169,24 +183,31 @@ export async function createPanel(config) {
       return reply(res, 200, await managerRequest(config, '/settings'));
     }
     if (['/api/desktop/settings', '/api/desktop/apply', '/api/desktop/terminal-display'].includes(path) && req.method === 'POST') {
-      requireOwner(req);
-      const body = await jsonBody(req, 1024);
-      requireOwner(req); // A delayed body must not outlive its page's ownership.
+      const body = await ownedBody(req, 1024);
       const target = path.endsWith('/apply') ? '/apply' : path.endsWith('/terminal-display') ? '/terminal' : '/settings';
-      return reply(res, 200, await managerRequest(config, target, body));
+      const pausesInput = target === '/apply' || (target === '/terminal' && body.action === 'font');
+      if (pausesInput && maintenancePending) throw new HttpError(409, '已有桌面操作进行中');
+      if (pausesInput) { maintenancePending = true; closeSockets(() => true); }
+      try {
+        const result = await managerRequest(config, target, body);
+        if (pausesInput) closeSockets(() => true);
+        return reply(res, 200, result);
+      } finally { if (pausesInput) maintenancePending = false; }
     }
     if (path === '/api/desktop/claim' && req.method === 'POST') {
       const session = requireWrite(req);
       const { viewer } = await jsonBody(req, 1024);
+      requireWrite(req); // Revoked/expired sessions cannot claim through a delayed body.
       if (typeof viewer !== 'string' || !VIEWER.test(viewer)) throw new HttpError(400, '页面标识无效');
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
       owner = { viewer, session: session.hash };
       return reply(res, 200, { ok: true });
     }
     if (['/api/paste', '/api/key', '/api/terminal'].includes(path) && req.method === 'POST') {
-      requireOwner(req);
-      const body = await jsonBody(req);
-      return reply(res, 200, await agent(path.replace('/api', ''), { method: 'POST', body }));
+      const body = await ownedBody(req);
+      if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，本次输入未发送');
+      try { return reply(res, 200, await managerRequest(config, '/input', { ...body, action: path.slice('/api/'.length) })); }
+      catch (error) { error.outcome ||= 'unknown'; throw error; }
     }
     if (path === '/api/files' && req.method === 'GET') {
       requireSession(req);
@@ -243,13 +264,13 @@ export async function createPanel(config) {
   const server = http.createServer((req, res) => {
     route(req, res).catch(error => {
       if (!error.status) console.error(`[panel] ${error.name}: request failed`); // No bodies, cookies or credentials.
-      reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试' });
+      reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown') });
     });
   });
   server.requestTimeout = 310_000;
   server.headersTimeout = 15_000;
   server.maxHeadersCount = 64;
-  server.on('upgrade', (req, socket, head) => {
+  async function upgrade(req, socket, head) {
     const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403);
     const session = sessionOf(req);
@@ -257,6 +278,12 @@ export async function createPanel(config) {
     const url = new URL(req.url, 'http://internal');
     if (url.pathname !== '/desktop/websockify') return deny(404);
     if (!owner || owner.session !== session.hash || owner.viewer !== url.searchParams.get('viewer')) return deny(409);
+    const expected = owner;
+    const controls = await controlStatus();
+    if (closing || socket.destroyed) { socket.destroy(); return; }
+    if (!sessionOf(req)) return deny(401);
+    if (owner !== expected) return deny(409);
+    if (!controls.available || controls.maintenance) return deny(503);
     // One stream per owner. Reconnecting the same viewer also closes its previous stream.
     closeSockets(state => state.socket !== socket);
     sockets.set(socket, { session: session.hash, token: cookieToken(req.headers.cookie), socket });
@@ -274,11 +301,13 @@ export async function createPanel(config) {
       upstream.on('error', () => ws.terminate());
       upstream.pipe(stream).pipe(upstream);
     });
-  });
+  }
+  server.on('upgrade', (req, socket, head) => { void upgrade(req, socket, head).catch(() => socket.destroy()); });
   const expiration = setInterval(() => {
     closeSockets(state => !auth.get(state.token));
   }, 10_000).unref();
   async function close() {
+    closing = true;
     clearInterval(expiration);
     closeSockets(() => true);
     for (const client of wss.clients) client.terminate();

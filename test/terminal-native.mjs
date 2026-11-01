@@ -64,6 +64,13 @@ try {
     const args = (await readFile(`/proc/${terminalPid}/cmdline`, 'utf8')).split('\0');
     assert.equal(args[args.indexOf('-fs') + 1], '20');
   }
+  await controls.input({ action: 'terminal' });
+  const literal = '中文原样 $(never) `never`';
+  await controls.input({ action: 'paste', target: 'terminal', text: `printf '%s\\n' '${literal}' > "$WORKSPACE_DIR/input-proof"` });
+  await assert.rejects(readFile(join(config.workspace, 'input-proof')), { code: 'ENOENT' });
+  await controls.input({ action: 'key', key: 'Enter' });
+  await eventually(async () => (await readFile(join(config.workspace, 'input-proof'), 'utf8')) === literal + '\n');
+  assert.equal((await controls.get()).session.pid, pid);
   // Exercise the real tmux/shell boundary with a dummy executable, never the host Codex.
   const cwd = join(config.workspace, "a'b $(never) `never`"), resumeId = '11111111-1111-4111-8111-111111111111';
   await mkdir(cwd);
@@ -74,7 +81,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log('✓ isolated real Xvfb / xfwm4 / xterm: maximize, restore and repeated font changes preserve the private tmux PID; real tmux passes hostile cwd and exact resume ID literally to a dummy executable, without starting Codex');
+  console.log('✓ isolated real X11: maximize, restore, repeated font changes, literal Chinese paste without execution and separate Enter preserve the private tmux PID; real tmux passes hostile cwd and exact ID literally to a dummy executable, without starting Codex');
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }

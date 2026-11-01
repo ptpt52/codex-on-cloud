@@ -10,9 +10,10 @@ import { createManagerServer } from '../native/manager-server.mjs';
 import { readPreferences } from '../native/preferences.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, tunnelDiagnosticsUrl } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
+  const inputCalls = [];
   const files = new Map();
   const screenGeometry = { width: 1600, height: 1600 };
   const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0 };
@@ -80,9 +81,11 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   let panePid = 4000, paneCommand = 'codex', terminalVisible = true, terminalChild;
   const controls = createDesktopControls({ root: directory, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
+    performInput: async value => { inputCalls.push(value); await inputHook?.(value); },
     sessionId: async () => '11111111-1111-4111-8111-111111111111',
     launch: () => { terminalVisible = true; terminalChild = { exitCode: null, signalCode: null }; return terminalChild; },
     run: async (command, args) => {
+      await desktopHook?.(command, args);
       if (command === 'xdotool' && args[0] === 'getdisplaygeometry') return `${screenGeometry.width} ${screenGeometry.height}`;
       if (command === 'xdotool' && args[0] === 'search') return terminalVisible ? '999' : '';
       if (command === 'xdotool' && args[0] === 'windowclose') { terminalVisible = false; if (terminalChild) terminalChild.exitCode = 0; managementStats.fontChanges++; return ''; }
@@ -100,7 +103,9 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
       throw new Error('Unexpected mock desktop command');
     },
   });
-  const manager = createManagerServer('agent_secret_for_test_123', { ...controls, save(body) { const result = controls.save(body); managementStats.saves++; return result; } });
+  const manager = createManagerServer('agent_secret_for_test_123', { ...controls,
+    async apply(body) { await applyHook?.(); return controls.apply(body); },
+    save(body) { const result = controls.save(body); managementStats.saves++; return result; } });
   const managerSocket = join(directory, 'manager.sock');
   manager.listen(managerSocket); await once(manager, 'listening');
   const config = {
@@ -131,7 +136,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, received, files, viewer, request, login, claim, managementStats,
+    panel, config, directory, received, inputCalls, controls, files, viewer, request, login, claim, managementStats,
     disconnectViewers() { for (const client of clients) client.destroy(); },
     pauseViewers() { viewersPaused = true; for (const client of clients) client.destroy(); },
     resumeViewers() { viewersPaused = false; for (const client of clients) client.destroy(); },

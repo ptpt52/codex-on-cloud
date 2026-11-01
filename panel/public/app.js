@@ -2,6 +2,8 @@ const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 const draftKey = 'codex-cloud.draft';
 let inputBusy = false;
+let inputController = null, inputFeedback = false, maintenancePending = false;
+let controlsState = { available: false, maintenance: false, inputBusy: false };
 let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
 let diagnosticsController = null, diagnosticsTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
@@ -23,7 +25,7 @@ try {
 } catch {}
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan }, location.origin);
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() }, location.origin);
 }
 function renderDisplayControls() {
   $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
@@ -55,8 +57,9 @@ $('pan-button').addEventListener('click', () => {
 $('toggle-input-button').addEventListener('click', () => updateDisplayPreferences({ collapsed: !displayPreferences.collapsed }));
 renderDisplayControls();
 
+function inputPaused() { return maintenancePending || controlsState.maintenance || !controlsState.available; }
 function canInput() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected';
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !controlsState.inputBusy;
 }
 function renderInputControls() {
   for (const control of [$('paste-button'), $('terminal-button'), ...document.querySelectorAll('[data-key]')]) control.disabled = inputBusy || !canInput();
@@ -67,6 +70,8 @@ function renderConnection() {
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
   else if (!owned) label = '等待接管';
   else if (desktopReady === false) label = '桌面未就绪';
+  else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
+  else if (!controlsState.available) label = '输入服务未就绪';
   else if (frameState === 'connected') label = '桌面在线';
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
   $('connection-status').classList.toggle('offline', label !== '桌面在线');
@@ -77,6 +82,7 @@ function renderConnection() {
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDesktopSettings();
+  sendDisplayPreferences();
   if (!loggedIn) return;
   if (accessExpired) {
     overlay('访问验证已过期', '刷新页面完成外层访问验证，然后返回原来的工作会话。');
@@ -86,6 +92,7 @@ function renderConnection() {
     else $('desktop-overlay').hidden = true;
   } else if (!owned) overlay('在这里继续工作', '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
   else if (desktopReady === false && frameState !== 'connected') overlay('桌面未就绪', '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
+  else if (inputPaused()) overlay(label, '输入暂时暂停。当前操作完成后恢复，不会自动重发输入。');
   else if (frameState === 'connected') $('desktop-overlay').hidden = true;
   else overlay(label, '正在连接画面，桌面任务继续运行。');
 }
@@ -148,7 +155,7 @@ async function api(path, { method = 'GET', body, raw, signal } = {}) {
   }
   const data = await response.json().catch(() => ({}));
   if (!signal?.aborted && response.status === 401 && path !== '/api/login') showLogin(loggedIn ? '登录已过期，请重新登录' : '');
-  if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+  if (!response.ok) { const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; throw error; }
   return data;
 }
 function overlay(title, description, takeover = false) {
@@ -173,6 +180,10 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  inputController?.abort(); inputController = null; inputBusy = false; inputFeedback = false;
+  controlsState = { available: false, maintenance: false, inputBusy: false };
+  maintenancePending = false;
+  $('input-status').hidden = true;
   loggedIn = false; owned = false; csrf = '';
   desktopReady = null; frameDimensions = null; panelState = 'auth';
   stopPolling();
@@ -212,6 +223,8 @@ async function poll() {
     owned = mine;
     panelState = 'online';
     desktopReady = state.desktop.ready === true;
+    controlsState = state.controls || { available: false, maintenance: false, inputBusy: false };
+    if (!inputBusy && !inputFeedback && controlsState.input?.status === 'unknown') inputMessage('unknown', '上一项输入结果未知，请先查看桌面确认，避免重复执行。');
     $('version-label').textContent = state.desktop.version;
     if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
     if (!mine) {
@@ -227,7 +240,7 @@ async function poll() {
     clearTimeout(timeout);
     if (pollController === controller) {
       pollController = null;
-      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, 4000);
+      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || maintenancePending ? 800 : 4000);
     }
   }
 }
@@ -264,12 +277,31 @@ async function action(button, work) {
   try { await work(); } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 }
-async function inputAction(work) {
+function inputMessage(outcome, message) {
+  inputFeedback = true;
+  $('input-status').hidden = false;
+  $('input-status').dataset.outcome = outcome;
+  $('input-status').textContent = message;
+}
+async function inputAction(path, body, label, success) {
   if (inputBusy || !canInput()) return;
+  const controller = new AbortController(); inputController = controller;
+  const timeout = setTimeout(() => controller.abort(), 8000);
   inputBusy = true;
+  inputMessage('pending', `正在${label}…`);
   renderInputControls();
-  try { await work(); } catch (error) { toast(error.message, true); }
-  finally { inputBusy = false; renderInputControls(); }
+  renderDesktopSettings();
+  try {
+    const result = await api(path, { method: 'POST', body, signal: controller.signal });
+    if (inputController !== controller) return;
+    if (result.outcome !== 'success') throw new Error('missing input result');
+    inputMessage('success', success);
+  } catch (error) {
+    if (inputController === controller) inputMessage(error.outcome === 'rejected' ? 'rejected' : 'unknown', error.outcome === 'rejected' ? `未发送：${error.message}` : `${label}结果未知，请先查看桌面确认，避免重复执行。`);
+  } finally {
+    clearTimeout(timeout);
+    if (inputController === controller) { inputController = null; inputBusy = false; renderInputControls(); renderDesktopSettings(); }
+  }
 }
 $('login-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -285,17 +317,13 @@ $('logout-button').addEventListener('click', () => void action($('logout-button'
 }));
 $('takeover-button').addEventListener('click', () => void action($('takeover-button'), claim));
 $('reconnect-button').addEventListener('click', () => void action($('reconnect-button'), claim));
-$('terminal-button').addEventListener('click', () => void inputAction(async () => {
-  await api('/api/terminal', { method: 'POST', body: {} });
-  toast('已打开终端，连接原有 tmux 会话');
-}));
-$('paste-button').addEventListener('click', () => void inputAction(async () => {
+$('terminal-button').addEventListener('click', () => void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话'));
+$('paste-button').addEventListener('click', () => {
   const text = $('mobile-input').value;
-  if (!text) return toast('先输入要粘贴的文字');
-  await api('/api/paste', { method: 'POST', body: { text, target: $('paste-target').value } });
-  toast('已粘贴。确认内容后，按 Enter 提交');
-}));
-for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => void inputAction(() => api('/api/key', { method: 'POST', body: { key: button.dataset.key } })));
+  if (!text) return inputMessage('rejected', '先输入要粘贴的文字');
+  void inputAction('/api/paste', { text, target: $('paste-target').value }, '粘贴', '已粘贴。确认内容后，按 Enter 提交');
+});
+for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => void inputAction('/api/key', { key: button.dataset.key }, '发送按键', `${button.textContent.trim()} 已发送`));
 $('fullscreen-button').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(error => toast(error.message, true));
   else if ($('desktop-card').requestFullscreen) $('desktop-card').requestFullscreen().catch(error => toast(error.message, true));
@@ -358,7 +386,7 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && panelState === 'online' && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !accessExpired && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
@@ -400,6 +428,8 @@ async function loadDesktopSettings(resetForm = false) {
 async function settingsAction(path, body) {
   if (settingsBusy || !desktopSettings || !loggedIn || !owned) return;
   stopSettingsPolling();
+  const pausesInput = path.endsWith('/apply') || (path.endsWith('/terminal-display') && body.action === 'font');
+  if (pausesInput) { maintenancePending = true; controlsState = { ...controlsState, maintenance: true }; renderConnection(); }
   settingsBusy = true; renderDesktopSettings();
   try {
     const result = await api(path, { method: 'POST', body, signal: AbortSignal.timeout(10000) });
@@ -409,7 +439,11 @@ async function settingsAction(path, body) {
     stopSettingsPolling();
     await loadDesktopSettings(true);
   } catch (error) { $('desktop-settings-status').textContent = error.message; }
-  finally { settingsBusy = false; renderDesktopSettings(); }
+  finally {
+    settingsBusy = false;
+    if (pausesInput) { maintenancePending = false; stopPolling(); void poll(); }
+    renderConnection();
+  }
 }
 $('desktop-settings-button').addEventListener('click', async () => {
   if (document.fullscreenElement) await document.exitFullscreen();
