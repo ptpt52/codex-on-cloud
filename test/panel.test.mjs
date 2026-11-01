@@ -24,19 +24,16 @@ test('authentication, host/origin checks and CSRF protect both API and desktop',
   assert.equal((await app.request('/api/me')).status, 401);
 });
 
-test('HTTP proxy injects credentials only upstream and strips upstream auth cookies', async t => {
+test('desktop resources require login, serve noVNC locally and reject traversal', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login();
   const response = await app.request('/desktop/index.html', { headers: { authorization: 'Bearer attacker', 'cf-access-jwt-assertion': 'private-login-token' } });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('set-cookie'), null);
   assert.equal(response.headers.get('www-authenticate'), null);
-  const upstream = app.received.at(-1);
-  assert.equal(upstream.url, '/index.html');
-  assert.equal(upstream.headers.authorization, `Basic ${Buffer.from('kasm_user:' + app.config.desktopPassword).toString('base64')}`);
-  assert.equal(upstream.headers.cookie, undefined);
-  assert.equal(upstream.headers['cf-access-jwt-assertion'], undefined);
-  const redirect = await app.request('/desktop/redirect');
-  assert.equal(redirect.headers.get('location'), '/desktop/index.html');
+  assert.match(await response.text(), /viewer.js/);
+  assert.equal((await app.request('/desktop/novnc/core/rfb.js')).status, 200);
+  assert.equal((await app.request('/desktop/novnc/core/%2e%2e%2f%2e%2e%2fpackage.json')).status, 404);
+  assert.equal(app.received.length, 0);
 });
 
 test('WebSocket upgrade enforces origin, login and viewer; takeover closes the old connection', async t => {
@@ -46,9 +43,8 @@ test('WebSocket upgrade enforces origin, login and viewer; takeover closes the o
   await once(connection, 'open');
   connection.send('frame');
   assert.equal((await once(connection, 'message'))[0].toString(), 'frame');
-  const upstream = app.received.find(item => item.method === 'WS');
-  assert.equal(upstream.url, '/websockify');
-  assert.equal(upstream.headers.cookie, undefined);
+  const upstream = app.received.find(item => item.method === 'VNC');
+  assert.equal(upstream.bytes.toString(), 'frame');
   const denied = async (options, status) => {
     const ws = new WebSocket(wsUrl, options);
     const code = await new Promise(resolve => {

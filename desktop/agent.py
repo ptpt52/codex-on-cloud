@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Private desktop helper: fixed input actions and a bounded transfer directory.
 
-Runs as the desktop user. It has no Docker socket and accepts no shell commands.
+Runs as the desktop user, on loopback, and accepts no shell commands.
 """
 import hmac
 import json
@@ -72,7 +72,7 @@ class Desktop:
             elif path == '/terminal':
                 # Opening a terminal attaches the existing tmux session; it never
                 # resubmits the last Codex prompt or restarts an active task.
-                subprocess.Popen(['/usr/local/bin/open-codex-terminal'],
+                subprocess.Popen([str(Path(__file__).with_name('open-codex-terminal'))],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
             else:
@@ -249,14 +249,14 @@ class AgentServer(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
-    secret = Path(os.environ.get('AGENT_SECRET_FILE', '/run/secrets/agent_secret')).read_text().strip()
+    secret = Path(os.environ['AGENT_SECRET_FILE']).read_text().strip()
     if len(secret) < 16:
         raise SystemExit('内部接口密钥无效')
-    desktop = Desktop(secret, os.environ.get('TRANSFER_DIR', '/workspace/transfer'))
-    # Recover interrupted uploads left by container termination, bounded to this directory.
+    desktop = Desktop(secret, os.environ['TRANSFER_DIR'])
+    # Recover interrupted uploads left by process termination, bounded to this directory.
     for item in desktop.transfer_dir.glob('.upload-*'):
         if item.is_file() and not item.is_symlink():
             item.unlink()
-    server = AgentServer(('0.0.0.0', int(os.environ.get('AGENT_PORT', '6902'))), desktop)
+    server = AgentServer(('127.0.0.1', int(os.environ.get('AGENT_PORT', '36902'))), desktop)
     print('桌面内部接口已启动', flush=True)
     server.serve_forever()

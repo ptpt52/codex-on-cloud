@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 set -eu
-cd /workspace
-exec tmux new-session -A -s codex /usr/local/bin/codex-session
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+cd "${WORKSPACE_DIR:?}"
+# A separate socket avoids attaching to, or changing, the physical desktop's tmux server.
+exec tmux -f "$script_dir/tmux.conf" -S "${TMUX_SOCKET:?}" new-session -A -s codex "$script_dir/codex-session"

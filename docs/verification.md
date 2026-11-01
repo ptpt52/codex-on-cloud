@@ -1,57 +1,58 @@
-# 验证记录与实机验收
+# 验证记录与验收
 
-## 当前开发环境
+开发机：Ubuntu 18.04.6，Node.js 24.21，Python 3.11，Chrome 137。原生部署不安装 Docker。
 
-2026-11-01，开发机为 Ubuntu 18.04，Node.js 24，Chrome 137。没有可用 Docker 命令 / daemon。
+本机已有 XFCE、x11vnc、xterm、tmux、xdotool、Codex。无 sudo 实机验证使用从 Ubuntu 仓库下载并解压到 `data/host-tools` 的包：
 
-已运行：
+- xvfb `2:1.19.6-1ubuntu4.15`
+- xclip `0.12+svn84-4build1`
+- fonts-wqy-microhei `0.2.0-beta-3`
 
-- JavaScript、Python、Bash 脚本语法检查。
-- 使用独立的 Docker Compose v2.39.4 CLI 验证完整 Compose 配置（包括 Cloudflare profile）；不连接 Docker daemon。
-- Node.js 集成测试：真实 HTTP/WebSocket 网关，模拟桌面与内部接口上游。
-- Python 内部接口测试：真实 HTTP 请求、文件写入、符号链接与输入命令参数验证；X11 动作通过测试替身验证。
-- Playwright：手机 390×844 和桌面 1440×1000，登录、桌面 iframe、WebSocket、中文粘贴、独立 Enter、上传下载、退出、多页面接管。
+这些私有文件不进入 Git，不修改系统包数据库。cloudflared `2026.10.0` 安装在同一私有目录，使用固定 SHA-256 校验。
 
-结果：7 项 Node.js 集成测试、7 项 Python 接口测试、4 项浏览器测试全部通过。20 个脚本通过语法检查，桌面 Shell 脚本通过 ShellCheck；使用生成的真实本地配置验证面板启动、登录和会话读取正常。
-
-浏览器测试生成的画面明确标注“模拟上游”。这些检查不能代替真实 KasmVNC、Docker、X11、Codex 和 Cloudflare 的联合验证。
-
-## 有 Docker 后的必做验收
-
-### 构建与启动
+## 自动化检查
 
 ```bash
-npm run setup
-docker compose config --quiet
-docker compose up -d --build
-docker compose ps
+npm run check
+npm test
+npm run test:desktop
+CHROME_PATH=/usr/bin/google-chrome npm run test:browser
 ```
 
-确认 desktop 与 panel 均健康，桌面里能打开终端，`codex --version` 正常，`/workspace` 可以创建文件。使用实际需要的审批 / 沙箱配置验证命令执行；容器内命名空间支持取决于宿主和 Docker 配置，不把自动批准或关闭沙箱作为默认修复。
+Node 集成测试覆盖登录、Host/Origin/CSRF、已认证 noVNC 资源、Unix socket WebSocket 桥接、多页面接管、会话持久化与文件代理。Python 测试使用真实 HTTP/文件，模拟 X11 动作。浏览器测试使用实际 noVNC 客户端与模拟 RFB 服务器，覆盖手机和桌面尺寸、中文输入、独立 Enter、文件、退出和接管。
 
-### 中文与焦点
+2026-11-01：7 项 Node、7 项 Python、4 项浏览器测试通过；真实桌面验收也通过。真实检查确认浏览器断开和面板重启期间 tmux shell PID 不变，中文通过 X11 剪贴板原样写入中转测试文件，粘贴阶段没有执行命令。
 
-1. 选中终端，粘贴中文、多行文本、反引号和 `$()`。
-2. 确认文字完整且只出现一次；未按 Enter 前没有执行。
-3. 检查终端粘贴模式、Esc、Tab、Ctrl+C 和方向键。
-4. 使用“其他应用”模式对普通文本编辑器测试 Ctrl+V。
+## 真实桌面
 
-### 断线保活
+```bash
+npm run native:doctor
+npm run native:install
+npm run native:start
+CHROME_PATH=/usr/bin/google-chrome npm run test:native
+```
 
-1. 在 tmux 终端里启动一个需要数分钟的普通任务，或经你授权的 Codex 任务。
-2. 关闭浏览器、锁屏、Wi-Fi 切换蜂窝网络。
-3. 重新打开桌面，确认原进程仍在，输入没有被自动重放。
-4. 关闭 xterm 窗口后点击“打开终端”，确认回到原 tmux 会话。
-5. 单独重建面板，确认桌面任务不被结束，工作台登录仍有效。
+`test:native` 只操作空闲 bash，会发出无害的 printf/sleep 命令并重启一次面板。验证真实 noVNC / Unix socket / x11vnc / Xvfb 链路、中文粘贴不自动执行、Enter 提交、浏览器断开后任务完成、手机视口、面板重启时原 tmux PID 与登录状态保留。结束后删除中转测试文件。
 
-### 持久化
+截图：`test-results/native-desktop.png`、`test-results/native-mobile.png`，不进入 Git。监听检查应只有回环 HTTP 面板和内部接口，不应出现项目的 VNC TCP 监听。
 
-先结束运行中的任务，再重建 desktop，确认项目文件、Codex 登录与历史仍在；确认不会自动重启之前的任务。
+## 仍需人工验收
 
-### 外网
+- 用实际 Codex 任务验证所需的审批、沙箱和工具链。自动化验收只运行 `codex --version`，不会自动创建付费模型请求。
+- 用实际手机蜂窝网络测试输入、手势及网络切换；当前已完成公网链路和手机尺寸浏览器验收，尚未使用真实手机。
+- 启用 linger 后验证注销及主机重启；关闭休眠并验证外出时供电、联网。
+- 在普通编辑器中验证“其他应用”的 Ctrl+V。不同编辑器的快捷键可能不同。
 
-按 Cloudflare 文档配置 Access 和 Tunnel，然后用手机蜂窝网络验证登录、桌面、中文输入、文件与接管。记录网络延迟与断线重连体验。
+重启桌面前先结束任务。文件保留不等于进程恢复；重启主机或桌面服务会终止正在运行的任务。
 
-### 升级
+## 当前公网实例
 
-保留前一版桌面镜像与 home 卷备份。新版本先在独立环境中验证现有 home 卷，再升级工作桌面。不要在任务执行中重建 desktop。
+2026-11-01 已通过 Cloudflare API 创建本项目专用 Tunnel 与 `remote-codex.x-wrt.dev` 的代理 CNAME，上游为 `http://127.0.0.1:36080`。桌面、面板、Tunnel 三个用户服务均在运行。API Token 仅从用户指定的 `/tmp/cf_token` 读取，运行时只保存专用 Tunnel 的 token，未进入 Git。
+
+```bash
+CHROME_PATH=/usr/bin/google-chrome npm run test:native -- --public
+```
+
+已从 HTTPS 公网入口验证：真实 noVNC 握手与画面、中文粘贴不自动执行、独立 Enter、断开浏览器后任务完成、手机视口，以及重启面板后登录保留和 tmux PID 不变。另用真实公网 HTTP 请求验证 Secure / HttpOnly / SameSite Cookie、中文文件上传下载、未登录桌面返回 401。
+
+当前使用工作台密码认证，未创建 Cloudflare Access 应用。用户已执行 `sudo loginctl enable-linger ptpt52`；检查确认 `Linger=yes`，桌面、面板和 Tunnel 三个用户服务均为 enabled / active。注销与主机重启后的实际恢复仍需人工验收；主机重启会结束原来的运行任务。

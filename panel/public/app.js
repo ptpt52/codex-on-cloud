@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, polling = false;
 const draftKey = 'codex-cloud.draft';
+let inputBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
 
@@ -42,10 +43,7 @@ function showLogin() {
   if ($('files-dialog').open) $('files-dialog').close();
 }
 function frameUrl() {
-  const query = new URLSearchParams({
-    autoconnect: '1', path: `desktop/websockify?viewer=${viewer}`, resize: 'remote',
-    reconnect: 'true', reconnect_delay: '2000',
-  });
+  const query = new URLSearchParams({ viewer });
   return `/desktop/index.html?${query}`;
 }
 function openFrame() {
@@ -66,6 +64,7 @@ async function poll() {
     $('connection-status').classList.toggle('offline', !state.desktop.ready || !mine);
     $('connection-status').lastChild.textContent = !mine ? '连接已释放' : state.desktop.ready ? '桌面在线' : '启动中';
     $('version-label').textContent = state.desktop.version;
+    if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
     if (!mine) {
       owned = false; stopFrame();
       overlay('在这里继续工作', '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
@@ -105,6 +104,14 @@ async function action(button, work) {
   try { await work(); } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 }
+async function inputAction(work) {
+  if (inputBusy) return;
+  inputBusy = true;
+  const controls = [$('paste-button'), $('terminal-button'), ...document.querySelectorAll('[data-key]')];
+  for (const control of controls) control.disabled = true;
+  try { await work(); } catch (error) { toast(error.message, true); }
+  finally { inputBusy = false; for (const control of controls) control.disabled = false; }
+}
 $('login-form').addEventListener('submit', event => {
   event.preventDefault();
   void action($('login-button'), async () => {
@@ -119,17 +126,17 @@ $('logout-button').addEventListener('click', () => void action($('logout-button'
 }));
 $('takeover-button').addEventListener('click', () => void action($('takeover-button'), claim));
 $('reconnect-button').addEventListener('click', () => void action($('reconnect-button'), claim));
-$('terminal-button').addEventListener('click', () => void action($('terminal-button'), async () => {
+$('terminal-button').addEventListener('click', () => void inputAction(async () => {
   await api('/api/terminal', { method: 'POST', body: {} });
   toast('已打开终端，连接原有 tmux 会话');
 }));
-$('paste-button').addEventListener('click', () => void action($('paste-button'), async () => {
+$('paste-button').addEventListener('click', () => void inputAction(async () => {
   const text = $('mobile-input').value;
   if (!text) return toast('先输入要粘贴的文字');
   await api('/api/paste', { method: 'POST', body: { text, target: $('paste-target').value } });
   toast('已粘贴。确认内容后，按 Enter 提交');
 }));
-for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => void action(button, () => api('/api/key', { method: 'POST', body: { key: button.dataset.key } })));
+for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => void inputAction(() => api('/api/key', { method: 'POST', body: { key: button.dataset.key } })));
 $('fullscreen-button').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(error => toast(error.message, true));
   else if ($('desktop-stage').requestFullscreen) $('desktop-stage').requestFullscreen().catch(error => toast(error.message, true));
@@ -168,6 +175,12 @@ $('upload-input').addEventListener('change', async () => {
   finally { $('upload-input').disabled = false; $('upload-input').value = ''; }
 });
 window.addEventListener('online', () => void poll());
+window.addEventListener('message', event => {
+  if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || event.data?.type !== 'codex-desktop' || !owned) return;
+  const connected = event.data.state === 'connected';
+  $('connection-status').classList.toggle('offline', !connected);
+  $('connection-status').lastChild.textContent = connected ? '桌面在线' : '重新连接中';
+});
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });
 
 try { await showWorkspace(await api('/api/me')); } catch { showLogin(); }

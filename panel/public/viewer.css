@@ -1,0 +1,4 @@
+html, body, #screen { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #152019; }
+body { touch-action: none; }
+#status { position: fixed; inset: auto 12px 12px; margin: 0; padding: 10px; background: #152019e6; color: #d6e6d0; font: 13px sans-serif; pointer-events: none; }
+#status[hidden] { display: none; }

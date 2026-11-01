@@ -16,7 +16,7 @@ let failed = false, count = 0;
 for (const file of await walk(root)) {
   let command;
   if (/\.(mjs|js)$/.test(file)) command = [process.execPath, ['--check', file]];
-  else if (/\.sh$/.test(file) || /codex-(workbench|session)$/.test(file) || file.endsWith('/open-codex-terminal')) command = ['bash', ['-n', file]];
+  else if (/\.(sh|bashrc)$/.test(file) || /codex-(workbench|session)$/.test(file) || file.endsWith('/open-codex-terminal')) command = ['bash', ['-n', file]];
   else if (file.endsWith('.py')) command = ['python3', ['-m', 'py_compile', file]];
   if (!command) continue;
   count++;

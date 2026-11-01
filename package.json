@@ -1,18 +1,28 @@
 {
   "name": "codex-on-cloud",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "start": "node panel/main.mjs",
+    "desktop": "node native/desktop.mjs",
+    "native:install": "node scripts/native.mjs install",
+    "native:doctor": "node scripts/native.mjs doctor",
+    "native:start": "node scripts/native.mjs start",
+    "native:status": "node scripts/native.mjs status",
+    "native:stop": "node scripts/native.mjs stop",
+    "native:tunnel": "node scripts/native.mjs tunnel",
+    "native:cloudflared": "node scripts/install-cloudflared.mjs",
+    "native:publish": "node scripts/provision-cloudflare.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
     "test:desktop": "python3 -m unittest discover -s test -p '*_test.py'",
     "test:browser": "playwright test",
+    "test:native": "node test/native-smoke.mjs",
     "demo": "node scripts/demo.mjs"
   },
-  "dependencies": { "http-proxy-middleware": "4.2.1" },
-  "devDependencies": { "@playwright/test": "1.64.1", "ws": "8.22.1" }
+  "dependencies": { "@novnc/novnc": "1.7.0", "ws": "8.22.1" },
+  "devDependencies": { "@playwright/test": "1.64.1" }
 }

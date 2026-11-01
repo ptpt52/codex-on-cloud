@@ -1,14 +1,13 @@
 import http from 'node:http';
+import net from 'node:net';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WebSocketServer } from 'ws';
 import { createPanel } from '../panel/server.mjs';
 
-const DEMO_DESKTOP = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;background:#1d2722;color:#d6e6d0;font:14px monospace}header{padding:13px 18px;background:#26332b;color:#aabca4;font:11px sans-serif}.terminal{margin:26px auto;max-width:850px;padding:22px;line-height:1.9;background:#152019;border:1px solid #3a4f3e;border-radius:8px}b{color:#88bb83}small{color:#849680}</style><header>Ubuntu 开发桌面 · 模拟上游，仅用于界面与代理测试</header><div class="terminal"><small>codex — /workspace</small><p><b>✳ Codex</b></p><p>你的工作空间已就绪。</p><p>在手机输入助手中粘贴指令，然后按 Enter 提交。</p><p><small>真实部署时，这里显示 KasmVNC 桌面画面。</small></p><p>› <span id="cursor">_</span></p></div><script>const p=new URLSearchParams(location.search).get('path');if(p){const w=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/'+p);w.onopen=()=>document.getElementById('cursor').textContent='已连接';}</script></html>`;
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const files = new Map();
@@ -16,7 +15,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     received.push({ method: req.method, url: req.url, headers: req.headers });
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
-    if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: 'Codex test fixture' })); }
+    if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试' })); }
     if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ files: [...files].map(([name, content]) => ({ name, size: content.length, modified: 1 })) })); }
     if (req.url.startsWith('/files/')) {
       const name = decodeURIComponent(req.url.slice('/files/'.length));
@@ -28,24 +27,47 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
       received.at(-1).body = JSON.parse(body);
       res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ok: true }));
     }
-    if (req.url.startsWith('/redirect')) { res.writeHead(302, { location: '/index.html' }); return res.end(); }
-    res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.setHeader('set-cookie', 'upstream_secret=must_not_escape');
-    res.setHeader('www-authenticate', 'Basic realm="secret"');
-    res.end(DEMO_DESKTOP);
+    res.writeHead(404); res.end();
   });
-  const wss = new WebSocketServer({ noServer: true });
-  upstream.on('upgrade', (req, socket, head) => {
-    received.push({ method: 'WS', url: req.url, headers: req.headers });
-    wss.handleUpgrade(req, socket, head, ws => { ws.on('message', bytes => ws.send(bytes)); });
+  const clients = new Set();
+  const vnc = net.createServer(socket => {
+    clients.add(socket);
+    socket.on('error', () => {});
+    socket.once('close', () => clients.delete(socket));
+    if (!rfb) return socket.on('data', bytes => { received.push({ method: 'VNC', bytes }); socket.write(bytes); });
+    // Minimal RFB fixture; browsers still use the real noVNC client and Unix socket bridge.
+    socket.write('RFB 003.008\n');
+    let phase = 0, pending = Buffer.alloc(0), sent = false;
+    socket.on('data', bytes => {
+      pending = Buffer.concat([pending, bytes]);
+      if (phase === 0 && pending.length >= 12) { pending = pending.subarray(12); socket.write(Buffer.from([1, 1])); phase = 1; }
+      if (phase === 1 && pending.length >= 1) { pending = pending.subarray(1); socket.write(Buffer.alloc(4)); phase = 2; }
+      if (phase === 2 && pending.length >= 1) {
+        pending = pending.subarray(1); phase = 3;
+        const name = Buffer.from('SIMULATED DESKTOP - TEST ONLY');
+        const header = Buffer.alloc(24);
+        header.writeUInt16BE(1280, 0); header.writeUInt16BE(800, 2);
+        header.set([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0], 4);
+        header.writeUInt32BE(name.length, 20); socket.write(Buffer.concat([header, name]));
+      } else if (phase === 3 && !sent) {
+        sent = true;
+        const frame = Buffer.alloc(16 + 1280 * 800 * 4);
+        frame.writeUInt16BE(1, 2); frame.writeUInt16BE(1280, 8); frame.writeUInt16BE(800, 10);
+        for (let i = 16; i < frame.length; i += 4) frame.set([34, 48, 29, 0], i);
+        socket.write(frame);
+      }
+      if (phase === 3) pending = Buffer.alloc(0);
+    });
   });
+  const vncSocket = join(directory, 'vnc.sock');
+  vnc.listen(vncSocket); await once(vnc, 'listening');
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const upstreamUrl = `http://127.0.0.1:${upstream.address().port}`;
   const config = {
     host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
-    dataDir: directory, username: 'admin', password, desktopPassword: 'desktop_password_for_test_123',
-    agentSecret: 'agent_secret_for_test_123', desktopUrl: upstreamUrl, agentUrl: upstreamUrl,
-    desktopTlsVerify: true, sessionMs: sessionMs || 604800000,
+    dataDir: directory, username: 'admin', password,
+    agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
+    transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
   };
   const panel = await createPanel(config);
   panel.server.listen(port, '127.0.0.1'); await once(panel.server, 'listening');
@@ -71,8 +93,8 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     get cookie() { return cookie; }, get csrf() { return csrf; },
     async close({ preserve = false } = {}) {
       await panel.close();
-      for (const client of wss.clients) client.terminate();
-      wss.close();
+      for (const client of clients) client.destroy();
+      await new Promise(resolve => vnc.close(resolve));
       await new Promise(resolve => { upstream.close(resolve); upstream.closeAllConnections(); });
       if (!preserve && !dataDir) await rm(directory, { recursive: true, force: true });
     },

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -eu
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# Reuse this desktop's terminal instead of opening an unbounded number of windows.
+window="$(xdotool search --onlyvisible --class '^codex-on-cloud-terminal$' 2>/dev/null | head -n 1 || true)"
+if [ -n "$window" ]; then
+  xdotool windowactivate --sync "$window" 2>/dev/null || xdotool windowfocus "$window"
+  exit 0
+fi
 # Make the helper's terminal shortcut deterministic across xterm distributions.
-exec xterm -fa 'DejaVu Sans Mono' -fs 15 -T Codex \
-  -xrm 'XTerm*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \
-  -e /usr/local/bin/codex-workbench
+exec xterm -u8 -class codex-on-cloud-terminal \
+  -fa 'DejaVu Sans Mono,Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' \
+  -fd 'Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' -fs 15 -T Codex \
+  -xrm '*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \
+  -e "$script_dir/codex-workbench"

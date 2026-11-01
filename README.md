@@ -1,169 +1,171 @@
 # Codex on Cloud
 
-在自己的 Ubuntu 电脑上运行一个独立开发桌面，出门后用手机或平板浏览器继续操作 Codex。
-
-当前版本提供单用户、单桌面：登录面板、KasmVNC 桌面代理、手机中文粘贴、常用按键、文件中转、tmux 会话和可选 Cloudflare Tunnel。桌面不挂载 Docker socket，浏览器离开不会主动停止任务。
-
-**验证范围：**已在本地验证面板与内部接口、HTTP/WebSocket 代理，以及手机和桌面浏览器的完整操作流程。当前开发环境未安装 Docker，因此真实桌面镜像构建、KasmVNC 串流、Codex 登录与外网连接尚待实机验证。`npm run demo` 使用明确标注的模拟桌面，不代表实际桌面串流成功。
-
-## 架构
+在 Ubuntu 本机运行独立开发桌面，通过手机或平板浏览器操作 Codex。**无需 Docker**，复用当前用户的工具、项目和 Codex 登录。
 
 ```text
-手机 / 平板浏览器
-        │ HTTPS
-Cloudflare Access（个人账号验证）
-        │
-Cloudflare Tunnel（Ubuntu 主动出站连接）
-        │
-Web 面板（登录、凭据注入、HTTP / WebSocket 代理）
-        │ 私有 Docker 网络
-开发桌面容器（KasmVNC + XFCE + xterm + tmux + Codex）
-        ├── 持久化用户目录 /home/kasm-user
-        └── 宿主项目目录 → /workspace
+手机浏览器 → Cloudflare Access（可选）→ Cloudflare Tunnel
+                                      ↓
+                         本机 Web 面板 127.0.0.1:36080
+                                      ↓ 已认证的 WebSocket
+                              私有 Unix socket
+                                      ↓
+                       x11vnc → Xvfb 独立显示 :93
+                                      ↓
+                        XFCE + xterm + tmux + 本机 Codex
 ```
 
-本地模式不需要 Cloudflare。桌面容器不发布端口，只有面板的 `127.0.0.1:36080` 映射到宿主。远程模式由 `cloudflared` 直接连接面板。
+面板与桌面使用独立的 systemd 用户服务。关闭浏览器、切换网络或重启面板，都不会主动停止桌面任务。VNC 不监听 TCP 端口，内部输入接口只监听回环地址。
 
-## 环境
+## 环境与安装
 
-- Ubuntu / Linux 主机，Docker Engine 和 Docker Compose v2。
-- x86_64 或 ARM64；桌面基础镜像同时提供两种架构。
-- Node.js 22+，用于初始化和开发。容器内自带 Node.js。
-- 首版默认桌面和面板进程使用 UID `1000`。宿主绑定的工作目录及 `secrets/` 文件必须对这个 UID 可读写；默认 Ubuntu 首个用户通常就是 `1000`。
-- 主机保持供电、联网且不休眠。
+需要 Linux、可运行的 Node.js 22+、Python 3.8+ 和本机 Codex CLI。已在本机 Ubuntu 18.04、Node 24、Python 3.11 上实测。Ubuntu 18.04 的系统默认 Node/Python 版本不满足要求，不要直接用旧系统包替换已有环境。
 
-## 本地启动
+在新主机上安装桌面依赖，只有这一步需要 sudo：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  xvfb x11vnc xfwm4 xfdesktop4 xfce4-panel xfce4-settings \
+  xterm tmux xclip xdotool xauth x11-utils dbus fontconfig fonts-noto-cjk
+```
+
+普通用户初始化、检查和安装服务：
 
 ```bash
 cd /home/ptpt52/Sources2/codex-on-cloud
 npm ci
 npm run setup
-docker compose up -d --build
+npm run native:doctor
+npm run native:install
+npm run native:start
+npm run native:status
 ```
 
-访问 `http://localhost:36080`。登录信息保存在 `secrets/credentials.txt`，初始化不会把密码打印到终端。`.env`、密钥、数据和项目目录均被 Git 忽略。
+本机已经有大部分组件。为完成无 sudo 的实机验证，Xvfb、xclip 和备用中文字体已从 Ubuntu 官方包解压到被 Git 忽略的 `data/host-tools/`；启动器会优先查找这个目录。这不是系统级安装，删除 `data/host-tools` 后需要用上面的 apt 命令补齐。
 
-桌面首次出现后：
+浏览器访问 **http://localhost:36080**。登录信息保存在 `secrets/credentials.txt`，不会打印到日志。
 
-1. 在面板点击“打开终端”。终端会连接名为 `codex` 的 tmux 会话。
-2. 在终端执行 `codex login --device-auth`，按提示用手机浏览器完成登录。该方式需要你的账号或工作空间允许设备码登录。
-3. 执行 `codex`，开始工作。后续打开终端会连接原会话。
+如需本机用户退出登录后及开机继续运行，执行一次：
 
-也可以在容器中的终端使用其他 Codex 登录方式。工作台登录和 Codex 登录是两个不同的身份；面板不会读取或转发 Codex 的登录文件。
+```bash
+sudo loginctl enable-linger "$USER"
+```
 
-初始化脚本再次执行时会保留原配置和密钥，不自动覆盖。
+这让用户服务在无人登录时也能运行；主机仍需保持供电、联网且不休眠。
 
-### 项目目录
+## 使用 Codex
 
-默认宿主的 `./workspaces` 映射为容器内 `/workspace`。可以先把仓库克隆到这个目录，或修改 `.env`：
+打开桌面后点击“打开终端”，在已有 tmux 会话中运行 `codex`。需要登录时运行 `codex login`。项目不会读取、改写或复制本机 `~/.codex` 配置，也不会更改审批和沙箱设置。
+
+初始终端只打开 shell，重新连接不会自动启动 Codex、提交指令或重放按键。关闭 xterm 后点击“打开终端”会重新连接原 tmux 会话。
+
+桌面、面板都以当前用户运行，**拥有这个用户的本机文件权限**。独立显示、Xauthority、D-Bus、XFCE 设置和 tmux socket 与物理桌面分开；文件系统和用户身份没有隔离。
+
+## 配置
+
+`.env` 使用 dotenv 格式解析，不作为 shell 脚本执行。初始化保留已有密码和配置。旧版 Docker 配置中的 `CODEX_VERSION`、`desktop_password` 不再使用，可自行移除。
 
 ```dotenv
-WORKSPACE_DIR=/home/your-user/projects
+PUBLIC_ORIGIN=http://localhost:36080
+ALLOWED_HOSTS=127.0.0.1:36080
+ADMIN_USER=admin
+PANEL_PORT=36080
+AGENT_PORT=36902
+DISPLAY_NUMBER=93
+DESKTOP_SIZE=1280x800
+WORKSPACE_DIR=./workspaces
+TZ=Asia/Shanghai
 ```
 
-修改后运行 `docker compose up -d`。容器拥有该目录内的读写权限。宿主原有软件和登录状态不会自动出现在容器中，需要在桌面镜像或用户目录内配置开发环境。
+`WORKSPACE_DIR` 可改为现有项目目录，绝对路径直接使用，相对路径以本项目根目录为基准。中转目录固定为该目录下的 `transfer`，面板会显示真实路径。每个文件最大 50 MiB，上传同名文件会原子替换。
 
-### 手机输入和文件
+显示号被占用时启动器会停止并提示，绝不接管已有桌面或删除其他显示的锁。可选 `RUNTIME_DIR` 指定私有运行目录，默认在 `$XDG_RUNTIME_DIR/codex-on-cloud`，无此变量时使用项目 `data/runtime/codex-on-cloud`。
 
-- 先点击桌面里需要输入的位置，再在“输入助手”中输入或粘贴中文、多行指令。
-- “终端”模式发送 `Ctrl+Shift+V`；“其他应用”模式发送 `Ctrl+V`。**只粘贴，不自动按 Enter。**
-- `Enter`、`Tab`、`Esc`、`Ctrl+C` 和方向键有独立按钮。
-- 通过“文件中转”上传和下载 `/workspace/transfer` 中的普通文件，每个文件最多 50 MiB。同名上传会原子替换旧文件；下载链接不接受目录或符号链接。
-- 新页面打开桌面会接管旧页面；旧页面停止自动抢回，需要用户点击“在这里继续使用”。
+修改公网域名或面板端口后，只重启面板：
+
+```bash
+systemctl --user restart codex-cloud-panel.service
+```
+
+修改显示号、尺寸、工作目录后，需要先结束桌面任务，再重启桌面服务。这会终止原桌面进程及 tmux 任务：
+
+```bash
+systemctl --user restart codex-cloud-desktop.service
+```
+
+Node/Codex 安装路径发生变化时重新运行 `npm run native:install`，刷新服务捕获的 PATH。该命令不重启正在运行的服务。
+
+## 手机输入
+
+- 先点击桌面里要输入的位置，再使用输入助手粘贴中文或多行文字。
+- “终端”模式使用 Ctrl+Shift+V，“其他应用”模式使用 Ctrl+V。
+- 粘贴不附带 Enter，确认后单独提交。网络故障后不会自动重试写操作。
+- 新标签页会接管桌面，旧页等待手动接管；不会互相不断重连。
+- 手机端缩放固定尺寸的桌面，横屏或全屏可以获得更大的操作区域。
 
 ## Cloudflare 外网访问
 
-需要 Cloudflare 账号及托管域名。完整步骤见 [Cloudflare 部署](docs/cloudflare.md)。
-
-1. 创建 Tunnel，路由例如 `desktop.example.com` → **`http://panel:8080`**。
-2. 为此域名创建 Access 应用，只放行你的账号，并启用 Tunnel 的 Access 令牌验证。
-3. 修改 `.env` 的 `PUBLIC_ORIGIN=https://desktop.example.com`。
-4. 将 Tunnel token 写入 `secrets/tunnel_token`，保持文件私密。
-5. 启动：
+详见 [Cloudflare 配置](docs/cloudflare.md)。安装固定版本的用户级 cloudflared：
 
 ```bash
-docker compose --profile cloudflare up -d --build
+npm run native:cloudflared
 ```
 
-随后手机浏览器访问 `https://desktop.example.com`，完成 Access 验证和工作台登录即可。
+它下载官方 `2026.10.0` 程序并校验 SHA-256，保存到 `data/host-tools/usr/bin`。有 API Token 时可直接创建专用 Tunnel 和域名：
 
-## 持久化和重启语义
+```bash
+npm run native:publish -- --domain remote-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
+```
 
-| 内容 | 保存位置 | 浏览器离开 | 容器重建 |
-| --- | --- | --- | --- |
-| 项目与中转文件 | 宿主 `WORKSPACE_DIR` | 保留 | 保留 |
-| Codex 配置、登录、历史 | `desktop-home` 数据卷 | 保留 | 保留 |
-| 面板登录状态 | `panel-data` 数据卷 | 保留到过期 | 保留 |
-| tmux、运行中的 Codex | 桌面容器内存 | 继续执行 | **进程终止** |
+脚本需要账户 Tunnel 编辑、目标区域 Zone 读取和 DNS 编辑权限，不覆盖无关记录。也可手动配置 Tunnel、HTTPS 域名并把 Tunnel 运行 token 写入 `secrets/tunnel_token`。随后启动：
 
-单独重建面板不会主动重启桌面。桌面没有根据观看人数触发的自动重启，也没有内存超限“自愈”脚本。容器进程异常退出时由 Docker 按 `unless-stopped` 恢复服务，**不会自动重新提交上一次任务**。
+```bash
+systemctl --user restart codex-cloud-panel.service
+npm run native:tunnel
+```
 
-不要使用 `docker compose down -v` 作为日常停止命令，`-v` 会删除命名数据卷。正常暂停可使用 `docker compose stop`；这会中断桌面中的运行任务。
+Tunnel 的上游是 **`http://127.0.0.1:36080`**。不需要开放路由器端口，也不把 VNC 或内部接口直接发布出去。
+
+公网入口使用工作台自身的账号密码登录，HTTPS Cookie 带 Secure。Cloudflare Access 是可选的额外身份验证层，配置方式见部署文档。
+
+## 生命周期与运维
+
+| 操作 | 桌面与 tmux 进程 | 文件与 Codex 登录 |
+| --- | --- | --- |
+| 浏览器关闭、断网或面板重启 | 继续 | 保留 |
+| 关闭 xterm 窗口 | tmux 内任务继续 | 保留 |
+| 重启/停止桌面服务、主机重启 | 终止；不会自动重放任务 | 本机文件保留 |
+
+```bash
+npm run native:status
+journalctl --user -u codex-cloud-desktop -u codex-cloud-panel -n 100 --no-pager
+# 查看 Tunnel
+systemctl --user status codex-cloud-tunnel.service
+# 停止全部服务，会终止桌面任务
+npm run native:stop
+```
+
+桌面服务遇到关键进程退出会整体停止并报告错误，不自动反复重建桌面。恢复前先检查日志，再运行 `npm run native:start`。
 
 ## 开发与验证
 
 ```bash
-npm ci
 npm run check
 npm test
 npm run test:desktop
-npx playwright install chromium
-npm run test:browser
-```
-
-已有兼容 Chrome 时可指定：
-
-```bash
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser
 ```
 
-测试覆盖：登录及过期、CSRF、Host / Origin 验证、代理凭据隔离、WebSocket 接管、会话持久化、文件穿越与符号链接、中文输入、手机与桌面操作流程。
+前端自动化测试连接模拟 RFB 上游，但实际运行 noVNC 客户端与 Unix socket 网关。`npm run demo` 在 `127.0.0.1:36081` 提供明确标注的模拟桌面，不连接 Codex。
 
-无需 Docker 的界面演示：
-
-```bash
-npm run demo
-```
-
-演示只监听 `127.0.0.1:36081`，使用临时数据和固定测试密码（启动时显示），不会连接 Codex、运行系统命令或使用真实凭据。
-
-真实部署后还需要按 [实机验收](docs/verification.md) 验证桌面启动、手机输入、断线继续任务、Codex 沙箱在容器中的可用性和 Cloudflare 链路。
-
-## 运维
+真实桌面已经启动且 tmux 中为**空闲 bash**时，可运行：
 
 ```bash
-docker compose ps
-docker compose logs --tail=100 panel desktop
-# 只更新面板，保留桌面任务
-docker compose up -d --build --no-deps panel
+CHROME_PATH=/usr/bin/google-chrome npm run test:native
 ```
 
-升级 Codex：显式修改 `.env` 中的 `CODEX_VERSION`，结束正在执行的任务后重建桌面：
+公网 HTTPS 实例可显式添加 `-- --public`；启用了外层 Cloudflare Access 的实例需要先完成相应身份验证，不能直接使用无人值守测试。
 
-```bash
-docker compose build desktop
-docker compose up -d --no-deps desktop
-```
+这会在终端发送无害的 printf/sleep 命令、验证中文粘贴与断线保活，并重启一次面板，测试完成删除中转测试文件。不要在桌面正在执行任务时运行。结果与待验收项目见 [验证记录](docs/verification.md)。
 
-桌面、Node 和 Cloudflare 镜像已固定到摘要；Codex npm 包固定版本。系统 apt 依赖在构建时更新，因此不同时间重建的系统软件可能不同。升级前保留旧镜像，按实际构建验证后再切换。
-
-## 代码结构
-
-```text
-panel/          Node.js 网关、持久登录和手机界面
-desktop/        开发桌面镜像、固定操作接口、tmux 启动脚本
-scripts/        初始化、语法检查和模拟演示
-test/           网关集成、内部接口和浏览器测试
-docs/           Cloudflare 配置、架构与实机验收
-compose.yaml    桌面、面板和可选 Tunnel
-```
-
-## 参考
-
-- WechatOnCloud：浏览器访问常驻应用、服务端注入桌面凭据、手机输入与多页面接管的设计参考。
-- agent-relay：Codex 跨设备操作需求及断线不重发任务的设计参考。
-- [Kasm 官方镜像](https://docs.kasm.com/docs/how-to/workspaces-sessions/container-workspace/custom-images)和 [KasmVNC](https://github.com/kasmtech/KasmVNC)。
-- [Codex CLI](https://learn.chatgpt.com/docs/cli)与[认证](https://learn.chatgpt.com/docs/auth)。
-- [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/) 与 [Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)。
-
-本项目新增代码采用 MIT 许可。依赖及容器软件分别遵循其自身许可。
+实现边界见 [架构说明](docs/architecture.md)。参考 WechatOnCloud 的浏览器常驻桌面与手机输入设计，以及 agent-relay 的跨设备、断线不重发需求。浏览器客户端使用 [noVNC](https://github.com/novnc/noVNC)，本项目新增代码采用 MIT 许可，依赖分别遵循自身许可。

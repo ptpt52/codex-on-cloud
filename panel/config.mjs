@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { environment, settings } from '../native/config.mjs';
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -10,34 +12,28 @@ function secret(env, name) {
   return value;
 }
 
-export function readConfig(env = process.env) {
+export function readConfig(env = environment()) {
+  const native = settings(env);
   const origin = new URL(env.PUBLIC_ORIGIN || 'http://localhost:36080');
   if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
     throw new Error('PUBLIC_ORIGIN 必须是完整的 HTTP(S) 根地址');
   }
-  const desktopUrl = new URL(env.DESKTOP_URL || 'https://desktop:6901');
-  const agentUrl = new URL(env.AGENT_URL || 'http://desktop:6902');
-  for (const url of [desktopUrl, agentUrl]) {
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
-      throw new Error('桌面和内部接口地址必须是 HTTP(S) 根地址');
-    }
-  }
+  const agentUrl = `http://127.0.0.1:${native.agentPort}`;
   const hosts = new Set([origin.host.toLowerCase()]);
   for (const host of (env.ALLOWED_HOSTS || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean)) {
     if (!/^[a-z0-9.:[\]-]+$/.test(host)) throw new Error('ALLOWED_HOSTS 只接受域名或 IP，可带端口，不接受通配符');
     hosts.add(host);
   }
-  const port = Number(env.PORT || 8080);
+  const port = Number(env.PORT ?? native.panelPort);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 无效');
   return {
-    host: env.HOST || '0.0.0.0', port, origin: origin.origin,
+    host: '127.0.0.1', port, origin: origin.origin,
     secureCookies: origin.protocol === 'https:', hosts,
-    dataDir: env.DATA_DIR || './data/panel',
-    username: env.ADMIN_USER || 'admin', password: secret(env, 'ADMIN_PASSWORD'),
-    desktopPassword: secret(env, 'DESKTOP_PASSWORD'), agentSecret: secret(env, 'AGENT_SECRET'),
-    desktopUrl: desktopUrl.origin, agentUrl: agentUrl.origin,
-    // Only the private Kasm endpoint uses a self-signed certificate.
-    desktopTlsVerify: env.DESKTOP_TLS_VERIFY !== 'false',
+    dataDir: join(native.root, 'data', 'panel'),
+    username: env.ADMIN_USER || 'admin',
+    password: secret({ ADMIN_PASSWORD_FILE: join(native.root, 'secrets', 'panel_password') }, 'ADMIN_PASSWORD'),
+    agentSecret: secret({ AGENT_SECRET_FILE: join(native.root, 'secrets', 'agent_secret') }, 'AGENT_SECRET'),
+    vncSocket: native.socket, agentUrl, transferDir: native.transfer,
     sessionMs: 7 * 24 * 60 * 60 * 1000,
   };
 }

@@ -1,12 +1,15 @@
 import http from 'node:http';
-import https from 'node:https';
+import net from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
-import { createProxyMiddleware } from 'http-proxy-middleware';
+import { fileURLToPath } from 'node:url';
+import { resolve, sep } from 'node:path';
+import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
+const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
@@ -14,6 +17,9 @@ const ASSETS = new Map([
   ['/icon.svg', ['icon.svg', 'image/svg+xml']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/index.html', ['viewer.html', 'text/html; charset=utf-8']],
+  ['/desktop/viewer.js', ['viewer.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
 ]);
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const VIEWER = /^[a-f0-9-]{16,64}$/;
@@ -95,62 +101,14 @@ export async function createPanel(config) {
     const promise = (async () => {
       try {
         const result = await agent('/health', { signal: AbortSignal.timeout(2500) });
-        return { ready: result.ready === true, version: result.version || '', message: result.ready ? '桌面已就绪' : '桌面正在启动' };
+        return { ready: result.ready === true, version: result.version || '', transferDir: config.transferDir || '', message: result.ready ? '桌面已就绪' : '桌面正在启动' };
       } catch { return { ready: false, version: '', message: '正在等待桌面服务，任务不会因网页断开而停止' }; }
     })();
     healthCache = { at: Date.now(), promise };
     return promise;
   }
 
-  const upstreamAgent = config.desktopUrl.startsWith('https:') ? new https.Agent({ rejectUnauthorized: config.desktopTlsVerify, keepAlive: true }) : new http.Agent({ keepAlive: true });
-  function cleanProxyRequest(proxyReq) {
-    proxyReq.removeHeader('cookie');
-    proxyReq.removeHeader('x-csrf-token');
-    proxyReq.removeHeader('x-viewer-id');
-    proxyReq.removeHeader('cf-access-jwt-assertion');
-    proxyReq.removeHeader('cf-access-authenticated-user-email');
-    proxyReq.setHeader('authorization', `Basic ${Buffer.from(`kasm_user:${config.desktopPassword}`).toString('base64')}`);
-    // Bound only the initial upstream response/upgrade, not an idle desktop session.
-    proxyReq.setTimeout(20_000, () => proxyReq.destroy());
-    proxyReq.once('response', () => proxyReq.setTimeout(0));
-    proxyReq.once('upgrade', () => proxyReq.setTimeout(0));
-  }
-  const proxy = createProxyMiddleware({
-    target: config.desktopUrl, changeOrigin: true, ws: false,
-    agent: upstreamAgent, secure: config.desktopTlsVerify,
-    pathRewrite: path => {
-      const url = new URL(path, 'http://internal');
-      url.searchParams.delete('viewer');
-      return url.pathname.slice('/desktop'.length) + url.search;
-    },
-    on: {
-      proxyReq: cleanProxyRequest,
-      proxyReqWs(proxyReq, _req, socket) {
-        cleanProxyRequest(proxyReq);
-        proxyReq.once('upgrade', (_response, upstream) => {
-          upstream.setKeepAlive(true, 30_000);
-          socket.once('close', () => upstream.destroy());
-        });
-      },
-      proxyRes(proxyRes) {
-        delete proxyRes.headers['set-cookie'];
-        delete proxyRes.headers['www-authenticate'];
-        const location = proxyRes.headers.location;
-        if (location) {
-          try {
-            const url = new URL(location, config.desktopUrl);
-            if (url.origin === config.desktopUrl) proxyRes.headers.location = `/desktop${url.pathname}${url.search}${url.hash}`;
-            else delete proxyRes.headers.location;
-          } catch { delete proxyRes.headers.location; }
-        }
-        proxyRes.headers['cache-control'] = 'no-store';
-      },
-      error(_error, _req, res) {
-        if (typeof res.writeHead === 'function') reply(res, 502, { error: '桌面尚未就绪，请稍后重新连接' });
-        else res.destroy();
-      },
-    },
-  });
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
 
   async function route(req, res) {
     res.setHeader('x-content-type-options', 'nosniff');
@@ -240,10 +198,18 @@ export async function createPanel(config) {
     }
     if (path.startsWith('/desktop/')) {
       requireSession(req);
-      if (!['GET', 'HEAD'].includes(req.method) && !originAllowed(req)) throw new HttpError(403, '请求来源无效');
-      if (req.headers.authorization) delete req.headers.authorization;
-      proxy(req, res, error => error ? reply(res, 502, { error: '桌面连接失败' }) : reply(res, 404, { error: '资源不存在' }));
-      return;
+      if (!['GET', 'HEAD'].includes(req.method)) throw new HttpError(405, '只允许读取桌面资源');
+      if (path.startsWith('/desktop/novnc/')) {
+        let relative;
+        try { relative = decodeURIComponent(path.slice('/desktop/novnc/'.length)); } catch { throw new HttpError(400, '资源路径无效'); }
+        if (!/^(core|vendor)\/[a-zA-Z0-9_./-]+\.js$/.test(relative)) throw new HttpError(404, '资源不存在');
+        const file = resolve(NOVNC, relative);
+        if (!file.startsWith(NOVNC + sep) || relative.split('/').includes('..')) throw new HttpError(404, '资源不存在');
+        let bytes;
+        try { bytes = await readFile(file); } catch { throw new HttpError(404, '资源不存在'); }
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': bytes.length, 'cache-control': 'no-store' });
+        return res.end(req.method === 'HEAD' ? undefined : bytes);
+      }
     }
     const asset = assets.get(path);
     if (asset && ['GET', 'HEAD'].includes(req.method)) {
@@ -271,10 +237,23 @@ export async function createPanel(config) {
     const url = new URL(req.url, 'http://internal');
     if (url.pathname !== '/desktop/websockify') return deny(404);
     if (!owner || owner.session !== session.hash || owner.viewer !== url.searchParams.get('viewer')) return deny(409);
-    sockets.set(socket, { session: session.hash, token: cookieToken(req.headers.cookie) });
+    // One stream per owner. Reconnecting the same viewer also closes its previous stream.
+    closeSockets(state => state.socket !== socket);
+    sockets.set(socket, { session: session.hash, token: cookieToken(req.headers.cookie), socket });
     socket.once('close', () => sockets.delete(socket));
     socket.setKeepAlive(true, 30_000);
-    proxy.upgrade(req, socket, head);
+    wss.handleUpgrade(req, socket, head, ws => {
+      // Only VNC bytes cross this bridge; no HTTP headers or credentials reach the desktop.
+      const upstream = net.createConnection(config.vncSocket);
+      const stream = createWebSocketStream(ws, { highWaterMark: 64 * 1024 });
+      const timer = setTimeout(() => upstream.destroy(), 5000).unref();
+      upstream.once('connect', () => clearTimeout(timer));
+      upstream.once('close', () => { clearTimeout(timer); ws.terminate(); });
+      stream.once('close', () => upstream.destroy());
+      stream.on('error', () => upstream.destroy());
+      upstream.on('error', () => ws.terminate());
+      upstream.pipe(stream).pipe(upstream);
+    });
   });
   const expiration = setInterval(() => {
     closeSockets(state => !auth.get(state.token));
@@ -282,7 +261,8 @@ export async function createPanel(config) {
   async function close() {
     clearInterval(expiration);
     closeSockets(() => true);
-    upstreamAgent.destroy();
+    for (const client of wss.clients) client.terminate();
+    wss.close();
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     await auth.close();
   }
