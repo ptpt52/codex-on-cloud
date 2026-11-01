@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { lanOffer, privateIPv4, rtcAddress } from '../panel/rtc.mjs';
+import { rtcOffer as lanOffer, privateIPv4, rtcAddress } from '../panel/rtc.mjs';
 import { fixture } from './fixture.mjs';
 
 const fingerprint = Array(32).fill('AB').join(':');
@@ -21,7 +21,7 @@ test('LAN negotiation bounds SDP and keeps only private IPv4/mDNS UDP host candi
   ]));
   assert.equal(result.sdp.match(/^a=candidate:/gm).length, 3);
   assert.ok(!result.sdp.includes('8.8.8.8') && !result.sdp.includes('attacker.example'));
-  const many = lanOffer(offer(Array.from({ length: 30 }, () => candidate('10.0.0.1'))));
+  const many = lanOffer(offer(Array.from({ length: 30 }, (_, i) => candidate(`10.0.0.${i + 1}`))));
   assert.equal(many.sdp.match(/^a=candidate:/gm).length, 8);
   for (const body of [{}, { type: 'answer', sdp: '' }, { type: 'offer', sdp: 'x'.repeat(32769) },
     { type: 'offer', sdp: offer([]).sdp.replace('sha-256', 'sha-1') },

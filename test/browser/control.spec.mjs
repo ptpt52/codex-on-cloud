@@ -7,7 +7,7 @@ async function login(page, app) {
   await page.getByRole('button', { name: '连接工作空间' }).click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 20000 });
   await page.getByRole('button', { name: '连接状态', exact: true }).click();
-  await expect(page.locator('#diag-input-transport')).toHaveText('局域网加密直连');
+  await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连');
   await page.getByRole('button', { name: '关闭连接状态' }).click();
 }
 

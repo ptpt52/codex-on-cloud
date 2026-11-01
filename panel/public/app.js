@@ -8,6 +8,9 @@ let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = fal
 let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
 let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
+let frameNetwork = null, directIssue = '';
+const directIssues = { unsupported: '当前浏览器环境不支持直连', disabled: '服务端已关闭直连', signaling: '直连协商请求未完成',
+  negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测', connection: '原直连已断开，正在恢复', heartbeat: '直连心跳无回复，已开始回退中转' };
 let controlReady = false, controlPending = null, controlSequence = 0;
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
@@ -211,7 +214,7 @@ function renderConnection() {
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
   else if (!owned) label = '等待接管';
   else if (desktopReady === false) label = '桌面未就绪';
-  else if (transportSwitching) label = '正在切换局域网';
+  else if (transportSwitching) label = '正在切换直连';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
   else if (frameState === 'connected') label = '桌面在线';
@@ -222,7 +225,13 @@ function renderConnection() {
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
   $('diag-transport').textContent = frameState !== 'connected' ? '等待画面连接' : frameTransport === 'direct' ? 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
-  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待画面连接' : controlReady ? '局域网加密直连' : 'HTTPS';
+  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待画面连接' : controlReady ? 'WebRTC 加密直连' : 'HTTPS';
+  const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
+  const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}`;
+  $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用直连';
+  $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
+  $('diag-latency').textContent = route?.rttMs != null ? `${route.rttMs} ms` : '—';
+  $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? '已建立加密直连' : directIssues[directIssue] || '尚未检测';
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
@@ -320,6 +329,7 @@ function stopFrame() {
   frameLoaded = false;
   frameState = 'idle';
   frameTransport = '';
+  frameNetwork = null; directIssue = '';
   frameEpoch++;
   displayScale = 0;
   scaleRevision = -1;
@@ -828,6 +838,14 @@ for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data?.type === 'codex-transport') {
+    if (typeof event.data.issue === 'string' && (Object.hasOwn(directIssues, event.data.issue) || event.data.issue === '')) directIssue = event.data.issue;
+    const route = event.data.details;
+    const validEnd = value => value && (value.address === null || typeof value.address === 'string' && value.address.length <= 253 && /^[a-zA-Z0-9:.%-]+$/.test(value.address)) && (value.port === null || Number.isInteger(value.port) && value.port >= 1 && value.port <= 65535);
+    frameNetwork = route && ['IPv4', 'IPv6', 'unknown'].includes(route.family) && ['UDP', 'TCP', 'unknown'].includes(route.protocol) && validEnd(route.local) && validEnd(route.remote) && (route.rttMs === null || Number.isInteger(route.rttMs) && route.rttMs >= 0 && route.rttMs <= 600000)
+      ? { family: route.family, protocol: route.protocol, rttMs: route.rttMs, local: { address: route.local.address, port: route.local.port }, remote: { address: route.remote.address, port: route.remote.port } } : null;
+    renderConnection(); return;
+  }
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
     const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !controlsState.inputBusy && !controlsState.clipboardBusy;

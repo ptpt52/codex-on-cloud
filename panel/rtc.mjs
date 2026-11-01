@@ -3,15 +3,12 @@ import { networkInterfaces } from 'node:os';
 import { RTCPeerConnection } from 'werift';
 import { attachRTCControl } from './rtc-control.mjs';
 import { attachRTCHealth } from './rtc-health.mjs';
+import { privateIPv4, peerAddress } from './rtc-network.mjs';
+import { guardIceAgent } from './rtc-guard.mjs';
+export { privateIPv4, rtcOffer, rtcIPv6Address } from './rtc-network.mjs';
 
-export const RTC_TIMEOUT = 8000;
+export const RTC_TIMEOUT = 12000;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
-
-export function privateIPv4(address) {
-  if (net.isIP(address) !== 4) return false;
-  const [a, b] = address.split('.').map(Number);
-  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-}
 
 export function rtcAddress(explicit) {
   const addresses = Object.values(networkInterfaces()).flat().map(item => item.address);
@@ -22,31 +19,13 @@ export function rtcAddress(explicit) {
   return addresses.find(address => privateIPv4(address) && !address.startsWith('127.')) || '127.0.0.1';
 }
 
-// Only one data m-section and a bounded set of LAN UDP candidates. No supplied
-// STUN/TURN URL, public destination, media stream or DNS hostname is used.
-export function lanOffer(body) {
-  if (body.type !== 'offer' || typeof body.sdp !== 'string' || Buffer.byteLength(body.sdp) > 32768 || /\0/.test(body.sdp)) throw new Error('连接协商内容无效');
-  const lines = body.sdp.split(/\r?\n/);
-  const media = lines.filter(line => line.startsWith('m='));
-  if (media.length !== 1 || !/^m=application \d+ UDP\/DTLS\/SCTP webrtc-datachannel$/.test(media[0]) ||
-      !lines.some(line => /^a=fingerprint:sha-256 (?:[A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}$/.test(line))) throw new Error('仅支持加密桌面数据通道');
-  let candidates = 0;
-  return { type: 'offer', sdp: lines.filter(line => {
-    if (!line.startsWith('a=candidate:')) return true;
-    const fields = line.slice(12).split(/ +/);
-    const [, component, transport, , host, port, typ, kind] = fields;
-    const mdns = /^[a-zA-Z0-9-]{1,63}\.local$/.test(host || '');
-    return ++candidates <= 8 && component === '1' && transport?.toLowerCase() === 'udp' &&
-      (privateIPv4(host) || mdns) && /^\d+$/.test(port) && Number(port) >= 1024 && Number(port) <= 65535 && typ === 'typ' && kind === 'host';
-  }).join('\r\n') };
-}
-
-export function createRTCBridge({ address, vncSocket, valid, closed, performControl }) {
+export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl }) {
+  const allowed = host => peerAddress(host, !!ipv6Address);
   const pc = new RTCPeerConnection({
-    iceServers: [], iceUseIpv4: true, iceUseIpv6: false, iceUseTcp: false,
-    iceInterfaceAddresses: { udp4: address }, icePortRange: [40000, 40015],
-    iceFilterStunResponse: (_message, [host]) => privateIPv4(host),
-    iceFilterCandidatePair: pair => privateIPv4(pair.remoteCandidate.host),
+    iceServers: [], iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
+    iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: [40000, 40015],
+    iceFilterStunResponse: (_message, [host]) => allowed(host),
+    iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host),
     maxMessageSize: MAX_MESSAGE,
   });
   let channel, control, health, upstream, ended = false, closePromise, activated = false, videoReady = false, openVideo;
@@ -74,6 +53,7 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
     async answer(offer) {
       try {
         await pc.setRemoteDescription(offer);
+        for (const transport of pc.iceTransports) guardIceAgent(transport.connection, { valid: authorized, allowed });
         if (ended || !valid()) throw new Error('连接控制权已变化');
         await pc.setLocalDescription(await pc.createAnswer());
         if (ended || !valid()) throw new Error('连接控制权已变化');

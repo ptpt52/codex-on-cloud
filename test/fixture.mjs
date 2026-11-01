@@ -11,7 +11,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -141,6 +141,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     managerSocket,
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
     webrtc, webrtcAddress: '127.0.0.1',
+    webrtcIPv6, webrtcIPv6Address, webrtcStunUrl,
   };
   const panel = await createPanel(config);
   panel.server.listen(port, '127.0.0.1'); await once(panel.server, 'listening');

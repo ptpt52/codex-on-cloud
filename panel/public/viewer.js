@@ -11,12 +11,26 @@ const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1 };
 let rfb, retry, stopping = false;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
-let healthTimer, healthGeneration = 0, viewAnchor, restoringView = false;
+let healthTimer, healthGeneration = 0, healthNetworkCheck = false, viewAnchor, restoringView = false;
+let networkDetails = null, directIssue = '', statsPending = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 let lastInteraction = 0, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
 function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
+}
+function reportNetwork() {
+  parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, issue: directIssue }, location.origin);
+}
+function directFailure(reason) { directIssue = reason; reportNetwork(); }
+async function refreshNetwork() {
+  const current = transport;
+  if (!current || !viewing || statsPending || stopping) return;
+  statsPending = true;
+  try {
+    const details = await current.stats();
+    if (transport === current && viewing && !stopping) { networkDetails = details; reportNetwork(); }
+  } catch {} finally { statsPending = false; }
 }
 function reportControl() {
   parent.postMessage({ type: 'codex-control-state', frame, ready: transportName === 'direct' && transport?.control.ready === true }, location.origin);
@@ -189,6 +203,7 @@ function needsProbe() {
 }
 function stopHealth() {
   healthGeneration++;
+  healthNetworkCheck = false;
   clearTimeout(healthTimer); healthTimer = undefined;
   transport?.health.cancel();
 }
@@ -201,11 +216,15 @@ function monitorDirect(delay = 3000) {
     if (generation !== healthGeneration || current !== transport || !viewing || stopping || document.hidden || !navigator.onLine) return;
     try {
       await current.health.ping();
-      if (generation === healthGeneration && current === transport) healthTimer = setTimeout(tick, 3000);
+      if (generation === healthGeneration && current === transport) {
+        healthNetworkCheck = false;
+        void refreshNetwork(); healthTimer = setTimeout(tick, 3000);
+      }
     } catch {
       if (generation !== healthGeneration || current !== transport || stopping || document.hidden || !navigator.onLine) return;
       // Cancel uncertain input in the parent before replacing the stream. Never replay it.
       rememberView(); stopHealth();
+      directFailure('heartbeat'); networkDetails = null;
       directFailed = true; viewing = false; connecting = false;
       probeController?.abort(); clearTimeout(probeTimer); probeTimer = null;
       if (switching) finishSwitch();
@@ -261,7 +280,8 @@ async function probeDirect() {
   const controller = probeController = new AbortController(), epoch = connectionEpoch;
   let candidate, prepared = false, requested = false, promoted = false;
   try {
-    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal: controller.signal });
+    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal: controller.signal,
+      failed: reason => { if (epoch === connectionEpoch && !controller.signal.aborted) directFailure(reason); } });
     if (!candidate) throw new Error('直连未就绪');
     await candidate.start();
     await candidate.control.request('ping', {});
@@ -296,6 +316,7 @@ function attachViewer(direct) {
   scrollGesture = null;
   const previous = rfb, previousTransport = transport;
   transport = direct;
+  networkDetails = null;
   transportName = direct ? 'direct' : 'relay';
   const url = new URL('/desktop/websockify', location.origin);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -311,6 +332,8 @@ function attachViewer(direct) {
   instance.addEventListener('connect', () => {
     if (rfb !== instance || stopping) return;
     connecting = false; viewing = true; status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl();
+    if (direct) directIssue = '';
+    reportNetwork(); void refreshNetwork();
     clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
     if (switching) finishSwitch();
     scheduleProbe();
@@ -322,6 +345,8 @@ function attachViewer(direct) {
     if (switching && switchingFrom === instance) return;
     if (switching) finishSwitch();
     if (direct) directFailed = true;
+    if (direct && !directIssue) directIssue = 'connection';
+    networkDetails = null; reportNetwork();
     direct?.close();
     probeController?.abort(); clearTimeout(probeTimer); probeTimer = null;
     status.hidden = false;
@@ -340,7 +365,7 @@ async function connect() {
   transportName = ''; viewing = false;
   announce('connecting');
   status.hidden = false; status.textContent = '正在连接独立桌面…';
-  const direct = directFailed ? null : await desktopTransport(viewer, reportControl);
+  const direct = directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure });
   if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
   const instance = attachViewer(direct);
   // RFB handlers are attached before negotiation can deliver video bytes.
@@ -357,7 +382,9 @@ for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercanc
 window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); });
 function networkChanged() {
   if (document.hidden || !navigator.onLine) { stopHealth(); if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
-  if (viewing && transport) monitorDirect(250);
+  // NetworkInformation also emits RTT/downlink estimate changes. Once a fresh
+  // network check is running, further events must not keep canceling its deadline.
+  if (viewing && transport && !healthNetworkCheck) { monitorDirect(250); healthNetworkCheck = true; }
   if (!viewing && !connecting) { clearTimeout(retry); retry = setTimeout(connect, 0); }
   probeDelay = 15000; clearTimeout(probeTimer); probeTimer = null; scheduleProbe(1000);
 }

@@ -9,7 +9,7 @@ import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
-import { createRTCBridge, lanOffer, rtcAddress } from './rtc.mjs';
+import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { validateInput } from '../native/input.mjs';
 import { clipboardSource } from '../native/clipboard.mjs';
 
@@ -27,6 +27,7 @@ const ASSETS = new Map([
   ['/desktop/index.html', ['viewer.html', 'text/html; charset=utf-8']],
   ['/desktop/viewer.js', ['viewer.js', 'text/javascript; charset=utf-8']],
   ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
 ]);
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -168,7 +169,8 @@ export async function createPanel(config) {
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { username: config.username, csrf: session.csrf, webrtc: config.webrtc === true });
+      return reply(res, 200, { username: config.username, csrf: session.csrf, webrtc: config.webrtc === true,
+        rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);
@@ -222,7 +224,7 @@ export async function createPanel(config) {
       const body = await ownedBody(req, 48 * 1024);
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
       let offer;
-      try { offer = lanOffer(body); } catch (error) { throw new HttpError(400, error.message); }
+      try { offer = rtcOffer(body, { ipv6: config.webrtcIPv6 === true }); } catch (error) { throw new HttpError(400, error.message); }
       if (rtcBusy) throw new HttpError(429, '连接协商正在进行');
       rtcBusy = true;
       let bridge;
@@ -240,7 +242,9 @@ export async function createPanel(config) {
         const token = cookieToken(req.headers.cookie);
         const state = { session: expected.session, token, socket: null, rtcPending: true };
         const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state;
-        bridge = createRTCBridge({ address: config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress, vncSocket: config.vncSocket, valid,
+        const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
+        const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
+        bridge = createRTCBridge({ address, ipv6Address, vncSocket: config.vncSocket, valid,
           performControl: async (action, body, live) => {
             if (!valid()) throw new HttpError(409, '页面控制权已变化，本次操作未发送');
             if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, '控制参数无效');
