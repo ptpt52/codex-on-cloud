@@ -4,6 +4,7 @@ const draftKey = 'codex-cloud.draft';
 let inputBusy = false;
 let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
 let diagnosticsController = null, diagnosticsTimer;
+let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
 
@@ -75,6 +76,7 @@ function renderConnection() {
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
+  renderDesktopSettings();
   if (!loggedIn) return;
   if (accessExpired) {
     overlay('访问验证已过期', '刷新页面完成外层访问验证，然后返回原来的工作会话。');
@@ -182,6 +184,7 @@ function showLogin(message = '') {
   $('login-view').hidden = false;
   if ($('files-dialog').open) $('files-dialog').close();
   if ($('connection-dialog').open) $('connection-dialog').close();
+  if ($('desktop-settings-dialog').open) $('desktop-settings-dialog').close();
   renderConnection();
 }
 function frameUrl() {
@@ -347,6 +350,101 @@ $('close-connection').addEventListener('click', () => $('connection-dialog').clo
 $('connection-dialog').addEventListener('close', stopDiagnostics);
 $('refresh-connection').addEventListener('click', () => { void poll(); void loadDiagnostics(); });
 for (const id of ['access-refresh-button', 'login-refresh-button']) $(id).addEventListener('click', () => location.reload());
+function settingsValues() {
+  return { width: Number($('desktop-width').value), height: Number($('desktop-height').value), fontSize: Number($('terminal-font-size').value) };
+}
+function settingsDirty() {
+  const value = settingsValues();
+  return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
+}
+function renderDesktopSettings() {
+  const writable = loggedIn && owned && !accessExpired && panelState === 'online' && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const dirty = settingsDirty();
+  $('save-desktop-settings').disabled = !writable || !dirty;
+  for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
+  $('apply-desktop-settings').disabled = !writable || dirty || !desktopSettings?.restartRequired || !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked;
+  if (!desktopSettings) return;
+  const { actual, saved, session, job } = desktopSettings;
+  $('settings-current').textContent = actual ? `当前实际分辨率：${actual.width} × ${actual.height}` : '桌面尚未就绪，仍可保存下次启动的配置。';
+  $('settings-pending').textContent = desktopSettings.restartRequired ? `待应用：${saved.width} × ${saved.height}；需显式重启桌面。` : `已保存：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
+  $('settings-recovery').textContent = session?.resumeId ? `将恢复会话 ${session.resumeId}，项目：${session.cwd}` : session?.recoverable ? '当前为 shell，重启后打开新的 shell，不自动启动任务。' : '当前会话无法准确识别或存在多个窗格。结束前台任务后再应用分辨率。';
+  $('apply-desktop-settings').textContent = session?.resumeId ? '重启桌面并恢复会话' : '重启桌面应用设置';
+  if (job) $('desktop-settings-status').textContent = job.message;
+}
+function stopSettingsPolling() {
+  clearTimeout(settingsTimer);
+  settingsController?.abort(); settingsController = null;
+}
+async function loadDesktopSettings(resetForm = false) {
+  if (!$('desktop-settings-dialog').open || settingsController || !loggedIn) return;
+  const controller = new AbortController(); settingsController = controller;
+  const timeout = setTimeout(() => controller.abort(new Error('读取设置超时，请手动刷新')), 8000);
+  clearTimeout(settingsTimer);
+  try {
+    const next = await api('/api/desktop/settings', { signal: controller.signal });
+    if (settingsController !== controller || !$('desktop-settings-dialog').open) return;
+    const fill = resetForm || !desktopSettings || !settingsDirty();
+    if (desktopSettings?.revision !== next.revision || desktopSettings?.session?.pid !== next.session?.pid) $('confirm-desktop-restart').checked = false;
+    desktopSettings = next;
+    if (fill) {
+      $('desktop-width').value = next.saved.width; $('desktop-height').value = next.saved.height; $('terminal-font-size').value = next.saved.fontSize;
+      const size = `${next.saved.width}x${next.saved.height}`;
+      $('resolution-preset').value = ['1280x1280', '1600x1600', '1920x1600'].includes(size) ? size : 'custom';
+    }
+    renderDesktopSettings();
+    if (next.busy) settingsTimer = setTimeout(() => void loadDesktopSettings(), 800);
+  } catch (error) {
+    if (settingsController === controller && loggedIn) $('desktop-settings-status').textContent = error.message;
+  } finally { clearTimeout(timeout); if (settingsController === controller) settingsController = null; }
+}
+async function settingsAction(path, body) {
+  if (settingsBusy || !desktopSettings || !loggedIn || !owned) return;
+  stopSettingsPolling();
+  settingsBusy = true; renderDesktopSettings();
+  try {
+    const result = await api(path, { method: 'POST', body, signal: AbortSignal.timeout(10000) });
+    if (result.job) desktopSettings = { ...desktopSettings, job: result.job, busy: true };
+    else $('desktop-settings-status').textContent = '已保存。分辨率与字号需分别显式应用。';
+    $('confirm-desktop-restart').checked = false;
+    stopSettingsPolling();
+    await loadDesktopSettings(true);
+  } catch (error) { $('desktop-settings-status').textContent = error.message; }
+  finally { settingsBusy = false; renderDesktopSettings(); }
+}
+$('desktop-settings-button').addEventListener('click', async () => {
+  if (document.fullscreenElement) await document.exitFullscreen();
+  $('desktop-settings-dialog').showModal();
+  $('desktop-settings-status').textContent = '';
+  $('confirm-desktop-restart').checked = false;
+  await loadDesktopSettings(true);
+});
+$('close-desktop-settings').addEventListener('click', () => $('desktop-settings-dialog').close());
+$('desktop-settings-dialog').addEventListener('close', stopSettingsPolling);
+$('refresh-desktop-settings').addEventListener('click', () => { if (settingsBusy) return; $('confirm-desktop-restart').checked = false; stopSettingsPolling(); void loadDesktopSettings(true); });
+$('resolution-preset').addEventListener('change', () => {
+  if ($('resolution-preset').value !== 'custom') {
+    const [width, height] = $('resolution-preset').value.split('x');
+    $('desktop-width').value = width; $('desktop-height').value = height;
+  }
+  $('confirm-desktop-restart').checked = false; renderDesktopSettings();
+});
+for (const id of ['desktop-width', 'desktop-height', 'terminal-font-size']) $(id).addEventListener('input', () => {
+  const size = `${$('desktop-width').value}x${$('desktop-height').value}`;
+  $('resolution-preset').value = ['1280x1280', '1600x1600', '1920x1600'].includes(size) ? size : 'custom';
+  $('confirm-desktop-restart').checked = false; renderDesktopSettings();
+});
+$('confirm-desktop-restart').addEventListener('change', renderDesktopSettings);
+$('desktop-settings-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!$('save-desktop-settings').disabled && $('desktop-settings-form').reportValidity()) void settingsAction('/api/desktop/settings', { ...settingsValues(), revision: desktopSettings.revision });
+});
+$('apply-desktop-settings').addEventListener('click', () => {
+  if ($('apply-desktop-settings').disabled) return;
+  void settingsAction('/api/desktop/apply', { revision: desktopSettings.revision, panePid: desktopSettings.session.pid, resumeId: desktopSettings.session.resumeId, confirm: $('confirm-desktop-restart').checked });
+});
+for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal', 'maximize'], ['restore-terminal', 'restore']]) $(id).addEventListener('click', () => {
+  if (!$(id).disabled) void settingsAction('/api/desktop/terminal-display', { action, revision: desktopSettings.revision });
+});
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;

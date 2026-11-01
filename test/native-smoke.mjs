@@ -18,6 +18,9 @@ function tmux(format) {
 }
 assert.equal(tmux('#{pane_current_command}'), 'bash', '请先结束 Codex 或其他前台任务；测试只操作空闲 bash');
 const pane = tmux('#{pane_pid}');
+const geometry = spawnSync('xdotool', ['getdisplaygeometry'], { env: { ...config.env, DISPLAY: config.display, XAUTHORITY: join(config.runtime, 'Xauthority') }, encoding: 'utf8' });
+assert.equal(geometry.status, 0, '无法读取独立桌面的实际分辨率');
+const actualSize = geometry.stdout.trim().split(' ').map(Number);
 const name = `native-smoke-${randomBytes(6).toString('hex')}.txt`;
 const file = join(config.transfer, name);
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
@@ -30,9 +33,9 @@ async function connect(mobile = false) {
   await page.goto(origin);
   await page.getByLabel('密码', { exact: true }).fill((await readFile(join(config.root, 'secrets', 'panel_password'), 'utf8')).trim());
   await page.getByRole('button', { name: '连接工作空间' }).click();
-  await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveJSProperty('width', Number(config.size.split('x')[0]), { timeout: 30000 });
+  await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveJSProperty('width', actualSize[0], { timeout: 30000 });
   await page.frameLocator('#desktop-frame').locator('#status').waitFor({ state: 'hidden', timeout: 30000 });
-  assert.deepEqual(await page.frameLocator('#desktop-frame').locator('#screen canvas').evaluate(canvas => [canvas.width, canvas.height]), config.size.split('x').map(Number));
+  assert.deepEqual(await page.frameLocator('#desktop-frame').locator('#screen canvas').evaluate(canvas => [canvas.width, canvas.height]), actualSize);
   return page;
 }
 async function eventually(probe) {
@@ -71,7 +74,7 @@ try {
   assert.equal(restarted.status, 0);
   await eventually(async () => { try { return (await fetch(origin + '/healthz')).ok; } catch { return false; } });
   await page.reload();
-  await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveJSProperty('width', Number(config.size.split('x')[0]), { timeout: 30000 });
+  await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveJSProperty('width', actualSize[0], { timeout: 30000 });
   // Session survives restart; ownership is deliberately claimed by the reloaded page.
   await page.frameLocator('#desktop-frame').locator('#status').waitFor({ state: 'hidden', timeout: 30000 });
   assert.equal(tmux('#{pane_pid}'), pane);

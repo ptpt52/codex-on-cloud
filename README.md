@@ -87,7 +87,7 @@ TZ=Asia/Shanghai
 systemctl --user restart codex-cloud-panel.service
 ```
 
-修改显示号、尺寸、工作目录后，需要先结束桌面任务，再重启桌面服务。这会终止原桌面进程及 tmux 任务：
+网页保存的分辨率优先于 `.env` 中的 `DESKTOP_SIZE`；尚未保存时使用该默认值。修改显示号、工作目录，或手动调整默认尺寸后，需要先结束桌面任务，再重启桌面服务。这会终止原桌面进程及 tmux 任务：
 
 ```bash
 systemctl --user restart codex-cloud-desktop.service
@@ -102,6 +102,23 @@ Node/Codex 安装路径发生变化时重新运行 `npm run native:install`，�
 - “收起输入”隐藏输入助手，将空出的高度分配给画面；“展开输入”恢复助手与原来的草稿。
 - 全屏时仍可使用显示控制。缩放、拖动和折叠只改变浏览器视图，不调整远程分辨率或重启桌面。
 - 显示比例、拖动模式和输入助手状态保存在本浏览器的一个固定偏好条目中，刷新和画面重连后恢复。浏览器禁止本地存储时，控件仍可使用，但刷新后不保留偏好。
+
+## 桌面设置
+
+画面工具栏的“桌面设置”提供 `1280 × 1280`、`1600 × 1600`、`1920 × 1600` 预设，也可输入 320–4096 的自定义宽高，以及 10–28 的终端字号。
+
+- “保存设置”只写入下次使用的配置，窗口分别显示实际分辨率与待应用值。刷新网页、重新连接或保存配置都不会重启桌面。
+- “更新字号”按已保存字号重新打开 xterm，保留私有 tmux 中的任务。“最大化终端”和“恢复窗口”只调整本项目终端窗口。
+- 应用分辨率需要勾选重启说明，再点击重启按钮。重启会终止原有进程及其他桌面应用。只有一个窗格且能准确识别 Codex `resume` 会话 ID 时，才按该 ID 和项目目录重新打开对话；不会自动继续旧任务或重发提示词。空闲 shell 则打开新的 shell。无法识别的前台任务或多个窗格会阻止应用。
+
+设置保存在被 Git 忽略的 `data/desktop-settings.json`（0600，最多 1 KiB，固定临时文件原子替换）。管理服务独立于面板和桌面，使用私有 Unix socket，仅提供固定动作。操作状态只保留一项，不排队、不自动重试；请求结果不明确时先手动刷新查看。
+
+升级已有部署时运行 `npm run native:install`，再启动管理服务并只重启面板，当前桌面可继续运行：
+
+```bash
+systemctl --user start codex-cloud-manager.service
+systemctl --user restart codex-cloud-panel.service
+```
 
 ## 连接状态
 
@@ -159,6 +176,8 @@ Tunnel 的上游是 **`http://127.0.0.1:36080`**。不需要开放路由器端�
 ```bash
 npm run native:status
 journalctl --user -u codex-cloud-desktop -u codex-cloud-panel -n 100 --no-pager
+# 查看设置操作服务
+journalctl --user -u codex-cloud-manager -n 100 --no-pager
 # 查看 Tunnel
 systemctl --user status codex-cloud-tunnel.service
 # 停止全部服务，会终止桌面任务
@@ -174,9 +193,11 @@ npm run check
 npm test
 npm run test:desktop
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser
+# 单独的真实 X11 控件验证：使用临时显示、HOME、tmux，不启动 Codex
+npm run test:display
 ```
 
-前端自动化测试连接模拟 RFB 上游，但实际运行 noVNC 客户端与 Unix socket 网关。`npm run demo` 在 `127.0.0.1:36081` 提供明确标注的模拟桌面，不连接 Codex。
+前端自动化测试连接模拟 RFB 上游，但实际运行 noVNC 客户端与 Unix socket 网关；重启与恢复命令也使用模拟执行器。`test:display` 使用真实 Xvfb、xfwm4、xterm 和 tmux 验证窗口动作与字号替换，不重启正在使用的桌面。`npm run demo` 在 `127.0.0.1:36081` 提供明确标注的模拟桌面，不连接 Codex。
 
 真实桌面已经启动且 tmux 中为**空闲 bash**时，可运行：
 

@@ -8,6 +8,7 @@ import { resolve, sep } from 'node:path';
 import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
+import { managerRequest } from './manager-client.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
@@ -162,6 +163,17 @@ export async function createPanel(config) {
     if (path === '/api/diagnostics' && req.method === 'GET') {
       requireSession(req);
       return reply(res, 200, { tunnel: await tunnelDiagnostics() });
+    }
+    if (path === '/api/desktop/settings' && req.method === 'GET') {
+      requireSession(req);
+      return reply(res, 200, await managerRequest(config, '/settings'));
+    }
+    if (['/api/desktop/settings', '/api/desktop/apply', '/api/desktop/terminal-display'].includes(path) && req.method === 'POST') {
+      requireOwner(req);
+      const body = await jsonBody(req, 1024);
+      requireOwner(req); // A delayed body must not outlive its page's ownership.
+      const target = path.endsWith('/apply') ? '/apply' : path.endsWith('/terminal-display') ? '/terminal' : '/settings';
+      return reply(res, 200, await managerRequest(config, target, body));
     }
     if (path === '/api/desktop/claim' && req.method === 'POST') {
       const session = requireWrite(req);

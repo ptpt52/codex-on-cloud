@@ -9,6 +9,7 @@ const command = process.argv[2] || 'doctor';
 const path = `${join(config.root, 'data', 'host-tools', 'usr', 'bin')}:${process.env.PATH}`;
 const serviceDir = join(process.env.HOME, '.config', 'systemd', 'user');
 const units = ['codex-cloud-desktop.service', 'codex-cloud-panel.service'];
+const managerUnit = 'codex-cloud-manager.service';
 const dependencies = new Map([
   ['Xvfb', 'xvfb'], ['x11vnc', 'x11vnc'], ['xfwm4', 'xfwm4'],
   ['xfdesktop', 'xfdesktop4'], ['xfce4-panel', 'xfce4-panel'], ['xfsettingsd', 'xfce4-settings'],
@@ -75,7 +76,8 @@ try {
       await mkdir(serviceDir, { recursive: true });
       const files = [
         [units[0], unit('Codex Cloud independent virtual desktop', [join(config.root, 'native', 'desktop.mjs')])],
-        [units[1], unit('Codex Cloud browser gateway', [join(config.root, 'panel', 'main.mjs')], 'After=codex-cloud-desktop.service')],
+        [units[1], unit('Codex Cloud browser gateway', [join(config.root, 'panel', 'main.mjs')], 'After=codex-cloud-desktop.service codex-cloud-manager.service')],
+        [managerUnit, unit('Codex Cloud fixed desktop settings manager', [join(config.root, 'native', 'manager.mjs')], 'After=codex-cloud-desktop.service')],
         ['codex-cloud-tunnel.service', unit('Codex Cloud Cloudflare Tunnel', [join(config.root, 'native', 'tunnel.mjs')], 'After=codex-cloud-panel.service', true)],
       ];
       for (const [name, content] of files) {
@@ -87,12 +89,12 @@ try {
         await chmod(file, 0o600);
       }
       systemctl(['daemon-reload']);
-      systemctl(['enable', ...units]);
+      systemctl(['enable', ...units, managerUnit]);
       console.log('用户服务已安装，尚未启动。运行 npm run native:start。\n如需退出本机登录后及开机继续运行，请执行一次：sudo loginctl enable-linger ' + process.env.USER);
     }
-  } else if (command === 'start') systemctl(['start', ...units]);
-  else if (command === 'status') process.exitCode = systemctl(['status', ...units, '--no-pager'], false).status || 0;
-  else if (command === 'stop') systemctl(['stop', 'codex-cloud-tunnel.service', units[1], units[0]]);
+  } else if (command === 'start') systemctl(['start', ...units, managerUnit]);
+  else if (command === 'status') process.exitCode = systemctl(['status', ...units, managerUnit, '--no-pager'], false).status || 0;
+  else if (command === 'stop') systemctl(['stop', 'codex-cloud-tunnel.service', units[1], managerUnit, units[0]]);
   else if (command === 'tunnel') {
     if (!config.env.PUBLIC_ORIGIN?.startsWith('https://')) throw new Error('请先将 .env 的 PUBLIC_ORIGIN 配为实际 HTTPS 域名，并重启 panel 服务');
     const token = (await readFile(join(config.root, 'secrets', 'tunnel_token'), 'utf8')).trim();
