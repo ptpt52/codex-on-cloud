@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import WebSocket from 'ws';
 import { validateInput, executeInput, runInputCommand } from '../native/input.mjs';
 import { fixture } from './fixture.mjs';
+import { SHORTCUTS } from '../panel/public/shortcuts.js';
 
 function gate() { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release }; }
 async function delayed(app, path, value) {
@@ -137,4 +138,27 @@ test('input validation and fixed commands preserve literal stdin and never appen
   await executeInput(validateInput({ action: 'paste', text, target: 'application' }), {}, async (_command, args) => { if (args[0] === 'key') assert.equal(args.at(-1), 'ctrl+v'); });
   await assert.rejects(runInputCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: process.env, timeout: 50 }), /timed out/);
   await assert.rejects(runInputCommand('/nonexistent/codex-test-input', [], { env: process.env, timeout: 50 }));
+});
+
+test('shortcut catalog uses fixed argv, preserves newline versus Enter and refuses arbitrary chords', async () => {
+  const calls = [];
+  for (const { key } of SHORTCUTS) {
+    const value = validateInput({ action: 'key', key });
+    await executeInput(value, {}, async (command, args) => calls.push({ key, command, args }));
+  }
+  assert.equal(new Set(SHORTCUTS.map(item => item.key)).size, SHORTCUTS.length);
+  assert.ok(SHORTCUTS.length <= 48);
+  assert.ok(calls.every(call => call.command === 'xdotool' && call.args[0] === 'key' && call.args[1] === '--clearmodifiers'));
+  const args = key => calls.find(call => call.key === key).args;
+  assert.deepEqual(args('Ctrl+J'), ['key', '--clearmodifiers', 'ctrl+j']);
+  assert.deepEqual(args('Enter'), ['key', '--clearmodifiers', 'Return']);
+  assert.deepEqual(args('Ctrl+ArrowLeft'), ['key', '--clearmodifiers', 'ctrl+Left']);
+  assert.deepEqual(args('Alt+Backspace'), ['key', '--clearmodifiers', '--delay', '0', 'Escape', 'BackSpace']);
+  assert.deepEqual(args('Ctrl+Shift+V'), ['key', '--clearmodifiers', 'ctrl+shift+v']);
+  assert.deepEqual(args('Escape Escape'), ['key', '--clearmodifiers', '--delay', '80', 'Escape', 'Escape']);
+  assert.ok(calls.filter(call => call.key !== 'Enter').every(call => !call.args.includes('Return')));
+  for (const key of ['Shift+Enter', 'ctrl+r', 'Ctrl+R;echo injected', 'ctrl+r Return', '__proto__', 'constructor', ['Ctrl+R']]) {
+    assert.throws(() => validateInput({ action: 'key', key }));
+    await assert.rejects(executeInput({ action: 'key', key }, {}, async () => assert.fail('invalid key executed')));
+  }
 });

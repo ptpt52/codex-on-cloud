@@ -1,3 +1,6 @@
+import { createShortcutMenu } from './shortcut-menu.js';
+import { SHORTCUT_BY_KEY } from './shortcuts.js';
+
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 const draftKey = 'codex-cloud.draft';
@@ -17,6 +20,9 @@ let desktopSettings = null, settingsController = null, settingsTimer, settingsBu
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false;
 let confirmation = null, uiGeneration = 0;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
+const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $('shortcuts-menu'), list: $('shortcuts-list'),
+  canSend: () => !confirmation && canInput() && !inputBusy && !displayPreferences.collapsed,
+  send: key => sendShortcut(key), changed: () => { sendDisplayPreferences(); scheduleViewport(); } });
 const wakeSupported = window.isSecureContext && typeof navigator.wakeLock?.request === 'function';
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
@@ -45,7 +51,7 @@ function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    busy: inputBusy || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation, revision: displayRevision }, location.origin);
+    busy: inputBusy || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
@@ -140,7 +146,7 @@ $('pan-button').addEventListener('click', () => {
   updateDisplayPreferences({ pan: !displayPreferences.pan });
   toast(displayPreferences.pan ? '拖动模式：移动画面，不会点击远程桌面' : '操作模式：可以点击远程桌面');
 });
-$('toggle-input-button').addEventListener('click', () => updateDisplayPreferences({ collapsed: !displayPreferences.collapsed }));
+$('toggle-input-button').addEventListener('click', () => { shortcutMenu.close(); updateDisplayPreferences({ collapsed: !displayPreferences.collapsed }); });
 $('toggle-controls-button').addEventListener('click', () => updateDisplayPreferences({ controlsCollapsed: !displayPreferences.controlsCollapsed }));
 renderDisplayControls();
 
@@ -168,7 +174,7 @@ function waitForViewport(actual, signal) {
 async function resizeViewport() {
   viewportTimer = null;
   if (!loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
-  if (!nativeIdle || inputPaused() || inputBusy || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || document.hidden) { scheduleViewport(1000); return; }
+  if (!nativeIdle || inputPaused() || inputBusy || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
   if (!followsViewport() && (controlsState.viewport.maximum.width < size.width || controlsState.viewport.maximum.height < size.height)) return;
@@ -203,7 +209,9 @@ function canInput() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
 function renderInputControls() {
-  for (const control of [$('paste-button'), $('terminal-button'), ...document.querySelectorAll('[data-key]')]) control.disabled = inputBusy || !canInput();
+  const disabled = inputBusy || !canInput();
+  for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
+  if (disabled) shortcutMenu.close();
   sendDisplayPreferences();
 }
 function renderConnection() {
@@ -322,6 +330,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame() {
+  shortcutMenu.close();
   closeConfirmation();
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false;
   clearTimeout(switchTimer); transportSwitching = false;
@@ -482,15 +491,19 @@ function closeConfirmation() {
   if ($('action-confirmation').open) $('action-confirmation').close();
   sendDisplayPreferences(); scheduleViewport();
 }
-function requestConfirmation(kind) {
+function requestConfirmation(kind, key) {
   if (confirmation || $('action-confirmation').open) return;
-  const pending = { kind, generation: uiGeneration, epoch: frameEpoch, frameState, owned };
+  const shortcut = kind === 'shortcut' ? SHORTCUT_BY_KEY.get(key) : null;
+  if (kind === 'shortcut' && !shortcut?.confirm) return;
+  shortcutMenu.close();
+  const pending = { kind, key: shortcut?.key, generation: uiGeneration, epoch: frameEpoch, frameState, owned };
   if (!confirmationValid(pending)) return;
   const copy = {
     logout: ['退出当前登录？', '退出后需要重新登录。远程桌面和正在运行的任务会继续保留。', '确认退出'],
     terminal: ['打开远程终端？', '将打开或切换到已有终端，改变当前桌面的窗口焦点。原有任务继续运行。', '确认打开终端'],
     reconnect: ['重新连接桌面画面？', '将重新建立当前观看连接；如果桌面在其他页面打开，会接管到这里。远程桌面和任务继续运行。', '确认重新连接'],
     interrupt: ['中断当前任务？', '将发送 Ctrl+C，可能终止当前正在执行的命令。请确认你确实需要中断。', '发送 Ctrl+C'],
+    shortcut: shortcut ? [`发送 ${shortcut.key}？`, shortcut.description, `发送 ${shortcut.key}`] : null,
   }[kind];
   if (!copy) return;
   confirmation = pending;
@@ -524,7 +537,15 @@ $('accept-confirmation').addEventListener('click', () => {
   if (pending.kind === 'reconnect') return void action($('reconnect-button'), claim);
   if (pending.kind === 'terminal') return void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话');
   if (pending.kind === 'interrupt') void inputAction('/api/key', { key: 'Ctrl+C' }, '发送中断', 'Ctrl C 已发送');
+  if (pending.kind === 'shortcut' && SHORTCUT_BY_KEY.get(pending.key)?.confirm) void inputAction('/api/key', { key: pending.key }, '发送按键', `${pending.key} 已发送`);
 });
+function sendShortcut(key) {
+  const shortcut = SHORTCUT_BY_KEY.get(key);
+  if (!shortcut || inputBusy || !canInput()) return;
+  if (key === 'Ctrl+C') return requestConfirmation('interrupt');
+  if (shortcut.confirm) return requestConfirmation('shortcut', key);
+  void inputAction('/api/key', { key }, '发送按键', `${key} 已发送`);
+}
 function inputMessage(outcome, message) {
   inputFeedback = true;
   $('input-status').hidden = false;
@@ -848,7 +869,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
-    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
     if (allowed) {
       transportSwitching = true;
       clearTimeout(switchTimer);
@@ -893,8 +914,9 @@ window.addEventListener('message', event => {
   else return;
   renderConnection();
 });
-document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else closeConfirmation(); });
-window.addEventListener('pagehide', () => { pageLeaving = true; closeConfirmation(); syncScreenLock(); });
+document.addEventListener('fullscreenchange', () => shortcutMenu.close());
+document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { shortcutMenu.close(); closeConfirmation(); } });
+window.addEventListener('pagehide', () => { pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
 
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }

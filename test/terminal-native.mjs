@@ -66,6 +66,24 @@ try {
     assert.equal(args[args.indexOf('-fs') + 1], '20');
   }
   await controls.input({ action: 'terminal' });
+  // Capture real xterm/tmux bytes in this temporary display, never in the user's Codex.
+  const keyCases = [
+    ['Ctrl+J', '0a'], ['Enter', '0d'], ['Ctrl+R', '12'], ['Ctrl+G', '07'], ['Ctrl+O', '0f'], ['Ctrl+L', '0c'],
+    ['Ctrl+A', '01'], ['Ctrl+E', '05'], ['Ctrl+U', '15'], ['Ctrl+K', '0b'], ['Ctrl+W', '17'], ['Ctrl+Y', '19'],
+    ['Ctrl+ArrowLeft', '1b5b313b3544'], ['Ctrl+ArrowRight', '1b5b313b3543'], ['Alt+B', '1b62'], ['Alt+F', '1b66'],
+    ['Alt+D', '1b64'], ['Alt+Backspace', '1b7f'], ['Delete', '1b5b337e'], ['Shift+Tab', '1b5b5a'],
+    ['Ctrl+C', '03'], ['Ctrl+D', '04'], ['Ctrl+Z', '1a'], ['Escape Escape', '1b1b'],
+  ];
+  const keyBytes = Buffer.from(keyCases.map(([, hex]) => hex).join(''), 'hex');
+  const keyScript = join(root, 'key-receiver.py'), keyReady = join(root, 'key-ready'), keyProof = join(root, 'key-proof.json');
+  await writeFile(keyScript, `import json, os, select, sys, termios, time, tty\nfd = sys.stdin.fileno()\nprevious = termios.tcgetattr(fd)\ndata = b''\ntry:\n tty.setraw(fd)\n with open(sys.argv[1], 'w') as f: f.write('ready')\n deadline = time.monotonic() + 10\n while len(data) < ${keyBytes.length} and time.monotonic() < deadline:\n  if select.select([fd], [], [], 0.1)[0]: data += os.read(fd, min(4096 - len(data), 1024))\n  if len(data) >= 4096: break\nfinally:\n termios.tcsetattr(fd, termios.TCSANOW, previous)\n with open(sys.argv[2], 'w') as f: json.dump({'hex': data.hex()}, f)\n`);
+  await controls.input({ action: 'paste', target: 'terminal', text: `python3 '${keyScript}' '${keyReady}' '${keyProof}'` });
+  await controls.input({ action: 'key', key: 'Enter' });
+  await eventually(async () => (await readFile(keyReady, 'utf8')) === 'ready');
+  for (const [key] of keyCases) await controls.input({ action: 'key', key });
+  await eventually(async () => !!(await readFile(keyProof, 'utf8')));
+  assert.equal(JSON.parse(await readFile(keyProof, 'utf8')).hex, keyBytes.toString('hex'), 'real terminal bytes must distinguish Ctrl+J from Enter and preserve modifiers');
+  assert.equal((await controls.get()).session.pid, pid);
   const literal = '中文原样 $(never) `never`';
   await controls.input({ action: 'paste', target: 'terminal', text: `printf '%s\\n' '${literal}' > "$WORKSPACE_DIR/input-proof"` });
   await assert.rejects(readFile(join(config.workspace, 'input-proof')), { code: 'ENOENT' });
@@ -95,7 +113,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log('✓ isolated real X11: window/font controls, literal Chinese paste and separate Enter, independent UTF-8 clipboard/primary reads with bounds and non-text rejection preserve the private tmux PID; resume args reach a dummy executable literally, without starting Codex');
+  console.log('✓ isolated real X11: 24 shortcut encodings preserve Ctrl+J versus Enter, word movement, Alt prefixes and double Escape; window/font controls, literal paste and bounded clipboard reads preserve private tmux; resume args reach a dummy executable without starting Codex');
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }

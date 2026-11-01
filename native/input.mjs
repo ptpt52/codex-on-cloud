@@ -1,7 +1,18 @@
 import { spawn } from 'node:child_process';
 
 const KEYS = Object.freeze({ Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Backspace: 'BackSpace',
-  'Ctrl+C': 'ctrl+c', 'Ctrl+D': 'ctrl+d', 'Ctrl+L': 'ctrl+l', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' });
+  'Ctrl+C': 'ctrl+c', 'Ctrl+D': 'ctrl+d', 'Ctrl+L': 'ctrl+l', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  'Ctrl+J': 'ctrl+j', 'Ctrl+R': 'ctrl+r', 'Ctrl+O': 'ctrl+o', 'Ctrl+G': 'ctrl+g',
+  'Ctrl+A': 'ctrl+a', 'Ctrl+E': 'ctrl+e', 'Ctrl+U': 'ctrl+u', 'Ctrl+K': 'ctrl+k', 'Ctrl+W': 'ctrl+w', 'Ctrl+Y': 'ctrl+y',
+  // This xterm's default Meta mode sets the high bit. Fixed ESC prefixes are
+  // the terminal encoding of Alt chords and work without restarting xterm.
+  'Alt+Backspace': Object.freeze(['Escape', 'BackSpace']), 'Alt+D': Object.freeze(['Escape', 'd']),
+  'Alt+B': Object.freeze(['Escape', 'b']), 'Alt+F': Object.freeze(['Escape', 'f']),
+  'Ctrl+ArrowLeft': 'ctrl+Left', 'Ctrl+ArrowRight': 'ctrl+Right', 'Shift+Tab': 'shift+Tab',
+  Home: 'Home', End: 'End', Delete: 'Delete', PageUp: 'Prior', PageDown: 'Next',
+  'Ctrl+Shift+V': 'ctrl+shift+v', 'Ctrl+V': 'ctrl+v', 'Ctrl+Z': 'ctrl+z',
+  'Escape Escape': Object.freeze(['Escape', 'Escape']),
+});
 export function validateInput(body) {
   if (body?.action === 'terminal') return { action: 'terminal' };
   if (body?.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) return { action: 'key', key: body.key };
@@ -29,6 +40,9 @@ export async function executeInput(body, env, run = runInputCommand) {
   if (body.action === 'paste') {
     await run('xclip', ['-selection', 'clipboard', '-i'], { env, input: body.text });
     await run('xdotool', ['key', '--clearmodifiers', body.target === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v'], { env });
-  } else if (body.action === 'key') await run('xdotool', ['key', '--clearmodifiers', KEYS[body.key]], { env });
+  } else if (body.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) {
+    const keys = KEYS[body.key];
+    await run('xdotool', ['key', '--clearmodifiers', ...(Array.isArray(keys) ? ['--delay', body.key === 'Escape Escape' ? '80' : '0', ...keys] : [keys])], { env });
+  }
   else throw new Error('terminal input requires the desktop controller');
 }

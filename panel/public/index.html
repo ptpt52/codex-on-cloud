@@ -72,11 +72,17 @@
     <section id="input-dock" class="input-dock" aria-label="手机输入辅助">
       <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><button id="clipboard-button" class="view-button clipboard-entry" type="button" disabled>取回文字</button><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
       <div class="composer"><textarea id="mobile-input" rows="2" placeholder="先点选桌面中的输入位置，再在这里写下指令…" aria-label="要粘贴到桌面的文字"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
-      <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="Escape">Esc</button><button data-key="Tab">Tab ⇥</button><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
+      <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="Escape">Esc</button><button data-key="Tab">Tab ⇥</button><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button><button id="shortcuts-button" class="shortcuts-entry" type="button" aria-haspopup="menu" aria-controls="shortcuts-menu" aria-expanded="false" disabled>更多按键 ▾</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       <p id="input-status" class="input-status" role="status" hidden></p>
     </section>
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，桌面继续运行</span><span id="version-label"></span></footer>
   </main>
+  <div id="shortcuts-menu" class="shortcuts-menu" role="menu" aria-label="Codex 和终端快捷键" tabindex="-1" popover="auto" hidden>
+    <p class="shortcuts-title">Codex 和终端快捷键</p>
+    <p class="shortcuts-help">可上下滚动查看，点击条目发送一次。先点选远程 Codex 终端；用途按默认键位标注，自定义键位以当前程序为准。</p>
+    <div id="shortcuts-list"></div>
+    <p class="shortcuts-help">文本粘贴与 Enter 提交保持分开。关闭本列表的 Esc 不会发给远程桌面。</p>
+  </div>
 
   <dialog id="action-confirmation" class="files-dialog action-confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-description">
     <h2 id="confirmation-title"></h2>
