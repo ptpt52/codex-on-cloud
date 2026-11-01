@@ -121,16 +121,18 @@ export async function createPanel(config) {
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw new HttpError(403, '请求来源无效');
       const key = req.socket.remoteAddress || 'unknown'; // Never trust client-supplied forwarding headers.
+      const body = await jsonBody(req, 4096);
+      // No await between checking the current limits and reserving a verification slot.
       const failure = failures.get(key);
       if (failure && failure.until > Date.now() && failure.count >= 10) throw new HttpError(429, '登录尝试过多，请 15 分钟后再试');
       if (loginBusy >= 2) throw new HttpError(429, '正在验证登录，请稍后再试');
-      const body = await jsonBody(req, 4096);
       let verified;
       loginBusy++;
       try { verified = await auth.verify(body.username, body.password); }
       finally { loginBusy--; }
       if (!verified) {
-        const current = failure && failure.until > Date.now() ? failure : { count: 0, until: Date.now() + 900_000 };
+        const latest = failures.get(key);
+        const current = latest && latest.until > Date.now() ? latest : { count: 0, until: Date.now() + 900_000 };
         current.count++; failures.set(key, current);
         if (failures.size > 1024) failures.delete(failures.keys().next().value);
         throw new HttpError(401, '用户名或密码错误');

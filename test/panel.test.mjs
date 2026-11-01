@@ -114,3 +114,49 @@ test('expired sessions and repeated failed logins are rejected', async t => {
   for (let index = 0; index < 10; index++) assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 401);
   assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 429);
 });
+
+test('delayed login bodies share the verification limit and concurrent failures are counted', { timeout: 5000 }, async t => {
+  const app = await fixture(); t.after(() => app.close());
+  const body = JSON.stringify({ username: 'admin', password: 'wrong' });
+  const requests = [];
+  t.after(() => requests.forEach(request => request.destroy()));
+  const reading = new Promise(resolve => {
+    let count = 0;
+    app.panel.server.on('request', () => { if (++count === 6) resolve(); });
+  });
+  const responses = Array.from({ length: 6 }, () => new Promise((resolve, reject) => {
+    const request = http.request(app.config.origin + '/api/login', { method: 'POST', headers: {
+      origin: app.config.origin, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body),
+    } }, response => { response.resume(); response.once('end', () => resolve(response.statusCode)); });
+    request.on('error', reject);
+    requests.push(request);
+    request.write(body.slice(0, 1));
+  }));
+  // Every handler is waiting for its body before any password verification starts.
+  await reading;
+  for (const request of requests) request.end(body.slice(1));
+  assert.deepEqual((await Promise.all(responses)).sort(), [401, 401, 429, 429, 429, 429]);
+  for (let index = 0; index < 8; index++) assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 401);
+  const limited = await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } });
+  assert.equal(limited.status, 429);
+  assert.match((await limited.json()).error, /登录尝试过多/);
+});
+
+test('a delayed login body cannot bypass a newer failed-attempt limit', { timeout: 5000 }, async t => {
+  const app = await fixture(); t.after(() => app.close());
+  const body = JSON.stringify({ username: 'admin', password: 'wrong' });
+  const reading = once(app.panel.server, 'request');
+  let request;
+  const response = new Promise((resolve, reject) => {
+    request = http.request(app.config.origin + '/api/login', { method: 'POST', headers: {
+      origin: app.config.origin, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body),
+    } }, result => { result.resume(); result.once('end', () => resolve(result.statusCode)); });
+    request.on('error', reject);
+    request.write(body.slice(0, 1));
+  });
+  t.after(() => request.destroy());
+  await reading;
+  for (let index = 0; index < 10; index++) assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 401);
+  request.end(body.slice(1));
+  assert.equal(await response, 429);
+});

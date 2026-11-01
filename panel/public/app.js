@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, polling = false;
+let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 const draftKey = 'codex-cloud.draft';
 let inputBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
@@ -12,14 +12,14 @@ function toast(message, failure = false) {
   $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
-async function api(path, { method = 'GET', body, raw } = {}) {
+async function api(path, { method = 'GET', body, raw, signal } = {}) {
   const headers = { 'x-viewer-id': viewer };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const response = await fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual' });
+  const response = await fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual', signal });
   if (response.type === 'opaqueredirect') throw new Error('外层访问验证已过期，请重新打开此页面完成验证');
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401 && path !== '/api/login') showLogin();
+  if (!signal?.aborted && response.status === 401 && path !== '/api/login') showLogin();
   if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
   return data;
 }
@@ -34,9 +34,14 @@ function stopFrame() {
   $('desktop-frame').hidden = true;
   $('desktop-frame').src = 'about:blank';
 }
+function stopPolling() {
+  clearTimeout(pollTimer);
+  pollController?.abort();
+  pollController = null;
+}
 function showLogin() {
   loggedIn = false; owned = false; csrf = '';
-  clearTimeout(pollTimer);
+  stopPolling();
   stopFrame();
   $('workspace-view').hidden = true;
   $('login-view').hidden = false;
@@ -54,35 +59,42 @@ function openFrame() {
   $('desktop-overlay').hidden = true;
 }
 async function poll() {
-  if (!loggedIn || polling) return;
-  polling = true;
+  if (!loggedIn || pollController) return;
+  const controller = new AbortController();
+  pollController = controller;
   clearTimeout(pollTimer);
   try {
-    const state = await api('/api/state');
-    if (!loggedIn) return;
+    const state = await api('/api/state', { signal: controller.signal });
+    if (!loggedIn || pollController !== controller) return;
     const mine = state.mine;
+    owned = mine;
     $('connection-status').classList.toggle('offline', !state.desktop.ready || !mine);
     $('connection-status').lastChild.textContent = !mine ? '连接已释放' : state.desktop.ready ? '桌面在线' : '启动中';
     $('version-label').textContent = state.desktop.version;
     if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
     if (!mine) {
-      owned = false; stopFrame();
+      stopFrame();
       overlay('在这里继续工作', '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
     } else if (state.desktop.ready) openFrame();
     else if (!frameLoaded) overlay('正在准备桌面', state.desktop.message);
   } catch (error) {
-    if (loggedIn) {
+    if (loggedIn && pollController === controller) {
       $('connection-status').classList.add('offline');
       $('connection-status').lastChild.textContent = '等待网络';
       if (!frameLoaded) overlay('等待连接恢复', error.message);
     }
   } finally {
-    polling = false;
-    if (loggedIn) pollTimer = setTimeout(poll, 4000);
+    if (pollController === controller) {
+      pollController = null;
+      if (loggedIn) pollTimer = setTimeout(poll, 4000);
+    }
   }
 }
 async function claim() {
   await api('/api/desktop/claim', { method: 'POST', body: { viewer } });
+  if (!loggedIn) return;
+  // A successful claim invalidates every state snapshot fetched before it.
+  stopPolling();
   owned = true;
   stopFrame();
   overlay('正在连接桌面', '连接后会回到原来的终端会话。');
