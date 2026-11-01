@@ -91,6 +91,8 @@
   <dialog id="desktop-settings-dialog" class="files-dialog desktop-settings-dialog">
     <div class="dialog-heading"><h2>桌面设置</h2><button id="close-desktop-settings" class="quiet" aria-label="关闭桌面设置">✕</button></div>
     <p id="settings-current" class="muted">正在读取当前桌面…</p>
+    <label class="viewport-option"><input id="auto-resolution" type="checkbox"><span>桌面大小跟随浏览器窗口，保留当前任务</span></label>
+    <p id="viewport-note" class="muted settings-help"></p>
     <form id="desktop-settings-form">
       <label class="settings-label" for="resolution-preset">分辨率预设</label>
       <select id="resolution-preset"><option value="1280x1280">1280 × 1280</option><option value="1600x1600">1600 × 1600</option><option value="1920x1600">1920 × 1600</option><option value="custom">自定义尺寸</option></select>

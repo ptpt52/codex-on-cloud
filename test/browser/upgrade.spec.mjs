@@ -108,7 +108,8 @@ test('takeover cancels a pending background probe without disturbing the new vie
 
 test('periodic probing continues after failure and upgrades later without any network event or refresh', async ({ page }) => {
   test.setTimeout(60000);
-  const app = await fixture({ rfb: true, webrtc: true }); let offers = 0, closed = 0;
+  // Keep this timer/connection test independent of large framebuffer delivery.
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, webrtc: true }); let offers = 0, closed = 0;
   const requests = writes(page);
   page.on('websocket', socket => socket.on('close', () => closed++));
   await page.addInitScript(() => {

@@ -12,7 +12,7 @@ let rfb, retry, stopping = false;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
 const pressedKeys = new Set(), pressedPointers = new Set();
-let lastInteraction = 0;
+let lastInteraction = 0, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
@@ -43,7 +43,8 @@ function reportView() {
     if (!canvas?.width) return;
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
-    const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height };
+    const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height,
+      idle: !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800 };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -236,6 +237,7 @@ function attachViewer(direct) {
   instance.addEventListener('connect', () => {
     if (rfb !== instance || stopping) return;
     viewing = true; status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl();
+    clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
     if (switching) finishSwitch();
     scheduleProbe();
   });
@@ -272,8 +274,9 @@ for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercanc
   if (name === 'keyup') pressedKeys.delete(event.code || event.key);
   if (name === 'pointerdown' && pressedPointers.size < 8) pressedPointers.add(event.pointerId);
   if (name === 'pointerup' || name === 'pointercancel') pressedPointers.delete(event.pointerId);
+  reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
 }, true);
-window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); });
+window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); });
 function networkChanged() {
   if (document.hidden || !navigator.onLine) { if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
   probeDelay = 15000; clearTimeout(probeTimer); probeTimer = null; scheduleProbe(1000);
@@ -284,6 +287,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  clearTimeout(idleTimer);
   connectionEpoch++;
   probeController?.abort(); clearTimeout(probeTimer); switchApproval?.finish(false);
   transport?.close();

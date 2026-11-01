@@ -8,17 +8,18 @@ import { createPanel } from '../panel/server.mjs';
 import { createDesktopControls } from '../native/desktop-controls.mjs';
 import { createManagerServer } from '../native/manager-server.mjs';
 import { readPreferences } from '../native/preferences.mjs';
+import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, webrtc = false, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, viewport = false, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
   const clipboardReads = [];
   const clipboardText = { clipboard: '', primary: '' };
   const files = new Map();
-  const screenGeometry = { width: 1600, height: 1600 };
-  const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0 };
+  const screenGeometry = { width: rfbSize?.width ?? 1600, height: rfbSize?.height ?? 1600 };
+  const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0, viewportResizes: 0 };
   const tunnel = { tunnelID: 'private-tunnel-id', connectorID: 'private-connector-id', connections: [
     { isConnected: true, edgeAddress: '2001:db8::1' }, { isConnected: true, edgeAddress: '2001:db8::2' },
     { isConnected: true, edgeAddress: '192.0.2.1' }, { isConnected: false, edgeAddress: '192.0.2.2' },
@@ -82,9 +83,24 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   const upstreamUrl = `http://127.0.0.1:${upstream.address().port}`;
   const preferencesFile = join(directory, 'desktop-settings.json');
   const defaultPreferences = { width: 1600, height: 1600, fontSize: 15 };
+  const maximum = { width: 1600, height: 1600 };
+  const viewportControls = viewport ? {
+    status: () => ({ supported: true, maximum, actual: { width: screenGeometry.width, height: screenGeometry.height } }),
+    async refresh() { return this.status(); },
+    async resize(value) {
+      await viewportHook?.(value);
+      const size = viewportSize(value, maximum); Object.assign(screenGeometry, size); managementStats.viewportResizes++;
+      if (rfb) for (const socket of clients) {
+        if (socket.destroyed) continue;
+        const update = Buffer.alloc(16); update.writeUInt16BE(1, 2); update.writeUInt16BE(size.width, 8); update.writeUInt16BE(size.height, 10); update.writeInt32BE(-223, 12); socket.write(update);
+      }
+      return { actual: size, maximum };
+    },
+  } : undefined;
   let panePid = 4000, paneCommand = 'codex', terminalVisible = true, terminalChild;
   const controls = createDesktopControls({ root: directory, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
+    viewport: viewportControls,
     performInput: async value => { inputCalls.push(value); await inputHook?.(value); },
     readClipboard: async source => {
       clipboardReads.push(source);

@@ -189,6 +189,11 @@ export async function createPanel(config) {
       requireSession(req);
       return reply(res, 200, await managerRequest(config, '/settings'));
     }
+    if (path === '/api/desktop/viewport' && req.method === 'POST') {
+      const body = await ownedBody(req, 1024);
+      if (maintenancePending) throw new HttpError(409, '桌面操作正在进行');
+      return reply(res, 200, await managerRequest(config, '/viewport', body));
+    }
     if (['/api/desktop/settings', '/api/desktop/apply', '/api/desktop/terminal-display'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
       const target = path.endsWith('/apply') ? '/apply' : path.endsWith('/terminal-display') ? '/terminal' : '/settings';
@@ -242,7 +247,7 @@ export async function createPanel(config) {
               if (!state.rtcPending) return { active: true };
               const current = await controlStatus();
               if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化');
-              if (!current.available || current.maintenance || current.inputBusy || current.clipboardBusy) throw new HttpError(409, '当前操作未结束，暂不切换连接');
+              if (!current.available || current.maintenance || current.inputBusy || current.clipboardBusy || current.viewportBusy) throw new HttpError(409, '当前操作未结束，暂不切换连接');
               closeSockets(value => value.socket !== bridge);
               state.rtcPending = false;
               bridge.activate();

@@ -11,12 +11,13 @@ let frameTransport = '';
 let controlReady = false, controlPending = null, controlSequence = 0;
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
+let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { zoom: 'fit', pan: false, collapsed: false, controlsCollapsed: false };
+const displayPreferences = { zoom: 'fit', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: true };
 let displayScale = 0, displayRevision = 0, scaleRevision = -1;
 try {
   const stored = localStorage.getItem(displayKey);
@@ -24,17 +25,22 @@ try {
     const value = JSON.parse(stored);
     if (value && (value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) && typeof value.pan === 'boolean' && typeof value.collapsed === 'boolean' && (value.controlsCollapsed === undefined || typeof value.controlsCollapsed === 'boolean')) {
       Object.assign(displayPreferences, { zoom: value.zoom, pan: value.pan, collapsed: value.collapsed, controlsCollapsed: value.controlsCollapsed === true });
+      if (typeof value.autoResolution === 'boolean') displayPreferences.autoResolution = value.autoResolution;
     }
   }
 } catch {}
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
-    handoff: transportSwitching && !maintenancePending && !controlsState.maintenance && controlsState.available,
+    handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     busy: inputBusy || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
+  $('auto-resolution').checked = displayPreferences.autoResolution;
+  $('viewport-note').textContent = controlsState.viewport?.supported
+    ? displayPreferences.autoResolution ? '分辨率随当前可用画面区域调整，无需重启；超过显示上限时等比例适配。' : '当前使用固定桌面尺寸；“适应窗口”仅缩放画面。'
+    : '当前显示暂未提供动态分辨率，画面继续等比例缩放。';
   $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
   $('actual-size-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 1));
   $('pan-button').setAttribute('aria-pressed', String(displayPreferences.pan));
@@ -57,6 +63,7 @@ function updateDisplayPreferences(change) {
   try { localStorage.setItem(displayKey, JSON.stringify(displayPreferences)); } catch {}
   renderDisplayControls();
   sendDisplayPreferences();
+  scheduleViewport();
 }
 $('fit-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 'fit' }));
 $('actual-size-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 1 }));
@@ -73,7 +80,55 @@ $('toggle-input-button').addEventListener('click', () => updateDisplayPreference
 $('toggle-controls-button').addEventListener('click', () => updateDisplayPreferences({ controlsCollapsed: !displayPreferences.controlsCollapsed }));
 renderDisplayControls();
 
-function inputPaused() { return transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
+function inputPaused() { return viewportResizing || controlsState.viewportBusy || transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
+function scheduleViewport(delay = 500) {
+  clearTimeout(viewportTimer);
+  if (!displayPreferences.autoResolution || !loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  viewportTimer = setTimeout(resizeViewport, delay);
+}
+function waitForViewport(actual, signal) {
+  if (!actual || ![actual.width, actual.height].every(value => Number.isInteger(value) && value >= 160 && value <= 4096)) return Promise.reject(new Error('显示尺寸无效'));
+  return new Promise((resolve, reject) => {
+    const finish = error => {
+      clearTimeout(timer); signal.removeEventListener('abort', abort);
+      if (viewportWaiter === check) viewportWaiter = undefined;
+      error ? reject(error) : resolve();
+    };
+    const abort = () => finish(new Error('窗口适配已取消'));
+    const check = () => { if (frameDimensions?.width === actual.width && frameDimensions?.height === actual.height) finish(); };
+    const timer = setTimeout(() => finish(new Error('等待画面尺寸更新超时')), 3000);
+    viewportWaiter = check; signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort(); else check();
+  });
+}
+async function resizeViewport() {
+  viewportTimer = null;
+  if (!displayPreferences.autoResolution || !loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  if (!nativeIdle || inputPaused() || inputBusy || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || document.hidden) { scheduleViewport(1000); return; }
+  const rect = $('desktop-stage').getBoundingClientRect();
+  const size = { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) };
+  const signature = `${frameEpoch}:${size.width}x${size.height}`;
+  if (signature === viewportApplied) return;
+  const controller = viewportController = new AbortController(), epoch = frameEpoch;
+  const timer = setTimeout(() => controller.abort(), 7000);
+  viewportResizing = true; renderInputControls(); sendDisplayPreferences();
+  try {
+    const result = await api('/api/desktop/viewport', { method: 'POST', body: size, signal: controller.signal });
+    clearTimeout(timer);
+    await waitForViewport(result.actual, controller.signal);
+    if (viewportController === controller && frameEpoch === epoch) viewportApplied = signature;
+  } catch (error) {
+    if (viewportController === controller && !controller.signal.aborted && error.status !== 409) $('viewport-note').textContent = '本次窗口适配未完成，当前任务继续运行；稍后会重新检查。';
+  } finally {
+    clearTimeout(timer);
+    if (viewportController === controller) {
+      viewportController = null; viewportResizing = false;
+      renderInputControls(); renderDesktopSettings(); sendDisplayPreferences(); scheduleViewport(2000);
+    }
+  }
+}
+new ResizeObserver(() => scheduleViewport()).observe($('desktop-stage'));
+$('auto-resolution').addEventListener('change', () => { updateDisplayPreferences({ autoResolution: $('auto-resolution').checked, ...($('auto-resolution').checked ? { zoom: 'fit' } : {}) }); renderDesktopSettings(); scheduleViewport(); });
 function canInput() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
@@ -114,6 +169,7 @@ function renderConnection() {
     else $('desktop-overlay').hidden = true;
   } else if (!owned) overlay('在这里继续工作', '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
   else if (desktopReady === false && frameState !== 'connected') overlay('桌面未就绪', '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
+  else if ((viewportResizing || controlsState.viewportBusy) && frameState === 'connected') $('desktop-overlay').hidden = true;
   else if (inputPaused()) overlay(label, '输入暂时暂停。当前操作完成后恢复，不会自动重发输入。');
   else if (frameState === 'connected') $('desktop-overlay').hidden = true;
   else overlay(label, '正在连接画面，桌面任务继续运行。');
@@ -188,6 +244,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame() {
+  clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false;
   clearTimeout(switchTimer); transportSwitching = false;
   resetDirectControl();
   frameLoaded = false;
@@ -278,6 +335,7 @@ async function poll() {
     panelState = 'online';
     desktopReady = state.desktop.ready === true;
     controlsState = state.controls || { available: false, maintenance: false, inputBusy: false };
+    scheduleViewport();
     if (!inputBusy && !inputFeedback && controlsState.input?.status === 'unknown') inputMessage('unknown', '上一项输入结果未知，请先查看桌面确认，避免重复执行。');
     $('version-label').textContent = state.desktop.version;
     if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
@@ -294,7 +352,7 @@ async function poll() {
     clearTimeout(timeout);
     if (pollController === controller) {
       pollController = null;
-      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || controlsState.clipboardBusy || maintenancePending ? 800 : 4000);
+      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || controlsState.clipboardBusy || controlsState.viewportBusy || maintenancePending ? 800 : 4000);
     }
   }
 }
@@ -520,14 +578,16 @@ function settingsDirty() {
 }
 function renderDesktopSettings() {
   const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const adaptive = displayPreferences.autoResolution && controlsState.viewport?.supported;
+  for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !!adaptive || viewportResizing;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
-  $('apply-desktop-settings').disabled = !writable || dirty || !desktopSettings?.restartRequired || !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked;
+  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.restartRequired || !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked;
   if (!desktopSettings) return;
   const { actual, saved, session, job } = desktopSettings;
   $('settings-current').textContent = actual ? `当前实际分辨率：${actual.width} × ${actual.height}` : '桌面尚未就绪，仍可保存下次启动的配置。';
-  $('settings-pending').textContent = desktopSettings.restartRequired ? `待应用：${saved.width} × ${saved.height}；需显式重启桌面。` : `已保存：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
+  $('settings-pending').textContent = adaptive ? '桌面尺寸正在跟随浏览器窗口；关闭此选项后可设置固定尺寸。' : desktopSettings.restartRequired ? `待应用：${saved.width} × ${saved.height}；需显式重启桌面。` : `已保存：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
   $('settings-recovery').textContent = session?.resumeId ? `将恢复会话 ${session.resumeId}，项目：${session.cwd}` : session?.recoverable ? '当前为 shell，重启后打开新的 shell，不自动启动任务。' : '当前会话无法准确识别或存在多个窗格。结束前台任务后再应用分辨率。';
   $('apply-desktop-settings').textContent = session?.resumeId ? '重启桌面并恢复会话' : '重启桌面应用设置';
   if (job) $('desktop-settings-status').textContent = job.message;
@@ -642,12 +702,15 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-desktop-view') {
     if (event.data.revision !== displayRevision) return;
+    nativeIdle = event.data.idle === true;
+    if (nativeIdle) scheduleViewport();
     if (Number.isFinite(event.data.scale) && event.data.scale > 0 && event.data.scale <= 16) {
       displayScale = event.data.scale;
       scaleRevision = event.data.revision;
       renderDisplayControls();
     }
     if (Number.isInteger(event.data.width) && Number.isInteger(event.data.height) && event.data.width > 0 && event.data.height > 0 && event.data.width <= 16384 && event.data.height <= 16384) frameDimensions = { width: event.data.width, height: event.data.height };
+    viewportWaiter?.();
     renderConnection();
     return;
   }

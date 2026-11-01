@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { readPreferences, writePreferences, preferenceRevision, validatePreferences } from './preferences.mjs';
 import { validateInput, executeInput } from './input.mjs';
 import { clipboardSource, readClipboard } from './clipboard.mjs';
+import { createViewportResizer, viewportSize } from './viewport.mjs';
 
 const exec = promisify(execFile);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -50,17 +51,23 @@ export function createDesktopControls(config, dependencies = {}) {
     const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), [], { env, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
   });
-  let job = null, preparing = false, terminalChild = null, inputActive = false, lastInput = null, clipboardActive = false;
+  const viewport = dependencies.viewport || (!dependencies.run ? createViewportResizer(run) : null);
+  if (viewport) void viewport.refresh();
+  let job = null, preparing = false, terminalChild = null, inputActive = false, lastInput = null, clipboardActive = false, viewportActive = false;
   const maintenance = () => preparing || job?.status === 'running';
-  const busy = () => maintenance() || inputActive || clipboardActive;
-  const status = () => ({ available: true, maintenance: !!maintenance(), inputBusy: inputActive, clipboardBusy: clipboardActive, input: lastInput ? { ...lastInput } : null });
+  const busy = () => maintenance() || inputActive || clipboardActive || viewportActive;
+  const status = () => {
+    if (viewport && !viewport.status().supported) void viewport.refresh();
+    return { available: true, maintenance: !!maintenance(), inputBusy: inputActive, clipboardBusy: clipboardActive, viewportBusy: viewportActive,
+      viewport: viewport?.status() || { supported: false }, input: lastInput ? { ...lastInput } : null };
+  };
   const saved = () => readPreferences(config.preferencesFile, config.defaultPreferences);
   async function geometry() {
     try {
       const result = await run('xdotool', ['getdisplaygeometry']);
       if (!/^\d{3,4} \d{3,4}$/.test(result)) return null;
       const [width, height] = result.split(' ').map(Number);
-      return width >= 320 && width <= 4096 && height >= 320 && height <= 4096 ? { width, height } : null;
+      return width >= 160 && width <= 4096 && height >= 160 && height <= 4096 ? { width, height } : null;
     } catch { return null; }
   }
   async function pane() {
@@ -136,6 +143,15 @@ export function createDesktopControls(config, dependencies = {}) {
     return { saved: preferences, revision: preferenceRevision(preferences), actual, session,
       restartRequired: !!actual && (actual.width !== preferences.width || actual.height !== preferences.height),
       busy: wasBusy || busy(), job: snapshot };
+  }
+  async function resizeViewport(body) {
+    try { viewportSize(body, { width: 4096, height: 4096 }); } catch (error) { throw new ControlError(400, error.message); }
+    if (!viewport?.status().supported) throw new ControlError(501, '当前虚拟显示不支持窗口适配');
+    if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，暂不调整尺寸');
+    viewportActive = true;
+    try { return await viewport.resize(body); }
+    catch { throw new ControlError(503, '本次窗口适配未完成，当前任务继续运行'); }
+    finally { viewportActive = false; }
   }
   function startJob(type, task) {
     if (busy()) throw new ControlError(409, '已有桌面操作进行中，请等待完成');
@@ -222,5 +238,5 @@ export function createDesktopControls(config, dependencies = {}) {
       }
     });
   }
-  return { get, save, apply, terminal, input, status, clipboard };
+  return { get, save, apply, terminal, input, status, clipboard, resizeViewport };
 }

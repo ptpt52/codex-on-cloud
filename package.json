@@ -22,6 +22,7 @@
     "test:browser": "playwright test",
     "test:native": "node test/native-smoke.mjs",
     "test:display": "node test/terminal-native.mjs",
+    "test:viewport": "node test/viewport-native.mjs",
     "demo": "node scripts/demo.mjs"
   },
   "dependencies": { "@novnc/novnc": "1.7.0", "werift": "0.26.0", "ws": "8.22.1" },
