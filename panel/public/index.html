@@ -39,8 +39,14 @@
       <div class="topbar-right"><span id="user-label" class="user-label"></span><button id="connection-button" class="quiet">连接状态</button><button id="files-button" class="secondary">文件中转</button><button id="logout-button" class="quiet">退出</button></div>
     </header>
     <section id="desktop-card" class="desktop-card" aria-label="远程桌面">
-      <div class="desktop-toolbar"><div class="desktop-title"><span class="monitor-icon" aria-hidden="true">▣</span><strong>开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span></div><div class="desktop-actions"><button id="terminal-button" class="quiet" title="打开或返回已有的 Codex 终端">打开终端</button><button id="reconnect-button" class="quiet">重新连接</button><button id="fullscreen-button" class="quiet" aria-label="全屏桌面" title="全屏桌面">⛶</button></div></div>
-      <div class="display-controls" role="group" aria-label="桌面显示控制">
+      <div class="desktop-toolbar">
+        <div class="desktop-title"><span class="monitor-icon" aria-hidden="true">▣</span><strong>开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span></div>
+        <div class="desktop-header-actions">
+          <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="quiet" title="打开或返回已有的 Codex 终端">打开终端</button><button id="reconnect-button" class="quiet">重新连接</button><button id="fullscreen-button" class="quiet" aria-label="全屏桌面" title="全屏桌面">⛶</button></div>
+          <button id="toggle-controls-button" class="quiet controls-toggle" type="button" aria-expanded="true" aria-controls="desktop-actions display-controls">收起控件</button>
+        </div>
+      </div>
+      <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
         <div class="zoom-controls">
           <button id="fit-button" class="view-button" aria-pressed="true">适应窗口</button>
           <button id="actual-size-button" class="view-button" aria-pressed="false">原始比例</button>

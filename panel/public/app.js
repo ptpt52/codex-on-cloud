@@ -13,14 +13,14 @@ $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { zoom: 'fit', pan: false, collapsed: false };
+const displayPreferences = { zoom: 'fit', pan: false, collapsed: false, controlsCollapsed: false };
 let displayScale = 0;
 try {
   const stored = localStorage.getItem(displayKey);
   if (stored && stored.length <= 256) {
     const value = JSON.parse(stored);
-    if (value && (value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) && typeof value.pan === 'boolean' && typeof value.collapsed === 'boolean') {
-      Object.assign(displayPreferences, { zoom: value.zoom, pan: value.pan, collapsed: value.collapsed });
+    if (value && (value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) && typeof value.pan === 'boolean' && typeof value.collapsed === 'boolean' && (value.controlsCollapsed === undefined || typeof value.controlsCollapsed === 'boolean')) {
+      Object.assign(displayPreferences, { zoom: value.zoom, pan: value.pan, collapsed: value.collapsed, controlsCollapsed: value.controlsCollapsed === true });
     }
   }
 } catch {}
@@ -35,6 +35,11 @@ function renderDisplayControls() {
   $('toggle-input-button').setAttribute('aria-expanded', String(!displayPreferences.collapsed));
   $('toggle-input-button').textContent = displayPreferences.collapsed ? '展开输入' : '收起输入';
   $('input-dock').hidden = displayPreferences.collapsed;
+  $('desktop-actions').hidden = displayPreferences.controlsCollapsed;
+  $('display-controls').hidden = displayPreferences.controlsCollapsed;
+  $('desktop-card').classList.toggle('controls-collapsed', displayPreferences.controlsCollapsed);
+  $('toggle-controls-button').setAttribute('aria-expanded', String(!displayPreferences.controlsCollapsed));
+  $('toggle-controls-button').textContent = displayPreferences.controlsCollapsed ? '展开控件' : '收起控件';
   $('zoom-label').textContent = displayScale ? `${Math.round(displayScale * 100)}%` : '—';
   $('zoom-out-button').disabled = !displayScale || displayScale <= 0.1;
   $('zoom-in-button').disabled = !displayScale || displayScale >= 2;
@@ -56,6 +61,7 @@ $('pan-button').addEventListener('click', () => {
   toast(displayPreferences.pan ? '拖动模式：移动画面，不会点击远程桌面' : '操作模式：可以点击远程桌面');
 });
 $('toggle-input-button').addEventListener('click', () => updateDisplayPreferences({ collapsed: !displayPreferences.collapsed }));
+$('toggle-controls-button').addEventListener('click', () => updateDisplayPreferences({ controlsCollapsed: !displayPreferences.controlsCollapsed }));
 renderDisplayControls();
 
 function inputPaused() { return maintenancePending || controlsState.maintenance || !controlsState.available; }
