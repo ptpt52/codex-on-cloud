@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readPreferences, writePreferences, preferenceRevision, validatePreferences } from './preferences.mjs';
 import { validateInput, executeInput } from './input.mjs';
+import { clipboardSource, readClipboard } from './clipboard.mjs';
 
 const exec = promisify(execFile);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -49,10 +50,10 @@ export function createDesktopControls(config, dependencies = {}) {
     const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), [], { env, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
   });
-  let job = null, preparing = false, terminalChild = null, inputActive = false, lastInput = null;
+  let job = null, preparing = false, terminalChild = null, inputActive = false, lastInput = null, clipboardActive = false;
   const maintenance = () => preparing || job?.status === 'running';
-  const busy = () => maintenance() || inputActive;
-  const status = () => ({ available: true, maintenance: !!maintenance(), inputBusy: inputActive, input: lastInput ? { ...lastInput } : null });
+  const busy = () => maintenance() || inputActive || clipboardActive;
+  const status = () => ({ available: true, maintenance: !!maintenance(), inputBusy: inputActive, clipboardBusy: clipboardActive, input: lastInput ? { ...lastInput } : null });
   const saved = () => readPreferences(config.preferencesFile, config.defaultPreferences);
   async function geometry() {
     try {
@@ -117,6 +118,16 @@ export function createDesktopControls(config, dependencies = {}) {
       const error = new ControlError(502, '输入结果未知，请先查看桌面确认，避免重复执行');
       error.outcome = 'unknown'; throw error;
     } finally { current.finishedAt = Date.now(); inputActive = false; }
+  }
+  async function clipboard(body) {
+    const source = clipboardSource(body?.source);
+    if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，请稍后手动读取');
+    clipboardActive = true;
+    try { return await (dependencies.readClipboard || (value => readClipboard(value, env)))(source); }
+    catch (error) {
+      if ([404, 413, 422, 504].includes(error.status)) throw error;
+      throw new ControlError(503, '远程剪贴板暂不可用，请稍后手动读取');
+    } finally { clipboardActive = false; }
   }
   async function get() {
     const preferences = saved();
@@ -211,5 +222,5 @@ export function createDesktopControls(config, dependencies = {}) {
       }
     });
   }
-  return { get, save, apply, terminal, input, status };
+  return { get, save, apply, terminal, input, status, clipboard };
 }

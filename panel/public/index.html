@@ -61,7 +61,7 @@
       </div>
     </section>
     <section id="input-dock" class="input-dock" aria-label="手机输入辅助">
-      <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
+      <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><button id="clipboard-button" class="view-button clipboard-entry" type="button" disabled>取回文字</button><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
       <div class="composer"><textarea id="mobile-input" rows="2" placeholder="先点选桌面中的输入位置，再在这里写下指令…" aria-label="要粘贴到桌面的文字"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="Escape">Esc</button><button data-key="Tab">Tab ⇥</button><button data-key="Ctrl+C">Ctrl C</button><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       <p id="input-status" class="input-status" role="status" hidden></p>
@@ -69,6 +69,19 @@
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，桌面继续运行</span><span id="version-label"></span></footer>
   </main>
 
+  <dialog id="clipboard-dialog" class="files-dialog clipboard-dialog">
+    <div class="dialog-heading"><h2>取回远程文字</h2><button id="close-clipboard" class="quiet" aria-label="关闭远程文字">✕</button></div>
+    <p class="muted">从远程桌面取回文字，预览后复制到本机。</p>
+    <label class="settings-label" for="clipboard-source">读取来源</label>
+    <select id="clipboard-source"><option value="clipboard">远程剪贴板（复制的文字）</option><option value="primary">选中文字（鼠标选区）</option></select>
+    <p class="muted">终端可先选中文字，其他应用可先执行复制。每次最多读取 32 KiB 纯文本。</p>
+    <button id="read-clipboard" class="secondary" type="button" disabled>读取远程文字</button>
+    <label class="settings-label" for="clipboard-preview">远程文字预览</label>
+    <textarea id="clipboard-preview" readonly rows="8" spellcheck="false" autocomplete="off" placeholder="点击读取后在这里预览文字"></textarea>
+    <p id="clipboard-meta" class="muted"></p>
+    <div class="clipboard-actions"><button id="copy-clipboard" class="primary" type="button" disabled>复制到本机</button><button id="select-clipboard" class="secondary" type="button" disabled>选择文字</button></div>
+    <p id="clipboard-status" class="muted" role="status">只在点击读取时获取；关闭窗口会清空预览。</p>
+  </dialog>
   <dialog id="desktop-settings-dialog" class="files-dialog desktop-settings-dialog">
     <div class="dialog-heading"><h2>桌面设置</h2><button id="close-desktop-settings" class="quiet" aria-label="关闭桌面设置">✕</button></div>
     <p id="settings-current" class="muted">正在读取当前桌面…</p>

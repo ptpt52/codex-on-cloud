@@ -10,10 +10,12 @@ import { createManagerServer } from '../native/manager-server.mjs';
 import { readPreferences } from '../native/preferences.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
+  const clipboardReads = [];
+  const clipboardText = { clipboard: '', primary: '' };
   const files = new Map();
   const screenGeometry = { width: 1600, height: 1600 };
   const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0 };
@@ -82,6 +84,11 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   const controls = createDesktopControls({ root: directory, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
     performInput: async value => { inputCalls.push(value); await inputHook?.(value); },
+    readClipboard: async source => {
+      clipboardReads.push(source);
+      await clipboardHook?.(source);
+      return { source, text: clipboardText[source], bytes: Buffer.byteLength(clipboardText[source]) };
+    },
     sessionId: async () => '11111111-1111-4111-8111-111111111111',
     launch: () => { terminalVisible = true; terminalChild = { exitCode: null, signalCode: null }; return terminalChild; },
     run: async (command, args) => {
@@ -136,7 +143,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, received, inputCalls, controls, files, viewer, request, login, claim, managementStats,
+    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats,
     disconnectViewers() { for (const client of clients) client.destroy(); },
     pauseViewers() { viewersPaused = true; for (const client of clients) client.destroy(); },
     resumeViewers() { viewersPaused = false; for (const client of clients) client.destroy(); },

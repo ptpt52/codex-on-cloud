@@ -8,7 +8,8 @@ export function managerRequest(config, path, body, timeout = 6000) {
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(payload === null ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) },
       signal: AbortSignal.timeout(timeout) }, response => {
       const chunks = []; let size = 0;
-      response.on('data', chunk => { size += chunk.length; if (size > 16 * 1024) response.destroy(new Error('管理响应过大')); else chunks.push(chunk); });
+      const limit = path === '/clipboard' ? 200 * 1024 : 16 * 1024;
+      response.on('data', chunk => { size += chunk.length; if (size > limit) response.destroy(new Error('管理响应过大')); else chunks.push(chunk); });
       response.once('error', reject);
       response.once('end', () => {
         try {

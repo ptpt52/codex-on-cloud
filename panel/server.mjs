@@ -209,6 +209,17 @@ export async function createPanel(config) {
       try { return reply(res, 200, await managerRequest(config, '/input', { ...body, action: path.slice('/api/'.length) })); }
       catch (error) { error.outcome ||= 'unknown'; throw error; }
     }
+    if (path === '/api/clipboard/read' && req.method === 'POST') {
+      const expected = owner;
+      const body = await ownedBody(req, 1024);
+      requireOwner(req);
+      if (owner !== expected) throw new HttpError(409, '页面控制权已变化，请重新读取');
+      if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，请稍后手动读取');
+      const result = await managerRequest(config, '/clipboard', body);
+      requireOwner(req);
+      if (owner !== expected) throw new HttpError(409, '页面控制权已变化，请重新读取');
+      return reply(res, 200, result);
+    }
     if (path === '/api/files' && req.method === 'GET') {
       requireSession(req);
       return reply(res, 200, await agent('/files'));

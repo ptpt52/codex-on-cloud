@@ -4,6 +4,7 @@ const draftKey = 'codex-cloud.draft';
 let inputBusy = false;
 let inputController = null, inputFeedback = false, maintenancePending = false;
 let controlsState = { available: false, maintenance: false, inputBusy: false };
+let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = false, clipboardText = '';
 let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
 let diagnosticsController = null, diagnosticsTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
@@ -59,7 +60,7 @@ renderDisplayControls();
 
 function inputPaused() { return maintenancePending || controlsState.maintenance || !controlsState.available; }
 function canInput() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !controlsState.inputBusy;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
 function renderInputControls() {
   for (const control of [$('paste-button'), $('terminal-button'), ...document.querySelectorAll('[data-key]')]) control.disabled = inputBusy || !canInput();
@@ -82,6 +83,7 @@ function renderConnection() {
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDesktopSettings();
+  renderClipboard();
   sendDisplayPreferences();
   if (!loggedIn) return;
   if (accessExpired) {
@@ -180,6 +182,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  clearClipboard();
   inputController?.abort(); inputController = null; inputBusy = false; inputFeedback = false;
   controlsState = { available: false, maintenance: false, inputBusy: false };
   maintenancePending = false;
@@ -196,6 +199,7 @@ function showLogin(message = '') {
   if ($('files-dialog').open) $('files-dialog').close();
   if ($('connection-dialog').open) $('connection-dialog').close();
   if ($('desktop-settings-dialog').open) $('desktop-settings-dialog').close();
+  if ($('clipboard-dialog').open) $('clipboard-dialog').close();
   renderConnection();
 }
 function frameUrl() {
@@ -240,7 +244,7 @@ async function poll() {
     clearTimeout(timeout);
     if (pollController === controller) {
       pollController = null;
-      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || maintenancePending ? 800 : 4000);
+      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || controlsState.clipboardBusy || maintenancePending ? 800 : 4000);
     }
   }
 }
@@ -378,6 +382,85 @@ $('close-connection').addEventListener('click', () => $('connection-dialog').clo
 $('connection-dialog').addEventListener('close', stopDiagnostics);
 $('refresh-connection').addEventListener('click', () => { void poll(); void loadDiagnostics(); });
 for (const id of ['access-refresh-button', 'login-refresh-button']) $(id).addEventListener('click', () => location.reload());
+function clipboardAccess() {
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && !inputPaused();
+}
+function clearClipboard() {
+  clipboardController?.abort(); clipboardController = null;
+  clipboardGeneration++; clipboardCopyBusy = false;
+  clipboardText = '';
+  $('clipboard-preview').value = '';
+  $('clipboard-meta').textContent = '';
+  $('clipboard-status').textContent = '';
+}
+function renderClipboard() {
+  const accessible = clipboardAccess();
+  if (!accessible) clearClipboard();
+  const readable = accessible && !inputBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
+  $('clipboard-button').disabled = !readable;
+  $('read-clipboard').disabled = !readable;
+  $('copy-clipboard').disabled = !accessible || !clipboardText || clipboardCopyBusy;
+  $('select-clipboard').disabled = !accessible || !$('clipboard-preview').value;
+}
+$('clipboard-button').addEventListener('click', async () => {
+  if ($('clipboard-button').disabled) return;
+  if (document.fullscreenElement) await document.exitFullscreen();
+  clearClipboard();
+  $('clipboard-dialog').showModal();
+  $('clipboard-status').textContent = '只在点击读取时获取；关闭窗口会清空预览。';
+  renderClipboard();
+});
+$('close-clipboard').addEventListener('click', () => $('clipboard-dialog').close());
+$('clipboard-dialog').addEventListener('close', () => { clearClipboard(); renderInputControls(); renderDesktopSettings(); renderClipboard(); });
+$('clipboard-source').addEventListener('change', () => { clearClipboard(); renderClipboard(); renderInputControls(); renderDesktopSettings(); });
+$('read-clipboard').addEventListener('click', async () => {
+  if ($('read-clipboard').disabled) return;
+  clearClipboard();
+  const controller = new AbortController(), source = $('clipboard-source').value;
+  clipboardController = controller;
+  const timeout = setTimeout(() => controller.abort(new Error('读取超时，请手动重试')), 8000);
+  $('clipboard-status').textContent = '正在读取远程文字…';
+  renderClipboard(); renderInputControls(); renderDesktopSettings();
+  try {
+    const result = await api('/api/clipboard/read', { method: 'POST', body: { source }, signal: controller.signal });
+    if (clipboardController !== controller || !$('clipboard-dialog').open || !clipboardAccess()) return;
+    if (result.source !== source || typeof result.text !== 'string' || result.text.length > 32768 || result.text.includes('\0') || new TextEncoder().encode(result.text).length > 32768) throw new Error('远程文字格式或大小无效');
+    clipboardText = result.text;
+    $('clipboard-preview').value = result.text;
+    $('clipboard-meta').textContent = `${source === 'clipboard' ? '远程剪贴板' : '选中文字'} · ${new TextEncoder().encode(result.text).length} 字节`;
+    $('clipboard-status').textContent = result.text ? '已读取，请预览后复制到本机。' : '当前内容为空，请在远程桌面复制或选中文字后手动读取。';
+  } catch (error) {
+    if (clipboardController === controller) $('clipboard-status').textContent = controller.signal.aborted ? '读取超时，请手动重试。' : error.message;
+  } finally {
+    clearTimeout(timeout);
+    if (clipboardController === controller) { clipboardController = null; renderClipboard(); renderInputControls(); renderDesktopSettings(); }
+  }
+});
+function selectClipboardText() {
+  $('clipboard-preview').focus(); $('clipboard-preview').select();
+  $('clipboard-preview').setSelectionRange(0, $('clipboard-preview').value.length);
+}
+$('select-clipboard').addEventListener('click', () => {
+  if ($('select-clipboard').disabled) return;
+  selectClipboardText();
+  $('clipboard-status').textContent = '已选中文字，请长按或使用系统的复制操作。';
+});
+$('copy-clipboard').addEventListener('click', async () => {
+  if ($('copy-clipboard').disabled) return;
+  const generation = clipboardGeneration;
+  clipboardCopyBusy = true; renderClipboard();
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(clipboardText);
+    if (generation === clipboardGeneration && $('clipboard-dialog').open && clipboardAccess()) $('clipboard-status').textContent = '已复制到本机剪贴板。';
+  } catch {
+    if (generation === clipboardGeneration && $('clipboard-dialog').open && clipboardAccess()) {
+      selectClipboardText();
+      $('clipboard-status').textContent = '浏览器未允许自动复制，文字已选中，请长按或使用系统的复制操作。';
+    }
+  } finally { if (generation === clipboardGeneration) { clipboardCopyBusy = false; renderClipboard(); } }
+});
+window.addEventListener('pagehide', clearClipboard);
 function settingsValues() {
   return { width: Number($('desktop-width').value), height: Number($('desktop-height').value), fontSize: Number($('terminal-font-size').value) };
 }
@@ -386,7 +469,7 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !accessExpired && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
@@ -494,7 +577,7 @@ window.addEventListener('message', event => {
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
   if (event.data.state === 'connected') { frameState = 'connected'; sendDisplayPreferences(); }
-  else if (event.data.state === 'disconnected') frameState = 'reconnecting';
+  else if (event.data.state === 'disconnected') { frameState = 'reconnecting'; clearClipboard(); renderClipboard(); }
   else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;
   renderConnection();

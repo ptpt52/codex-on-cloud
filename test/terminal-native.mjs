@@ -7,6 +7,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { createDesktopControls, desktopEnvironment, RESUME_COMMAND } from '../native/desktop-controls.mjs';
+import { runInputCommand } from '../native/input.mjs';
 
 const exec = promisify(execFile), source = resolve(import.meta.dirname, '..');
 const root = await mkdtemp(join(tmpdir(), 'codex-display-'));
@@ -71,6 +72,19 @@ try {
   await controls.input({ action: 'key', key: 'Enter' });
   await eventually(async () => (await readFile(join(config.workspace, 'input-proof'), 'utf8')) === literal + '\n');
   assert.equal((await controls.get()).session.pid, pid);
+  const clipboardText = '\ufeff  中文😀\r\n`$(never)`\t\n ', primaryText = '鼠标选区\n独立文字';
+  await runInputCommand('xclip', ['-selection', 'clipboard', '-in'], { env, input: clipboardText });
+  await runInputCommand('xclip', ['-selection', 'primary', '-in'], { env, input: primaryText });
+  assert.deepEqual(await controls.clipboard({ source: 'clipboard' }), { source: 'clipboard', text: clipboardText, bytes: Buffer.byteLength(clipboardText) });
+  assert.deepEqual(await controls.clipboard({ source: 'primary' }), { source: 'primary', text: primaryText, bytes: Buffer.byteLength(primaryText) });
+  await runInputCommand('xclip', ['-selection', 'clipboard', '-in'], { env, input: '' });
+  assert.equal((await controls.clipboard({ source: 'clipboard' })).text, '');
+  await runInputCommand('xclip', ['-selection', 'clipboard', '-in'], { env, input: 'x'.repeat(32769) });
+  await assert.rejects(controls.clipboard({ source: 'clipboard' }), { status: 413 });
+  await runInputCommand('xclip', ['-selection', 'clipboard', '-target', 'image/png', '-in'], { env, input: Buffer.from([137, 80, 78, 71]) });
+  // Some older selection owners return raw bytes despite the requested text target.
+  await assert.rejects(controls.clipboard({ source: 'clipboard' }), error => [404, 422].includes(error.status));
+  assert.equal((await controls.get()).session.pid, pid);
   // Exercise the real tmux/shell boundary with a dummy executable, never the host Codex.
   const cwd = join(config.workspace, "a'b $(never) `never`"), resumeId = '11111111-1111-4111-8111-111111111111';
   await mkdir(cwd);
@@ -81,7 +95,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log('✓ isolated real X11: maximize, restore, repeated font changes, literal Chinese paste without execution and separate Enter preserve the private tmux PID; real tmux passes hostile cwd and exact ID literally to a dummy executable, without starting Codex');
+  console.log('✓ isolated real X11: window/font controls, literal Chinese paste and separate Enter, independent UTF-8 clipboard/primary reads with bounds and non-text rejection preserve the private tmux PID; resume args reach a dummy executable literally, without starting Codex');
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
