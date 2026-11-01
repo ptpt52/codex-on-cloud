@@ -9,6 +9,7 @@ let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEp
 let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
 let controlReady = false, controlPending = null, controlSequence = 0;
+let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
@@ -28,7 +29,9 @@ try {
 } catch {}
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(), revision: displayRevision }, location.origin);
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
+    handoff: transportSwitching && !maintenancePending && !controlsState.maintenance && controlsState.available,
+    busy: inputBusy || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
@@ -70,12 +73,13 @@ $('toggle-input-button').addEventListener('click', () => updateDisplayPreference
 $('toggle-controls-button').addEventListener('click', () => updateDisplayPreferences({ controlsCollapsed: !displayPreferences.controlsCollapsed }));
 renderDisplayControls();
 
-function inputPaused() { return maintenancePending || controlsState.maintenance || !controlsState.available; }
+function inputPaused() { return transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
 function canInput() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
 function renderInputControls() {
   for (const control of [$('paste-button'), $('terminal-button'), ...document.querySelectorAll('[data-key]')]) control.disabled = inputBusy || !canInput();
+  sendDisplayPreferences();
 }
 function renderConnection() {
   let label;
@@ -83,6 +87,7 @@ function renderConnection() {
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
   else if (!owned) label = '等待接管';
   else if (desktopReady === false) label = '桌面未就绪';
+  else if (transportSwitching) label = '正在切换局域网';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
   else if (frameState === 'connected') label = '桌面在线';
@@ -183,6 +188,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame() {
+  clearTimeout(switchTimer); transportSwitching = false;
   resetDirectControl();
   frameLoaded = false;
   frameState = 'idle';
@@ -513,7 +519,7 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
@@ -609,6 +615,21 @@ for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data?.type === 'codex-direct-prepare') {
+    if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
+    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    if (allowed) {
+      transportSwitching = true;
+      clearTimeout(switchTimer);
+      switchTimer = setTimeout(() => { transportSwitching = false; renderConnection(); }, 15000);
+      renderConnection();
+    }
+    $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-approved', frame: String(frameEpoch), id: event.data.id, allowed }, location.origin);
+    return;
+  }
+  if (event.data?.type === 'codex-direct-finished') {
+    clearTimeout(switchTimer); transportSwitching = false; renderConnection(); return;
+  }
   if (event.data?.type === 'codex-control-state') {
     controlReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
     if (!controlReady) resetDirectControl();

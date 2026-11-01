@@ -9,7 +9,7 @@ export function attachRTCControl(channel, { valid, perform }) {
     void (async () => {
       let response;
       try {
-        const result = await perform(value.action, value.body);
+        const result = await perform(value.action, value.body, () => !ended && channel.readyState === 'open' && valid());
         response = { id: value.id, ok: true, value: result };
       } catch (error) {
         response = { id: value.id, ok: false, error: { status: error.status || 502,

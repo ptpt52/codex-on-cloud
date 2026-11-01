@@ -48,9 +48,17 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
     iceFilterCandidatePair: pair => privateIPv4(pair.remoteCandidate.host),
     maxMessageSize: MAX_MESSAGE,
   });
-  let channel, control, upstream, ended = false, closePromise;
-  const timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
+  let channel, control, upstream, ended = false, closePromise, activated = false, openVideo;
+  let timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
   const handle = {
+    activate() {
+      if (ended || !valid()) throw new Error('连接控制权已变化');
+      if (activated) return;
+      activated = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => handle.destroy(), 5000).unref();
+      if (channel?.readyState === 'open') openVideo();
+    },
     destroy() {
       if (ended) return closePromise;
       ended = true;
@@ -91,12 +99,13 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
       if (state === 'closed') void handle.destroy();
     });
     channel.onMessage.subscribe(bytes => {
-      if (!authorized() || !Buffer.isBuffer(bytes) || bytes.length > MAX_MESSAGE || !upstream || upstream.writableLength + bytes.length > HIGH_WATER) {
+      if (!activated || !authorized() || !Buffer.isBuffer(bytes) || bytes.length > MAX_MESSAGE || !upstream || upstream.writableLength + bytes.length > HIGH_WATER) {
         void handle.destroy(); return;
       }
       upstream.write(bytes);
     });
-    const open = () => {
+    openVideo = () => {
+      if (!activated) return;
       if (!authorized() || upstream) { void handle.destroy(); return; }
       upstream = net.createConnection({ path: vncSocket, highWaterMark: MAX_MESSAGE });
       upstream.once('connect', () => clearTimeout(timer));
@@ -111,8 +120,8 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
         } catch { void handle.destroy(); }
       });
     };
-    if (channel.readyState === 'open') open();
-    else channel.stateChange.subscribe(state => { if (state === 'open') open(); });
+    if (channel.readyState === 'open') openVideo();
+    else channel.stateChange.subscribe(state => { if (state === 'open') openVideo(); });
   });
   return handle;
 }

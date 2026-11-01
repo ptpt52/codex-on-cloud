@@ -1,27 +1,44 @@
 import { createControlClient } from '/control.js';
 
+let enabled = true;
+export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
+
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer, controlChanged = () => {}) {
-  if (!window.isSecureContext || !window.RTCPeerConnection) return null;
+export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal } = {}) {
+  if (!canTryDirect() || signal?.aborted) return null;
   const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
   const timeout = setTimeout(() => controller.abort(), 8000);
   let peer;
   try {
     const response = await fetch('/api/me', { signal: controller.signal });
     if (!response.ok) throw new Error('无法验证连接');
     const { csrf, webrtc } = await response.json();
-    if (!webrtc) { clearTimeout(timeout); return null; }
+    if (controller.signal.aborted) throw new Error('连接已取消');
+    if (!webrtc) { enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
     peer = new RTCPeerConnection({ iceServers: [] });
-    const channel = peer.createDataChannel('codex-vnc', { ordered: true, protocol: 'rfb' });
-    const control = createControlClient(peer.createDataChannel('codex-control', { ordered: true, protocol: 'codex-control-v1' }), controlChanged);
-    const close = () => { clearTimeout(timeout); controller.abort(); control.close(); peer.close(); };
-    controller.signal.addEventListener('abort', () => peer.close(), { once: true });
-    channel.addEventListener('open', () => clearTimeout(timeout), { once: true });
-    peer.addEventListener('connectionstatechange', () => {
-      if (['failed', 'disconnected'].includes(peer.connectionState)) close();
+    let channel, ended = false, resolveReady, rejectReady;
+    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    void ready.catch(() => {});
+    const control = createControlClient(peer.createDataChannel('codex-control', { ordered: true, protocol: 'codex-control-v1' }), value => {
+      if (value) { clearTimeout(timeout); resolveReady(); }
+      else rejectReady(new Error('直连已关闭'));
+      controlChanged(value);
     });
-    return { channel, control, close, async start() {
+    const video = () => channel ||= peer.createDataChannel('codex-vnc', { ordered: true, protocol: 'rfb' });
+    if (!probe) video();
+    const close = () => {
+      if (ended) return;
+      ended = true; clearTimeout(timeout); signal?.removeEventListener('abort', cancel);
+      rejectReady(new Error('直连已关闭')); controller.abort(); control.close(); peer.close();
+    };
+    controller.signal.addEventListener('abort', close, { once: true });
+    peer.addEventListener('connectionstatechange', () => {
+      if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) close();
+    });
+    return { get channel() { return channel; }, video, control, close, async start() {
       try {
         await peer.setLocalDescription(await peer.createOffer());
         if (peer.iceGatheringState !== 'complete') await new Promise((resolve, reject) => {
@@ -41,7 +58,9 @@ export async function desktopTransport(viewer, controlChanged = () => {}) {
         });
         if (!result.ok) throw new Error('直连暂不可用');
         await peer.setRemoteDescription(await result.json());
+        await ready;
+        if (!probe) await control.request('activate', {});
       } catch (error) { close(); throw error; }
     } };
-  } catch { clearTimeout(timeout); controller.abort(); peer?.close(); return null; }
+  } catch { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); controller.abort(); peer?.close(); return null; }
 }

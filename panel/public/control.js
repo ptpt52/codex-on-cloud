@@ -40,7 +40,7 @@ export function controlDecoder(receive, fail) {
 
 export function createControlClient(channel, changed) {
   channel.binaryType = 'arraybuffer';
-  let pending, disposed = false;
+  let pending, disposed = false, sequence = 0;
   const unavailable = () => Object.assign(new Error('直连操作结果未知，请先查看桌面确认'), { outcome: 'unknown' });
   const finish = (error, value) => {
     if (!pending) return;
@@ -61,9 +61,10 @@ export function createControlClient(channel, changed) {
   channel.addEventListener('close', close);
   channel.addEventListener('error', close);
   return { close, get ready() { return !disposed && channel.readyState === 'open'; },
-    request(id, action, body) {
-      if (pending || disposed || channel.readyState !== 'open') return Promise.reject(Object.assign(new Error('直连控制通道繁忙或未就绪，本次操作未发送'), { outcome: 'rejected' }));
+    request(action, body) {
+      if (pending || disposed || channel.readyState !== 'open' || sequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连控制通道繁忙或未就绪，本次操作未发送'), { outcome: 'rejected' }));
       return new Promise((resolve, reject) => {
+        const id = ++sequence;
         pending = { id, resolve, reject, timer: setTimeout(close, 8000) };
         try { sendControl(channel, { id, action, body }); } catch { close(); }
       });

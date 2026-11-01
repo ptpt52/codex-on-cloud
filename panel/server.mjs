@@ -9,7 +9,7 @@ import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
-import { createRTCBridge, lanOffer } from './rtc.mjs';
+import { createRTCBridge, lanOffer, rtcAddress } from './rtc.mjs';
 import { validateInput } from '../native/input.mjs';
 import { clipboardSource } from '../native/clipboard.mjs';
 
@@ -225,16 +225,30 @@ export async function createPanel(config) {
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         if (!controls.available || controls.maintenance || maintenancePending) throw new HttpError(503, '桌面暂不可连接');
-        closeSockets(() => true);
+        // A candidate may negotiate while the current stream stays usable.
+        closeSockets(state => state.rtcPending === true);
         await rtcClosing;
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         const token = cookieToken(req.headers.cookie);
-        const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token);
-        bridge = createRTCBridge({ address: config.webrtcAddress, vncSocket: config.vncSocket, valid,
-          performControl: async (action, body) => {
+        const state = { session: expected.session, token, socket: null, rtcPending: true };
+        const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state;
+        bridge = createRTCBridge({ address: config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress, vncSocket: config.vncSocket, valid,
+          performControl: async (action, body, live) => {
             if (!valid()) throw new HttpError(409, '页面控制权已变化，本次操作未发送');
             if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, '控制参数无效');
+            if (action === 'ping') return { ready: true };
+            if (action === 'activate') {
+              if (!state.rtcPending) return { active: true };
+              const current = await controlStatus();
+              if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化');
+              if (!current.available || current.maintenance || current.inputBusy || current.clipboardBusy) throw new HttpError(409, '当前操作未结束，暂不切换连接');
+              closeSockets(value => value.socket !== bridge);
+              state.rtcPending = false;
+              bridge.activate();
+              return { active: true };
+            }
+            if (state.rtcPending) throw new HttpError(409, '直连尚未启用，本次操作未发送');
             if (action === 'clipboard') {
               const source = clipboardSource(body.source);
               const result = await managerRequest(config, '/clipboard', { source });
@@ -251,13 +265,19 @@ export async function createPanel(config) {
         // Use the same revocation, maintenance, expiry and takeover path as WS.
         const destroy = bridge.destroy;
         bridge.destroy = () => { const result = destroy(); rtcClosing = result || rtcClosing; return result; };
-        sockets.set(bridge, { session: expected.session, token, socket: bridge });
+        state.socket = bridge;
+        sockets.set(bridge, state);
         res.once('close', () => { if (!res.writableFinished) void bridge.destroy(); });
         const answer = await bridge.answer(offer);
         requireOwner(req);
         if (!valid()) throw new HttpError(409, '页面控制权已变化');
         return reply(res, 200, answer);
-      } catch (error) { await bridge?.destroy(); throw error; }
+      } catch (error) {
+        await bridge?.destroy();
+        if (!sessionOf(req)) throw new HttpError(401, '登录已失效');
+        if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '连接协商已取消');
+        throw error;
+      }
       finally { rtcBusy = false; }
     }
     if (['/api/paste', '/api/key', '/api/terminal'].includes(path) && req.method === 'POST') {

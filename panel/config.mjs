@@ -41,5 +41,6 @@ export function readConfig(env = environment()) {
     sessionMs: 7 * 24 * 60 * 60 * 1000,
     webrtc: env.WEBRTC_ENABLED !== '0',
     webrtcAddress: env.WEBRTC_ENABLED === '0' ? undefined : rtcAddress(env.WEBRTC_LAN_ADDRESS),
+    webrtcAddressAuto: !env.WEBRTC_LAN_ADDRESS,
   };
 }

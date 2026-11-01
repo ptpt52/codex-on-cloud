@@ -1,5 +1,5 @@
 import RFB from './novnc/core/rfb.js';
-import { desktopTransport } from './rtc.js';
+import { desktopTransport, canTryDirect } from './rtc.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -10,12 +10,16 @@ const panLayer = document.getElementById('pan-layer');
 const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1 };
 let rfb, retry, stopping = false;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
+let viewing = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
+const pressedKeys = new Set(), pressedPointers = new Set();
+let lastInteraction = 0;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
 }
 function reportControl() {
   parent.postMessage({ type: 'codex-control-state', frame, ready: transportName === 'direct' && transport?.control.ready === true }, location.origin);
+  scheduleProbe();
 }
 window.addEventListener('message', event => {
   const value = event.data;
@@ -24,7 +28,7 @@ window.addEventListener('message', event => {
   if (value.type !== 'codex-control-request') return;
   const current = transport;
   const request = current?.control.ready && !preferences.blocked
-    ? current.control.request(value.id, value.action, value.body)
+    ? current.control.request(value.action, value.body)
     : Promise.reject(Object.assign(new Error('直连暂不可用，本次操作未发送'), { outcome: 'rejected' }));
   void request.then(result => {
     parent.postMessage({ type: 'codex-control-result', frame, id: value.id, ok: true, value: result }, location.origin);
@@ -92,7 +96,10 @@ window.addEventListener('message', event => {
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
   preferences.zoom = value.zoom;
   preferences.pan = value.pan;
-  preferences.blocked = value.blocked;
+  // Let an already held key/pointer release on the old stream. A handoff is
+  // refused below if native input raced with the parent's idle confirmation.
+  preferences.blocked = value.handoff === true && (pressedKeys.size || pressedPointers.size) ? false : value.blocked;
+  preferences.busy = value.busy === true;
   preferences.revision = value.revision ?? 0;
   applyView();
 });
@@ -136,44 +143,149 @@ panLayer.addEventListener('keydown', event => {
   viewport.scrollLeft += steps[event.key][0];
   viewport.scrollTop += steps[event.key][1];
 });
-async function connect() {
-  if (stopping || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
-  const epoch = ++connectionEpoch;
-  transportName = '';
-  announce('connecting');
+function needsProbe() {
+  return !stopping && viewing && !switching && canTryDirect() && (!transport || !transport.control.ready);
+}
+function idleForSwitch() {
+  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800;
+}
+function scheduleProbe(delay = probeDelay) {
+  if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;
+  probeTimer = setTimeout(() => { probeTimer = null; void probeDirect(); }, delay);
+}
+function finishSwitch() {
+  switching = false; switchingFrom = undefined;
+  parent.postMessage({ type: 'codex-direct-finished', frame }, location.origin);
+}
+function prepareSwitch(signal) {
+  return new Promise(resolve => {
+    const id = ++switchSequence;
+    const finish = allowed => {
+      clearTimeout(timer); signal.removeEventListener('abort', abort);
+      if (switchApproval?.id === id) switchApproval = undefined;
+      resolve(allowed);
+    };
+    const abort = () => finish(false);
+    const timer = setTimeout(abort, 2000);
+    switchApproval = { id, finish };
+    signal.addEventListener('abort', abort, { once: true });
+    parent.postMessage({ type: 'codex-direct-prepare', frame, id }, location.origin);
+  });
+}
+window.addEventListener('message', event => {
+  const value = event.data;
+  if (switchApproval && event.origin === location.origin && event.source === parent && value?.type === 'codex-direct-approved' && value.frame === frame && value.id === switchApproval.id) switchApproval.finish(value.allowed === true);
+});
+function waitStable(signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(new Error('探测已取消')); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 500);
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+async function probeDirect() {
+  if (!needsProbe() || document.hidden || !navigator.onLine) return;
+  if (!idleForSwitch()) { scheduleProbe(5000); return; }
+  const controller = probeController = new AbortController(), epoch = connectionEpoch;
+  let candidate, prepared = false, requested = false, promoted = false;
+  try {
+    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal: controller.signal });
+    if (!candidate) throw new Error('直连未就绪');
+    await candidate.start();
+    await candidate.control.request('ping', {});
+    await waitStable(controller.signal);
+    await candidate.control.request('ping', {});
+    if (!needsProbe() || epoch !== connectionEpoch || !idleForSwitch() || controller.signal.aborted) return;
+    requested = true;
+    prepared = await prepareSwitch(controller.signal);
+    if (!prepared || epoch !== connectionEpoch || stopping || controller.signal.aborted) return;
+    if (pressedKeys.size || pressedPointers.size || performance.now() - lastInteraction < 800) return;
+    switching = true; switchingFrom = rfb;
+    await candidate.control.request('activate', {});
+    if (epoch !== connectionEpoch || stopping || controller.signal.aborted) return;
+    attachViewer(candidate);
+    promoted = true; probeDelay = 15000;
+  } catch {
+    probeDelay = Math.min(60000, probeDelay * 2);
+  } finally {
+    if (!promoted) candidate?.close();
+    probeController = null;
+    if (requested && !promoted) {
+      finishSwitch();
+      if (!viewing && !stopping) { announce('disconnected'); clearTimeout(retry); retry = setTimeout(connect, 2500); }
+    }
+    scheduleProbe();
+  }
+}
+function attachViewer(direct) {
+  const previous = rfb, previousTransport = transport;
+  transport = direct;
+  transportName = direct ? 'direct' : 'relay';
   const url = new URL('/desktop/websockify', location.origin);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('viewer', viewer);
-  status.hidden = false;
-  status.textContent = '正在连接独立桌面…';
-  const direct = directFailed ? null : await desktopTransport(viewer, reportControl);
-  if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
-  transport = direct;
-  transportName = direct ? 'direct' : 'relay';
-  const instance = rfb = new RFB(screen, direct ? direct.channel : url.href, { shared: false });
-  rfb.scaleViewport = true;
-  // Preserve a usable terminal size on phones; rotating the phone scales the view.
-  rfb.resizeSession = false;
-  rfb.viewOnly = preferences.pan || preferences.blocked;
-  rfb.qualityLevel = 6;
-  rfb.compressionLevel = 2;
-  rfb.addEventListener('connect', () => { status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl(); });
-  rfb.addEventListener('disconnect', () => {
-    if (stopping) return;
+  const instance = rfb = new RFB(screen, direct ? direct.video() : url.href, { shared: false });
+  if (previousTransport !== direct) previousTransport?.close();
+  previous?.disconnect();
+  instance.scaleViewport = true;
+  instance.resizeSession = false;
+  instance.viewOnly = preferences.pan || preferences.blocked;
+  instance.qualityLevel = 6;
+  instance.compressionLevel = 2;
+  instance.addEventListener('connect', () => {
+    if (rfb !== instance || stopping) return;
+    viewing = true; status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl();
+    if (switching) finishSwitch();
+    scheduleProbe();
+  });
+  instance.addEventListener('disconnect', () => {
+    if (rfb !== instance || stopping) return;
+    viewing = false;
+    if (switching && switchingFrom === instance) return;
+    if (switching) finishSwitch();
     if (direct) directFailed = true;
     direct?.close();
+    probeController?.abort(); clearTimeout(probeTimer); probeTimer = null;
     status.hidden = false;
     status.textContent = '连接已断开，正在等待恢复。桌面任务继续运行。';
     announce('disconnected');
-    // Reconnect only the framebuffer stream. Never replay input or start a task.
-    retry = setTimeout(connect, 2500);
+    clearTimeout(retry); retry = setTimeout(connect, 2500);
   });
-  // RFB has installed all channel handlers synchronously in its constructor.
+  return instance;
+}
+async function connect() {
+  if (stopping || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
+  const epoch = ++connectionEpoch;
+  transportName = ''; viewing = false;
+  announce('connecting');
+  status.hidden = false; status.textContent = '正在连接独立桌面…';
+  const direct = directFailed ? null : await desktopTransport(viewer, reportControl);
+  if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
+  const instance = attachViewer(direct);
+  // RFB handlers are attached before negotiation can deliver video bytes.
   if (direct) void direct.start().catch(() => instance.disconnect());
 }
+for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(name, event => {
+  lastInteraction = performance.now();
+  if (name === 'keydown' && pressedKeys.size < 64) pressedKeys.add(event.code || event.key);
+  if (name === 'keyup') pressedKeys.delete(event.code || event.key);
+  if (name === 'pointerdown' && pressedPointers.size < 8) pressedPointers.add(event.pointerId);
+  if (name === 'pointerup' || name === 'pointercancel') pressedPointers.delete(event.pointerId);
+}, true);
+window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); });
+function networkChanged() {
+  if (document.hidden || !navigator.onLine) { if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
+  probeDelay = 15000; clearTimeout(probeTimer); probeTimer = null; scheduleProbe(1000);
+}
+window.addEventListener('online', networkChanged);
+window.addEventListener('offline', networkChanged);
+document.addEventListener('visibilitychange', networkChanged);
+navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
   connectionEpoch++;
+  probeController?.abort(); clearTimeout(probeTimer); switchApproval?.finish(false);
   transport?.close();
   stopDrag();
   clearTimeout(retry);

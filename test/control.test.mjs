@@ -42,7 +42,7 @@ test('control authorization, exclusivity and monotonic IDs prevent execution aft
   let calls = 0, release;
   const hold = new Promise(resolve => { release = resolve; });
   const first = channel(); let valid = true;
-  attachRTCControl(first, { valid: () => valid, perform: async () => { calls++; await hold; return { text: 'private result' }; } });
+  attachRTCControl(first, { valid: () => valid, perform: async (_action, _body, live) => { calls++; await hold; assert.equal(live(), false); return { text: 'private result' }; } });
   receive(first, { id: 1, action: 'clipboard', body: {} });
   assert.equal(calls, 1); valid = false; release();
   await new Promise(resolve => setImmediate(resolve));
