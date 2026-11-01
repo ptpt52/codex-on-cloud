@@ -8,6 +8,7 @@ let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = fal
 let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
 let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
+let controlReady = false, controlPending = null, controlSequence = 0;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
@@ -92,6 +93,7 @@ function renderConnection() {
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
   $('diag-transport').textContent = frameState !== 'connected' ? '等待画面连接' : frameTransport === 'direct' ? 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
+  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待画面连接' : controlReady ? '局域网加密直连' : 'HTTPS';
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
@@ -181,6 +183,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame() {
+  resetDirectControl();
   frameLoaded = false;
   frameState = 'idle';
   frameTransport = '';
@@ -190,6 +193,32 @@ function stopFrame() {
   renderDisplayControls();
   $('desktop-frame').hidden = true;
   $('desktop-frame').src = 'about:blank';
+}
+function finishDirectControl(error, value) {
+  if (!controlPending) return;
+  const pending = controlPending; controlPending = null;
+  clearTimeout(pending.timer);
+  pending.signal?.removeEventListener('abort', pending.abort);
+  error ? pending.reject(error) : pending.resolve(value);
+}
+function resetDirectControl() {
+  controlReady = false;
+  finishDirectControl(Object.assign(new Error('连接已变化，操作结果未知，请先查看桌面确认'), { outcome: 'unknown' }));
+}
+function assistantRequest(path, body, signal) {
+  const action = { '/api/paste': 'paste', '/api/key': 'key', '/api/clipboard/read': 'clipboard' }[path];
+  if (!controlReady || !action) return api(path, { method: 'POST', body, signal });
+  if (controlPending || signal?.aborted || controlSequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连通道未就绪，本次操作未发送'), { outcome: 'rejected' }));
+  return new Promise((resolve, reject) => {
+    const id = ++controlSequence;
+    const abort = () => {
+      $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-cancel', frame: String(frameEpoch), id }, location.origin);
+      finishDirectControl(Object.assign(new Error('直连操作结果未知，请先查看桌面确认'), { outcome: 'unknown' }));
+    };
+    controlPending = { id, resolve, reject, signal, abort, timer: setTimeout(abort, 8000) };
+    signal?.addEventListener('abort', abort, { once: true });
+    $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-request', frame: String(frameEpoch), id, action, body }, location.origin);
+  });
 }
 function stopPolling() {
   clearTimeout(pollTimer);
@@ -311,7 +340,7 @@ async function inputAction(path, body, label, success) {
   renderInputControls();
   renderDesktopSettings();
   try {
-    const result = await api(path, { method: 'POST', body, signal: controller.signal });
+    const result = await assistantRequest(path, body, controller.signal);
     if (inputController !== controller) return;
     if (result.outcome !== 'success') throw new Error('missing input result');
     inputMessage('success', success);
@@ -437,7 +466,7 @@ $('read-clipboard').addEventListener('click', async () => {
   $('clipboard-status').textContent = '正在读取远程文字…';
   renderClipboard(); renderInputControls(); renderDesktopSettings();
   try {
-    const result = await api('/api/clipboard/read', { method: 'POST', body: { source }, signal: controller.signal });
+    const result = await assistantRequest('/api/clipboard/read', { source }, controller.signal);
     if (clipboardController !== controller || !$('clipboard-dialog').open || !clipboardAccess()) return;
     if (result.source !== source || typeof result.text !== 'string' || result.text.length > 32768 || result.text.includes('\0') || new TextEncoder().encode(result.text).length > 32768) throw new Error('远程文字格式或大小无效');
     clipboardText = result.text;
@@ -580,6 +609,16 @@ for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data?.type === 'codex-control-state') {
+    controlReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
+    if (!controlReady) resetDirectControl();
+    renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-control-result') {
+    if (!controlPending || event.data.id !== controlPending.id) return;
+    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '直连操作失败'), { outcome: event.data.error?.outcome || 'unknown', status: event.data.error?.status });
+    finishDirectControl(error, event.data.value); return;
+  }
   if (event.data?.type === 'codex-desktop-view') {
     if (event.data.revision !== displayRevision) return;
     if (Number.isFinite(event.data.scale) && event.data.scale > 0 && event.data.scale <= 16) {
@@ -594,7 +633,7 @@ window.addEventListener('message', event => {
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
   if (event.data.state === 'connected') { frameState = 'connected'; frameTransport = event.data.transport === 'direct' ? 'direct' : 'relay'; sendDisplayPreferences(); }
-  else if (event.data.state === 'disconnected') { frameState = 'reconnecting'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
+  else if (event.data.state === 'disconnected') { resetDirectControl(); frameState = 'reconnecting'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
   else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;
   renderConnection();

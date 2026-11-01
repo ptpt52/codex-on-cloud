@@ -1,6 +1,8 @@
+import { createControlClient } from '/control.js';
+
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer) {
+export async function desktopTransport(viewer, controlChanged = () => {}) {
   if (!window.isSecureContext || !window.RTCPeerConnection) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
@@ -12,13 +14,14 @@ export async function desktopTransport(viewer) {
     if (!webrtc) { clearTimeout(timeout); return null; }
     peer = new RTCPeerConnection({ iceServers: [] });
     const channel = peer.createDataChannel('codex-vnc', { ordered: true, protocol: 'rfb' });
-    const close = () => { clearTimeout(timeout); controller.abort(); peer.close(); };
+    const control = createControlClient(peer.createDataChannel('codex-control', { ordered: true, protocol: 'codex-control-v1' }), controlChanged);
+    const close = () => { clearTimeout(timeout); controller.abort(); control.close(); peer.close(); };
     controller.signal.addEventListener('abort', () => peer.close(), { once: true });
     channel.addEventListener('open', () => clearTimeout(timeout), { once: true });
     peer.addEventListener('connectionstatechange', () => {
       if (['failed', 'disconnected'].includes(peer.connectionState)) close();
     });
-    return { channel, close, async start() {
+    return { channel, control, close, async start() {
       try {
         await peer.setLocalDescription(await peer.createOffer());
         if (peer.iceGatheringState !== 'complete') await new Promise((resolve, reject) => {

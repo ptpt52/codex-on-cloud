@@ -10,12 +10,15 @@ import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
 import { createRTCBridge, lanOffer } from './rtc.mjs';
+import { validateInput } from '../native/input.mjs';
+import { clipboardSource } from '../native/clipboard.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/control.js', ['control.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/icon.svg', ['icon.svg', 'image/svg+xml']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
@@ -229,6 +232,21 @@ export async function createPanel(config) {
         const token = cookieToken(req.headers.cookie);
         const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token);
         bridge = createRTCBridge({ address: config.webrtcAddress, vncSocket: config.vncSocket, valid,
+          performControl: async (action, body) => {
+            if (!valid()) throw new HttpError(409, '页面控制权已变化，本次操作未发送');
+            if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, '控制参数无效');
+            if (action === 'clipboard') {
+              const source = clipboardSource(body.source);
+              const result = await managerRequest(config, '/clipboard', { source });
+              if (!valid()) throw new HttpError(409, '页面控制权已变化，请重新读取');
+              return result;
+            }
+            if (!['paste', 'key'].includes(action)) throw new HttpError(400, '不支持的直连动作');
+            let input;
+            try { input = validateInput({ ...body, action }); } catch (error) { throw new HttpError(400, error.message); }
+            try { return await managerRequest(config, '/input', input); }
+            catch (error) { error.outcome ||= 'unknown'; throw error; }
+          },
           closed: () => sockets.delete(bridge) });
         // Use the same revocation, maintenance, expiry and takeover path as WS.
         const destroy = bridge.destroy;

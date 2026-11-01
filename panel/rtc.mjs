@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { RTCPeerConnection } from 'werift';
+import { attachRTCControl } from './rtc-control.mjs';
 
 export const RTC_TIMEOUT = 8000;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
@@ -39,7 +40,7 @@ export function lanOffer(body) {
   }).join('\r\n') };
 }
 
-export function createRTCBridge({ address, vncSocket, valid, closed }) {
+export function createRTCBridge({ address, vncSocket, valid, closed, performControl }) {
   const pc = new RTCPeerConnection({
     iceServers: [], iceUseIpv4: true, iceUseIpv6: false, iceUseTcp: false,
     iceInterfaceAddresses: { udp4: address }, icePortRange: [40000, 40015],
@@ -47,13 +48,14 @@ export function createRTCBridge({ address, vncSocket, valid, closed }) {
     iceFilterCandidatePair: pair => privateIPv4(pair.remoteCandidate.host),
     maxMessageSize: MAX_MESSAGE,
   });
-  let channel, upstream, ended = false, closePromise;
+  let channel, control, upstream, ended = false, closePromise;
   const timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
   const handle = {
     destroy() {
       if (ended) return closePromise;
       ended = true;
       clearTimeout(timer);
+      control?.close();
       upstream?.destroy();
       closed();
       closePromise = pc.close().catch(() => {});
@@ -74,6 +76,11 @@ export function createRTCBridge({ address, vncSocket, valid, closed }) {
     if (['closed', 'failed', 'disconnected'].includes(state)) void handle.destroy();
   });
   pc.onDataChannel.subscribe(value => {
+    if (value.label === 'codex-control' && value.protocol === 'codex-control-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null) {
+      if (control || !authorized()) { void handle.destroy(); return; }
+      control = attachRTCControl(value, { valid: authorized, perform: performControl });
+      return;
+    }
     if (channel || !authorized() || value.label !== 'codex-vnc' || value.protocol !== 'rfb' || !value.ordered ||
         value.maxRetransmits != null || value.maxPacketLifeTime != null) { void handle.destroy(); return; }
     channel = value;

@@ -70,7 +70,9 @@ test('failed direct negotiation falls back to WebSocket without resubmitting log
 test('a mismatched DTLS fingerprint cannot open VNC and falls back to the authenticated WebSocket', async ({ page }) => {
   const app = await fixture({ rfb: true, webrtc: true });
   let vncBeforeFallback;
-  page.on('websocket', () => { vncBeforeFallback = app.vncConnections; });
+  // Observe the server event before the async WS authorization can open VNC.
+  // Playwright's websocket notification may arrive after that connection.
+  app.panel.server.on('upgrade', () => { vncBeforeFallback = app.vncConnections; });
   try {
     await page.route('**/api/desktop/rtc', route => {
       const body = route.request().postDataJSON();

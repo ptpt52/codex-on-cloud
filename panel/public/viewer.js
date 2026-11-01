@@ -14,6 +14,25 @@ let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
 }
+function reportControl() {
+  parent.postMessage({ type: 'codex-control-state', frame, ready: transportName === 'direct' && transport?.control.ready === true }, location.origin);
+}
+window.addEventListener('message', event => {
+  const value = event.data;
+  if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame || !Number.isSafeInteger(value.id) || value.id < 1) return;
+  if (value.type === 'codex-control-cancel') { transport?.control.close(); return; }
+  if (value.type !== 'codex-control-request') return;
+  const current = transport;
+  const request = current?.control.ready && !preferences.blocked
+    ? current.control.request(value.id, value.action, value.body)
+    : Promise.reject(Object.assign(new Error('直连暂不可用，本次操作未发送'), { outcome: 'rejected' }));
+  void request.then(result => {
+    parent.postMessage({ type: 'codex-control-result', frame, id: value.id, ok: true, value: result }, location.origin);
+  }, error => {
+    parent.postMessage({ type: 'codex-control-result', frame, id: value.id, ok: false,
+      error: { message: error.message, outcome: error.outcome || 'unknown', status: error.status } }, location.origin);
+  });
+});
 function reportView() {
   cancelAnimationFrame(reportFrame);
   reportFrame = requestAnimationFrame(() => {
@@ -127,7 +146,7 @@ async function connect() {
   url.searchParams.set('viewer', viewer);
   status.hidden = false;
   status.textContent = '正在连接独立桌面…';
-  const direct = directFailed ? null : await desktopTransport(viewer);
+  const direct = directFailed ? null : await desktopTransport(viewer, reportControl);
   if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
   transport = direct;
   transportName = direct ? 'direct' : 'relay';
@@ -138,7 +157,7 @@ async function connect() {
   rfb.viewOnly = preferences.pan || preferences.blocked;
   rfb.qualityLevel = 6;
   rfb.compressionLevel = 2;
-  rfb.addEventListener('connect', () => { status.hidden = true; lastReport = ''; applyView(); announce('connected'); });
+  rfb.addEventListener('connect', () => { status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl(); });
   rfb.addEventListener('disconnect', () => {
     if (stopping) return;
     if (direct) directFailed = true;

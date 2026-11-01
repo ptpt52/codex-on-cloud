@@ -14,7 +14,7 @@ tmux 使用本项目运行目录下的专用 socket，历史行数固定 2000；
 
 ## 浏览器与认证
 
-默认通过已认证 HTTPS 交换 WebRTC SDP，noVNC 直接使用可靠、有序的 DataChannel，将 DTLS 加密的 LAN UDP 流接到原有 VNC Unix socket。`werift@0.26.0` 校验远端证书指纹；协商、候选、端口和背压界限见[局域网直连](lan.md)。它与 WebSocket 共用画面连接的接管、会话到期、退出和维护关闭机制。直连失败后回退到现有 WebSocket；API 仍走 HTTPS，没有部署 TURN 或本地证书服务。
+默认通过已认证 HTTPS 交换 WebRTC SDP，noVNC 直接使用可靠、有序的 DataChannel，将 DTLS 加密的 LAN UDP 流接到原有 VNC Unix socket。独立控制通道只接受粘贴、白名单按键和剪贴板读取，复用私有桌面管理服务，每端一项请求、有界分块、单调 ID，无自动重发。`werift@0.26.0` 校验远端证书指纹；协商、候选、端口和背压界限见[局域网直连](lan.md)。它与 WebSocket 共用画面连接的接管、会话到期、退出和维护关闭机制。直连失败后回退到现有链路，其他 API 仍走 HTTPS；没有部署 TURN 或本地证书服务。
 
 noVNC `1.7.0` 作为固定 npm 依赖从面板提供，不依赖 CDN 或 websockify 服务。桌面 HTML、脚本、noVNC 资源和 WebSocket 都要求登录。面板将已认证 WebSocket 的二进制流与固定 Unix socket 连接，应用层存在背压，单帧上限 1 MiB，不转发 HTTP Cookie 或 Cloudflare 身份头。
 

@@ -128,3 +128,9 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native -- --public
 另在真实公网页面人为拒绝一次直连协商，验证回退到现有 WSS / x11vnc 桌面。第一次 30 秒验收等待超时；随后带状态跟踪的复测连通，再次完整检查约 17.5 秒连通，只有一次协商、一次 WebSocket，没有发送终端输入。公网建连时间有波动，未据此声称 LAN 性能提升。复测时 Tunnel 仍有 4 条活动连接（3 条 IPv6、1 条 IPv4），保持原来的 auto 优先策略，未重启 Tunnel。
 
 真实浏览器检查未调用输入、剪贴板、文件写入或桌面重启接口；测试登录随后退出。桌面 MainPID 15956、管理服务 MainPID 13090、Tunnel MainPID 12521 和 Codex pane PID 20243 保持不变；HTTP 面板与 helper 仍仅监听回环，观看结束后 UDP 40000–40015 无监听。未部署本地 HTTPS 网关、DNS 覆盖、STUN 或 TURN，未运行会向工作终端发送命令的 `test:native`。
+
+## 输入助手的局域网控制通道
+
+2026-11-01：57 个脚本语法检查、43 项 Node、7 项 Python 及隔离的真实 X11 `test:display` 检查通过。浏览器完整回归中 66 项通过；两项指纹负例的浏览器侧 WebSocket 事件存在观测时序问题，改为服务端 upgrade 事件观察后，手机与桌面两个负例均通过，共 68 项用例完成验证。
+
+新增控制通道测试使用真实 Chrome、noVNC、WebRTC/DTLS 和 UDP，桌面及输入执行器为模拟对象。确认 30 KiB 中文粘贴、独立 Enter 和 32 KiB 最坏 JSON 转义剪贴板均走加密控制通道，对应 HTTP 写入数为零；断开已接受输入的回复只显示结果未知，没有 HTTP 重发或重连重放；接管期间的剪贴板结果被丢弃。Node 测试覆盖有界分块、UTF-8、格式错误、背压、权限撤销、并发与重复 ID 拒绝。尚未对工作中的真实 Codex 发送输入，未运行 `test:native`。

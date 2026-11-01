@@ -153,7 +153,7 @@ cloudflared 的诊断接口固定监听 `127.0.0.1:36903`，可用 `TUNNEL_METRI
 
 ## Cloudflare 外网访问
 
-本机和同一局域网的画面与原生键鼠流优先通过 WebRTC 加密直连，失败回退到现有 WebSocket；无需另备本地证书或修改 DNS。“连接状态 → 画面路径”显示实际路径。网页、协商和管理 API 仍通过现有 HTTPS 入口，当前未部署 TURN；配置、UDP 端口范围与限制见[局域网直连](docs/lan.md)。
+本机和同一局域网的画面、原生键鼠及输入助手的粘贴、按键、剪贴板读取支持 WebRTC 加密直连，失败回退到既有链路；无需另备本地证书或修改 DNS。“连接状态”分别显示画面与输入助手路径。网页、协商、桌面管理和文件仍使用 HTTPS，当前未部署 TURN；配置、UDP 端口范围与限制见[局域网直连](docs/lan.md)。
 
 详见 [Cloudflare 配置](docs/cloudflare.md)。安装固定版本的用户级 cloudflared：
 
