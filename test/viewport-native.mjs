@@ -28,12 +28,15 @@ try {
   assert.ok(env.DISPLAY);
   await writeFile(env.XAUTHORITY, '', { mode: 0o600 });
   await run('xauth', ['-f', env.XAUTHORITY, 'add', env.DISPLAY, '.', randomBytes(16).toString('hex')]);
-  const display = start('Xvfb', [env.DISPLAY, '-screen', '0', '1600x1600x24', '-nolisten', 'tcp', '-auth', env.XAUTHORITY, '-noreset']);
+  const display = start('Xvfb', [env.DISPLAY, '-screen', '0', '1600x3200x24', '-nolisten', 'tcp', '-auth', env.XAUTHORITY, '-noreset']);
   for (let attempt = 0; attempt < 100; attempt++) {
-    try { if (await run('xdotool', ['getdisplaygeometry']) === '1600 1600') break; } catch {}
+    try { if (await run('xdotool', ['getdisplaygeometry']) === '1600 3200') break; } catch {}
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   const tmux = ['-S', join(directory, 'tmux.sock'), '-f', '/dev/null'];
+  const resizer = createViewportResizer(run);
+  await resizer.resize({ width: 1600, height: 1600 });
+  assert.deepEqual((await resizer.refresh()).maximum, { width: 1600, height: 3200 });
   await run('tmux', [...tmux, 'new-session', '-d', '-s', 'viewport', '-x', '100', '-y', '30', '/bin/sleep 120']);
   const pid = await run('tmux', [...tmux, 'list-panes', '-F', '#{pane_pid}']);
   async function eventually(probe) {
@@ -74,10 +77,10 @@ try {
   server.listen(path); await once(server, 'listening'); await chmod(path, 0o600);
   socket = net.createConnection(path); await once(socket, 'connect');
   let bytes = Buffer.alloc(0), wake, closed = false;
-  socket.on('data', chunk => { bytes = Buffer.concat([bytes, chunk]); if (bytes.length > 16 * 1024 * 1024) socket.destroy(); wake?.(); });
+  socket.on('data', chunk => { bytes = Buffer.concat([bytes, chunk]); if (bytes.length > 32 * 1024 * 1024) socket.destroy(); wake?.(); });
   socket.on('close', () => { closed = true; wake?.(); }); socket.on('error', () => {});
   async function read(size) {
-    assert.ok(size <= 16 * 1024 * 1024);
+    assert.ok(size <= 32 * 1024 * 1024);
     while (bytes.length < size) {
       if (closed) throw new Error('RFB closed during live resize');
       await new Promise((resolve, reject) => { const timer = setTimeout(() => { wake = null; reject(new Error('RFB response timed out')); }, 5000); wake = () => { clearTimeout(timer); wake = null; resolve(); }; });
@@ -104,8 +107,8 @@ try {
     return resized;
   }
   request(); await update();
-  const resizer = createViewportResizer(run); assert.equal((await resizer.refresh()).supported, true);
-  for (const size of [{ width: 1280, height: 720 }, { width: 1440, height: 800 }, { width: 900, height: 1200 }, { width: 1600, height: 240 }, { width: 1600, height: 1600 }]) {
+  assert.equal((await resizer.refresh()).supported, true);
+  for (const size of [{ width: 1280, height: 720 }, { width: 1440, height: 800 }, { width: 900, height: 1200 }, { width: 1600, height: 240 }, { width: 1600, height: 3200 }, { width: 1600, height: 1600 }]) {
     const result = await resizer.resize(size);
     request();
     let changed = false;

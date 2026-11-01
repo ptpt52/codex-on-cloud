@@ -13,7 +13,7 @@ let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
 const pressedKeys = new Set(), pressedPointers = new Set();
 let lastInteraction = 0, idleTimer;
-let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
+let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
 function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
 }
@@ -65,9 +65,11 @@ function applyView() {
     x: rect?.width ? (viewport.clientWidth / 2 - rect.left) / rect.width : 0.5,
     y: rect?.height ? (viewport.clientHeight / 2 - rect.top) / rect.height : 0.5,
   };
-  const manual = preferences.zoom !== 'fit' && canvas?.width && canvas?.height;
-  screen.style.width = manual ? `${Math.round(canvas.width * preferences.zoom)}px` : '100%';
-  screen.style.height = manual ? `${Math.round(canvas.height * preferences.zoom)}px` : '100%';
+  const widthFit = preferences.zoom === 'width' && canvas?.width && canvas?.height;
+  const manual = typeof preferences.zoom === 'number' && canvas?.width && canvas?.height;
+  const scrollTop = viewport.scrollTop;
+  screen.style.width = widthFit ? `${viewport.clientWidth}px` : manual ? `${Math.round(canvas.width * preferences.zoom)}px` : '100%';
+  screen.style.height = widthFit ? `${Math.ceil(canvas.height * viewport.clientWidth / canvas.width)}px` : manual ? `${Math.round(canvas.height * preferences.zoom)}px` : '100%';
   if (rfb) {
     // Resize the local container through public APIs; remote pixels and input coordinates stay intact.
     rfb.scaleViewport = true;
@@ -79,6 +81,9 @@ function applyView() {
     if (manual) {
       viewport.scrollLeft = Math.max(0, Math.min(1, center.x)) * canvas.width * preferences.zoom - viewport.clientWidth / 2;
       viewport.scrollTop = Math.max(0, Math.min(1, center.y)) * canvas.height * preferences.zoom - viewport.clientHeight / 2;
+    } else if (widthFit) {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = scrollTop;
     } else {
       viewport.scrollLeft = 0;
       viewport.scrollTop = 0;
@@ -93,7 +98,7 @@ viewportObserver.observe(viewport);
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-desktop-options') return;
-  if (!(value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
+  if (!(['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
   preferences.zoom = value.zoom;
   preferences.pan = value.pan;
@@ -104,6 +109,27 @@ window.addEventListener('message', event => {
   preferences.revision = value.revision ?? 0;
   applyView();
 });
+
+// Intercept scrolling gestures before the pinned noVNC 1.7 gesture handler turns
+// them into remote drags. Taps and native mouse/keyboard input remain with noVNC.
+for (const name of ['gesturestart', 'gesturemove', 'gestureend']) screen.addEventListener(name, event => {
+  if (!['drag', 'twodrag'].includes(event.detail?.type)) return;
+  if (!scrollGesture && (preferences.zoom !== 'width' || preferences.pan || preferences.blocked)) return;
+  event.stopImmediatePropagation();
+  const y = event.detail.type === 'twodrag' ? event.detail.magnitudeY : event.detail.clientY;
+  if (name === 'gesturestart') scrollGesture = { y, instance: rfb };
+  if (name === 'gesturemove' && scrollGesture) {
+    if (scrollGesture.instance === rfb && preferences.zoom === 'width' && !preferences.pan && !preferences.blocked) viewport.scrollTop += scrollGesture.y - y;
+    scrollGesture.y = y;
+  }
+  if (name === 'gestureend') scrollGesture = null;
+}, true);
+viewport.addEventListener('wheel', event => {
+  if (preferences.zoom !== 'width' || preferences.pan || preferences.blocked) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+  viewport.scrollTop += event.deltaY * unit;
+}, { capture: true, passive: false });
 
 // A separate input layer blocks taps, wheel events and keys before noVNC can send them.
 function stopDrag(event) {
@@ -220,6 +246,7 @@ async function probeDirect() {
   }
 }
 function attachViewer(direct) {
+  scrollGesture = null;
   const previous = rfb, previousTransport = transport;
   transport = direct;
   transportName = direct ? 'direct' : 'relay';
@@ -287,6 +314,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  scrollGesture = null;
   clearTimeout(idleTimer);
   connectionEpoch++;
   probeController?.abort(); clearTimeout(probeTimer); switchApproval?.finish(false);

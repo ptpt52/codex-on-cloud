@@ -11,10 +11,13 @@ async function fillsViewport(page) {
   const canvas = await page.frameLocator('#desktop-frame').locator('#screen canvas').boundingBox();
   return !!canvas && canvas.width <= stage.width + 2 && canvas.height <= stage.height + 2 && canvas.width * canvas.height > stage.width * stage.height * 0.96;
 }
+async function fitsWidth(page) {
+  return page.frameLocator('#desktop-frame').locator('#screen canvas').evaluate(canvas => Math.abs(canvas.getBoundingClientRect().width - document.getElementById('viewport').clientWidth) <= 1);
+}
 const geometry = page => page.frameLocator('#desktop-frame').locator('#screen canvas').evaluate(canvas => [canvas.width, canvas.height]);
 async function enableWindowFollowing(page) {
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({
-    zoom: 'fit', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: true, mobileAutoResolution: true,
+    layout: 2, zoom: 'fit', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: true,
   })));
 }
 
@@ -55,8 +58,8 @@ test('fixed desktop option persists and stops changing remote dimensions on wind
     await page.locator('#desktop-settings-button').click();
     await expect(page.locator('#auto-resolution')).toBeChecked();
     await page.locator('#auto-resolution').uncheck(); await page.locator('#close-desktop-settings').click();
-    // Phones return from window-follow mode to their fixed square desktop.
-    if (test.info().project.name === 'mobile') await expect.poll(() => geometry(page)).toEqual([1600, 1600]);
+    // Phones return from window-follow mode to their fixed tall desktop.
+    await expect.poll(() => geometry(page)).toEqual([1600, 3200]);
     const count = app.managementStats.viewportResizes;
     await page.setViewportSize({ width: 1100, height: 760 }); await page.waitForTimeout(1200);
     expect(app.managementStats.viewportResizes).toBe(count);
@@ -67,21 +70,21 @@ test('fixed desktop option persists and stops changing remote dimensions on wind
   } finally { await app.close(); }
 });
 
-test('device defaults keep phones square across rotation, keyboard, folding and reconnect', async ({ page }, info) => {
+test('fixed tall desktops fit width across window changes, folding and reconnect', async ({ page }, info) => {
   const mobile = info.project.name === 'mobile';
   const app = await fixture({ rfb: true, viewport: true, rfbSize: { width: 1280, height: 720 } });
   let connections = 0;
   page.on('websocket', () => connections++);
   async function settled() {
-    if (mobile) await expect.poll(() => geometry(page), { timeout: 12000 }).toEqual([1600, 1600]);
-    else await expect.poll(() => fillsViewport(page), { timeout: 12000 }).toBe(true);
+    await expect.poll(() => geometry(page), { timeout: 12000 }).toEqual([1600, 3200]);
+    await expect.poll(() => fitsWidth(page)).toBe(true);
   }
   try {
     await login(page, app); await settled();
     await page.locator('#desktop-settings-button').click();
-    await expect(page.locator('#auto-resolution')).toBeChecked({ checked: !mobile });
+    await expect(page.locator('#auto-resolution')).not.toBeChecked();
     if (mobile) {
-      await expect(page.locator('#viewport-note')).toContainText('1600 × 1600');
+      await expect(page.locator('#viewport-note')).toContainText('1600 × 3200');
       await expect(page.locator('#apply-desktop-settings')).toBeDisabled();
     }
     await page.locator('#close-desktop-settings').click();
@@ -94,19 +97,19 @@ test('device defaults keep phones square across rotation, keyboard, folding and 
     }
     await page.locator('#toggle-input-button').click(); await page.locator('#toggle-controls-button').click();
     await page.waitForTimeout(1200); await settled();
-    if (mobile) expect(app.managementStats.viewportResizes).toBe(initialChanges);
+    expect(app.managementStats.viewportResizes).toBe(initialChanges);
     expect(connections).toBe(1);
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('桌面在线'); await settled();
     app.disconnectViewers();
     await expect.poll(() => connections, { timeout: 12000 }).toBe(3);
     await expect(page.locator('#connection-status')).toContainText('桌面在线'); await settled();
-    if (mobile) expect(app.managementStats.viewportResizes).toBe(initialChanges);
+    expect(app.managementStats.viewportResizes).toBe(initialChanges);
     await expect(page.locator('#mobile-input')).toHaveValue('尺寸切换保留草稿');
     expect(app.managementStats.restarts).toBe(0); expect(app.managementStats.resumes).toBe(0); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });
 
-test('legacy automatic preference migrates only on mobile while preserving other display preferences', async ({ page }, info) => {
+test('legacy preferences migrate to fixed width-fit on all devices while preserving other display preferences', async ({ page }, info) => {
   const mobile = info.project.name === 'mobile';
   const app = await fixture({ rfb: true, viewport: true, rfbSize: { width: 1280, height: 720 } });
   try {
@@ -114,21 +117,72 @@ test('legacy automatic preference migrates only on mobile while preserving other
       zoom: 'fit', pan: true, collapsed: true, controlsCollapsed: false, autoResolution: true,
     })));
     await login(page, app);
-    if (mobile) await expect.poll(() => geometry(page), { timeout: 12000 }).toEqual([1600, 1600]);
-    else await expect.poll(() => fillsViewport(page), { timeout: 12000 }).toBe(true);
+    await expect.poll(() => geometry(page), { timeout: 12000 }).toEqual([1600, 3200]);
+    await expect.poll(() => fitsWidth(page)).toBe(true);
     await expect(page.locator('#input-dock')).toBeHidden();
     await expect(page.locator('#pan-button')).toHaveAttribute('aria-pressed', 'true');
     await page.locator('#desktop-settings-button').click();
-    await expect(page.locator('#auto-resolution')).toBeChecked({ checked: !mobile });
+    await expect(page.locator('#auto-resolution')).not.toBeChecked();
     await page.locator('#close-desktop-settings').click();
     await page.locator('#toggle-input-button').click();
     const stored = await page.evaluate(() => localStorage.getItem('codex-cloud.display.v1'));
     expect(stored.length).toBeLessThanOrEqual(256);
-    expect(JSON.parse(stored).mobileAutoResolution).toBe(false);
-    expect(JSON.parse(stored).autoResolution).toBe(true);
+    expect(JSON.parse(stored).layout).toBe(2);
+    expect(JSON.parse(stored).autoResolution).toBe(false);
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await page.locator('#desktop-settings-button').click();
-    await expect(page.locator('#auto-resolution')).toBeChecked({ checked: !mobile });
+    await expect(page.locator('#auto-resolution')).not.toBeChecked();
+    expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('width-fit scrolls locally without remote drags and preserves tap coordinates and scroll position', async ({ page, context }, info) => {
+  const app = await fixture({ rfb: true, viewport: true });
+  const pointers = [];
+  page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
+    if (Buffer.isBuffer(payload) && payload.length === 6 && payload[0] === 5) pointers.push({ buttons: payload[1], x: payload.readUInt16BE(2), y: payload.readUInt16BE(4) });
+  }));
+  try {
+    await login(page, app);
+    await expect.poll(() => geometry(page)).toEqual([1600, 3200]);
+    await expect.poll(() => fitsWidth(page)).toBe(true);
+    await page.waitForTimeout(1000);
+    const viewport = page.frameLocator('#desktop-frame').locator('#viewport');
+    const stage = await page.locator('#desktop-stage').boundingBox();
+    const x = Math.round(stage.x + stage.width / 2), y = Math.round(stage.y + stage.height * 0.7);
+    await page.mouse.move(x, y); await page.waitForTimeout(100);
+    const before = pointers.length;
+    if (info.project.name === 'mobile') {
+      const client = await context.newCDPSession(page);
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+      for (let step = 1; step <= 6; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - step * 16 }] });
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await client.detach();
+    } else await page.mouse.wheel(0, 240);
+    await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBeGreaterThan(60);
+    expect(pointers.length).toBe(before);
+    const top = await viewport.evaluate(element => element.scrollTop);
+    await page.waitForTimeout(4500);
+    expect(await viewport.evaluate(element => element.scrollTop)).toBe(top);
+    const canvas = await page.frameLocator('#desktop-frame').locator('#screen canvas').boundingBox();
+    if (info.project.name === 'mobile') await page.touchscreen.tap(x, y); else await page.mouse.click(x, y);
+    await expect.poll(() => pointers.filter(value => value.buttons === 1).length).toBeGreaterThan(0);
+    const pressed = pointers.findLast(value => value.buttons === 1), scale = canvas.width / 1600;
+    expect(Math.abs(pressed.x - (x - canvas.x) / scale)).toBeLessThanOrEqual(2);
+    expect(Math.abs(pressed.y - (y - canvas.y) / scale)).toBeLessThanOrEqual(2);
+    expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('an old display limit keeps the current desktop and explains the required restart', async ({ page }) => {
+  const app = await fixture({ rfb: true, viewport: true, viewportMaximum: { width: 1600, height: 1600 } });
+  try {
+    await login(page, app);
+    await page.locator('#desktop-settings-button').click();
+    await expect(page.locator('#viewport-note')).toContainText('显示上限不足');
+    await page.waitForTimeout(2000);
+    expect(await geometry(page)).toEqual([1600, 1600]);
+    expect(app.managementStats.viewportResizes).toBe(0);
     expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });

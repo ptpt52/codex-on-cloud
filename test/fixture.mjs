@@ -11,7 +11,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, viewport = false, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -82,8 +82,8 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
   const upstreamUrl = `http://127.0.0.1:${upstream.address().port}`;
   const preferencesFile = join(directory, 'desktop-settings.json');
-  const defaultPreferences = { width: 1600, height: 1600, fontSize: 15 };
-  const maximum = { width: 1600, height: 1600 };
+  const defaultPreferences = { width: 1600, height: viewport ? 3200 : 1600, fontSize: 15 };
+  const maximum = viewportMaximum || { width: 1600, height: viewport ? 3200 : 1600 };
   const viewportControls = viewport ? {
     status: () => ({ supported: true, maximum, actual: { width: screenGeometry.width, height: screenGeometry.height } }),
     async refresh() { return this.status(); },

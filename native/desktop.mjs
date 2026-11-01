@@ -1,9 +1,11 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { mkdir, chmod, lstat, readFile, writeFile, unlink, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
 import { settings } from './config.mjs';
+import { createViewportResizer } from './viewport.mjs';
 
 const config = settings();
 const children = new Set();
@@ -101,8 +103,13 @@ try {
   delete env.SESSION_MANAGER;
   const auth = spawnSync('xauth', ['-f', xauthority, 'add', config.display, '.', randomBytes(16).toString('hex')], { env, stdio: 'inherit' });
   if (auth.status !== 0) throw new Error('无法生成独立 Xauthority');
-  start('Xvfb', [config.display, '-screen', '0', `${config.size}x24`, '-nolisten', 'tcp', '-auth', xauthority, '-noreset'], env);
+  // Reserve a bounded tall framebuffer once; window changes never restart X.
+  const capacity = `${Math.max(1600, config.preferences.width)}x${Math.max(3200, config.preferences.height)}`;
+  start('Xvfb', [config.display, '-screen', '0', `${capacity}x24`, '-nolisten', 'tcp', '-auth', xauthority, '-noreset'], env);
   await waitFor(() => spawnSync('xdpyinfo', [], { env, stdio: 'ignore', timeout: 1000 }).status === 0, '独立显示');
+  const exec = promisify(execFile);
+  const viewport = createViewportResizer(async (command, args, options) => (await exec(command, args, { env, timeout: 1000, maxBuffer: 16384, ...options })).stdout.trim());
+  await viewport.resize({ width: config.preferences.width, height: config.preferences.height });
   start('dbus-run-session', ['--', 'bash', join(config.root, 'native', 'xfce-session.sh')], env);
   // Node owns the private Unix listener. x11vnc's inetd mode receives an already
   // accepted socket and opens no TCP listener, including on old Ubuntu builds

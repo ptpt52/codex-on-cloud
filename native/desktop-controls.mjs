@@ -57,11 +57,13 @@ export function createDesktopControls(config, dependencies = {}) {
   const maintenance = () => preparing || job?.status === 'running';
   const busy = () => maintenance() || inputActive || clipboardActive || viewportActive;
   const status = () => {
-    if (viewport && !viewport.status().supported) void viewport.refresh();
+    if (viewport) void viewport.refresh();
     return { available: true, maintenance: !!maintenance(), inputBusy: inputActive, clipboardBusy: clipboardActive, viewportBusy: viewportActive,
-      viewport: viewport?.status() || { supported: false }, input: lastInput ? { ...lastInput } : null };
+      viewport: { ...(viewport?.status() || { supported: false }), fixed: { ...fixedSize } }, input: lastInput ? { ...lastInput } : null };
   };
   const saved = () => readPreferences(config.preferencesFile, config.defaultPreferences);
+  const initial = saved();
+  let fixedSize = { width: initial.width, height: initial.height };
   async function geometry() {
     try {
       const result = await run('xdotool', ['getdisplaygeometry']);
@@ -193,6 +195,7 @@ export function createDesktopControls(config, dependencies = {}) {
         await new Promise(resolve => setTimeout(resolve, 250));
       }
       if (!ready) throw new Error('desktop startup timed out');
+      fixedSize = { width: view.saved.width, height: view.saved.height };
       if (view.session.resumeId) {
         current.message = '正在恢复已确认的会话';
         // Keep all shell text fixed. The cwd and ID cross tmux as separate argv data.

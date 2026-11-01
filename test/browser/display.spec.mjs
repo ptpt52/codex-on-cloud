@@ -162,7 +162,7 @@ test('a framebuffer reconnect restores display controls without replaying input'
 test('invalid saved display preferences fall back to a usable interactive view', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ zoom: 100000, pan: true, collapsed: true })));
   await login(page);
-  await expect(page.locator('#fit-button')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#width-button')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#pan-button')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#input-dock')).toBeVisible();
   await expect(page.frameLocator('#desktop-frame').locator('#pan-layer')).toBeHidden();

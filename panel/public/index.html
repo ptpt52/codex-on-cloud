@@ -48,7 +48,8 @@
       </div>
       <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
         <div class="zoom-controls">
-          <button id="fit-button" class="view-button" aria-pressed="true">适应窗口</button>
+          <button id="width-button" class="view-button" aria-pressed="true">适应宽度</button>
+          <button id="fit-button" class="view-button" aria-pressed="false">适应窗口</button>
           <button id="actual-size-button" class="view-button" aria-pressed="false">原始比例</button>
           <button id="zoom-out-button" class="view-button zoom-step" aria-label="缩小画面" disabled>−</button>
           <output id="zoom-label" class="zoom-label" aria-label="当前显示比例">—</output>
@@ -95,7 +96,7 @@
     <p id="viewport-note" class="muted settings-help"></p>
     <form id="desktop-settings-form">
       <label class="settings-label" for="resolution-preset">分辨率预设</label>
-      <select id="resolution-preset"><option value="1280x1280">1280 × 1280</option><option value="1600x1600">1600 × 1600</option><option value="1920x1600">1920 × 1600</option><option value="custom">自定义尺寸</option></select>
+      <select id="resolution-preset"><option value="1280x1280">1280 × 1280</option><option value="1600x1600">1600 × 1600</option><option value="1600x3200">1600 × 3200</option><option value="1920x1600">1920 × 1600</option><option value="custom">自定义尺寸</option></select>
       <div class="settings-dimensions"><label for="desktop-width">宽度<input id="desktop-width" type="number" min="320" max="4096" step="1" required></label><span aria-hidden="true">×</span><label for="desktop-height">高度<input id="desktop-height" type="number" min="320" max="4096" step="1" required></label></div>
       <label class="settings-label" for="terminal-font-size">新终端字号</label><input id="terminal-font-size" type="number" min="10" max="28" step="1" required>
       <p class="muted settings-help">宽高 320–4096 像素，字号 10–28。保存只更新配置，不会重启桌面。</p>
