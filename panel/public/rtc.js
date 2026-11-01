@@ -1,4 +1,5 @@
 import { createControlClient } from '/control.js';
+import { createHealthClient } from '/health.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -19,7 +20,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     if (controller.signal.aborted) throw new Error('连接已取消');
     if (!webrtc) { enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
     peer = new RTCPeerConnection({ iceServers: [] });
-    let channel, ended = false, resolveReady, rejectReady;
+    let channel, ended = false, videoReadySent = false, resolveReady, rejectReady;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     void ready.catch(() => {});
     const control = createControlClient(peer.createDataChannel('codex-control', { ordered: true, protocol: 'codex-control-v1' }), value => {
@@ -27,18 +28,30 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       else rejectReady(new Error('直连已关闭'));
       controlChanged(value);
     });
-    const video = () => channel ||= peer.createDataChannel('codex-vnc', { ordered: true, protocol: 'rfb' });
+    const health = createHealthClient(peer.createDataChannel('codex-health', { ordered: true, protocol: 'codex-health-v1' }));
+    const video = () => channel ||= peer.createDataChannel('codex-vnc', { ordered: true, protocol: 'rfb-ready-v1' });
+    const viewerReady = () => {
+      // Register after noVNC has attached its open handler. The server must not
+      // send the RFB greeting before the browser has initialized that handler.
+      const notify = () => {
+        if (ended || videoReadySent || channel.readyState !== 'open') return;
+        videoReadySent = true;
+        try { channel.send(new Uint8Array([0])); } catch { close(); }
+      };
+      if (channel.readyState === 'open') notify();
+      else channel.addEventListener('open', notify, { once: true });
+    };
     if (!probe) video();
     const close = () => {
       if (ended) return;
       ended = true; clearTimeout(timeout); signal?.removeEventListener('abort', cancel);
-      rejectReady(new Error('直连已关闭')); controller.abort(); control.close(); peer.close();
+      rejectReady(new Error('直连已关闭')); controller.abort(); control.close(); health.close(); peer.close();
     };
     controller.signal.addEventListener('abort', close, { once: true });
     peer.addEventListener('connectionstatechange', () => {
       if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) close();
     });
-    return { get channel() { return channel; }, video, control, close, async start() {
+    return { get channel() { return channel; }, video, viewerReady, control, health, close, async start() {
       try {
         await peer.setLocalDescription(await peer.createOffer());
         if (peer.iceGatheringState !== 'complete') await new Promise((resolve, reject) => {

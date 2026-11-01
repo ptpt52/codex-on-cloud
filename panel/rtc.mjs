@@ -2,6 +2,7 @@ import net from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { RTCPeerConnection } from 'werift';
 import { attachRTCControl } from './rtc-control.mjs';
+import { attachRTCHealth } from './rtc-health.mjs';
 
 export const RTC_TIMEOUT = 8000;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
@@ -48,7 +49,7 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
     iceFilterCandidatePair: pair => privateIPv4(pair.remoteCandidate.host),
     maxMessageSize: MAX_MESSAGE,
   });
-  let channel, control, upstream, ended = false, closePromise, activated = false, openVideo;
+  let channel, control, health, upstream, ended = false, closePromise, activated = false, videoReady = false, openVideo;
   let timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
   const handle = {
     activate() {
@@ -64,6 +65,7 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
       ended = true;
       clearTimeout(timer);
       control?.close();
+      health?.close();
       upstream?.destroy();
       closed();
       closePromise = pc.close().catch(() => {});
@@ -84,14 +86,20 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
     if (['closed', 'failed', 'disconnected'].includes(state)) void handle.destroy();
   });
   pc.onDataChannel.subscribe(value => {
+    if (value.label === 'codex-health' && value.protocol === 'codex-health-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null) {
+      if (health || !authorized()) { void handle.destroy(); return; }
+      health = attachRTCHealth(value, { valid: authorized, fail: () => { void handle.destroy(); } });
+      return;
+    }
     if (value.label === 'codex-control' && value.protocol === 'codex-control-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null) {
       if (control || !authorized()) { void handle.destroy(); return; }
       control = attachRTCControl(value, { valid: authorized, perform: performControl });
       return;
     }
-    if (channel || !authorized() || value.label !== 'codex-vnc' || value.protocol !== 'rfb' || !value.ordered ||
+    if (channel || !authorized() || value.label !== 'codex-vnc' || !['rfb', 'rfb-ready-v1'].includes(value.protocol) || !value.ordered ||
         value.maxRetransmits != null || value.maxPacketLifeTime != null) { void handle.destroy(); return; }
     channel = value;
+    videoReady = value.protocol === 'rfb'; // Old clients retain their original protocol until refreshed.
     channel.bufferedAmountLowThreshold = HIGH_WATER / 2;
     channel.bufferedAmountLow.subscribe(() => { if (authorized()) upstream?.resume(); });
     channel.error.subscribe(() => { void handle.destroy(); });
@@ -99,13 +107,19 @@ export function createRTCBridge({ address, vncSocket, valid, closed, performCont
       if (state === 'closed') void handle.destroy();
     });
     channel.onMessage.subscribe(bytes => {
+      if (!videoReady) {
+        if (!authorized() || !Buffer.isBuffer(bytes) || bytes.length !== 1 || bytes[0] !== 0) { void handle.destroy(); return; }
+        videoReady = true;
+        openVideo();
+        return; // The fixed readiness byte never reaches VNC.
+      }
       if (!activated || !authorized() || !Buffer.isBuffer(bytes) || bytes.length > MAX_MESSAGE || !upstream || upstream.writableLength + bytes.length > HIGH_WATER) {
         void handle.destroy(); return;
       }
       upstream.write(bytes);
     });
     openVideo = () => {
-      if (!activated) return;
+      if (!activated || !videoReady || channel.readyState !== 'open') return;
       if (!authorized() || upstream) { void handle.destroy(); return; }
       upstream = net.createConnection({ path: vncSocket, highWaterMark: MAX_MESSAGE });
       upstream.once('connect', () => clearTimeout(timer));

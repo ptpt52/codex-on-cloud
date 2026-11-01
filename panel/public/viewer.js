@@ -10,7 +10,8 @@ const panLayer = document.getElementById('pan-layer');
 const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1 };
 let rfb, retry, stopping = false;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
-let viewing = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
+let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
+let healthTimer, healthGeneration = 0, viewAnchor, restoringView = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 let lastInteraction = 0, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
@@ -52,6 +53,12 @@ function reportView() {
   });
 }
 const canvasObserver = new ResizeObserver(reportView);
+function rememberView() {
+  if (!viewing || restoringView || !canvas?.width || !canvas?.height) return;
+  const scale = canvas.getBoundingClientRect().width / canvas.width;
+  if (scale > 0 && Number.isFinite(scale)) viewAnchor = { zoom: preferences.zoom, x: viewport.scrollLeft / scale, y: viewport.scrollTop / scale };
+}
+viewport.addEventListener('scroll', rememberView);
 function applyView() {
   cancelAnimationFrame(layoutFrame);
   const nextCanvas = screen.querySelector('canvas');
@@ -78,7 +85,12 @@ function applyView() {
   if (!preferences.pan && !preferences.blocked) stopDrag();
   panLayer.hidden = !preferences.pan && !preferences.blocked;
   layoutFrame = requestAnimationFrame(() => {
-    if (manual) {
+    if (!viewing || !canvas?.width || !canvas?.height) return;
+    if (restoringView && viewAnchor?.zoom === preferences.zoom && (manual || widthFit)) {
+      const scale = widthFit ? viewport.clientWidth / canvas.width : preferences.zoom;
+      viewport.scrollLeft = widthFit ? 0 : viewAnchor.x * scale;
+      viewport.scrollTop = viewAnchor.y * scale;
+    } else if (manual) {
       viewport.scrollLeft = Math.max(0, Math.min(1, center.x)) * canvas.width * preferences.zoom - viewport.clientWidth / 2;
       viewport.scrollTop = Math.max(0, Math.min(1, center.y)) * canvas.height * preferences.zoom - viewport.clientHeight / 2;
     } else if (widthFit) {
@@ -88,6 +100,8 @@ function applyView() {
       viewport.scrollLeft = 0;
       viewport.scrollTop = 0;
     }
+    restoringView = false;
+    rememberView();
     reportView();
   });
 }
@@ -173,6 +187,36 @@ panLayer.addEventListener('keydown', event => {
 function needsProbe() {
   return !stopping && viewing && !switching && canTryDirect() && (!transport || !transport.control.ready);
 }
+function stopHealth() {
+  healthGeneration++;
+  clearTimeout(healthTimer); healthTimer = undefined;
+  transport?.health.cancel();
+}
+function monitorDirect(delay = 3000) {
+  stopHealth();
+  if (stopping || !viewing || !transport || document.hidden || !navigator.onLine) return;
+  const current = transport, generation = healthGeneration;
+  const tick = async () => {
+    healthTimer = undefined;
+    if (generation !== healthGeneration || current !== transport || !viewing || stopping || document.hidden || !navigator.onLine) return;
+    try {
+      await current.health.ping();
+      if (generation === healthGeneration && current === transport) healthTimer = setTimeout(tick, 3000);
+    } catch {
+      if (generation !== healthGeneration || current !== transport || stopping || document.hidden || !navigator.onLine) return;
+      // Cancel uncertain input in the parent before replacing the stream. Never replay it.
+      rememberView(); stopHealth();
+      directFailed = true; viewing = false; connecting = false;
+      probeController?.abort(); clearTimeout(probeTimer); probeTimer = null;
+      if (switching) finishSwitch();
+      pressedKeys.clear(); pressedPointers.clear();
+      announce('disconnected');
+      clearTimeout(retry);
+      void connect();
+    }
+  };
+  healthTimer = setTimeout(tick, delay);
+}
 function idleForSwitch() {
   return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800;
 }
@@ -246,6 +290,9 @@ async function probeDirect() {
   }
 }
 function attachViewer(direct) {
+  rememberView(); stopHealth();
+  restoringView = !!viewAnchor;
+  viewing = false; connecting = true;
   scrollGesture = null;
   const previous = rfb, previousTransport = transport;
   transport = direct;
@@ -263,14 +310,15 @@ function attachViewer(direct) {
   instance.compressionLevel = 2;
   instance.addEventListener('connect', () => {
     if (rfb !== instance || stopping) return;
-    viewing = true; status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl();
+    connecting = false; viewing = true; status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl();
     clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
     if (switching) finishSwitch();
     scheduleProbe();
+    monitorDirect();
   });
   instance.addEventListener('disconnect', () => {
     if (rfb !== instance || stopping) return;
-    viewing = false;
+    stopHealth(); viewing = false; connecting = false;
     if (switching && switchingFrom === instance) return;
     if (switching) finishSwitch();
     if (direct) directFailed = true;
@@ -279,12 +327,15 @@ function attachViewer(direct) {
     status.hidden = false;
     status.textContent = '连接已断开，正在等待恢复。桌面任务继续运行。';
     announce('disconnected');
-    clearTimeout(retry); retry = setTimeout(connect, 2500);
+    clearTimeout(retry); retry = setTimeout(connect, direct ? 0 : 2500);
   });
+  direct?.viewerReady();
   return instance;
 }
 async function connect() {
-  if (stopping || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
+  if (stopping || connecting || document.hidden || !navigator.onLine || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
+  clearTimeout(retry); retry = undefined;
+  rememberView(); stopHealth(); connecting = true;
   const epoch = ++connectionEpoch;
   transportName = ''; viewing = false;
   announce('connecting');
@@ -305,7 +356,9 @@ for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercanc
 }, true);
 window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); });
 function networkChanged() {
-  if (document.hidden || !navigator.onLine) { if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
+  if (document.hidden || !navigator.onLine) { stopHealth(); if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
+  if (viewing && transport) monitorDirect(250);
+  if (!viewing && !connecting) { clearTimeout(retry); retry = setTimeout(connect, 0); }
   probeDelay = 15000; clearTimeout(probeTimer); probeTimer = null; scheduleProbe(1000);
 }
 window.addEventListener('online', networkChanged);
@@ -314,6 +367,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  stopHealth();
   scrollGesture = null;
   clearTimeout(idleTimer);
   connectionEpoch++;
