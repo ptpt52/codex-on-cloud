@@ -24,6 +24,6 @@
     "test:display": "node test/terminal-native.mjs",
     "demo": "node scripts/demo.mjs"
   },
-  "dependencies": { "@novnc/novnc": "1.7.0", "ws": "8.22.1" },
+  "dependencies": { "@novnc/novnc": "1.7.0", "werift": "0.26.0", "ws": "8.22.1" },
   "devDependencies": { "@playwright/test": "1.64.1" }
 }

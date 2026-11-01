@@ -10,7 +10,7 @@ import { createManagerServer } from '../native/manager-server.mjs';
 import { readPreferences } from '../native/preferences.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, webrtc = false, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -44,7 +44,9 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   });
   const clients = new Set();
   let viewersPaused = false;
+  let vncConnections = 0;
   const vnc = net.createServer(socket => {
+    vncConnections++;
     clients.add(socket);
     socket.on('error', () => {});
     socket.once('close', () => clients.delete(socket));
@@ -122,6 +124,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
     managerSocket,
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
+    webrtc, webrtcAddress: '127.0.0.1',
   };
   const panel = await createPanel(config);
   panel.server.listen(port, '127.0.0.1'); await once(panel.server, 'listening');
@@ -148,6 +151,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     pauseViewers() { viewersPaused = true; for (const client of clients) client.destroy(); },
     resumeViewers() { viewersPaused = false; for (const client of clients) client.destroy(); },
     get cookie() { return cookie; }, get csrf() { return csrf; },
+    get vncConnections() { return vncConnections; },
     async close({ preserve = false } = {}) {
       await panel.close();
       await new Promise(resolve => { manager.close(resolve); manager.closeAllConnections(); });

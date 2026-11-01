@@ -153,7 +153,7 @@ cloudflared 的诊断接口固定监听 `127.0.0.1:36903`，可用 `TUNNEL_METRI
 
 ## Cloudflare 外网访问
 
-本机和同一局域网可通过本机 HTTPS 网关与单域名 DNS 覆盖直接访问，公网继续使用 Tunnel；具体见[直连设计](docs/lan.md)。该方案尚未部署，当前入口仍走既有公网路径。
+本机和同一局域网的画面与原生键鼠流优先通过 WebRTC 加密直连，失败回退到现有 WebSocket；无需另备本地证书或修改 DNS。“连接状态 → 画面路径”显示实际路径。网页、协商和管理 API 仍通过现有 HTTPS 入口，当前未部署 TURN；配置、UDP 端口范围与限制见[局域网直连](docs/lan.md)。
 
 详见 [Cloudflare 配置](docs/cloudflare.md)。安装固定版本的用户级 cloudflared：
 

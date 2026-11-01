@@ -9,6 +9,7 @@ import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
+import { createRTCBridge, lanOffer } from './rtc.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
@@ -21,6 +22,7 @@ const ASSETS = new Map([
   ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
   ['/desktop/index.html', ['viewer.html', 'text/html; charset=utf-8']],
   ['/desktop/viewer.js', ['viewer.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
 ]);
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -61,6 +63,8 @@ export async function createPanel(config) {
   let healthCache = null;
   let maintenancePending = false;
   let closing = false;
+  let rtcBusy = false;
+  let rtcClosing = Promise.resolve();
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -160,7 +164,7 @@ export async function createPanel(config) {
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { username: config.username, csrf: session.csrf });
+      return reply(res, 200, { username: config.username, csrf: session.csrf, webrtc: config.webrtc === true });
     }
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);
@@ -202,6 +206,41 @@ export async function createPanel(config) {
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
       owner = { viewer, session: session.hash };
       return reply(res, 200, { ok: true });
+    }
+    if (path === '/api/desktop/rtc' && req.method === 'POST') {
+      const expected = owner;
+      const body = await ownedBody(req, 48 * 1024);
+      if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
+      let offer;
+      try { offer = lanOffer(body); } catch (error) { throw new HttpError(400, error.message); }
+      if (rtcBusy) throw new HttpError(429, '连接协商正在进行');
+      rtcBusy = true;
+      let bridge;
+      try {
+        const controls = await controlStatus();
+        await rtcClosing;
+        requireOwner(req);
+        if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
+        if (!controls.available || controls.maintenance || maintenancePending) throw new HttpError(503, '桌面暂不可连接');
+        closeSockets(() => true);
+        await rtcClosing;
+        requireOwner(req);
+        if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
+        const token = cookieToken(req.headers.cookie);
+        const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token);
+        bridge = createRTCBridge({ address: config.webrtcAddress, vncSocket: config.vncSocket, valid,
+          closed: () => sockets.delete(bridge) });
+        // Use the same revocation, maintenance, expiry and takeover path as WS.
+        const destroy = bridge.destroy;
+        bridge.destroy = () => { const result = destroy(); rtcClosing = result || rtcClosing; return result; };
+        sockets.set(bridge, { session: expected.session, token, socket: bridge });
+        res.once('close', () => { if (!res.writableFinished) void bridge.destroy(); });
+        const answer = await bridge.answer(offer);
+        requireOwner(req);
+        if (!valid()) throw new HttpError(409, '页面控制权已变化');
+        return reply(res, 200, answer);
+      } catch (error) { await bridge?.destroy(); throw error; }
+      finally { rtcBusy = false; }
     }
     if (['/api/paste', '/api/key', '/api/terminal'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req);
@@ -321,6 +360,7 @@ export async function createPanel(config) {
     closing = true;
     clearInterval(expiration);
     closeSockets(() => true);
+    await rtcClosing;
     for (const client of wss.clients) client.terminate();
     wss.close();
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });

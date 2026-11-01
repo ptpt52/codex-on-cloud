@@ -116,3 +116,15 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native -- --public
 ## IPv6 优先连接确认
 
 2026-11-01：保留本机已有的 `TUNNEL_EDGE_IP_VERSION=auto`。在 Tunnel 的独立 DNS 环境中，`region1.v2.argotunnel.com` 与 `region2.v2.argotunnel.com` 各返回 10 个 IPv6 和 10 个 IPv4 地址，IPv6 均排在前面。cloudflared 日志记录的四条边缘连接均为 IPv6，实时 `cloudflared_tunnel_ha_connections` 指标为 4；公网 `curl -4`、`curl -6` 健康检查均返回 `200 {"ok":true}`。本次只完善配置示例与策略说明，未修改运行参数或重启服务，桌面、面板和 Tunnel 的 MainPID 均保持不变；未通过中断网络模拟故障回退。
+
+## WebRTC 局域网加密直连
+
+2026-11-01：53 个脚本语法检查、40 项 Node、7 项 Python 通过；完整 60 项手机/桌面浏览器回归及随后新增的 2 项 DTLS 指纹篡改检查均通过，共 62 项浏览器用例。`npm run test:display` 也通过，使用隔离的真实 Xvfb、xterm、tmux 和假 Codex，不操作运行中的 Codex。
+
+新增浏览器测试使用真实 Chrome、noVNC、WebRTC/DTLS/UDP，RFB 上游为模拟桌面；验证 1600×1600 画面不建立 WebSocket、实际 DTLS cipher 和选中候选存在、多页面接管与草稿保留、协商失败回退，以及错误指纹无法打开 VNC。错误指纹测试在回退前的 VNC 连接数为零，回退后只有一个连接。Node 测试覆盖 Host、Origin、登录、CSRF、控制权、延迟请求、候选过滤和大小界限。
+
+只重启面板后，通过实际公网域名 `https://remote-codex.x-wrt.dev` 登录，真实 noVNC 显示 1600×1600 桌面，画面路径为“WebRTC 加密直连”。Chrome stats 确认 DTLS connected，cipher 为 `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`，远端 host candidate 为 `192.168.16.224:40000`。此检查的浏览器运行在主机本身，不能代替另一台 LAN 设备或真实手机的连通性和性能验收。
+
+另在真实公网页面人为拒绝一次直连协商，验证回退到现有 WSS / x11vnc 桌面。第一次 30 秒验收等待超时；随后带状态跟踪的复测连通，再次完整检查约 17.5 秒连通，只有一次协商、一次 WebSocket，没有发送终端输入。公网建连时间有波动，未据此声称 LAN 性能提升。复测时 Tunnel 仍有 4 条活动连接（3 条 IPv6、1 条 IPv4），保持原来的 auto 优先策略，未重启 Tunnel。
+
+真实浏览器检查未调用输入、剪贴板、文件写入或桌面重启接口；测试登录随后退出。桌面 MainPID 15956、管理服务 MainPID 13090、Tunnel MainPID 12521 和 Codex pane PID 20243 保持不变；HTTP 面板与 helper 仍仅监听回环，观看结束后 UDP 40000–40015 无监听。未部署本地 HTTPS 网关、DNS 覆盖、STUN 或 TURN，未运行会向工作终端发送命令的 `test:native`。

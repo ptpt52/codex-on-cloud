@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { environment, settings } from '../native/config.mjs';
+import { rtcAddress } from './rtc.mjs';
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -26,6 +27,7 @@ export function readConfig(env = environment()) {
   }
   const port = Number(env.PORT ?? native.panelPort);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 无效');
+  if (env.WEBRTC_ENABLED !== undefined && !['0', '1'].includes(env.WEBRTC_ENABLED)) throw new Error('WEBRTC_ENABLED 必须为 0 或 1');
   return {
     host: '127.0.0.1', port, origin: origin.origin,
     secureCookies: origin.protocol === 'https:', hosts,
@@ -37,5 +39,7 @@ export function readConfig(env = environment()) {
     tunnelDiagnosticsUrl: `http://127.0.0.1:${native.tunnelMetricsPort}/diag/tunnel`,
     managerSocket: native.managerSocket,
     sessionMs: 7 * 24 * 60 * 60 * 1000,
+    webrtc: env.WEBRTC_ENABLED !== '0',
+    webrtcAddress: env.WEBRTC_ENABLED === '0' ? undefined : rtcAddress(env.WEBRTC_LAN_ADDRESS),
   };
 }

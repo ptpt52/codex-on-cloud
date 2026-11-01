@@ -1,4 +1,5 @@
 import RFB from './novnc/core/rfb.js';
+import { desktopTransport } from './rtc.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -8,9 +9,10 @@ const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
 const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1 };
 let rfb, retry, stopping = false;
+let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
-  parent.postMessage({ type: 'codex-desktop', state, frame }, location.origin);
+  parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
 }
 function reportView() {
   cancelAnimationFrame(reportFrame);
@@ -115,15 +117,21 @@ panLayer.addEventListener('keydown', event => {
   viewport.scrollLeft += steps[event.key][0];
   viewport.scrollTop += steps[event.key][1];
 });
-function connect() {
+async function connect() {
   if (stopping || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
+  const epoch = ++connectionEpoch;
+  transportName = '';
   announce('connecting');
   const url = new URL('/desktop/websockify', location.origin);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('viewer', viewer);
   status.hidden = false;
   status.textContent = '正在连接独立桌面…';
-  rfb = new RFB(screen, url.href, { shared: false });
+  const direct = directFailed ? null : await desktopTransport(viewer);
+  if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
+  transport = direct;
+  transportName = direct ? 'direct' : 'relay';
+  const instance = rfb = new RFB(screen, direct ? direct.channel : url.href, { shared: false });
   rfb.scaleViewport = true;
   // Preserve a usable terminal size on phones; rotating the phone scales the view.
   rfb.resizeSession = false;
@@ -133,15 +141,21 @@ function connect() {
   rfb.addEventListener('connect', () => { status.hidden = true; lastReport = ''; applyView(); announce('connected'); });
   rfb.addEventListener('disconnect', () => {
     if (stopping) return;
+    if (direct) directFailed = true;
+    direct?.close();
     status.hidden = false;
     status.textContent = '连接已断开，正在等待恢复。桌面任务继续运行。';
     announce('disconnected');
     // Reconnect only the framebuffer stream. Never replay input or start a task.
     retry = setTimeout(connect, 2500);
   });
+  // RFB has installed all channel handlers synchronously in its constructor.
+  if (direct) void direct.start().catch(() => instance.disconnect());
 }
 window.addEventListener('pagehide', () => {
   stopping = true;
+  connectionEpoch++;
+  transport?.close();
   stopDrag();
   clearTimeout(retry);
   cancelAnimationFrame(layoutFrame);

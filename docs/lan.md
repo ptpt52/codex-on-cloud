@@ -1,68 +1,60 @@
-# 本机与局域网直连设计
+# 本机与局域网加密直连
 
-本页为设计与部署准备，尚未安装网关、申请证书、修改 DNS 或开放端口。
+浏览器继续访问 `https://remote-codex.x-wrt.dev`。无需另备本地 HTTPS 证书、修改路由器 DNS 或安装客户端 CA：网页和连接协商使用现有 HTTPS 入口，noVNC 的画面与原生键鼠字节通过 WebRTC DataChannel 直连主机。
 
-## 当前情况
-
-2026-11-01 检查本机：局域网 IPv4 为 `192.168.16.224/24`，网关为 `192.168.16.1`。地址来自当前网络配置，部署前应在路由器预留地址。端口 80 已有其他服务，443 尚未监听。
-
-面板固定监听 `127.0.0.1:36080`。当前 `PUBLIC_ORIGIN=https://remote-codex.x-wrt.dev`，Host 白名单只有该域名，Cookie 使用 Secure；直接请求 `http://127.0.0.1:36080/` 与健康接口均因 Host 不匹配返回 400。仅增加 `ALLOWED_HOSTS` 不能同时解决 HTTPS Origin 与 Secure Cookie。
-
-## 推荐：同一个域名，按访问位置选择路径
-
-浏览器始终访问 `https://remote-codex.x-wrt.dev`，保持当前应用配置及登录、Host、Origin、CSRF 校验。
-
-| 访问位置 | 域名解析 | 网页与 WebSocket 路径 |
-| --- | --- | --- |
-| 主机本身 | hosts 或本机 DNS 指向 `127.0.0.1` | 回环 HTTPS 网关 → `127.0.0.1:36080` |
-| 同一局域网 | 路由器 DNS 覆盖为 `192.168.16.224` | 局域网 HTTPS 网关 → `127.0.0.1:36080` |
-| 外网 | 保留现有公网 DNS | Cloudflare → Tunnel → `127.0.0.1:36080` |
-
-HTTPS 网关就在本机，不需要外部中转。本机与局域网路径的网页、API 和画面流都绕过 Cloudflare；外网连接继续使用既有 Tunnel。面板及 Python helper 保持回环绑定，VNC 继续使用私有 Unix socket，不开放 VNC TCP。
-
-内网 DNS 只覆盖这个完整域名，不覆盖整个 `x-wrt.dev`。除 A 记录外，也需处理 AAAA：配置稳定的局域网 IPv6，或在内网对该名称的 AAAA 返回无记录，避免浏览器仍通过公网 IPv6 连接 Cloudflare。浏览器的独立 DoH、安全 DNS 或手机私有 DNS 若绕过路由器，也需为该域名采用本地解析；系统代理/VPN 同样需要允许 LAN 地址直连。这不改动 Tunnel 的 IPv6 优先出站策略。
-
-## HTTPS 和反向代理
-
-网关需要浏览器信任、名称匹配 `remote-codex.x-wrt.dev` 的证书。可通过 ACME DNS-01 申请，网站无需开放公网 80/443；证书续期仍要验证 DNS。使用范围受限的 DNS 凭据，Tunnel 运行 token 不能代替 DNS API 凭据。[Let's Encrypt DNS-01](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)
-
-Cloudflare Origin CA 主要用于 Cloudflare 到源站的连接，不能作为浏览器局域网直连的默认可信证书。[Cloudflare Origin CA 说明](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/)
-
-网关监听回环和明确的 LAN 地址，允许网段限定为当前局域网；复用已有网关或固定版本部署，保留既有 80 端口服务。若使用 Nginx，除了域名证书，必须传递实际 Host、Origin 以及 WebSocket 升级头，网页和 `/desktop/websockify` 都走同一个入口。[Nginx WebSocket 转发](https://nginx.org/en/docs/http/websocket.html)
-
-核心转发配置示意（不是完整部署文件）：
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:36080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $http_host;
-    proxy_set_header Origin $http_origin;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;
-    proxy_buffering off;
-    proxy_request_buffering off;
-    proxy_read_timeout 3600s;
-}
+```text
+浏览器 ── HTTPS：登录、协商、管理 API ── Cloudflare / Tunnel ── 面板回环接口
+   └──────── 局域网 UDP：ICE + DTLS + SCTP ───────────────┘
+                                                       ↓
+                                               私有 VNC Unix socket
 ```
 
-`$connection_upgrade` 需在网关 http 上下文中按 Upgrade 头是否为空映射；上传上限保持 50 MiB。实施时为网关与证书维护补齐固定路径和资源界限：仅一组活动证书/密钥与最多一组备份，每个文件最多 64 KiB；DNS 凭据最多 4 KiB、私有目录 0700、密钥 0600；日志使用宿主受限 journal 或明确轮转上限。证书、密钥、凭据和运行文件全部留在忽略目录。
+## 当前支持
 
-普通局域网 HTTP 不具备 HTTPS 的浏览器能力；例如剪贴板与 Service Worker 涉及安全上下文。`localhost` 是浏览器的本机例外，但不会使局域网 IP HTTP 自动可信，也不会绕过本项目的 Origin 检查。[MDN 安全上下文](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Secure_Contexts)
+- 同一台主机或可互通的 IPv4 局域网优先尝试加密直连。
+- 连接状态窗口的“画面路径”显示实际使用的“WebRTC 加密直连”或“HTTPS / WebSocket 中转”。不是根据地址猜测结果。
+- 直连协商最多等待 8 秒；失败或连接断开后，本次画面生命周期回退到既有 WebSocket。刷新页面可重新尝试直连。连接恢复只建立新画面，不补发提示词、粘贴、Enter、审批或其他输入。
+- 当前只有画面与 noVNC 原生键鼠流直连。登录、健康轮询、输入助手、剪贴板、桌面管理及文件 API 仍使用现有 HTTPS 入口；网页初次打开仍依赖公网入口可达。
+- 第一阶段不使用外部 STUN 或 TURN，不做公网打洞，也不承诺跨网直连。外网、AP 客户端隔离、防火墙或浏览器策略阻止 UDP 时使用原有 WebSocket。
 
-## 验证与回退
+WebRTC 使用标准 DTLS 加密，不另设计密码协议。临时证书不需要浏览器 CA 信任；双方通过已认证 HTTPS 协商证书指纹，再在 DTLS 握手中校验指纹。该安全性仍依赖 HTTPS 页面与协商入口可信。Cloudflare 参与页面、协商和管理 API；直连的画面字节不经过它。[WebRTC Data Channels 标准](https://www.rfc-editor.org/rfc/rfc8831.html)、[WebRTC 浏览器规范](https://www.w3.org/TR/webrtc/)
 
-部署网关后，先通过指定解析测试，不必立即改路由器 DNS：
+现有 WebSocket 回退使用原有 HTTPS/WSS 链路，不等同于 WebRTC 两端之间的 DTLS 加密。后续接入 TURN 后，TURN 可转发 DTLS 密文；当前未部署 TURN。
+
+## 配置和端口
+
+默认启用，可在 `.env` 中关闭或明确指定本机接口：
+
+```dotenv
+WEBRTC_ENABLED=1
+# 可选；不填时选择本机第一个私有 IPv4，找不到则使用回环。
+WEBRTC_LAN_ADDRESS=192.168.16.224
+```
+
+多网卡、VPN 或容器网桥环境建议明确指定 LAN 地址；必须是本机已分配的 RFC 1918 私有 IPv4 或回环地址。DHCP 地址变化后需更新配置并重启面板，建议在路由器预留地址。主机本身的浏览器也可连接该 LAN 地址。
+
+WebRTC 仅在协商时绑定指定地址的 **UDP 40000–40015**，不监听公共 TCP VNC 端口。主机防火墙如需放行，只允许可信 LAN 网段访问此 UDP 范围；不配置路由器公网端口转发。浏览器 mDNS 地址解析可能使用局域网 UDP 5353。面板 `127.0.0.1:36080`、helper 回环地址、VNC 私有 Unix socket 以及 Tunnel 的 IPv6 优先出站策略保持原状。
+
+运行 `npm ci` 安装锁定的 `werift@0.26.0`，再只重启面板：
 
 ```bash
-curl --noproxy '*' --resolve remote-codex.x-wrt.dev:443:192.168.16.224 \
-  https://remote-codex.x-wrt.dev/healthz
-curl --noproxy '*' --resolve remote-codex.x-wrt.dev:443:127.0.0.1 \
-  https://remote-codex.x-wrt.dev/healthz
+systemctl --user restart codex-cloud-panel.service
 ```
 
-不用 `-k`，以同时验证证书。浏览器 Network 的远端地址应为局域网地址或回环地址，WebSocket 应正常升级并持续显示画面。修改解析后需清理旧解析缓存并重新建立连接；已经建立的公网 WebSocket 不会仅因 DNS 改动立即切换路径。再验证登录、接管、剪贴板、文件传输及错误 Origin 拒绝；同一桌面、相同分辨率和画质下比较交互延迟，HTTPS 首次请求时间不能直接当作 VNC 帧延迟。
+关闭直连时设置 `WEBRTC_ENABLED=0` 并重启面板。桌面、tmux 和 Codex 会话独立运行。
 
-然后从另一局域网设备确认 A/AAAA 解析，再启用单域名 DNS 覆盖；使用蜂窝网络验证公网入口仍经过 Cloudflare。回退时移除 DNS/hosts 覆盖即可恢复公网路径。切换网络可能关闭画面连接，恢复只重连画面，不重放输入。
+## 认证与资源界限
 
-本次只完成设计。实际直连效果、LAN HTTPS 证书及另一台局域网设备的连通性，需在网关部署后验证。
+协商接口要求有效登录、Host、Origin、CSRF 及当前页面控制权。延迟请求体、协商过程中发生接管或退出均不能获得旧控制权。WebRTC 与 WebSocket 共用单一画面连接、退出、登录到期、接管和桌面维护的关闭机制；数据转发前再次检查授权，不将 Cookie 或 CSRF 发给 VNC。
+
+只接受一个 data m-section、有 SHA-256 指纹的 SDP；请求体最多 48 KiB，SDP 最多 32 KiB，最多保留 8 个私有 IPv4 或单标签 `.local` 的 UDP host 候选。候选配对和 STUN 响应再次限定为私有 IPv4。只允许一个可靠、有序的 `codex-vnc` 数据通道，不接受媒体或任意代理目标。
+
+每次仅一项协商、一个活动 peer；替换时先关闭原 peer。连接建立窗口最多 10 秒，活动连接受登录有效期约束。消息最多 64 KiB，画面切为 16 KiB 消息，应用发送高水位 256 KiB，暂停读取上游形成背压；终端方向超过 256 KiB 就关闭连接，不排队重试。没有新增持久化证书、SDP、候选缓存、终端内容或连接日志。
+
+## 验证与后续
+
+自动化测试使用真实 Chrome、noVNC、WebRTC、DTLS 和 UDP，桌面源为模拟 RFB；检查加密状态、无需 WebSocket 的画面、接管、草稿保留和故障回退。Node 测试覆盖协商认证、延迟请求、候选与大小限制。这些测试不能代替另一台 LAN 设备的验收。
+
+实际验收时，手机与主机连接同一局域网，打开原来的 HTTPS 域名，查看“连接状态 → 画面路径”。再使用蜂窝网络确认能回退至中转。不要把 HTTPS 首次请求时间当作画面交互延迟。
+
+后续可接入有独立凭据与配额的 TURN，提供跨网加密中转；若需要断网时完整访问网页和所有 API，仍需另行部署浏览器可信的 LAN HTTPS 入口及单域名 DNS 覆盖。后者可用 ACME DNS-01 签发，无需开放公网网站端口。[Let's Encrypt DNS-01](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)

@@ -7,6 +7,7 @@ let controlsState = { available: false, maintenance: false, inputBusy: false };
 let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = false, clipboardText = '';
 let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
 let diagnosticsController = null, diagnosticsTimer;
+let frameTransport = '';
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
@@ -90,6 +91,7 @@ function renderConnection() {
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
+  $('diag-transport').textContent = frameState !== 'connected' ? '等待画面连接' : frameTransport === 'direct' ? 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
@@ -181,6 +183,7 @@ function overlay(title, description, takeover = false) {
 function stopFrame() {
   frameLoaded = false;
   frameState = 'idle';
+  frameTransport = '';
   frameEpoch++;
   displayScale = 0;
   scaleRevision = -1;
@@ -590,7 +593,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
-  if (event.data.state === 'connected') { frameState = 'connected'; sendDisplayPreferences(); }
+  if (event.data.state === 'connected') { frameState = 'connected'; frameTransport = event.data.transport === 'direct' ? 'direct' : 'relay'; sendDisplayPreferences(); }
   else if (event.data.state === 'disconnected') { frameState = 'reconnecting'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
   else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;
