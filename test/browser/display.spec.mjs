@@ -168,3 +168,61 @@ test('invalid saved display preferences fall back to a usable interactive view',
   await expect(page.frameLocator('#desktop-frame').locator('#pan-layer')).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+async function observeScaleReports(page) {
+  await page.addInitScript(() => window.addEventListener('message', event => {
+    if (event.data?.type !== 'codex-desktop-view') return;
+    if (window.holdScaleReports) { window.heldScaleReport = event.data; event.stopImmediatePropagation(); }
+    else window.latestScaleReport = event.data;
+  }, true));
+}
+
+test('rapid manual zoom uses the requested scale while viewer reports are delayed', async ({ page }) => {
+  const app = await fixture({ rfb: true, password: 'demo_password_for_tests' });
+  const stats = observeInput(page);
+  try {
+    await observeScaleReports(page); await login(page, app.config.origin);
+    await page.evaluate(() => { window.holdScaleReports = true; });
+    await page.locator('#actual-size-button').click();
+    await page.locator('#zoom-in-button').click();
+    await expect(page.locator('#zoom-label')).toHaveText('125%');
+    await page.locator('#zoom-in-button').click();
+    await expect(page.locator('#zoom-label')).toHaveText('156%');
+    await page.locator('#zoom-out-button').click();
+    await expect(page.locator('#zoom-label')).toHaveText('125%');
+    await expect.poll(() => widthOf(page)).toBe(2000);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('codex-cloud.display.v1')).zoom)).toBe(1.25);
+    for (let i = 0; i < 4; i++) if (!await page.locator('#zoom-in-button').isDisabled()) await page.locator('#zoom-in-button').click();
+    await expect(page.locator('#zoom-label')).toHaveText('200%');
+    await expect(page.locator('#zoom-in-button')).toBeDisabled();
+    expect(stats.connections).toBe(1); expect(stats.keys).toBe(0); expect(stats.resizes).toBe(0); expect(app.inputCalls).toHaveLength(0);
+  } finally { await app.close(); }
+});
+
+test('fit zoom waits for its matching report and ignores a late manual-scale report', async ({ page }) => {
+  const app = await fixture({ rfb: true, password: 'demo_password_for_tests' });
+  try {
+    await observeScaleReports(page); await login(page, app.config.origin);
+    await page.locator('#actual-size-button').click();
+    await expect.poll(() => page.evaluate(() => window.latestScaleReport?.scale)).toBe(1);
+    const stale = await page.evaluate(() => window.latestScaleReport);
+    await page.evaluate(() => { window.holdScaleReports = true; });
+    await page.locator('#fit-button').click();
+    await expect(page.locator('#zoom-in-button')).toBeDisabled();
+    await expect(page.locator('#zoom-label')).toHaveText('—');
+    await expect.poll(() => page.evaluate(() => window.heldScaleReport?.revision ?? -1)).toBeGreaterThan(stale.revision);
+    const current = await page.evaluate(() => window.heldScaleReport);
+    const deliver = report => page.evaluate(data => {
+      window.holdScaleReports = false;
+      window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: document.getElementById('desktop-frame').contentWindow, data }));
+    }, report);
+    await deliver(stale);
+    await expect(page.locator('#zoom-label')).toHaveText('—');
+    await expect(page.locator('#zoom-in-button')).toBeDisabled();
+    await deliver(current);
+    await expect(page.locator('#zoom-in-button')).toBeEnabled();
+    await page.locator('#zoom-in-button').click();
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('codex-cloud.display.v1')).zoom)).toBe(Math.round(current.scale * 1.25 * 100) / 100);
+    expect(app.inputCalls).toHaveLength(0);
+  } finally { await app.close(); }
+});

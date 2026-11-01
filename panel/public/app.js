@@ -14,7 +14,7 @@ $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
 const displayPreferences = { zoom: 'fit', pan: false, collapsed: false, controlsCollapsed: false };
-let displayScale = 0;
+let displayScale = 0, displayRevision = 0, scaleRevision = -1;
 try {
   const stored = localStorage.getItem(displayKey);
   if (stored && stored.length <= 256) {
@@ -26,8 +26,9 @@ try {
 } catch {}
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() }, location.origin);
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(), revision: displayRevision }, location.origin);
 }
+function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
   $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
   $('actual-size-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 1));
@@ -40,11 +41,13 @@ function renderDisplayControls() {
   $('desktop-card').classList.toggle('controls-collapsed', displayPreferences.controlsCollapsed);
   $('toggle-controls-button').setAttribute('aria-expanded', String(!displayPreferences.controlsCollapsed));
   $('toggle-controls-button').textContent = displayPreferences.controlsCollapsed ? '展开控件' : '收起控件';
-  $('zoom-label').textContent = displayScale ? `${Math.round(displayScale * 100)}%` : '—';
-  $('zoom-out-button').disabled = !displayScale || displayScale <= 0.1;
-  $('zoom-in-button').disabled = !displayScale || displayScale >= 2;
+  const base = zoomBase(), ready = frameLoaded && frameState === 'connected';
+  $('zoom-label').textContent = base ? `${Math.round(base * 100)}%` : '—';
+  $('zoom-out-button').disabled = !ready || !base || base <= 0.1;
+  $('zoom-in-button').disabled = !ready || !base || base >= 2;
 }
 function updateDisplayPreferences(change) {
+  if (change.zoom !== undefined && change.zoom !== displayPreferences.zoom) displayRevision++;
   Object.assign(displayPreferences, change);
   try { localStorage.setItem(displayKey, JSON.stringify(displayPreferences)); } catch {}
   renderDisplayControls();
@@ -53,8 +56,9 @@ function updateDisplayPreferences(change) {
 $('fit-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 'fit' }));
 $('actual-size-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 1 }));
 for (const [id, factor] of [['zoom-out-button', 0.8], ['zoom-in-button', 1.25]]) $(id).addEventListener('click', () => {
-  if (!displayScale) return;
-  updateDisplayPreferences({ zoom: Math.max(0.1, Math.min(2, Math.round(displayScale * factor * 100) / 100)) });
+  const base = zoomBase();
+  if (!base || $(id).disabled) return;
+  updateDisplayPreferences({ zoom: Math.max(0.1, Math.min(2, Math.round(base * factor * 100) / 100)) });
 });
 $('pan-button').addEventListener('click', () => {
   updateDisplayPreferences({ pan: !displayPreferences.pan });
@@ -88,6 +92,7 @@ function renderConnection() {
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
   $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
+  renderDisplayControls();
   renderDesktopSettings();
   renderClipboard();
   sendDisplayPreferences();
@@ -178,6 +183,7 @@ function stopFrame() {
   frameState = 'idle';
   frameEpoch++;
   displayScale = 0;
+  scaleRevision = -1;
   renderDisplayControls();
   $('desktop-frame').hidden = true;
   $('desktop-frame').src = 'about:blank';
@@ -572,8 +578,10 @@ window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
   if (event.data?.type === 'codex-desktop-view') {
+    if (event.data.revision !== displayRevision) return;
     if (Number.isFinite(event.data.scale) && event.data.scale > 0 && event.data.scale <= 16) {
       displayScale = event.data.scale;
+      scaleRevision = event.data.revision;
       renderDisplayControls();
     }
     if (Number.isInteger(event.data.width) && Number.isInteger(event.data.height) && event.data.width > 0 && event.data.height > 0 && event.data.width <= 16384 && event.data.height <= 16384) frameDimensions = { width: event.data.width, height: event.data.height };
@@ -583,7 +591,7 @@ window.addEventListener('message', event => {
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
   if (event.data.state === 'connected') { frameState = 'connected'; sendDisplayPreferences(); }
-  else if (event.data.state === 'disconnected') { frameState = 'reconnecting'; clearClipboard(); renderClipboard(); }
+  else if (event.data.state === 'disconnected') { frameState = 'reconnecting'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
   else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;
   renderConnection();

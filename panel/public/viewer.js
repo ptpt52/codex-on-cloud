@@ -6,7 +6,7 @@ const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
-const preferences = { zoom: 'fit', pan: false, blocked: true };
+const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1 };
 let rfb, retry, stopping = false;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
@@ -18,7 +18,7 @@ function reportView() {
     if (!canvas?.width) return;
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
-    const report = { type: 'codex-desktop-view', frame, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height };
+    const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -68,9 +68,11 @@ window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-desktop-options') return;
   if (!(value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
+  if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
   preferences.zoom = value.zoom;
   preferences.pan = value.pan;
   preferences.blocked = value.blocked;
+  preferences.revision = value.revision ?? 0;
   applyView();
 });
 
