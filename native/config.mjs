@@ -20,7 +20,7 @@ export function settings(env = environment()) {
   const runtime = resolve(env.RUNTIME_DIR || join(env.XDG_RUNTIME_DIR || join(root, 'data', 'runtime'), 'codex-on-cloud'));
   const socket = join(runtime, 'vnc.sock');
   if (Buffer.byteLength(socket) > 100) throw new Error('RUNTIME_DIR 太长，请使用较短的绝对路径');
-  const size = env.DESKTOP_SIZE || '1280x1280';
+  const size = env.DESKTOP_SIZE || '1600x1280';
   if (!/^\d{3,4}x\d{3,4}$/.test(size) || size.split('x').some(value => Number(value) < 320 || Number(value) > 4096)) throw new Error('DESKTOP_SIZE 必须在 320x320 到 4096x4096 之间');
   return {
     root, runtime, socket, workspace, transfer: join(workspace, 'transfer'),

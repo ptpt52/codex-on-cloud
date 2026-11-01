@@ -46,13 +46,13 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
         pending = pending.subarray(1); phase = 3;
         const name = Buffer.from('SIMULATED DESKTOP - TEST ONLY');
         const header = Buffer.alloc(24);
-        header.writeUInt16BE(1280, 0); header.writeUInt16BE(1280, 2);
+        header.writeUInt16BE(1600, 0); header.writeUInt16BE(1280, 2);
         header.set([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0], 4);
         header.writeUInt32BE(name.length, 20); socket.write(Buffer.concat([header, name]));
       } else if (phase === 3 && !sent) {
         sent = true;
-        const frame = Buffer.alloc(16 + 1280 * 1280 * 4);
-        frame.writeUInt16BE(1, 2); frame.writeUInt16BE(1280, 8); frame.writeUInt16BE(1280, 10);
+        const frame = Buffer.alloc(16 + 1600 * 1280 * 4);
+        frame.writeUInt16BE(1, 2); frame.writeUInt16BE(1600, 8); frame.writeUInt16BE(1280, 10);
         for (let i = 16; i < frame.length; i += 4) frame.set([34, 48, 29, 0], i);
         socket.write(frame);
       }
