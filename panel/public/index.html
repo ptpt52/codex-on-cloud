@@ -37,14 +37,28 @@
       <div class="brand"><img src="/icon.svg" width="30" height="30" alt=""><span>Codex<span class="brand-light"> on Cloud</span></span></div>
       <div class="topbar-right"><span id="user-label" class="user-label"></span><button id="files-button" class="secondary">文件中转</button><button id="logout-button" class="quiet">退出</button></div>
     </header>
-    <section class="desktop-card" aria-label="远程桌面">
+    <section id="desktop-card" class="desktop-card" aria-label="远程桌面">
       <div class="desktop-toolbar"><div class="desktop-title"><span class="monitor-icon" aria-hidden="true">▣</span><strong>开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span></div><div class="desktop-actions"><button id="terminal-button" class="quiet" title="打开或返回已有的 Codex 终端">打开终端</button><button id="reconnect-button" class="quiet">重新连接</button><button id="fullscreen-button" class="quiet" aria-label="全屏桌面" title="全屏桌面">⛶</button></div></div>
+      <div class="display-controls" role="group" aria-label="桌面显示控制">
+        <div class="zoom-controls">
+          <button id="fit-button" class="view-button" aria-pressed="true">适应窗口</button>
+          <button id="actual-size-button" class="view-button" aria-pressed="false">原始比例</button>
+          <button id="zoom-out-button" class="view-button zoom-step" aria-label="缩小画面" disabled>−</button>
+          <output id="zoom-label" class="zoom-label" aria-label="当前显示比例">—</output>
+          <button id="zoom-in-button" class="view-button zoom-step" aria-label="放大画面" disabled>＋</button>
+        </div>
+        <div class="view-actions">
+          <button id="pan-button" class="view-button" aria-pressed="false" aria-describedby="pan-description">拖动画面</button>
+          <span id="pan-description" class="sr-only">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
+          <button id="toggle-input-button" class="view-button" aria-expanded="true" aria-controls="input-dock">收起输入</button>
+        </div>
+      </div>
       <div id="desktop-stage" class="desktop-stage">
         <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
         <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button></div>
       </div>
     </section>
-    <section class="input-dock" aria-label="手机输入辅助">
+    <section id="input-dock" class="input-dock" aria-label="手机输入辅助">
       <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
       <div class="composer"><textarea id="mobile-input" rows="2" placeholder="先点选桌面中的输入位置，再在这里写下指令…" aria-label="要粘贴到桌面的文字"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="Escape">Esc</button><button data-key="Tab">Tab ⇥</button><button data-key="Ctrl+C">Ctrl C</button><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>

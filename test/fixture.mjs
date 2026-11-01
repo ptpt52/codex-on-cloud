@@ -90,6 +90,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
     panel, config, directory, received, files, viewer, request, login, claim,
+    disconnectViewers() { for (const client of clients) client.destroy(); },
     get cookie() { return cookie; }, get csrf() { return csrf; },
     async close({ preserve = false } = {}) {
       await panel.close();

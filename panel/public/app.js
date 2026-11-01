@@ -5,6 +5,53 @@ let inputBusy = false;
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
 $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
 
+// One bounded browser preference entry; it contains no terminal text or credentials.
+const displayKey = 'codex-cloud.display.v1';
+const displayPreferences = { zoom: 'fit', pan: false, collapsed: false };
+let displayScale = 0;
+try {
+  const stored = localStorage.getItem(displayKey);
+  if (stored && stored.length <= 256) {
+    const value = JSON.parse(stored);
+    if (value && (value.zoom === 'fit' || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) && typeof value.pan === 'boolean' && typeof value.collapsed === 'boolean') {
+      Object.assign(displayPreferences, { zoom: value.zoom, pan: value.pan, collapsed: value.collapsed });
+    }
+  }
+} catch {}
+function sendDisplayPreferences() {
+  if (!frameLoaded || !owned) return;
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan }, location.origin);
+}
+function renderDisplayControls() {
+  $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
+  $('actual-size-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 1));
+  $('pan-button').setAttribute('aria-pressed', String(displayPreferences.pan));
+  $('toggle-input-button').setAttribute('aria-expanded', String(!displayPreferences.collapsed));
+  $('toggle-input-button').textContent = displayPreferences.collapsed ? '展开输入' : '收起输入';
+  $('input-dock').hidden = displayPreferences.collapsed;
+  $('zoom-label').textContent = displayScale ? `${Math.round(displayScale * 100)}%` : '—';
+  $('zoom-out-button').disabled = !displayScale || displayScale <= 0.1;
+  $('zoom-in-button').disabled = !displayScale || displayScale >= 2;
+}
+function updateDisplayPreferences(change) {
+  Object.assign(displayPreferences, change);
+  try { localStorage.setItem(displayKey, JSON.stringify(displayPreferences)); } catch {}
+  renderDisplayControls();
+  sendDisplayPreferences();
+}
+$('fit-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 'fit' }));
+$('actual-size-button').addEventListener('click', () => updateDisplayPreferences({ zoom: 1 }));
+for (const [id, factor] of [['zoom-out-button', 0.8], ['zoom-in-button', 1.25]]) $(id).addEventListener('click', () => {
+  if (!displayScale) return;
+  updateDisplayPreferences({ zoom: Math.max(0.1, Math.min(2, Math.round(displayScale * factor * 100) / 100)) });
+});
+$('pan-button').addEventListener('click', () => {
+  updateDisplayPreferences({ pan: !displayPreferences.pan });
+  toast(displayPreferences.pan ? '拖动模式：移动画面，不会点击远程桌面' : '操作模式：可以点击远程桌面');
+});
+$('toggle-input-button').addEventListener('click', () => updateDisplayPreferences({ collapsed: !displayPreferences.collapsed }));
+renderDisplayControls();
+
 function toast(message, failure = false) {
   clearTimeout(toastTimer);
   $('toast').textContent = message;
@@ -31,6 +78,8 @@ function overlay(title, description, takeover = false) {
 }
 function stopFrame() {
   frameLoaded = false;
+  displayScale = 0;
+  renderDisplayControls();
   $('desktop-frame').hidden = true;
   $('desktop-frame').src = 'about:blank';
 }
@@ -151,7 +200,7 @@ $('paste-button').addEventListener('click', () => void inputAction(async () => {
 for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => void inputAction(() => api('/api/key', { method: 'POST', body: { key: button.dataset.key } })));
 $('fullscreen-button').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(error => toast(error.message, true));
-  else if ($('desktop-stage').requestFullscreen) $('desktop-stage').requestFullscreen().catch(error => toast(error.message, true));
+  else if ($('desktop-card').requestFullscreen) $('desktop-card').requestFullscreen().catch(error => toast(error.message, true));
   else toast('此浏览器不支持网页全屏，可以横屏或添加到主屏幕使用');
 });
 
@@ -188,7 +237,18 @@ $('upload-input').addEventListener('change', async () => {
 });
 window.addEventListener('online', () => void poll());
 window.addEventListener('message', event => {
-  if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || event.data?.type !== 'codex-desktop' || !owned) return;
+  if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
+  if (event.data?.type === 'codex-desktop-view') {
+    if (Number.isFinite(event.data.scale) && event.data.scale > 0 && event.data.scale <= 16) {
+      displayScale = event.data.scale;
+      renderDisplayControls();
+    }
+    return;
+  }
+  if (event.data?.type !== 'codex-desktop') return;
+  if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
+  if (!['connected', 'disconnected'].includes(event.data.state)) return;
+  if (event.data.state === 'connected') sendDisplayPreferences();
   const connected = event.data.state === 'connected';
   $('connection-status').classList.toggle('offline', !connected);
   $('connection-status').lastChild.textContent = connected ? '桌面在线' : '重新连接中';

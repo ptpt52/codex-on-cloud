@@ -7,7 +7,10 @@
   <link rel="stylesheet" href="./viewer.css">
 </head>
 <body>
-  <div id="screen"></div>
+  <div id="viewport">
+    <div id="screen"></div>
+  </div>
+  <div id="pan-layer" tabindex="0" role="region" aria-label="拖动查看桌面，点击和按键不会发送到远程桌面" hidden></div>
   <p id="status" role="status">正在连接独立桌面…</p>
   <script type="module" src="./viewer.js"></script>
 </body>
