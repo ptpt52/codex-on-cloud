@@ -7,6 +7,7 @@ import { readPreferences, writePreferences, preferenceRevision, validatePreferen
 import { validateInput, executeInput } from './input.mjs';
 import { clipboardSource, readClipboard } from './clipboard.mjs';
 import { createViewportResizer, viewportSize } from './viewport.mjs';
+import { createFixedSizeStore } from './fixed-size.mjs';
 
 const exec = promisify(execFile);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -58,12 +59,21 @@ export function createDesktopControls(config, dependencies = {}) {
   const busy = () => maintenance() || inputActive || clipboardActive || viewportActive;
   const status = () => {
     if (viewport) void viewport.refresh();
+    void refreshFixed();
     return { available: true, maintenance: !!maintenance(), inputBusy: inputActive, clipboardBusy: clipboardActive, viewportBusy: viewportActive,
       viewport: { ...(viewport?.status() || { supported: false }), fixed: { ...fixedSize } }, input: lastInput ? { ...lastInput } : null };
   };
   const saved = () => readPreferences(config.preferencesFile, config.defaultPreferences);
   const initial = saved();
   let fixedSize = { width: initial.width, height: initial.height };
+  const fixedStore = dependencies.fixedSizeStore || (!dependencies.run ? createFixedSizeStore(run) : null);
+  let fixedGeneration = 0;
+  async function refreshFixed() {
+    if (!fixedStore || busy()) return;
+    const generation = fixedGeneration, value = await fixedStore.read();
+    if (value && generation === fixedGeneration && !busy()) fixedSize = value;
+  }
+  const ready = refreshFixed();
   async function geometry() {
     try {
       const result = await run('xdotool', ['getdisplaygeometry']);
@@ -139,11 +149,15 @@ export function createDesktopControls(config, dependencies = {}) {
     } finally { clipboardActive = false; }
   }
   async function get() {
+    await ready;
     const preferences = saved();
     const wasBusy = busy(), snapshot = job ? { ...job } : null;
-    const [actual, session] = await Promise.all([geometry(), pane()]);
-    return { saved: preferences, revision: preferenceRevision(preferences), actual, session,
-      restartRequired: !!actual && (actual.width !== preferences.width || actual.height !== preferences.height),
+    const [actual, session] = await Promise.all([geometry(), pane(), viewport?.refresh(), refreshFixed()]);
+    const capability = viewport?.status();
+    const canResize = capability?.supported === true && preferences.width <= capability.maximum.width && preferences.height <= capability.maximum.height;
+    const applyRequired = !!actual && (actual.width !== preferences.width || actual.height !== preferences.height || fixedSize.width !== preferences.width || fixedSize.height !== preferences.height);
+    return { saved: preferences, revision: preferenceRevision(preferences), actual, session, fixed: { ...fixedSize }, maximum: capability?.maximum || null,
+      canResize, applyRequired, restartRequired: applyRequired && !canResize,
       busy: wasBusy || busy(), job: snapshot };
   }
   async function resizeViewport(body) {
@@ -151,7 +165,7 @@ export function createDesktopControls(config, dependencies = {}) {
     if (!viewport?.status().supported) throw new ControlError(501, '当前虚拟显示不支持窗口适配');
     if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，暂不调整尺寸');
     viewportActive = true;
-    try { return await viewport.resize(body); }
+    try { return await viewport.resize(body, { exact: body.width === fixedSize.width && body.height === fixedSize.height }); }
     catch { throw new ControlError(503, '本次窗口适配未完成，当前任务继续运行'); }
     finally { viewportActive = false; }
   }
@@ -174,14 +188,39 @@ export function createDesktopControls(config, dependencies = {}) {
     job = null;
     return { saved: value, revision: preferenceRevision(value) };
   }
+  async function applyResolution(body) {
+    if (busy()) throw new ControlError(409, '已有桌面操作进行中');
+    preparing = true;
+    fixedGeneration++;
+    let view;
+    try {
+      view = await get();
+      if (body?.revision !== view.revision) throw new ControlError(409, '设置已变化，请刷新后重新应用');
+      if (!view.actual || !view.canResize) throw new ControlError(409, '当前尺寸无法直接应用，请刷新设置查看是否需要重启');
+      viewportActive = true;
+    } finally { preparing = false; }
+    job = null;
+    try {
+      const result = await viewport.resize({ width: view.saved.width, height: view.saved.height }, { exact: true });
+      if (result.actual.width !== view.saved.width || result.actual.height !== view.saved.height) throw new Error('尺寸未匹配');
+      await fixedStore?.write(result.actual);
+      fixedSize = { ...result.actual };
+      return { ...result, fixed: { ...fixedSize } };
+    } catch {
+      const error = new ControlError(503, '分辨率应用结果未确认，请刷新设置查看；不会自动重试或重启桌面');
+      error.outcome = 'unknown'; throw error;
+    } finally { viewportActive = false; }
+  }
   async function apply(body) {
     if (busy()) throw new ControlError(409, '已有桌面操作进行中');
     if (body?.confirm !== true) throw new ControlError(400, '应用分辨率需要明确确认重启');
     preparing = true;
+    fixedGeneration++;
     let view;
     try {
       view = await get();
       if (body.revision !== view.revision || body.panePid !== view.session?.pid || (body.resumeId ?? null) !== view.session?.resumeId) throw new ControlError(409, '设置或会话已变化，请刷新后重新确认');
+      if (view.canResize) throw new ControlError(409, '该分辨率可直接应用，请刷新设置，无需重启');
       if (!view.actual || !view.restartRequired || !view.session?.recoverable) throw new ControlError(409, '当前无法安全应用；请确认只有一个可恢复会话，或先结束前台任务');
     } finally { preparing = false; }
     return startJob('apply', async current => {
@@ -241,5 +280,5 @@ export function createDesktopControls(config, dependencies = {}) {
       }
     });
   }
-  return { get, save, apply, terminal, input, status, clipboard, resizeViewport };
+  return { ready, get, save, apply, applyResolution, terminal, input, status, clipboard, resizeViewport };
 }

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import net from 'node:net';
 import { settings } from './config.mjs';
 import { createViewportResizer } from './viewport.mjs';
+import { createFixedSizeStore } from './fixed-size.mjs';
 
 const config = settings();
 const children = new Set();
@@ -108,8 +109,10 @@ try {
   start('Xvfb', [config.display, '-screen', '0', `${capacity}x24`, '-nolisten', 'tcp', '-auth', xauthority, '-noreset'], env);
   await waitFor(() => spawnSync('xdpyinfo', [], { env, stdio: 'ignore', timeout: 1000 }).status === 0, '独立显示');
   const exec = promisify(execFile);
-  const viewport = createViewportResizer(async (command, args, options) => (await exec(command, args, { env, timeout: 1000, maxBuffer: 16384, ...options })).stdout.trim());
-  await viewport.resize({ width: config.preferences.width, height: config.preferences.height });
+  const run = async (command, args, options) => (await exec(command, args, { env, timeout: 1000, maxBuffer: 16384, ...options })).stdout.trim();
+  const viewport = createViewportResizer(run);
+  await viewport.resize({ width: config.preferences.width, height: config.preferences.height }, { exact: true });
+  await createFixedSizeStore(run).write(config.preferences);
   start('dbus-run-session', ['--', 'bash', join(config.root, 'native', 'xfce-session.sh')], env);
   // Node owns the private Unix listener. x11vnc's inetd mode receives an already
   // accepted socket and opens no TCP listener, including on old Ubuntu builds

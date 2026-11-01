@@ -189,10 +189,11 @@ export async function createPanel(config) {
       requireSession(req);
       return reply(res, 200, await managerRequest(config, '/settings'));
     }
-    if (path === '/api/desktop/viewport' && req.method === 'POST') {
+    if (['/api/desktop/viewport', '/api/desktop/resolution'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
       if (maintenancePending) throw new HttpError(409, '桌面操作正在进行');
-      return reply(res, 200, await managerRequest(config, '/viewport', body));
+      const live = path.endsWith('/resolution');
+      return reply(res, 200, await managerRequest(config, live ? '/resolution' : '/viewport', body, live ? 9000 : 6000));
     }
     if (['/api/desktop/settings', '/api/desktop/apply', '/api/desktop/terminal-display'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req, 1024);

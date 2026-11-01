@@ -99,15 +99,17 @@
       <select id="resolution-preset"><option value="1280x1280">1280 × 1280</option><option value="1600x1600">1600 × 1600</option><option value="1600x3200">1600 × 3200</option><option value="1920x1600">1920 × 1600</option><option value="custom">自定义尺寸</option></select>
       <div class="settings-dimensions"><label for="desktop-width">宽度<input id="desktop-width" type="number" min="320" max="4096" step="1" required></label><span aria-hidden="true">×</span><label for="desktop-height">高度<input id="desktop-height" type="number" min="320" max="4096" step="1" required></label></div>
       <label class="settings-label" for="terminal-font-size">新终端字号</label><input id="terminal-font-size" type="number" min="10" max="28" step="1" required>
-      <p class="muted settings-help">宽高 320–4096 像素，字号 10–28。保存只更新配置，不会重启桌面。</p>
+    <p class="muted settings-help">宽高 320–4096 像素，字号 10–28。保存后点击应用；显示上限内立即生效并保留当前任务，超出上限才需确认重启。</p>
       <button id="save-desktop-settings" class="primary" type="submit" disabled>保存设置</button>
     </form>
     <p id="settings-pending" class="muted settings-help"></p>
     <div class="terminal-display-actions"><button id="apply-terminal-font" class="secondary" disabled>更新字号</button><button id="maximize-terminal" class="secondary" disabled>最大化终端</button><button id="restore-terminal" class="secondary" disabled>恢复窗口</button></div>
     <p class="muted settings-help">更新字号会重新打开终端窗口，保留 tmux 中的任务。</p>
     <div class="desktop-apply-section">
+      <div id="desktop-restart-notice" hidden>
       <p id="settings-recovery" class="muted"></p>
       <label class="restart-confirmation"><input id="confirm-desktop-restart" type="checkbox">我已了解：重启会终止当前进程和其他桌面应用。仅恢复已识别的对话，不自动继续旧任务。</label>
+      </div>
       <button id="apply-desktop-settings" class="primary" disabled>重启桌面并恢复会话</button>
     </div>
     <p id="desktop-settings-status" class="muted settings-help" role="status"></p>

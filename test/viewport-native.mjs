@@ -9,6 +9,8 @@ import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { createViewportResizer } from '../native/viewport.mjs';
+import { createDesktopControls } from '../native/desktop-controls.mjs';
+import { createFixedSizeStore } from '../native/fixed-size.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'codex-viewport-'));
 const env = { ...process.env, HOME: directory, XAUTHORITY: join(directory, 'Xauthority'),
@@ -36,6 +38,8 @@ try {
   const tmux = ['-S', join(directory, 'tmux.sock'), '-f', '/dev/null'];
   const resizer = createViewportResizer(run);
   await resizer.resize({ width: 1600, height: 1600 });
+  const fixedSizeStore = createFixedSizeStore(run);
+  await fixedSizeStore.write({ width: 1600, height: 1600 });
   assert.deepEqual((await resizer.refresh()).maximum, { width: 1600, height: 3200 });
   await run('tmux', [...tmux, 'new-session', '-d', '-s', 'viewport', '-x', '100', '-y', '30', '/bin/sleep 120']);
   const pid = await run('tmux', [...tmux, 'list-panes', '-F', '#{pane_pid}']);
@@ -108,8 +112,23 @@ try {
   }
   request(); await update();
   assert.equal((await resizer.refresh()).supported, true);
-  for (const size of [{ width: 1280, height: 720 }, { width: 1440, height: 800 }, { width: 900, height: 1200 }, { width: 1600, height: 240 }, { width: 1600, height: 3200 }, { width: 1600, height: 1600 }]) {
-    const result = await resizer.resize(size);
+  const config = { root: directory, runtime: directory, display: env.DISPLAY, env,
+    workspace: directory, transfer: directory, preferencesFile: join(directory, 'settings.json'), defaultPreferences: { width: 1600, height: 3200, fontSize: 15 } };
+  const controls = createDesktopControls(config, { run, viewport: resizer, fixedSizeStore });
+  for (const size of [{ width: 1280, height: 720 }, { width: 1440, height: 800 }, { width: 900, height: 1200 }, { width: 1600, height: 240 }, { width: 1366, height: 777 }, { width: 1600, height: 3200 }, { width: 1600, height: 1600 }]) {
+    let result;
+    if (size.height === 777 || size.height === 3200) {
+      const before = await controls.get();
+      const saved = controls.save({ ...before.saved, ...size, revision: before.revision });
+      assert.deepEqual((await controls.get()).actual, { width, height }, 'saving alone must not resize');
+      const reloaded = createDesktopControls(config, { run, viewport: resizer, fixedSizeStore });
+      await reloaded.ready;
+      assert.deepEqual(reloaded.status().viewport.fixed, before.fixed, 'manager recreation must preserve the applied target instead of activating pending settings');
+      result = await controls.applyResolution({ revision: saved.revision });
+      assert.deepEqual(result.actual, size);
+      assert.deepEqual(await fixedSizeStore.read(), size);
+      assert.equal((await controls.get()).applyRequired, false);
+    } else result = await resizer.resize(size);
     request();
     let changed = false;
     for (let i = 0; i < 40 && !changed; i++) { changed = await update(); if (!changed) { await new Promise(resolve => setTimeout(resolve, 100)); request(); } }
@@ -126,6 +145,8 @@ try {
     });
   }
   assert.ok(((await run('xrandr', ['--query'])).match(/^\s+codex-viewport-[ab]\s/gm) || []).length <= 2);
+  await fixedSizeStore.write({ width: 1440, height: 800 });
+  assert.deepEqual((await controls.get()).fixed, { width: 1440, height: 800 }, 'manager observes the applied size published by a separately restarted desktop');
   assert.ok(!(await run('ss', ['-lntp'])).includes(`pid=${viewer.pid},`));
   process.kill(originalComponents.xfdesktop, 'SIGTERM');
   await eventually(async () => !Object.hasOwn(await components(), 'xfdesktop'));

@@ -11,6 +11,8 @@ test('viewport sizing respects current virtual limits and rejects invalid dimens
   const size = viewportSize({ width: 2560, height: 1200 }, screen.maximum);
   assert.ok(size.width <= 1600 && size.height <= 1600);
   assert.ok(Math.abs(size.width / size.height - 2560 / 1200) < 0.03);
+  assert.deepEqual(viewportSize({ width: 1366, height: 777 }, screen.maximum, { exact: true }), { width: 1366, height: 777 });
+  assert.throws(() => viewportSize({ width: 1920, height: 900 }, screen.maximum, { exact: true }));
   for (const value of [{ width: 159, height: 800 }, { width: 1024, height: 8193 }, { width: '1024', height: 800 }, { width: 1024, height: 800, command: 'never' }]) assert.throws(() => viewportSize(value, screen.maximum));
   assert.throws(() => parseScreen('Screen 0: minimum 1 x 1, current 1600 x 900, maximum 1600 x 1600\nHDMI-1 connected 1600x900+0+0\n'));
 });

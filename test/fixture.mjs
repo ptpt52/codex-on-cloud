@@ -87,9 +87,9 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   const viewportControls = viewport ? {
     status: () => ({ supported: true, maximum, actual: { width: screenGeometry.width, height: screenGeometry.height } }),
     async refresh() { return this.status(); },
-    async resize(value) {
+    async resize(value, options) {
       await viewportHook?.(value);
-      const size = viewportSize(value, maximum); Object.assign(screenGeometry, size); managementStats.viewportResizes++;
+      const size = viewportSize(value, maximum, options); Object.assign(screenGeometry, size); managementStats.viewportResizes++;
       if (rfb) for (const socket of clients) {
         if (socket.destroyed) continue;
         const update = Buffer.alloc(16); update.writeUInt16BE(1, 2); update.writeUInt16BE(size.width, 8); update.writeUInt16BE(size.height, 10); update.writeInt32BE(-223, 12); socket.write(update);

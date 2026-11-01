@@ -10,11 +10,11 @@ export function createManagerServer(secret, controls) {
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return reply(401, { error: '本机管理接口认证失败', outcome: 'rejected' });
     if (active >= 4) return reply(503, { error: '本机管理接口繁忙，本次操作未发送', outcome: 'rejected' });
     active++;
-    req.setTimeout(5000, () => req.destroy());
+    req.setTimeout(req.url === '/resolution' ? 8000 : 5000, () => req.destroy());
     try {
       if (req.method === 'GET' && req.url === '/settings') return reply(200, await controls.get());
       if (req.method === 'GET' && req.url === '/status') return reply(200, controls.status());
-      if (!['/settings', '/apply', '/terminal', '/input', '/clipboard', '/viewport'].includes(req.url) || req.method !== 'POST') return reply(404, { error: '动作不存在' });
+      if (!['/settings', '/apply', '/resolution', '/terminal', '/input', '/clipboard', '/viewport'].includes(req.url) || req.method !== 'POST') return reply(404, { error: '动作不存在' });
       if (req.headers['content-type'] !== 'application/json') return reply(415, { error: '需要 JSON 请求' });
       const chunks = []; let size = 0;
       const limit = req.url === '/input' ? 128 * 1024 : 1024;
@@ -26,6 +26,7 @@ export function createManagerServer(secret, controls) {
       if (req.url === '/input') return reply(200, await controls.input(body));
       if (req.url === '/clipboard') return reply(200, await controls.clipboard(body));
       if (req.url === '/viewport') return reply(200, await controls.resizeViewport(body));
+      if (req.url === '/resolution') return reply(200, await controls.applyResolution(body));
       if (req.url === '/apply') return reply(202, { job: await controls.apply(body) });
       return reply(202, { job: controls.terminal(body) });
     } catch (error) { reply(error.status || 503, { error: error.status ? error.message : '本机桌面管理暂不可用', outcome: error.outcome || (error.status ? 'rejected' : 'unknown') }); }

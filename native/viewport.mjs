@@ -1,6 +1,10 @@
-export function viewportSize(value, maximum) {
+export function viewportSize(value, maximum, { exact = false } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['width', 'height'].includes(key)) ||
       !['width', 'height'].every(key => Number.isInteger(value[key]) && value[key] >= 160 && value[key] <= 8192)) throw new Error('窗口宽高必须为 160–8192 的整数');
+  if (exact) {
+    if (value.width > maximum.width || value.height > maximum.height) throw new Error('分辨率超过当前显示上限');
+    return { width: value.width, height: value.height };
+  }
   const scale = Math.min(1, maximum.width / value.width, maximum.height / value.height);
   return { width: Math.min(maximum.width, Math.max(160, Math.floor(value.width * scale / 8) * 8)),
     height: Math.min(maximum.height, Math.max(160, Math.floor(value.height * scale / 8) * 8)) };
@@ -30,7 +34,7 @@ export function createViewportResizer(run) {
     })().finally(() => { refreshing = undefined; });
     return refreshing;
   }
-  return { refresh, status: () => ({ ...state }), async resize(value) {
+  return { refresh, status: () => ({ ...state }), async resize(value, options) {
     if (active) throw new Error('窗口适配正在进行');
     active = true;
     const deadline = Date.now() + 5000;
@@ -39,8 +43,11 @@ export function createViewportResizer(run) {
       return run(command, args, { timeout: Math.min(1000, deadline - Date.now()) });
     };
     try {
-      const screen = await inspect(bounded), size = viewportSize(value, screen.maximum);
-      if (size.width === screen.actual.width && size.height === screen.actual.height) return { actual: size, maximum: screen.maximum };
+      const screen = await inspect(bounded), size = viewportSize(value, screen.maximum, options);
+      if (size.width === screen.actual.width && size.height === screen.actual.height) {
+        state = { supported: true, maximum: screen.maximum, actual: screen.actual };
+        return { actual: size, maximum: screen.maximum };
+      }
       const current = screen.text.match(/^\s+(codex-viewport-[ab])\s+[^\n]*\*/m)?.[1];
       const next = current === 'codex-viewport-a' ? 'codex-viewport-b' : 'codex-viewport-a';
       // Two reusable mode slots bound X server resources, including failures.

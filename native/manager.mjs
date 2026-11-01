@@ -26,7 +26,9 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const secret = (await readFile(join(config.root, 'secrets', 'agent_secret'), 'utf8')).trim();
 if (secret.length < 16 || secret.length > 512) throw new Error('管理接口密钥无效');
-const server = createManagerServer(secret, createDesktopControls(config));
+const controls = createDesktopControls(config);
+await controls.ready;
+const server = createManagerServer(secret, controls);
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.managerSocket, resolve); });
 await chmod(config.managerSocket, 0o600);
 console.log('本机桌面管理服务已启动');

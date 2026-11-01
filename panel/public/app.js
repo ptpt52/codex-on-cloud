@@ -593,20 +593,22 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
+  const live = desktopSettings?.canResize === true;
   for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !!adaptive || viewportResizing;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
-  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.restartRequired || !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked;
+  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !nativeIdle || frameState !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
+  $('desktop-restart-notice').hidden = !desktopSettings?.restartRequired;
   if (!desktopSettings) return;
   const { actual, saved, session, job } = desktopSettings;
   $('settings-current').textContent = actual ? `当前实际分辨率：${actual.width} × ${actual.height}` : '桌面尚未就绪，仍可保存下次启动的配置。';
   $('settings-pending').textContent = adaptive ? '桌面尺寸正在跟随浏览器窗口；关闭此选项后使用固定尺寸。'
-    : desktopSettings.restartRequired ? `固定桌面：${saved.width} × ${saved.height}；当前显示上限不足时需显式重启。` : `已保存：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
+    : desktopSettings.applyRequired ? `待应用：${saved.width} × ${saved.height}；${live ? '可立即生效，当前任务继续运行。' : '当前显示无法直接调整，需确认重启。'}` : `已应用：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
   $('settings-recovery').textContent = session?.resumeId ? `将恢复会话 ${session.resumeId}，项目：${session.cwd}` : session?.recoverable ? '当前为 shell，重启后打开新的 shell，不自动启动任务。' : '当前会话无法准确识别或存在多个窗格。结束前台任务后再应用分辨率。';
-  $('apply-desktop-settings').textContent = session?.resumeId ? '重启桌面并恢复会话' : '重启桌面应用设置';
+  $('apply-desktop-settings').textContent = live ? '立即应用分辨率' : session?.resumeId ? '重启桌面并恢复会话' : '重启桌面应用设置';
   if (job) $('desktop-settings-status').textContent = job.message;
 }
 function stopSettingsPolling() {
@@ -622,8 +624,9 @@ async function loadDesktopSettings(resetForm = false) {
     const next = await api('/api/desktop/settings', { signal: controller.signal });
     if (settingsController !== controller || !$('desktop-settings-dialog').open) return;
     const fill = resetForm || !desktopSettings || !settingsDirty();
-    if (desktopSettings?.revision !== next.revision || desktopSettings?.session?.pid !== next.session?.pid) $('confirm-desktop-restart').checked = false;
+    if (desktopSettings?.revision !== next.revision || desktopSettings?.session?.pid !== next.session?.pid || desktopSettings?.restartRequired !== next.restartRequired) $('confirm-desktop-restart').checked = false;
     desktopSettings = next;
+    if (controlsState.viewport && next.fixed) controlsState.viewport = { ...controlsState.viewport, fixed: next.fixed, ...(next.maximum ? { maximum: next.maximum } : {}) };
     if (fill) {
       $('desktop-width').value = next.saved.width; $('desktop-height').value = next.saved.height; $('terminal-font-size').value = next.saved.fontSize;
       const size = `${next.saved.width}x${next.saved.height}`;
@@ -637,21 +640,43 @@ async function loadDesktopSettings(resetForm = false) {
 }
 async function settingsAction(path, body) {
   if (settingsBusy || !desktopSettings || !loggedIn || !owned) return;
+  const live = path.endsWith('/resolution');
+  if (live && (viewportController || !nativeIdle || inputPaused())) return;
   stopSettingsPolling();
+  const controller = live ? new AbortController() : null;
+  const timeout = live ? setTimeout(() => controller.abort(), 10000) : null;
+  const expected = { width: desktopSettings.saved.width, height: desktopSettings.saved.height };
+  if (live) { viewportController = controller; viewportResizing = true; renderInputControls(); }
   const pausesInput = path.endsWith('/apply') || (path.endsWith('/terminal-display') && body.action === 'font');
   if (pausesInput) { maintenancePending = true; controlsState = { ...controlsState, maintenance: true }; renderConnection(); }
   settingsBusy = true; renderDesktopSettings();
   try {
-    const result = await api(path, { method: 'POST', body, signal: AbortSignal.timeout(10000) });
+    const result = await api(path, { method: 'POST', body, signal: controller?.signal || AbortSignal.timeout(10000) });
+    if (live) {
+      clearTimeout(timeout);
+      controlsState.viewport = { ...controlsState.viewport, ...result };
+      viewportApplied = '';
+      await waitForViewport(result.actual, controller.signal);
+    }
     if (result.job) desktopSettings = { ...desktopSettings, job: result.job, busy: true };
     else $('desktop-settings-status').textContent = '已保存。分辨率与字号需分别显式应用。';
     $('confirm-desktop-restart').checked = false;
     stopSettingsPolling();
     await loadDesktopSettings(true);
-  } catch (error) { $('desktop-settings-status').textContent = error.message; }
+    if (live) $('desktop-settings-status').textContent = '分辨率已立即应用，当前任务保留，无需重启。';
+  } catch (error) {
+    if (live && !controller.signal.aborted && (!error.status || error.status >= 500)) {
+      clearTimeout(timeout);
+      await waitForViewport(expected, controller.signal).catch(() => {});
+    }
+    if (live) await loadDesktopSettings(true);
+    $('desktop-settings-status').textContent = live && (!error.status || error.status >= 500) ? '分辨率应用结果未确认，请刷新设置查看；不会自动重试或重启桌面。' : error.message;
+  }
   finally {
+    clearTimeout(timeout);
+    if (live && viewportController === controller) { viewportController = null; viewportResizing = false; viewportApplied = ''; }
     settingsBusy = false;
-    if (pausesInput) { maintenancePending = false; stopPolling(); void poll(); }
+    if (pausesInput || live) { if (pausesInput) maintenancePending = false; stopPolling(); void poll(); }
     renderConnection();
   }
 }
@@ -684,6 +709,7 @@ $('desktop-settings-form').addEventListener('submit', event => {
 });
 $('apply-desktop-settings').addEventListener('click', () => {
   if ($('apply-desktop-settings').disabled) return;
+  if (desktopSettings.canResize) return void settingsAction('/api/desktop/resolution', { revision: desktopSettings.revision });
   void settingsAction('/api/desktop/apply', { revision: desktopSettings.revision, panePid: desktopSettings.session.pid, resumeId: desktopSettings.session.resumeId, confirm: $('confirm-desktop-restart').checked });
 });
 for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal', 'maximize'], ['restore-terminal', 'restore']]) $(id).addEventListener('click', () => {
