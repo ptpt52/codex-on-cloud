@@ -70,7 +70,8 @@
       </div>
     </section>
     <section id="input-dock" class="input-dock" aria-label="手机输入辅助">
-      <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><button id="clipboard-button" class="view-button clipboard-entry" type="button" disabled>取回文字</button><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
+      <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="clipboard-button" class="view-button clipboard-entry" type="button" disabled>取回文字</button><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
+      <div class="terminal-destination"><label for="input-terminal">输入目标<select id="input-terminal" disabled><option value="">当前窗口（跟随桌面焦点）</option></select></label><span id="terminal-target-note" class="muted">发送到桌面当前获得焦点的位置。</span></div>
       <div class="composer"><textarea id="mobile-input" rows="2" placeholder="先点选桌面中的输入位置，再在这里写下指令…" aria-label="要粘贴到桌面的文字"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button><button id="shortcuts-button" class="shortcuts-entry" type="button" aria-haspopup="menu" aria-controls="shortcuts-menu" aria-expanded="false" disabled>更多按键 ▾</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       <p id="input-status" class="input-status" role="status" hidden></p>
@@ -83,6 +84,16 @@
     <div id="shortcuts-list"></div>
     <p class="shortcuts-help">文本粘贴与 Enter 提交保持分开。关闭本列表的 Esc 不会发给远程桌面。</p>
   </div>
+
+  <dialog id="terminals-dialog" class="files-dialog terminals-dialog" aria-labelledby="terminals-title">
+    <div class="dialog-heading"><h2 id="terminals-title">终端管理</h2><button id="close-terminals" class="quiet" aria-label="关闭终端管理">✕</button></div>
+    <p class="muted">主终端加最多 3 个辅助终端，任务分别运行。关闭窗口后可重新打开；浏览器离开不会结束任务。</p>
+    <div id="terminal-list" class="terminal-list"></div>
+    <form id="create-terminal-form" class="terminal-create"><label for="new-terminal-name">新终端名称<input id="new-terminal-name" maxlength="24" placeholder="例如：运行测试" required></label><button id="create-terminal" class="primary" type="submit" disabled>新建辅助终端</button></form>
+    <p id="terminals-status" class="muted" role="status"></p>
+    <p class="muted">打开或切换后，输入助手会选中该终端。存在辅助终端时，网页不会提供桌面重启恢复，避免结束其他任务。</p>
+    <button id="refresh-terminals" class="secondary" type="button">刷新列表</button>
+  </dialog>
 
   <dialog id="action-confirmation" class="files-dialog action-confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-description">
     <h2 id="confirmation-title"></h2>

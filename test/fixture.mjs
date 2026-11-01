@@ -98,6 +98,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     },
   } : undefined;
   let panePid = 4000, paneCommand = 'codex', terminalVisible = true, terminalChild;
+  const auxiliary = new Map(); let activeWindow = '999', nextAuxPid = 4100;
   const controls = createDesktopControls({ root: directory, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
     viewport: viewportControls,
@@ -108,11 +109,22 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
       return { source, text: clipboardText[source], bytes: Buffer.byteLength(clipboardText[source]) };
     },
     sessionId: async () => '11111111-1111-4111-8111-111111111111',
-    launch: () => { terminalVisible = true; terminalChild = { exitCode: null, signalCode: null }; return terminalChild; },
+    terminalParentPid: async pid => String(Number(pid) - 10000),
+    launch: (id = 'main') => {
+      if (id !== 'main') { const terminal = auxiliary.get(id); terminal.visible = true; return { exitCode: 0, signalCode: null }; }
+      terminalVisible = true; terminalChild = { exitCode: null, signalCode: null }; return terminalChild;
+    },
     run: async (command, args) => {
       await desktopHook?.(command, args);
       if (command === 'xdotool' && args[0] === 'getdisplaygeometry') return `${screenGeometry.width} ${screenGeometry.height}`;
-      if (command === 'xdotool' && args[0] === 'search') return terminalVisible ? '999' : '';
+      if (command === 'xdotool' && args[0] === 'search') {
+        const id = args.at(-1).match(/terminal-(aux[123])/i)?.[1];
+        if (id) return auxiliary.get(id)?.visible ? String(1000 + Number(id.slice(-1))) : '';
+        return terminalVisible ? '999' : '';
+      }
+      if (command === 'xdotool' && args[0] === 'getactivewindow') return activeWindow;
+      if (command === 'xdotool' && args[0] === 'getwindowpid') return args[1];
+      if (command === 'xdotool' && args[0] === 'windowactivate') { activeWindow = args.at(-1); return ''; }
       if (command === 'xdotool' && args[0] === 'windowclose') { terminalVisible = false; if (terminalChild) terminalChild.exitCode = 0; managementStats.fontChanges++; return ''; }
       if (command === 'python3') { if (args[1] === 'maximize') managementStats.maximizes++; else managementStats.restores++; return ''; }
       if (command === 'systemctl') {
@@ -124,7 +136,19 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
       }
       if (command === 'tmux' && args.includes('respawn-pane')) { managementStats.resumes++; paneCommand = 'codex'; return ''; }
       if (command === 'tmux' && args.includes('set-environment')) return '';
-      if (command === 'tmux' && args.includes('list-panes')) return args.at(-1) === '#{pane_pid}' ? String(panePid) : `codex:0.0\t${panePid}\t${paneCommand}\t/test-workspace`;
+      if (command === 'tmux' && args.includes('new-session')) {
+        const id = args[args.indexOf('-s') + 1].replace('codex-', ''); auxiliary.set(id, { pid: nextAuxPid++, name: '', visible: false }); return '';
+      }
+      if (command === 'tmux' && args.includes('set-option')) {
+        const id = args[args.indexOf('-t') + 1].replace('codex-', '');
+        if (id === 'codex') return '';
+        auxiliary.get(id).name = args.at(-1); return '';
+      }
+      if (command === 'tmux' && args.includes('list-clients')) return [terminalVisible ? '10999\t/dev/pts/0\tcodex' : '', ...[...auxiliary].filter(([, item]) => item.visible).map(([id]) => `${11000 + Number(id.slice(-1))}\t/dev/pts/${id.slice(-1)}\tcodex-${id}`)].filter(Boolean).join('\n');
+      if (command === 'tmux' && args.includes('list-panes')) {
+        if (args.at(-1).includes('#{pane_id}')) return [`codex\t%0\t${panePid}\t${paneCommand}\t0\t0\t`, ...[...auxiliary].map(([id, terminal]) => `codex-${id}\t%${id.slice(-1)}\t${terminal.pid}\tbash\t0\t0\t${terminal.name}`)].join('\n');
+        return args.at(-1) === '#{pane_pid}' ? [panePid, ...[...auxiliary.values()].map(item => item.pid)].join('\n') : [`codex:0.0\t${panePid}\t${paneCommand}\t/test-workspace`, ...[...auxiliary].map(([id, terminal]) => `codex-${id}:0.0\t${terminal.pid}\tbash\t/test-workspace`)].join('\n');
+      }
       throw new Error('Unexpected mock desktop command');
     },
   });

@@ -46,7 +46,8 @@ try {
   await eventually(async () => (await run('xdotool', ['getdisplaygeometry'])) === '1280 1280');
   start('dbus-run-session', ['--', 'xfwm4', '--compositor=off']);
   await eventually(async () => (await run('xprop', ['-root', '_NET_SUPPORTING_WM_CHECK'])).includes('window id'));
-  const controls = createDesktopControls(config, { launch: () => start(join(root, 'desktop/open-codex-terminal'), []) });
+  const launch = (id = 'main') => start(join(root, 'desktop/open-codex-terminal'), id === 'main' ? [] : [id]);
+  const controls = createDesktopControls(config, { launch });
   start(join(root, 'desktop/open-codex-terminal'), []);
   await eventually(async () => !!(await controls.get()).session);
   const first = await controls.get(), pid = first.session.pid;
@@ -104,6 +105,38 @@ try {
   await assert.rejects(controls.clipboard({ source: 'clipboard' }), error => [404, 422].includes(error.status));
   assert.equal((await controls.get()).session.pid, pid);
   // Exercise the real tmux/shell boundary with a dummy executable, never the host Codex.
+  const created = await controls.manageTerminals({ action: 'create', name: '辅助测试' });
+  const auxiliary = created.terminals.find(item => item.id === created.created);
+  assert.ok(auxiliary?.supported); assert.equal(created.terminals.length, 2);
+  const destination = { terminalId: auxiliary.id, terminalToken: auxiliary.token };
+  await controls.input({ action: 'paste', target: 'terminal', text: 'printf "辅助终端中文\\n" > "$WORKSPACE_DIR/aux-proof"', ...destination });
+  await assert.rejects(readFile(join(config.workspace, 'aux-proof')), { code: 'ENOENT' });
+  await controls.input({ action: 'key', key: 'Enter', ...destination });
+  await eventually(async () => (await readFile(join(config.workspace, 'aux-proof'), 'utf8')) === '辅助终端中文\n');
+  await controls.input({ action: 'paste', target: 'terminal', text: 'sleep 30', ...destination });
+  await controls.input({ action: 'key', key: 'Enter', ...destination });
+  await eventually(async () => (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex-aux1', '-F', '#{pane_current_command}'])) === 'sleep');
+  const auxClient = (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_tty}\t#{session_name}'])).split('\n').find(line => line.endsWith('\tcodex-aux1')).split('\t')[0];
+  await run('tmux', ['-S', env.TMUX_SOCKET, 'switch-client', '-c', auxClient, '-t', 'codex']);
+  await assert.rejects(controls.input({ action: 'key', key: 'Enter', ...destination }), { status: 409, outcome: 'rejected' });
+  await controls.manageTerminals({ action: 'open', ...destination });
+  assert.equal((await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-c', auxClient, '#{session_name}'])), 'codex-aux1');
+  const auxWindow = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']);
+  await run('xdotool', ['windowclose', auxWindow]);
+  await eventually(async () => !(await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']).catch(() => '')));
+  await assert.rejects(controls.input({ action: 'key', key: 'Enter', ...destination }), { status: 409, outcome: 'rejected' });
+  const recovered = createDesktopControls(config, { launch });
+  assert.deepEqual((await recovered.listTerminals()).terminals.map(({ id, name, token }) => ({ id, name, token })), created.terminals.map(({ id, name, token }) => ({ id, name, token })));
+  await recovered.manageTerminals({ action: 'open', ...destination });
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex-aux1', '-F', '#{pane_current_command}']), 'sleep');
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
+  await assert.rejects(recovered.input({ action: 'key', key: 'Enter', ...destination, terminalToken: '%999:12345' }), { status: 409, outcome: 'rejected' });
+  await recovered.manageTerminals({ action: 'rename', ...destination, name: "日志 ' $(never) `never`" });
+  assert.equal((await recovered.listTerminals()).terminals[1].name, "日志 ' $(never) `never`");
+  await recovered.manageTerminals({ action: 'create', name: '辅助 2' });
+  await recovered.manageTerminals({ action: 'create', name: '辅助 3' });
+  await assert.rejects(recovered.manageTerminals({ action: 'create', name: '超额' }), { status: 409 });
+  assert.equal((await recovered.get()).session, null, 'additional tasks must block destructive desktop recovery');
   const cwd = join(config.workspace, "a'b $(never) `never`"), resumeId = '11111111-1111-4111-8111-111111111111';
   await mkdir(cwd);
   await writeFile(join(root, 'bin/codex'), '#!/usr/bin/env python3\nimport json, os, sys, time\nwith open(os.path.join(os.environ["WORKSPACE_DIR"], "resume-args.json"), "w") as f: json.dump({"args":sys.argv[1:], "cwd":os.getcwd()}, f)\ntime.sleep(30)\n', { mode: 0o700 });
@@ -113,7 +146,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log('✓ isolated real X11: 24 shortcut encodings preserve Ctrl+J versus Enter, word movement, Alt prefixes and double Escape; window/font controls, literal paste and bounded clipboard reads preserve private tmux; resume args reach a dummy executable without starting Codex');
+  console.log('✓ isolated real X11: four independent terminals, targeted literal Chinese paste, separate Enter, stale-target rejection, names, limits and reopening a running sleep preserve the main task; 24 key encodings, font/clipboard controls and dummy resume passed without starting Codex');
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }

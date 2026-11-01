@@ -14,7 +14,8 @@ export function createManagerServer(secret, controls) {
     try {
       if (req.method === 'GET' && req.url === '/settings') return reply(200, await controls.get());
       if (req.method === 'GET' && req.url === '/status') return reply(200, controls.status());
-      if (!['/settings', '/apply', '/resolution', '/terminal', '/input', '/clipboard', '/viewport'].includes(req.url) || req.method !== 'POST') return reply(404, { error: '动作不存在' });
+      if (req.method === 'GET' && req.url === '/terminals') return reply(200, await controls.listTerminals());
+      if (!['/settings', '/apply', '/resolution', '/terminal', '/input', '/clipboard', '/viewport', '/terminals'].includes(req.url) || req.method !== 'POST') return reply(404, { error: '动作不存在' });
       if (req.headers['content-type'] !== 'application/json') return reply(415, { error: '需要 JSON 请求' });
       const chunks = []; let size = 0;
       const limit = req.url === '/input' ? 128 * 1024 : 1024;
@@ -23,6 +24,7 @@ export function createManagerServer(secret, controls) {
       try { body = JSON.parse(Buffer.concat(chunks).toString()); if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error(); }
       catch { const error = new Error('JSON 格式无效'); error.status = 400; throw error; }
       if (req.url === '/settings') return reply(200, controls.save(body));
+      if (req.url === '/terminals') return reply(200, await controls.manageTerminals(body));
       if (req.url === '/input') return reply(200, await controls.input(body));
       if (req.url === '/clipboard') return reply(200, await controls.clipboard(body));
       if (req.url === '/viewport') return reply(200, await controls.resizeViewport(body));

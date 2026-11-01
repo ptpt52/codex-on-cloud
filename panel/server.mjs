@@ -194,6 +194,15 @@ export async function createPanel(config) {
       requireSession(req);
       return reply(res, 200, await managerRequest(config, '/settings'));
     }
+    if (path === '/api/terminals' && req.method === 'GET') {
+      requireSession(req);
+      return reply(res, 200, await managerRequest(config, '/terminals'));
+    }
+    if (path === '/api/terminals' && req.method === 'POST') {
+      const body = await ownedBody(req, 1024);
+      if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，本次终端操作未发送');
+      return reply(res, 200, await managerRequest(config, '/terminals', body));
+    }
     if (['/api/desktop/viewport', '/api/desktop/resolution'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
       if (maintenancePending) throw new HttpError(409, '桌面操作正在进行');

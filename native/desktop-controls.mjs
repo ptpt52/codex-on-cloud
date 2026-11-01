@@ -4,7 +4,8 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readPreferences, writePreferences, preferenceRevision, validatePreferences } from './preferences.mjs';
-import { validateInput, executeInput } from './input.mjs';
+import { validateInput, executeInput, runInputCommand } from './input.mjs';
+import { createTerminalManager } from './terminals.mjs';
 import { clipboardSource, readClipboard } from './clipboard.mjs';
 import { createViewportResizer, viewportSize } from './viewport.mjs';
 import { createFixedSizeStore } from './fixed-size.mjs';
@@ -48,10 +49,11 @@ export function createDesktopControls(config, dependencies = {}) {
   const env = desktopEnvironment(config);
   const run = dependencies.run || (async (command, args, options = {}) => (await exec(command, args, { env, encoding: 'utf8', timeout: 2000, maxBuffer: 16 * 1024, ...options })).stdout.trim());
   const inspectSession = dependencies.sessionId || sessionId;
-  const launch = dependencies.launch || (() => {
-    const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), [], { env, stdio: 'ignore' });
+  const launch = dependencies.launch || ((id = 'main') => {
+    const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), id === 'main' ? [] : [id], { env, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
   });
+  const terminals = createTerminalManager(config, { run, launch, parentPid: dependencies.terminalParentPid });
   const viewport = dependencies.viewport || (!dependencies.run ? createViewportResizer(run) : null);
   if (viewport) void viewport.refresh();
   let job = null, preparing = false, terminalChild = null, inputActive = false, lastInput = null, clipboardActive = false, viewportActive = false;
@@ -120,7 +122,10 @@ export function createDesktopControls(config, dependencies = {}) {
     }
     throw new Error('terminal did not open');
   }
-  const performInput = dependencies.performInput || (body => body.action === 'terminal' ? openTerminal() : executeInput(body, env));
+  const performInput = dependencies.performInput || (body => body.action === 'terminal' ? openTerminal() : executeInput(body, env, async (command, args, options) => {
+    if (body.terminalId && command === 'xdotool') await terminals.assertFocused(body);
+    return runInputCommand(command, args, options);
+  }));
   async function input(body) {
     let value;
     try { value = validateInput(body); } catch (error) { throw new ControlError(400, error.message); }
@@ -129,14 +134,22 @@ export function createDesktopControls(config, dependencies = {}) {
     const current = { id: randomBytes(12).toString('hex'), action: value.action, status: 'running', startedAt: Date.now(), finishedAt: null };
     lastInput = current;
     try {
+      if (value.terminalId) await terminals.focus(value);
       await performInput(value);
       current.status = 'success';
       return { ok: true, outcome: 'success', id: current.id };
-    } catch {
+    } catch (cause) {
+      if (cause.outcome === 'rejected') { current.status = 'rejected'; throw cause; }
       current.status = 'unknown';
       const error = new ControlError(502, '输入结果未知，请先查看桌面确认，避免重复执行');
       error.outcome = 'unknown'; throw error;
     } finally { current.finishedAt = Date.now(); inputActive = false; }
+  }
+  async function manageTerminals(body) {
+    if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，本次终端操作未发送');
+    inputActive = true;
+    try { return await terminals.manage(body); }
+    finally { inputActive = false; }
   }
   async function clipboard(body) {
     const source = clipboardSource(body?.source);
@@ -280,5 +293,5 @@ export function createDesktopControls(config, dependencies = {}) {
       }
     });
   }
-  return { ready, get, save, apply, applyResolution, terminal, input, status, clipboard, resizeViewport };
+  return { ready, get, save, apply, applyResolution, terminal, input, status, clipboard, resizeViewport, listTerminals: terminals.list, manageTerminals };
 }

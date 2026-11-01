@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
 set -eu
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+terminal_id="${1:-main}"
+case "$terminal_id" in
+  main) terminal_class=codex-on-cloud-terminal; terminal_title=Codex ;;
+  aux1|aux2|aux3) terminal_class="codex-on-cloud-terminal-$terminal_id"; terminal_title="Codex $terminal_id" ;;
+  *) exit 2 ;;
+esac
 # Reuse this desktop's terminal instead of opening an unbounded number of windows.
-window="$(xdotool search --class '^codex-on-cloud-terminal$' 2>/dev/null | head -n 1 || true)"
+window="$(xdotool search --class "^$terminal_class$" 2>/dev/null | head -n 1 || true)"
 if [ -n "$window" ]; then
   xdotool windowactivate --sync "$window" 2>/dev/null || xdotool windowfocus "$window"
   exit 0
 fi
 # Make the helper's terminal shortcut deterministic across xterm distributions.
 font_size="$(python3 "$script_dir/terminal-display.py" font)"
-exec xterm -u8 -class codex-on-cloud-terminal \
+if [ "$terminal_id" != main ]; then
+  # An auxiliary window only attaches an existing session; opening and reconnect
+  # never create a shell or resubmit a command.
+  tmux -S "${TMUX_SOCKET:?}" has-session -t "=codex-$terminal_id"
+  exec xterm -u8 -class "$terminal_class" \
+    -fa 'DejaVu Sans Mono,Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' \
+    -fd 'Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' -fs "$font_size" -T "$terminal_title" \
+    -xrm '*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \
+    -e tmux -S "$TMUX_SOCKET" attach-session -t "=codex-$terminal_id"
+fi
+exec xterm -u8 -class "$terminal_class" \
   -fa 'DejaVu Sans Mono,Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' \
   -fd 'Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' -fs "$font_size" -T Codex \
   -xrm '*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \

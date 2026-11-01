@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { terminalTarget } from './terminals.mjs';
 
 const KEYS = Object.freeze({ Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Backspace: 'BackSpace',
   'Ctrl+C': 'ctrl+c', 'Ctrl+D': 'ctrl+d', 'Ctrl+L': 'ctrl+l', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
@@ -15,12 +16,14 @@ const KEYS = Object.freeze({ Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Back
 });
 export function validateInput(body) {
   if (body?.action === 'terminal') return { action: 'terminal' };
-  if (body?.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) return { action: 'key', key: body.key };
+  if (body?.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) return { action: 'key', key: body.key, ...terminalTarget(body) };
   if (body?.action === 'paste') {
     if (typeof body.text !== 'string' || !body.text || body.text.includes('\0') || Buffer.byteLength(body.text) > 32 * 1024) throw new Error('请输入不超过 32 KiB 的文字');
     const target = body.target ?? 'terminal';
     if (!['terminal', 'application'].includes(target)) throw new Error('粘贴目标无效');
-    return { action: 'paste', text: body.text, target };
+    const terminal = terminalTarget(body);
+    if (terminal.terminalId && target !== 'terminal') throw new Error('指定终端时请使用终端粘贴');
+    return { action: 'paste', text: body.text, target, ...terminal };
   }
   throw new Error('不支持的输入动作');
 }
