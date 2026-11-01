@@ -24,7 +24,7 @@ await keepOrCreate('agent_secret', randomBytes(32).toString('base64url') + '\n')
 await keepOrCreate('tunnel_token', '');
 await keepOrCreate('credentials.txt', `工作台：${origin.origin}\n用户名：${values.username}\n密码：${password}\n\n实际入口以 .env 为准。请妥善保管，不要提交到 Git。\n`);
 const extraHosts = [...new Set([...(origin.protocol === 'http:' ? ['127.0.0.1:36080'] : []), ...values['allow-host']])];
-const env = `# 本机原生部署。修改后只重启需要更新配置的服务。\nPUBLIC_ORIGIN=${origin.origin}\nALLOWED_HOSTS=${extraHosts.join(',')}\nADMIN_USER=${values.username}\nPANEL_PORT=36080\nAGENT_PORT=36902\nDISPLAY_NUMBER=93\nDESKTOP_SIZE=1600x1280\nWORKSPACE_DIR=./workspaces\nTZ=Asia/Shanghai\n`;
+const env = `# 本机原生部署。修改后只重启需要更新配置的服务。\nPUBLIC_ORIGIN=${origin.origin}\nALLOWED_HOSTS=${extraHosts.join(',')}\nADMIN_USER=${values.username}\nPANEL_PORT=36080\nAGENT_PORT=36902\nDISPLAY_NUMBER=93\nDESKTOP_SIZE=1600x1600\nWORKSPACE_DIR=./workspaces\nTZ=Asia/Shanghai\n`;
 try { await writeFile(join(root, '.env'), env, { flag: 'wx', mode: 0o600 }); }
 catch (error) { if (error.code !== 'EEXIST') throw error; console.log('保留已有 .env 和密钥；旧 Docker 的 CODEX_VERSION 配置在原生模式不再使用。'); }
 await mkdir(join(root, 'workspaces', 'transfer'), { recursive: true });
