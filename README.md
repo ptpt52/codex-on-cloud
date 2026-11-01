@@ -126,6 +126,8 @@ npm run native:tunnel
 
 Tunnel 的上游是 **`http://127.0.0.1:36080`**。不需要开放路由器端口，也不把 VNC 或内部接口直接发布出去。
 
+本机系统 DNS 无法解析 Tunnel 的 SRV 记录时，可只给 Tunnel 配置独立 DNS，配置及 IPv4/IPv6 选项见 [连接排查](docs/cloudflare.md#dns-与-ipv4ipv6)。Tunnel 异常退出后每 10 秒自动重试；桌面不会因此重启。
+
 公网入口使用工作台自身的账号密码登录，HTTPS Cookie 带 Secure。Cloudflare Access 是可选的额外身份验证层，配置方式见部署文档。
 
 ## 生命周期与运维

@@ -83,4 +83,38 @@ journalctl --user -u codex-cloud-tunnel -u codex-cloud-panel -u codex-cloud-desk
 - Tunnel 在线但桌面失败：检查 WebSocket 是否被额外反代或 Access 策略拦截。
 - Node 路径变化：重新运行 `npm run native:install` 更新服务路径。
 
+## DNS 与 IPv4/IPv6
+
+进程显示 active 不代表 Tunnel 已连接。检查近期日志中的 `Registered tunnel connection`，并通过公网健康接口验证实际链路：
+
+```bash
+curl -4 -fsS --max-time 15 https://remote-codex.x-wrt.dev/healthz
+curl -6 -fsS --max-time 15 https://remote-codex.x-wrt.dev/healthz
+```
+
+本次故障中，本机面板正常，但系统 DNS `127.0.0.53` 查询 `_v2-origintunneld._tcp.argotunnel.com` 超时或失败，Tunnel 无法发现接入节点。IPv4 和 IPv6 浏览器都能到达 Cloudflare，但收到 1033。直接使用公共 DNS 可以正确解析。
+
+在 `.env` 中配置：
+
+```dotenv
+TUNNEL_DNS_SERVERS=1.1.1.1,8.8.8.8
+TUNNEL_EDGE_IP_VERSION=auto
+TUNNEL_PROTOCOL=auto
+```
+
+`TUNNEL_DNS_SERVERS` 接受最多三个逗号分隔的 DNS 服务器 IP。启动器使用非特权 user/mount namespace，只为 cloudflared 挂载专用 `resolv.conf`，不修改系统 DNS 或其他进程。专用文件保存在被忽略的 `data/tunnel/resolv.conf`。需要 Linux 允许非特权用户命名空间，以及 `unshare`、`mount`；`native:doctor` 会检查。若系统禁止这种命名空间，可由管理员修复系统 DNS 后移除此选项。
+
+`TUNNEL_EDGE_IP_VERSION` 可设为 `auto`、`4`、`6`，控制 Ubuntu 到 Cloudflare 的出站连接。`TUNNEL_PROTOCOL` 可设为 `auto`、`quic`、`http2`；UDP 7844 不可用时可选择 `http2`。这些选项与手机访问公网域名使用的 IP 协议相互独立，面板仍只需要监听回环地址。
+
+配置后检查并只重启 Tunnel：
+
+```bash
+npm run native:doctor
+# 首次更新服务的自动重试配置时运行；不会重启正在运行的服务
+npm run native:install
+systemctl --user restart codex-cloud-tunnel.service
+```
+
+Tunnel 服务使用 `Restart=on-failure`，失败后每 10 秒重试；手动停止后不会自行启动。桌面服务继续保持独立生命周期。
+
 来源：[cloudflared 官方下载](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)、[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/)、[Access 自托管应用](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)。

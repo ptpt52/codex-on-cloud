@@ -56,3 +56,11 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native -- --public
 已从 HTTPS 公网入口验证：真实 noVNC 握手与画面、中文粘贴不自动执行、独立 Enter、断开浏览器后任务完成、手机视口，以及重启面板后登录保留和 tmux PID 不变。另用真实公网 HTTP 请求验证 Secure / HttpOnly / SameSite Cookie、中文文件上传下载、未登录桌面返回 401。
 
 当前使用工作台密码认证，未创建 Cloudflare Access 应用。用户已执行 `sudo loginctl enable-linger ptpt52`；检查确认 `Linger=yes`，桌面、面板和 Tunnel 三个用户服务均为 enabled / active。注销与主机重启后的实际恢复仍需人工验收；主机重启会结束原来的运行任务。
+
+## DNS 故障恢复
+
+2026-11-01，后续重连出现系统 DNS 查询 Tunnel SRV 记录失败，公网 IPv4 / IPv6 均返回 Cloudflare 1033。本机面板仍返回 200，公共 DNS 查询正常，IPv4 / IPv6 到接入节点 TCP 7844 均可达。
+
+已仅为 Tunnel 启用公共 DNS 的私有 user/mount namespace，并为 Tunnel 用户服务增加失败后 10 秒重试。宿主 `/etc/resolv.conf` 仍指向原系统解析器。实际日志确认 Tunnel 通过 IPv6 建立四条连接；公网 `curl -4` 和 `curl -6` 的健康检查都恢复为 `200 {"ok":true}`。桌面 MainPID 保持不变，未重启桌面或执行用户终端中的命令。
+
+新增回归测试验证专用 DNS 仅在子进程中可见、宿主 DNS 文件不变、包装脚本不解释传入参数中的 shell 字符。此测试在允许非特权 namespace 的 Linux 上运行，否则明确跳过。

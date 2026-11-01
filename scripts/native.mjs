@@ -16,6 +16,10 @@ const dependencies = new Map([
   ['xauth', 'xauth'], ['xdpyinfo', 'x11-utils'], ['dbus-run-session', 'dbus'],
   ['python3', 'python3'], ['codex', null],
 ]);
+if (config.env.TUNNEL_DNS_SERVERS?.trim()) {
+  dependencies.set('unshare', 'util-linux');
+  dependencies.set('mount', 'mount');
+}
 async function executable(name) {
   for (const directory of path.split(':')) {
     const file = join(directory, name);
@@ -44,6 +48,10 @@ async function doctor() {
   }
   const python = spawnSync('python3', ['-c', 'import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)'], { env: { ...process.env, PATH: path } });
   if (python.status !== 0) throw new Error('需要 Python 3.8+；Ubuntu 18.04 自带的 Python 3.6 不适用，请先准备较新的 python3');
+  if (config.env.TUNNEL_DNS_SERVERS?.trim()) {
+    const probe = spawnSync('unshare', ['--user', '--map-root-user', '--mount', '--propagation', 'private', '--', 'true'], { encoding: 'utf8', timeout: 3000 });
+    if (probe.status !== 0) throw new Error('独立 DNS 需要允许非特权 user/mount namespace；也可修复系统 DNS 后移除 TUNNEL_DNS_SERVERS');
+  }
   const check = spawnSync('x11vnc', ['-help'], { env: { ...process.env, PATH: path }, encoding: 'utf8' });
   if (!`${check.stdout}${check.stderr}`.includes('-inetd')) throw new Error('x11vnc 必须支持 -inetd');
   return true;
@@ -53,9 +61,9 @@ function quote(value) {
   if (/[\r\n\0]/.test(value)) throw new Error('服务路径不能包含换行或 NUL');
   return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$')}"`;
 }
-function unit(description, args, extra = '') {
+function unit(description, args, extra = '', reconnect = false) {
   const directory = config.root.replaceAll('%', '%%').replaceAll(' ', '\\x20');
-  return `# Managed by codex-on-cloud\n[Unit]\nDescription=${description}\n${extra}\n[Service]\nType=simple\nWorkingDirectory=${directory}\nEnvironment=${quote(`PATH=${path}`)}\nExecStart=${[process.execPath, ...args].map(quote).join(' ')}\nRestart=no\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\nStandardOutput=journal\nStandardError=journal\nSyslogIdentifier=codex-cloud\n\n[Install]\nWantedBy=default.target\n`;
+  return `# Managed by codex-on-cloud\n[Unit]\nDescription=${description}\n${extra}\n${reconnect ? 'StartLimitIntervalSec=0\n' : ''}\n[Service]\nType=simple\nWorkingDirectory=${directory}\nEnvironment=${quote(`PATH=${path}`)}\nExecStart=${[process.execPath, ...args].map(quote).join(' ')}\nRestart=${reconnect ? 'on-failure' : 'no'}\n${reconnect ? 'RestartSec=10\n' : ''}KillMode=control-group\nTimeoutStopSec=15\nUMask=0077\nStandardOutput=journal\nStandardError=journal\nSyslogIdentifier=codex-cloud\n\n[Install]\nWantedBy=default.target\n`;
 }
 try {
   if (process.getuid() === 0) throw new Error('请用普通用户执行 npm 命令，不要使用 sudo');
@@ -68,7 +76,7 @@ try {
       const files = [
         [units[0], unit('Codex Cloud independent virtual desktop', [join(config.root, 'native', 'desktop.mjs')])],
         [units[1], unit('Codex Cloud browser gateway', [join(config.root, 'panel', 'main.mjs')], 'After=codex-cloud-desktop.service')],
-        ['codex-cloud-tunnel.service', unit('Codex Cloud Cloudflare Tunnel', [join(config.root, 'native', 'tunnel.mjs')], 'After=codex-cloud-panel.service')],
+        ['codex-cloud-tunnel.service', unit('Codex Cloud Cloudflare Tunnel', [join(config.root, 'native', 'tunnel.mjs')], 'After=codex-cloud-panel.service', true)],
       ];
       for (const [name, content] of files) {
         const file = join(serviceDir, name);
