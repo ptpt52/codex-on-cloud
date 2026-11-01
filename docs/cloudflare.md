@@ -119,4 +119,16 @@ systemctl --user restart codex-cloud-tunnel.service
 
 Tunnel 服务使用 `Restart=on-failure`，失败后每 10 秒重试；手动停止后不会自行启动。桌面服务继续保持独立生命周期。
 
+## 网页连接诊断
+
+工作台顶部的“连接状态”会汇总实际画面分辨率、Tunnel 活动连接数和 IPv6 / IPv4 数量。诊断读取固定版本 cloudflared 的 `/diag/tunnel`，仅统计活动连接；没有活动连接时显示 0，读取失败则显示不可用。[固定版本接口实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/diagnostic/handlers.go)
+
+cloudflared 的指标/诊断服务默认固定绑定 `127.0.0.1:36903`，可以在 `.env` 中设置 `TUNNEL_METRICS_PORT`。原始服务保持本机可见，不添加 Tunnel 公网路由。面板仅在登录后提供白名单汇总字段，不提供原始数据代理；不要将诊断端口直接暴露到公网。
+
+从旧版随机指标端口升级，或修改 `TUNNEL_METRICS_PORT` 后，重启以下两个服务即可：
+
+```bash
+systemctl --user restart codex-cloud-panel.service codex-cloud-tunnel.service
+```
+
 来源：[cloudflared 官方下载](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)、[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/)、[Access 自托管应用](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)。

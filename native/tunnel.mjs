@@ -17,7 +17,7 @@ const protocol = config.env.TUNNEL_PROTOCOL || 'auto';
 if (!['auto', '4', '6'].includes(ipVersion)) throw new Error('TUNNEL_EDGE_IP_VERSION 必须是 auto / 4 / 6');
 if (!['auto', 'quic', 'http2'].includes(protocol)) throw new Error('TUNNEL_PROTOCOL 必须是 auto / quic / http2');
 let command = 'cloudflared';
-let args = ['tunnel', '--no-autoupdate', '--loglevel', 'info', '--metrics', '127.0.0.1:0',
+let args = ['tunnel', '--no-autoupdate', '--loglevel', 'info', '--metrics', `127.0.0.1:${config.tunnelMetricsPort}`,
   '--edge-ip-version', ipVersion, '--protocol', protocol, 'run', '--token-file', tokenFile];
 const servers = (config.env.TUNNEL_DNS_SERVERS || '').split(',').map(value => value.trim()).filter(Boolean);
 if (servers.length) {

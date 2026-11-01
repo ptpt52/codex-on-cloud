@@ -7,14 +7,19 @@ import { join } from 'node:path';
 import { createPanel } from '../panel/server.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, tunnelDiagnosticsUrl } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const files = new Map();
+  const tunnel = { tunnelID: 'private-tunnel-id', connectorID: 'private-connector-id', connections: [
+    { isConnected: true, edgeAddress: '2001:db8::1' }, { isConnected: true, edgeAddress: '2001:db8::2' },
+    { isConnected: true, edgeAddress: '192.0.2.1' }, { isConnected: false, edgeAddress: '192.0.2.2' },
+  ] };
   const upstream = http.createServer(async (req, res) => {
     received.push({ method: req.method, url: req.url, headers: req.headers });
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
+    if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
     if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试' })); }
     if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ files: [...files].map(([name, content]) => ({ name, size: content.length, modified: 1 })) })); }
     if (req.url.startsWith('/files/')) {
@@ -30,10 +35,12 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     res.writeHead(404); res.end();
   });
   const clients = new Set();
+  let viewersPaused = false;
   const vnc = net.createServer(socket => {
     clients.add(socket);
     socket.on('error', () => {});
     socket.once('close', () => clients.delete(socket));
+    if (viewersPaused) return;
     if (!rfb) return socket.on('data', bytes => { received.push({ method: 'VNC', bytes }); socket.write(bytes); });
     // Minimal RFB fixture; browsers still use the real noVNC client and Unix socket bridge.
     socket.write('RFB 003.008\n');
@@ -67,6 +74,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
+    tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
   };
   const panel = await createPanel(config);
@@ -91,6 +99,8 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   return {
     panel, config, directory, received, files, viewer, request, login, claim,
     disconnectViewers() { for (const client of clients) client.destroy(); },
+    pauseViewers() { viewersPaused = true; for (const client of clients) client.destroy(); },
+    resumeViewers() { viewersPaused = false; for (const client of clients) client.destroy(); },
     get cookie() { return cookie; }, get csrf() { return csrf; },
     async close({ preserve = false } = {}) {
       await panel.close();

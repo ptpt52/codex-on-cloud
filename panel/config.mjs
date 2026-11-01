@@ -34,6 +34,7 @@ export function readConfig(env = environment()) {
     password: secret({ ADMIN_PASSWORD_FILE: join(native.root, 'secrets', 'panel_password') }, 'ADMIN_PASSWORD'),
     agentSecret: secret({ AGENT_SECRET_FILE: join(native.root, 'secrets', 'agent_secret') }, 'AGENT_SECRET'),
     vncSocket: native.socket, agentUrl, transferDir: native.transfer,
+    tunnelDiagnosticsUrl: `http://127.0.0.1:${native.tunnelMetricsPort}/diag/tunnel`,
     sessionMs: 7 * 24 * 60 * 60 * 1000,
   };
 }

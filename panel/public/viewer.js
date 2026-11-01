@@ -2,6 +2,7 @@ import RFB from './novnc/core/rfb.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
+const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
@@ -9,7 +10,7 @@ const preferences = { zoom: 'fit', pan: false };
 let rfb, retry, stopping = false;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null;
 function announce(state) {
-  parent.postMessage({ type: 'codex-desktop', state }, location.origin);
+  parent.postMessage({ type: 'codex-desktop', state, frame }, location.origin);
 }
 function reportView() {
   cancelAnimationFrame(reportFrame);
@@ -17,7 +18,7 @@ function reportView() {
     if (!canvas?.width) return;
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
-    const report = { type: 'codex-desktop-view', scale: Math.round(scale * 10000) / 10000 };
+    const report = { type: 'codex-desktop-view', frame, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -113,6 +114,7 @@ panLayer.addEventListener('keydown', event => {
 });
 function connect() {
   if (stopping || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
+  announce('connecting');
   const url = new URL('/desktop/websockify', location.origin);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('viewer', viewer);

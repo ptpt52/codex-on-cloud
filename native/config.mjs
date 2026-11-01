@@ -27,6 +27,7 @@ export function settings(env = environment()) {
     display: `:${number('DISPLAY_NUMBER', 93, 10, 199)}`,
     panelPort: number('PANEL_PORT', 36080, 1024, 65535),
     agentPort: number('AGENT_PORT', 36902, 1024, 65535),
+    tunnelMetricsPort: number('TUNNEL_METRICS_PORT', 36903, 1024, 65535),
     size, env,
   };
 }

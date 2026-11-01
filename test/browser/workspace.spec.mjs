@@ -45,11 +45,17 @@ test('a second page takes over without the first page reconnecting automatically
   await page.getByLabel('密码', { exact: true }).fill('demo_password_for_tests');
   await page.getByRole('button', { name: '连接工作空间' }).click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线');
+  const oldFrame = new URL(await page.locator('#desktop-frame').getAttribute('src'), page.url()).searchParams.get('frame');
   const second = await context.newPage();
   await second.goto('/');
   await expect(second.locator('#connection-status')).toContainText('桌面在线');
   await expect(page.getByRole('button', { name: '在这里继续使用' })).toBeVisible({ timeout: 10000 });
   await page.getByRole('button', { name: '在这里继续使用' }).click();
+  await expect(page.locator('#connection-status')).toContainText('桌面在线');
+  await page.evaluate(frame => window.dispatchEvent(new MessageEvent('message', {
+    origin: location.origin, source: document.getElementById('desktop-frame').contentWindow,
+    data: { type: 'codex-desktop', state: 'disconnected', frame },
+  })), oldFrame);
   await expect(page.locator('#connection-status')).toContainText('桌面在线');
   await expect(second.getByRole('button', { name: '在这里继续使用' })).toBeVisible({ timeout: 10000 });
   await second.close();

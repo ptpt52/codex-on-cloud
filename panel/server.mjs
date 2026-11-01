@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve, sep } from 'node:path';
 import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
+import { createTunnelDiagnostics } from './diagnostics.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
@@ -50,6 +51,7 @@ function reply(res, status, data, headers = {}) {
 
 export async function createPanel(config) {
   const auth = await createAuth(config);
+  const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
   const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
   const failures = new Map();
   const sockets = new Map();
@@ -156,6 +158,10 @@ export async function createPanel(config) {
       const session = requireSession(req);
       const desktop = await desktopHealth();
       return reply(res, 200, { desktop, mine: !!owner && owner.session === session.hash && owner.viewer === req.headers['x-viewer-id'] });
+    }
+    if (path === '/api/diagnostics' && req.method === 'GET') {
+      requireSession(req);
+      return reply(res, 200, { tunnel: await tunnelDiagnostics() });
     }
     if (path === '/api/desktop/claim' && req.method === 'POST') {
       const session = requireWrite(req);
