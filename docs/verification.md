@@ -74,3 +74,7 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native -- --public
 已仅为 Tunnel 启用公共 DNS 的私有 user/mount namespace，并为 Tunnel 用户服务增加失败后 10 秒重试。宿主 `/etc/resolv.conf` 仍指向原系统解析器。实际日志确认 Tunnel 通过 IPv6 建立四条连接；公网 `curl -4` 和 `curl -6` 的健康检查都恢复为 `200 {"ok":true}`。桌面 MainPID 保持不变，未重启桌面或执行用户终端中的命令。
 
 新增回归测试验证专用 DNS 仅在子进程中可见、宿主 DNS 文件不变、包装脚本不解释传入参数中的 shell 字符。此测试在允许非特权 namespace 的 Linux 上运行，否则明确跳过。
+
+## IPv6 优先连接确认
+
+2026-11-01：保留本机已有的 `TUNNEL_EDGE_IP_VERSION=auto`。在 Tunnel 的独立 DNS 环境中，`region1.v2.argotunnel.com` 与 `region2.v2.argotunnel.com` 各返回 10 个 IPv6 和 10 个 IPv4 地址，IPv6 均排在前面。cloudflared 日志记录的四条边缘连接均为 IPv6，实时 `cloudflared_tunnel_ha_connections` 指标为 4；公网 `curl -4`、`curl -6` 健康检查均返回 `200 {"ok":true}`。本次只完善配置示例与策略说明，未修改运行参数或重启服务，桌面、面板和 Tunnel 的 MainPID 均保持不变；未通过中断网络模拟故障回退。

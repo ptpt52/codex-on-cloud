@@ -128,6 +128,8 @@ Tunnel 的上游是 **`http://127.0.0.1:36080`**。不需要开放路由器端�
 
 本机系统 DNS 无法解析 Tunnel 的 SRV 记录时，可只给 Tunnel 配置独立 DNS，配置及 IPv4/IPv6 选项见 [连接排查](docs/cloudflare.md#dns-与-ipv4ipv6)。Tunnel 异常退出后每 10 秒自动重试；桌面不会因此重启。
 
+本机 Tunnel 使用 `TUNNEL_EDGE_IP_VERSION=auto`，已验证解析结果中 IPv6 排在前面，四条边缘连接均通过 IPv6 建立，并保留 IPv4 故障回退。`auto` 随主机解析顺序选择主地址族，部署到其他主机时需核对实际连接；`6` 则表示仅使用 IPv6，详见 [地址族配置](docs/cloudflare.md#dns-与-ipv4ipv6)。
+
 公网入口使用工作台自身的账号密码登录，HTTPS Cookie 带 Secure。Cloudflare Access 是可选的额外身份验证层，配置方式见部署文档。
 
 ## 生命周期与运维

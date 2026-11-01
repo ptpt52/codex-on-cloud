@@ -106,6 +106,8 @@ TUNNEL_PROTOCOL=auto
 
 `TUNNEL_EDGE_IP_VERSION` 可设为 `auto`、`4`、`6`，控制 Ubuntu 到 Cloudflare 的出站连接。`TUNNEL_PROTOCOL` 可设为 `auto`、`quic`、`http2`；UDP 7844 不可用时可选择 `http2`。这些选项与手机访问公网域名使用的 IP 协议相互独立，面板仍只需要监听回环地址。
 
+本机采用 **IPv6 优先，连接故障时允许回退 IPv4** 的策略，保留 `TUNNEL_EDGE_IP_VERSION=auto`。`auto` 将系统解析返回的第一种地址族作为主地址族，再使用另一种地址族作为故障备用，因此不能仅凭 `auto` 就认定 IPv6 优先。本机已在 Tunnel 的独立 DNS 环境中确认两个边缘区域均优先返回 IPv6，日志记录的四条连接均为 IPv6，当前连接指标为 4。`6` 会仅使用 IPv6，不保留跨地址族回退；需要双栈故障回退时应保留 `auto` 并核对实际解析顺序。参见 [Cloudflare 运行参数](https://developers.cloudflare.com/tunnel/reference/run-parameters/#edge-ip-version)及本项目固定版本的[地址族选择实现](https://github.com/cloudflare/cloudflared/blob/2026.10.0/edgediscovery/allregions/region.go)。
+
 配置后检查并只重启 Tunnel：
 
 ```bash
