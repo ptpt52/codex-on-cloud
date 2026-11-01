@@ -176,3 +176,5 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native -- --public
 隔离的真实 `npm run test:viewport` 通过：Xvfb 以 1600×3200 容量启动，在完整 XFCE 启动前先恢复较小的保存尺寸，然后在同一 RFB 连接上验证包含 1600×3200 的六次大小切换。X server、完整 XFCE、x11vnc、xterm 和私有 tmux sleep 任务 PID 保留；原生测试的接收缓冲上限增至 32 MiB，容纳约 20 MiB 的未压缩长桌面。未向工作 Codex 发送测试输入。
 
 运行中的保存设置已更新为 1600×3200，字号保留。仅更新管理服务及网页面板，MainPID 分别为 10662、10670；更新前将管理服务 cgroup 内的 xclip、xterm 及私有 tmux client 移入桌面 cgroup，未读取剪贴板内容。桌面 MainPID 32293、pane PID 32392 与 Codex PID 32688 保留。当前 Xvfb 实际与最大尺寸仍为 1600×1600；新桌面启动逻辑已部署，但扩大容量需要一次显式桌面重启。当前 Codex 正在运行且未识别到 CLI 参数中的准确 resume ID，因此尚未重启桌面，也不将生产 3200 高度验收记为完成。
+
+随后用户明确要求“现在重启”，已只重启独立桌面。实际 Xvfb 当前及最大尺寸均为 1600×3200，管理状态的实际、上限与固定目标也一致；helper 健康检查 ready 为 true，真实 xterm 已最大化为 1600×3140（其余为 XFCE 顶栏和窗口边框）。桌面 MainPID 更新为 11204，新 shell pane PID 为 11316；管理服务 10662、面板 10670 与 Tunnel 12521 保留。VNC 仍为权限 0600 的私有 Unix socket，公网 `/healthz` 返回 `{"ok":true}`。按已说明的重启行为结束旧 Codex 进程，没有猜测 resume ID、自动启动新 Codex、重发提示或审批。本次确认了生产桌面实际 3200 高度，未重复进行公网浏览器旋转和触摸验收。
