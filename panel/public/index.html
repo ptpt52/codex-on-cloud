@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151d1a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Codex Cloud">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css">
+  <title>Codex on Cloud</title>
+</head>
+<body>
+  <main id="login-view" class="login-layout" hidden>
+    <section class="intro">
+      <div class="brand"><img src="/icon.svg" width="36" height="36" alt=""><span>Codex<span class="brand-light"> on Cloud</span></span></div>
+      <div class="intro-copy"><span class="eyebrow">YOUR PERSONAL WORKSPACE</span><h1>换个地方，<br>继续手上的工作。</h1><p>一个属于你的开发桌面。<br>电脑继续执行，你随时回来。</p></div>
+      <div class="intro-bottom"><span class="status-dot"></span> 独立桌面 · 持久会话 · 浏览器访问</div>
+    </section>
+    <section class="login-side">
+      <form id="login-form" class="login-card">
+        <div class="card-icon" aria-hidden="true">↗</div>
+        <h2>进入工作空间</h2><p class="muted">登录后连接你的远程开发桌面。</p>
+        <label for="username">用户名</label><input id="username" name="username" autocomplete="username" value="admin" required maxlength="100">
+        <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="512">
+        <p id="login-error" class="error" role="alert"></p>
+        <button id="login-button" class="primary" type="submit">连接工作空间 <span aria-hidden="true">→</span></button>
+        <p class="login-note">首次部署的登录信息位于服务器的<br><code>secrets/credentials.txt</code></p>
+      </form>
+      <span class="login-footer">你的项目和执行环境，留在自己的电脑上。</span>
+    </section>
+  </main>
+
+  <main id="workspace-view" class="workspace" hidden>
+    <header class="topbar">
+      <div class="brand"><img src="/icon.svg" width="30" height="30" alt=""><span>Codex<span class="brand-light"> on Cloud</span></span></div>
+      <div class="topbar-right"><span id="user-label" class="user-label"></span><button id="files-button" class="secondary">文件中转</button><button id="logout-button" class="quiet">退出</button></div>
+    </header>
+    <section class="desktop-card" aria-label="远程桌面">
+      <div class="desktop-toolbar"><div class="desktop-title"><span class="monitor-icon" aria-hidden="true">▣</span><strong>开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span></div><div class="desktop-actions"><button id="terminal-button" class="quiet" title="打开或返回已有的 Codex 终端">打开终端</button><button id="reconnect-button" class="quiet">重新连接</button><button id="fullscreen-button" class="quiet" aria-label="全屏桌面" title="全屏桌面">⛶</button></div></div>
+      <div id="desktop-stage" class="desktop-stage">
+        <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
+        <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button></div>
+      </div>
+    </section>
+    <section class="input-dock" aria-label="手机输入辅助">
+      <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
+      <div class="composer"><textarea id="mobile-input" rows="2" placeholder="先点选桌面中的输入位置，再在这里写下指令…" aria-label="要粘贴到桌面的文字"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
+      <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="Escape">Esc</button><button data-key="Tab">Tab ⇥</button><button data-key="Ctrl+C">Ctrl C</button><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
+    </section>
+    <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，桌面继续运行</span><span id="version-label"></span></footer>
+  </main>
+
+  <dialog id="files-dialog" class="files-dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">WORKSPACE TRANSFER</span><h2>文件中转</h2></div><button id="close-files" class="quiet" aria-label="关闭文件中转">✕</button></div>
+    <p class="muted">文件位于桌面里的 <code>/workspace/transfer</code>。每个文件最大 50 MiB，同名上传会覆盖。</p>
+    <label class="upload-zone" for="upload-input"><span aria-hidden="true">↑</span><strong>选择文件上传</strong><small>从手机传到开发桌面</small></label><input id="upload-input" type="file" hidden>
+    <p id="upload-status" class="muted" role="status"></p><div id="file-list" class="file-list"></div>
+    <button id="refresh-files" class="secondary">刷新文件列表</button>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -eu
+cd /workspace
+exec tmux new-session -A -s codex /usr/local/bin/codex-session

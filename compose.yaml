@@ -1,0 +1,92 @@
+name: codex-on-cloud
+services:
+  desktop:
+    build:
+      context: .
+      dockerfile: desktop/Dockerfile
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.166.0}
+    image: codex-on-cloud/desktop:0.1.0
+    restart: unless-stopped
+    shm_size: 1gb
+    secrets:
+      - desktop_password
+      - agent_secret
+    volumes:
+      - desktop-home:/home/kasm-user
+      - ${WORKSPACE_DIR:-./workspaces}:/workspace
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    networks: [desktop, egress]
+    healthcheck:
+      test: [CMD, python3, -c, "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:6902/health',headers={'Authorization':'Bearer '+open(os.environ['AGENT_SECRET_FILE']).read().strip()}); assert b'\"ready\": true' in urllib.request.urlopen(r,timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+
+  panel:
+    build:
+      context: .
+      dockerfile: panel/Dockerfile
+    image: codex-on-cloud/panel:0.1.0
+    restart: unless-stopped
+    init: true
+    environment:
+      PORT: '8080'
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:36080}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-127.0.0.1:36080}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD_FILE: /run/secrets/panel_password
+      DESKTOP_PASSWORD_FILE: /run/secrets/desktop_password
+      AGENT_SECRET_FILE: /run/secrets/agent_secret
+      DATA_DIR: /data
+      DESKTOP_URL: https://desktop:6901
+      DESKTOP_TLS_VERIFY: 'false'
+      AGENT_URL: http://desktop:6902
+    secrets: [panel_password, desktop_password, agent_secret]
+    volumes: [panel-data:/data]
+    ports: ['127.0.0.1:${PANEL_PORT:-36080}:8080']
+    networks: [desktop, frontend]
+    depends_on: [desktop]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/healthz',{headers:{host:new URL(process.env.PUBLIC_ORIGIN).host}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07
+    profiles: [cloudflare]
+    user: '1000:1000'
+    restart: unless-stopped
+    command: [tunnel, --no-autoupdate, run, --token-file, /run/secrets/tunnel_token]
+    secrets: [tunnel_token]
+    networks: [frontend, egress]
+    depends_on: [panel]
+    logging: *logging
+
+networks:
+  desktop:
+    internal: true
+  frontend:
+    # The loopback port mapping and cloudflared use this ingress network.
+  egress: {}
+
+volumes:
+  desktop-home: {}
+  panel-data: {}
+
+secrets:
+  panel_password:
+    file: ./secrets/panel_password
+  desktop_password:
+    file: ./secrets/desktop_password
+  agent_secret:
+    file: ./secrets/agent_secret
+  tunnel_token:
+    file: ./secrets/tunnel_token

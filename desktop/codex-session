@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+cd /workspace || exit 1
+printf '\n  Codex on Cloud\n  项目：/workspace    文件中转：/workspace/transfer\n\n'
+if codex login status >/dev/null 2>&1; then
+  codex
+else
+  printf '首次使用：先运行 codex login --device-auth，在手机浏览器完成登录。\n登录成功后运行 codex。\n\n'
+fi
+exec bash -i

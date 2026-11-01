@@ -1,0 +1,9 @@
+.git
+node_modules
+.env
+secrets
+data
+workspaces
+test-results
+playwright-report
+**/__pycache__

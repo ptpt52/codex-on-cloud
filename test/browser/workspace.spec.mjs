@@ -1,0 +1,51 @@
+import { test, expect } from '@playwright/test';
+
+test('login, Chinese input without automatic submit, files and logout work on a real page', async ({ page }, info) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '进入工作空间' })).toBeVisible();
+  await page.screenshot({ path: `test-results/${info.project.name}-login.png`, fullPage: true });
+  await page.getByLabel('密码', { exact: true }).fill('demo_password_for_tests');
+  await page.getByRole('button', { name: '连接工作空间' }).click();
+  await expect(page.locator('#connection-status')).toContainText('桌面在线');
+  await expect(page.frameLocator('#desktop-frame').getByText('你的工作空间已就绪。')).toBeVisible();
+  await expect(page.frameLocator('#desktop-frame').locator('#cursor')).toHaveText('已连接');
+  const text = '请分析这个项目\n保留中文和换行';
+  await page.getByLabel('要粘贴到桌面的文字').fill(text);
+  const paste = page.waitForRequest(request => request.url().endsWith('/api/paste') && request.method() === 'POST');
+  await page.getByRole('button', { name: '粘贴文字' }).click();
+  expect((await paste).postDataJSON()).toEqual({ text, target: 'terminal' });
+  await expect(page.getByRole('status').filter({ hasText: '已粘贴' })).toBeVisible();
+  const enter = page.waitForRequest(request => request.url().endsWith('/api/key') && request.method() === 'POST');
+  await page.getByRole('button', { name: 'Enter ↵' }).click();
+  expect((await enter).postDataJSON()).toEqual({ key: 'Enter' });
+  await page.screenshot({ path: `test-results/${info.project.name}-workspace.png`, fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: '文件中转', exact: true }).click();
+  await page.locator('#upload-input').setInputFiles({ name: '手机资料.txt', mimeType: 'text/plain', buffer: Buffer.from('中文内容') });
+  await expect(page.locator('#upload-status')).toContainText('上传完成');
+  await expect(page.locator('#file-list')).toContainText('手机资料.txt');
+  const download = page.waitForEvent('download');
+  await page.locator('#file-list').getByRole('link', { name: '下载' }).last().click();
+  expect((await download).suggestedFilename()).toBe('手机资料.txt');
+  await page.getByRole('button', { name: '关闭文件中转' }).click();
+  await page.getByRole('button', { name: '退出', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '进入工作空间' })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('a second page takes over without the first page reconnecting automatically', async ({ page, context }) => {
+  await page.goto('/');
+  await page.getByLabel('密码', { exact: true }).fill('demo_password_for_tests');
+  await page.getByRole('button', { name: '连接工作空间' }).click();
+  await expect(page.locator('#connection-status')).toContainText('桌面在线');
+  const second = await context.newPage();
+  await second.goto('/');
+  await expect(second.locator('#connection-status')).toContainText('桌面在线');
+  await expect(page.getByRole('button', { name: '在这里继续使用' })).toBeVisible({ timeout: 10000 });
+  await page.getByRole('button', { name: '在这里继续使用' }).click();
+  await expect(page.locator('#connection-status')).toContainText('桌面在线');
+  await expect(second.getByRole('button', { name: '在这里继续使用' })).toBeVisible({ timeout: 10000 });
+  await second.close();
+});

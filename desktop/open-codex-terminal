@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -eu
+# Make the helper's terminal shortcut deterministic across xterm distributions.
+exec xterm -fa 'DejaVu Sans Mono' -fs 15 -T Codex \
+  -xrm 'XTerm*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \
+  -e /usr/local/bin/codex-workbench
