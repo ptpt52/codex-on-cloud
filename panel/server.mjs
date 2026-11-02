@@ -35,6 +35,7 @@ const ASSETS = new Map([
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
   ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
   ['/terminal/terminal.js', ['terminal.js', 'text/javascript; charset=utf-8']],
+  ['/terminal/terminal-health.js', ['terminal-health.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal.css', ['terminal.css', 'text/css; charset=utf-8']],
   ['/terminal/xterm.js', ['../../node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
   ['/terminal/fit.js', ['../../node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],

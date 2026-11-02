@@ -23,16 +23,18 @@ async function until(probe) { for (let i = 0; i < 150; i++) { if (probe()) retur
 
 test('terminal assets and WebSockets authenticate Host, Origin, viewer, target token and a CSRF handshake before launching a PTY', async t => {
   const app = await fixture(); t.after(() => app.close());
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
   assert.equal(await denied(app), 401); await app.login(); assert.equal(await denied(app), 409); await app.claim();
   for (const headers of [{ origin: 'https://evil.test' }, { host: 'evil.test', origin: 'http://evil.test' }]) assert.equal(await denied(app, {}, headers), 403);
   assert.equal(await denied(app, { terminalId: '../main' }), 400); assert.equal(await denied(app, { terminalToken: '%0:9999' }), 409);
   for (const csrf of ['', 'bad', {}, { toString: 'invalid' }]) {
     const { ws } = await connected(app, csrf); await once(ws, 'close'); assert.equal(app.terminalConnections, 0);
   }
-  const malformed = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } });
-  await once(malformed, 'open'); const malformedClosed = once(malformed, 'close'); malformed.send('null'); await malformedClosed; assert.equal(app.terminalConnections, 0);
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
+  for (const first of ['null', JSON.stringify({ type: 'health', nonce: 1 })]) {
+    const malformed = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } });
+    await once(malformed, 'open'); const malformedClosed = once(malformed, 'close'); malformed.send(first); await malformedClosed; assert.equal(app.terminalConnections, 0);
+  }
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
   const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
   assert.equal(app.terminalConnections, 1); assert.equal(app.inputCalls.length, 0); assert.equal(app.terminalInputs.length, 0);
 });
@@ -85,4 +87,34 @@ test('malformed, oversized and invalid output acknowledgments close the terminal
     const closed = once(ws, 'close'); ws.send(value); await closed;
   }
   assert.equal(app.terminalInputs.length, 0); assert.equal((await app.controls.listTerminals()).terminals.length, 1);
+});
+
+test('read-only terminal health is independent of a pending input and does not consume input IDs', async t => {
+  let release, entered; const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const app = await fixture({ terminalHook: async () => { entered(); await hold; } }); t.after(() => { release(); return app.close(); }); await app.login(); await app.claim();
+  const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
+  ws.send(JSON.stringify({ type: 'health', nonce: 1 })); await until(() => records.some(item => item.type === 'health' && item.nonce === 1));
+  assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.terminalSizes, []); assert.deepEqual(app.clipboardReads, []);
+  ws.send(JSON.stringify({ type: 'control', id: 1, action: 'key', key: 'Enter' })); await started;
+  ws.send(JSON.stringify({ type: 'health', nonce: 2 })); await until(() => records.some(item => item.type === 'health' && item.nonce === 2));
+  assert.equal(records.some(item => item.type === 'result'), false); assert.equal(app.terminalInputs.length, 1);
+  release(); await until(() => records.some(item => item.type === 'result' && item.id === 1));
+  ws.send(JSON.stringify({ type: 'resize', id: 2, cols: 100, rows: 24 })); await until(() => app.terminalSizes.length === 1);
+  assert.equal(app.terminalInputs.length, 1); assert.equal(app.managementStats.restarts, 0);
+});
+
+test('terminal health rejects malformed, repeated, extra-field and rate-exceeding records before forwarding any input', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  for (const value of [{ type: 'health', nonce: 0 }, { type: 'health', nonce: -1 }, { type: 'health', nonce: '1' }, { type: 'health', nonce: 2147483648 }, { type: 'health', nonce: 1, data: 'Enter' }, { type: 'health', nonce: 1, padding: 'x'.repeat(96) }]) {
+    const { ws, records } = await connected(app); await until(() => records.some(item => item.type === 'ready'));
+    const closed = once(ws, 'close'); ws.send(JSON.stringify(value)); await closed;
+  }
+  let current = await connected(app); await until(() => current.records.some(item => item.type === 'ready'));
+  current.ws.send(JSON.stringify({ type: 'health', nonce: 1 })); await until(() => current.records.some(item => item.type === 'health'));
+  let closed = once(current.ws, 'close'); current.ws.send(JSON.stringify({ type: 'health', nonce: 1 })); await closed;
+  current = await connected(app); await until(() => current.records.some(item => item.type === 'ready'));
+  for (let nonce = 1; nonce <= 8; nonce++) current.ws.send(JSON.stringify({ type: 'health', nonce }));
+  await until(() => current.records.filter(item => item.type === 'health').length === 8);
+  closed = once(current.ws, 'close'); current.ws.send(JSON.stringify({ type: 'health', nonce: 9 })); await closed;
+  assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.terminalSizes, []); assert.deepEqual(app.clipboardReads, []);
 });

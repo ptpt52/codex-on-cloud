@@ -19,6 +19,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   let ended = false, ready = false, pending = '', outstanding = 0, sequence = 0, lastClientId = 0, busy = false;
   const requests = new Map(); // At most 64 streamed records / 64 KiB in the helper.
   let rawWindow = Date.now(), rawBytes = 0;
+  let lastHealthNonce = 0, healthWindow = Date.now(), healthCount = 0;
   let pressureTimer, escapeTimer;
   const close = () => {
     if (ended) return;
@@ -74,6 +75,13 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
     if (binary || bytes.length > 256 * 1024 || !valid()) return close();
     let value;
     try { value = JSON.parse(bytes.toString('utf8')); } catch { return close(); }
+    if (value?.type === 'health') {
+      if (!ready || bytes.length > 96 || Object.keys(value).length !== 2 || !Number.isSafeInteger(value.nonce) || value.nonce <= lastHealthNonce || value.nonce > 2147483647) return close();
+      if (Date.now() - healthWindow >= 1000) { healthWindow = Date.now(); healthCount = 0; }
+      if (++healthCount > 8) return close();
+      lastHealthNonce = value.nonce;
+      send({ type: 'health', nonce: value.nonce }); return;
+    }
     if (value?.type === 'ack') {
       if (!Number.isSafeInteger(value.bytes) || value.bytes <= 0 || value.bytes > outstanding) return close();
       outstanding -= value.bytes; if (outstanding < 16 * 1024) { clearTimeout(pressureTimer); pressureTimer = null; child.stdout.resume(); } return;
