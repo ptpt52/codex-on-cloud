@@ -12,6 +12,8 @@ import { managerRequest } from './manager-client.mjs';
 import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { validateInput } from '../native/input.mjs';
 import { clipboardSource } from '../native/clipboard.mjs';
+import { terminalTarget } from '../native/terminals.mjs';
+import { attachTerminal } from './terminal-bridge.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
@@ -31,6 +33,12 @@ const ASSETS = new Map([
   ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
   ['/desktop/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
+  ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
+  ['/terminal/terminal.js', ['terminal.js', 'text/javascript; charset=utf-8']],
+  ['/terminal/terminal.css', ['terminal.css', 'text/css; charset=utf-8']],
+  ['/terminal/xterm.js', ['../../node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
+  ['/terminal/fit.js', ['../../node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
+  ['/terminal/xterm.css', ['../../node_modules/@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8']],
 ]);
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const VIEWER = /^[a-f0-9-]{16,64}$/;
@@ -137,6 +145,7 @@ export async function createPanel(config) {
   }
 
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
+  const terminalWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 256 * 1024 });
 
   async function route(req, res) {
     res.setHeader('x-content-type-options', 'nosniff');
@@ -347,7 +356,7 @@ export async function createPanel(config) {
       await pipeline(response.body, res);
       return;
     }
-    if (path.startsWith('/desktop/')) {
+    if (path.startsWith('/desktop/') || path.startsWith('/terminal/')) {
       requireSession(req);
       if (!['GET', 'HEAD'].includes(req.method)) throw new HttpError(405, '只允许读取桌面资源');
       if (path.startsWith('/desktop/novnc/')) {
@@ -364,7 +373,7 @@ export async function createPanel(config) {
     }
     const asset = assets.get(path);
     if (asset && ['GET', 'HEAD'].includes(req.method)) {
-      res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'");
+      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self'; style-src 'self'${path.startsWith('/terminal/') ? " 'unsafe-inline'" : ''}; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'`);
       res.writeHead(200, { 'content-type': asset.type, 'content-length': asset.bytes.length, 'cache-control': 'no-store' });
       return res.end(req.method === 'HEAD' ? undefined : asset.bytes);
     }
@@ -386,7 +395,8 @@ export async function createPanel(config) {
     const session = sessionOf(req);
     if (!session) return deny(401);
     const url = new URL(req.url, 'http://internal');
-    if (url.pathname !== '/desktop/websockify') return deny(404);
+    const terminalMode = url.pathname === '/terminal/connect';
+    if (url.pathname !== '/desktop/websockify' && !terminalMode) return deny(404);
     if (!owner || owner.session !== session.hash || owner.viewer !== url.searchParams.get('viewer')) return deny(409);
     const expected = owner;
     const controls = await controlStatus();
@@ -394,6 +404,35 @@ export async function createPanel(config) {
     if (!sessionOf(req)) return deny(401);
     if (owner !== expected) return deny(409);
     if (!controls.available || controls.maintenance) return deny(503);
+    if (terminalMode) {
+      let target;
+      try { target = terminalTarget({ terminalId: url.searchParams.get('terminalId'), terminalToken: url.searchParams.get('terminalToken') }); }
+      catch { return deny(400); }
+      const currentTarget = async () => {
+        const catalog = await managerRequest(config, '/terminals');
+        return catalog.terminals.some(item => item.id === target.terminalId && item.token === target.terminalToken && item.supported);
+      };
+      if (!await currentTarget()) return deny(409);
+      if (owner !== expected || !sessionOf(req) || closing || maintenancePending || socket.destroyed) return deny(409);
+      closeSockets(state => state.socket !== socket);
+      const state = { session: session.hash, token: cookieToken(req.headers.cookie), socket };
+      sockets.set(socket, state); socket.once('close', () => sockets.delete(socket));
+      const valid = () => owner === expected && sockets.get(socket) === state && !!auth.get(state.token) && !closing && !maintenancePending;
+      terminalWss.handleUpgrade(req, socket, head, ws => {
+        const timer = setTimeout(() => ws.terminate(), 2500).unref();
+        ws.once('close', () => clearTimeout(timer));
+        ws.once('message', (bytes, binary) => {
+          clearTimeout(timer);
+          let first;
+          try { if (binary || bytes.length > 1024) throw new Error(); first = JSON.parse(bytes.toString('utf8')); } catch { return ws.terminate(); }
+          if (!valid() || first?.type !== 'auth' || typeof first.csrf !== 'string' || !equal(first.csrf, session.csrf)) return ws.terminate();
+          attachTerminal(ws, { ...target, socketPath: config.terminalSocket, env: config.terminalEnv, valid, verify: currentTarget,
+            readClipboard: async () => { const result = await managerRequest(config, '/clipboard', { source: 'clipboard' }); if (!valid()) throw new Error('控制权已变化'); return result.text; },
+            launch: config.terminalLaunch ? () => config.terminalLaunch(target) : undefined });
+        });
+      });
+      return;
+    }
     // One stream per owner. Reconnecting the same viewer also closes its previous stream.
     closeSockets(state => state.socket !== socket);
     sockets.set(socket, { session: session.hash, token: cookieToken(req.headers.cookie), socket });
@@ -423,6 +462,8 @@ export async function createPanel(config) {
     await rtcClosing;
     for (const client of wss.clients) client.terminate();
     wss.close();
+    for (const client of terminalWss.clients) client.terminate();
+    terminalWss.close();
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     await auth.close();
   }

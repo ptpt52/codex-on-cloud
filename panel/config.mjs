@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { environment, settings } from '../native/config.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { stunURL } from './rtc-network.mjs';
+import { desktopEnvironment } from '../native/desktop-controls.mjs';
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -42,6 +43,7 @@ export function readConfig(env = environment()) {
     vncSocket: native.socket, agentUrl, transferDir: native.transfer,
     tunnelDiagnosticsUrl: `http://127.0.0.1:${native.tunnelMetricsPort}/diag/tunnel`,
     managerSocket: native.managerSocket,
+    terminalSocket: join(native.runtime, 'tmux.sock'), terminalEnv: desktopEnvironment(native),
     sessionMs: 7 * 24 * 60 * 60 * 1000,
     webrtc: env.WEBRTC_ENABLED !== '0',
     webrtcAddress,

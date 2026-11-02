@@ -20,9 +20,10 @@ let desktopSettings = null, settingsController = null, settingsTimer, settingsBu
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalController = null, terminalLoadAttempted = false;
+let frameTerminalKey = '', terminalGeometry = null;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
 const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $('shortcuts-menu'), list: $('shortcuts-list'),
-  canSend: () => !confirmation && canInput() && !inputBusy && !displayPreferences.collapsed,
+  canSend: () => !confirmation && canInput() && !inputBusy && !inputCollapsed(),
   send: key => sendShortcut(key), changed: () => { sendDisplayPreferences(); scheduleViewport(); } });
 const wakeSupported = window.isSecureContext && typeof navigator.wakeLock?.request === 'function';
 try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
@@ -30,7 +31,9 @@ $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false, keepAwake: false };
+const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalInputCollapsed: true };
+const terminalMode = () => displayPreferences.mode === 'terminal';
+function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
 const followsViewport = () => displayPreferences.autoResolution;
 const fixedSize = () => controlsState.viewport?.fixed || { width: 1600, height: 3200 };
 let displayScale = 0, displayRevision = 0, scaleRevision = -1;
@@ -44,6 +47,9 @@ try {
         displayPreferences.zoom = value.zoom;
         if (typeof value.autoResolution === 'boolean') displayPreferences.autoResolution = value.autoResolution;
         if (typeof value.keepAwake === 'boolean') displayPreferences.keepAwake = value.keepAwake;
+        if (['desktop', 'terminal'].includes(value.mode)) displayPreferences.mode = value.mode;
+        if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) displayPreferences.terminalFontSize = value.terminalFontSize;
+        if (typeof value.terminalInputCollapsed === 'boolean') displayPreferences.terminalInputCollapsed = value.terminalInputCollapsed;
       }
     }
   }
@@ -52,10 +58,18 @@ function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
+    ...(terminalMode() ? { csrf, terminalFontSize: displayPreferences.terminalFontSize } : {}),
     busy: inputBusy || terminalBusy || $('terminals-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
+  $('desktop-card').classList.toggle('terminal-mode', terminalMode());
+  $('desktop-mode').setAttribute('aria-pressed', String(!terminalMode())); $('terminal-mode').setAttribute('aria-pressed', String(terminalMode()));
+  $('view-title').textContent = terminalMode() ? '网页终端' : '开发桌面';
+  $('fullscreen-button').setAttribute('aria-label', terminalMode() ? '全屏终端' : '全屏桌面');
+  $('terminal-view-controls').hidden = !terminalMode();
+  $('terminal-font-label').textContent = String(displayPreferences.terminalFontSize);
+  $('terminal-font-down').disabled = displayPreferences.terminalFontSize <= 10; $('terminal-font-up').disabled = displayPreferences.terminalFontSize >= 28;
   renderWakeStatus();
   $('auto-resolution').checked = followsViewport();
   const fixed = fixedSize(), maximum = controlsState.viewport?.maximum;
@@ -68,9 +82,9 @@ function renderDisplayControls() {
   $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
   $('actual-size-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 1));
   $('pan-button').setAttribute('aria-pressed', String(displayPreferences.pan));
-  $('toggle-input-button').setAttribute('aria-expanded', String(!displayPreferences.collapsed));
-  $('toggle-input-button').textContent = displayPreferences.collapsed ? '展开输入' : '收起输入';
-  $('input-dock').hidden = displayPreferences.collapsed;
+  $('toggle-input-button').setAttribute('aria-expanded', String(!inputCollapsed()));
+  $('toggle-input-button').textContent = inputCollapsed() ? '展开输入' : '收起输入';
+  $('input-dock').hidden = inputCollapsed();
   $('desktop-actions').hidden = displayPreferences.controlsCollapsed;
   $('display-controls').hidden = displayPreferences.controlsCollapsed;
   $('desktop-card').classList.toggle('controls-collapsed', displayPreferences.controlsCollapsed);
@@ -147,7 +161,7 @@ $('pan-button').addEventListener('click', () => {
   updateDisplayPreferences({ pan: !displayPreferences.pan });
   toast(displayPreferences.pan ? '拖动模式：移动画面，不会点击远程桌面' : '操作模式：可以点击远程桌面');
 });
-$('toggle-input-button').addEventListener('click', () => { shortcutMenu.close(); updateDisplayPreferences({ collapsed: !displayPreferences.collapsed }); });
+$('toggle-input-button').addEventListener('click', () => { shortcutMenu.close(); updateDisplayPreferences(terminalMode() ? { terminalInputCollapsed: !inputCollapsed() } : { collapsed: !inputCollapsed() }); });
 $('toggle-controls-button').addEventListener('click', () => updateDisplayPreferences({ controlsCollapsed: !displayPreferences.controlsCollapsed }));
 renderDisplayControls();
 
@@ -174,7 +188,7 @@ function waitForViewport(actual, signal) {
 }
 async function resizeViewport() {
   viewportTimer = null;
-  if (!loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  if (terminalMode() || !loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
   if (!nativeIdle || inputPaused() || inputBusy || terminalBusy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
@@ -209,14 +223,21 @@ $('auto-resolution').addEventListener('change', () => {
 function canInput() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
+function canManageTerminals() {
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
+}
 function renderInputControls() {
   const disabled = inputBusy || !canInput();
   for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
   if (disabled) shortcutMenu.close();
-  for (const control of [$('terminals-button'), $('input-terminal'), $('create-terminal'), ...$('terminal-list').querySelectorAll('button, input')]) control.disabled = disabled || control.closest('.terminal-row')?.dataset.supported === 'false';
-  $('create-terminal').disabled = disabled || terminalCatalog.length >= 4;
+  for (const control of [$('terminals-button'), $('create-terminal'), ...$('terminal-list').querySelectorAll('button, input')]) control.disabled = !canManageTerminals() || control.closest('.terminal-row')?.dataset.supported === 'false';
+  $('input-terminal').disabled = disabled;
+  $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= 4;
   $('refresh-terminals').disabled = !loggedIn || terminalBusy;
   $('paste-target').disabled = !!selectedTerminal;
+  $('desktop-mode').disabled = $('terminal-mode').disabled = inputBusy || terminalBusy || settingsBusy || maintenancePending || !!confirmation;
+  $('terminal-view-select').disabled = !canManageTerminals();
+  $('terminal-view-manage').disabled = !canManageTerminals();
   sendDisplayPreferences();
 }
 function renderConnection() {
@@ -230,22 +251,22 @@ function renderConnection() {
   else if (transportSwitching) label = '正在切换直连';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
-  else if (frameState === 'connected') label = '桌面在线';
+  else if (frameState === 'connected') label = terminalMode() ? '终端在线' : '桌面在线';
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
-  $('connection-status').classList.toggle('offline', label !== '桌面在线');
+  $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线'].includes(label));
   $('connection-status').lastChild.textContent = label;
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
-  $('diag-transport').textContent = frameState !== 'connected' ? '等待画面连接' : frameTransport === 'direct' ? 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
-  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待画面连接' : controlReady ? 'WebRTC 加密直连' : 'HTTPS';
+  $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
+  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? '网页终端加密通道' : controlReady ? 'WebRTC 加密直连' : 'HTTPS';
   const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
   const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}`;
   $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用直连';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
   $('diag-latency').textContent = route?.rttMs != null ? `${route.rttMs} ms` : '—';
-  $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? '已建立加密直连' : directIssues[directIssue] || '尚未检测';
-  $('diag-resolution').textContent = frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
+  $('diag-direct-status').textContent = terminalMode() ? '网页终端当前使用 HTTPS / WSS' : frameTransport === 'direct' && frameState === 'connected' ? '已建立加密直连' : directIssues[directIssue] || '尚未检测';
+  $('diag-resolution').textContent = terminalMode() ? terminalGeometry ? `${terminalGeometry.cols} 列 × ${terminalGeometry.rows} 行` : '等待终端尺寸' : frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
   renderDesktopSettings();
@@ -344,6 +365,7 @@ function stopFrame() {
   frameLoaded = false;
   frameState = 'idle';
   frameTransport = '';
+  frameTerminalKey = ''; terminalGeometry = null;
   frameNetwork = null; directIssue = '';
   frameEpoch++;
   displayScale = 0;
@@ -365,7 +387,8 @@ function resetDirectControl() {
 }
 function assistantRequest(path, body, signal) {
   const action = { '/api/paste': 'paste', '/api/key': 'key', '/api/clipboard/read': 'clipboard' }[path];
-  if (!controlReady || !action) return api(path, { method: 'POST', body, signal });
+  if (terminalMode() && ['paste', 'key'].includes(action) && !controlReady) return Promise.reject(Object.assign(new Error('网页终端未就绪，本次输入未发送'), { outcome: 'rejected' }));
+  if (!controlReady || !action || (terminalMode() && action === 'clipboard')) return api(path, { method: 'POST', body, signal });
   if (controlPending || signal?.aborted || controlSequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连通道未就绪，本次操作未发送'), { outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
     const id = ++controlSequence;
@@ -409,13 +432,25 @@ function showLogin(message = '') {
 }
 function frameUrl() {
   const query = new URLSearchParams({ viewer, frame: String(frameEpoch) });
+  if (terminalMode()) {
+    const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
+    query.set('terminalId', terminal.id); query.set('terminalToken', terminal.token);
+    return `/terminal/index.html?${query}`;
+  }
   return `/desktop/index.html?${query}`;
 }
 function openFrame() {
   if (frameLoaded || !owned) return;
+  if (terminalMode()) {
+    if (!selectedTerminal) selectedTerminal = 'main';
+    const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
+    if (!terminal) return;
+    frameTerminalKey = `${terminal.id}:${terminal.token}`;
+  }
   frameLoaded = true;
   frameState = 'connecting';
   $('desktop-frame').src = frameUrl();
+  $('desktop-frame').title = terminalMode() ? 'Codex 网页终端' : 'Ubuntu 开发桌面';
   $('desktop-frame').hidden = false;
   renderConnection();
 }
@@ -496,6 +531,7 @@ function confirmationValid(pending) {
   if (pending.epoch !== frameEpoch || pending.frameState !== frameState || pending.owned !== owned) return false;
   if (pending.destination && JSON.stringify(pending.destination) !== JSON.stringify(inputDestination(false))) return false;
   if (pending.kind === 'terminal-open' && !terminalCatalog.some(item => item.id === pending.body?.terminalId && item.token === pending.body.terminalToken && item.supported)) return false;
+  if (['terminal-open', 'terminal-create'].includes(pending.kind)) return canManageTerminals();
   return pending.kind === 'reconnect' ? panelState === 'online' && navigator.onLine && !maintenancePending && !controlsState.maintenance : !inputBusy && canInput();
 }
 function closeConfirmation() {
@@ -601,12 +637,16 @@ function inputDestination(strict = true) {
 function renderTerminalList() {
   const select = $('input-terminal');
   select.replaceChildren(new Option('当前窗口（跟随桌面焦点）', ''));
+  select.options[0].disabled = terminalMode();
+  const viewSelect = $('terminal-view-select'); viewSelect.replaceChildren();
   for (const terminal of terminalCatalog) {
     const option = new Option(`${terminal.name}${terminal.supported ? '' : '（布局不支持）'}`, terminal.id); option.disabled = !terminal.supported; select.add(option);
+    const viewOption = new Option(terminal.name, terminal.id); viewOption.disabled = !terminal.supported; viewSelect.add(viewOption);
   }
   if (selectedTerminal && !terminalCatalog.some(item => item.id === selectedTerminal)) select.add(new Option('原目标已结束，请重新选择', selectedTerminal));
   select.value = selectedTerminal;
-  $('terminal-target-note').textContent = selectedTerminal ? '按键和粘贴发送前会切换到所选终端；关闭的窗口需先重新打开。' : '发送到桌面当前获得焦点的位置。';
+  viewSelect.value = selectedTerminal;
+  $('terminal-target-note').textContent = terminalMode() ? '输入直接发送到当前网页终端；粘贴与 Enter 提交分开。' : selectedTerminal ? '按键和粘贴发送前会切换到所选终端；关闭的窗口需先重新打开。' : '发送到桌面当前获得焦点的位置。';
   if (selectedTerminal) $('paste-target').value = 'terminal';
   const list = $('terminal-list'); list.replaceChildren();
   for (const terminal of terminalCatalog) {
@@ -624,8 +664,9 @@ function renderTerminalList() {
   renderInputControls();
 }
 async function terminalRequest(body) {
-  if (!loggedIn || terminalBusy || (body && (inputBusy || !canInput()))) return;
+  if (!loggedIn || terminalBusy || (body && !canManageTerminals())) return;
   const controller = new AbortController(), generation = uiGeneration;
+  if (body && terminalMode()) body = { ...body, view: 'terminal' };
   terminalController = controller; terminalBusy = true; shortcutMenu.close();
   const timeout = setTimeout(() => controller.abort(), 6500);
   $('terminals-status').textContent = body ? '正在处理终端操作…' : '正在读取终端列表…'; renderInputControls(); sendDisplayPreferences();
@@ -641,17 +682,38 @@ async function terminalRequest(body) {
     if (terminalController === controller && generation === uiGeneration) $('terminals-status').textContent = body && error.outcome !== 'rejected' ? '操作结果未知，请手动刷新列表确认；不会自动重试。' : error.message;
   } finally {
     clearTimeout(timeout);
-    if (terminalController === controller) { terminalController = null; terminalBusy = false; renderInputControls(); sendDisplayPreferences(); scheduleViewport(); }
+    if (terminalController === controller) { terminalController = null; terminalBusy = false; renderInputControls(); sendDisplayPreferences(); scheduleViewport(); if (terminalMode()) syncTerminalView(); }
   }
 }
 async function loadTerminals() { return terminalRequest(); }
 async function manageTerminals(body) { return terminalRequest(body); }
 $('terminals-button').addEventListener('click', () => { shortcutMenu.close(); $('terminals-dialog').showModal(); sendDisplayPreferences(); void loadTerminals(); });
+$('terminal-view-manage').addEventListener('click', () => { shortcutMenu.close(); $('terminals-dialog').showModal(); sendDisplayPreferences(); void loadTerminals(); });
 $('close-terminals').addEventListener('click', () => $('terminals-dialog').close());
 $('terminals-dialog').addEventListener('close', () => { sendDisplayPreferences(); scheduleViewport(); });
 $('refresh-terminals').addEventListener('click', () => void loadTerminals());
-$('create-terminal-form').addEventListener('submit', event => { event.preventDefault(); if (!inputBusy && canInput()) requestConfirmation('terminal-create', null, { action: 'create', name: $('new-terminal-name').value }); });
-$('input-terminal').addEventListener('change', () => { shortcutMenu.close(); closeConfirmation(); selectedTerminal = $('input-terminal').value; renderTerminalList(); });
+$('create-terminal-form').addEventListener('submit', event => { event.preventDefault(); if (canManageTerminals()) requestConfirmation('terminal-create', null, { action: 'create', name: $('new-terminal-name').value }); });
+$('input-terminal').addEventListener('change', () => { shortcutMenu.close(); closeConfirmation(); selectedTerminal = $('input-terminal').value; renderTerminalList(); if (terminalMode()) syncTerminalView(); });
+function syncTerminalView() {
+  if (!terminalMode() || !loggedIn || !owned) return;
+  const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
+  if (!terminal) return;
+  if (frameLoaded && frameTerminalKey === `${terminal.id}:${terminal.token}`) return;
+  stopFrame(); openFrame(); renderConnection();
+}
+function changeMode(mode) {
+  if (!['desktop', 'terminal'].includes(mode) || mode === displayPreferences.mode || inputBusy || terminalBusy || settingsBusy || confirmation) return;
+  shortcutMenu.close(); closeConfirmation(); stopFrame();
+  if (mode === 'terminal' && !selectedTerminal) selectedTerminal = 'main';
+  updateDisplayPreferences({ mode }); renderTerminalList(); openFrame();
+  if (mode === 'terminal' && !frameLoaded) void loadTerminals();
+  renderConnection();
+}
+$('desktop-mode').addEventListener('click', () => changeMode('desktop'));
+$('terminal-mode').addEventListener('click', () => changeMode('terminal'));
+$('terminal-view-select').addEventListener('change', () => { closeConfirmation(); selectedTerminal = $('terminal-view-select').value; renderTerminalList(); syncTerminalView(); });
+$('terminal-font-down').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.max(10, displayPreferences.terminalFontSize - 1) }));
+$('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));
 $('login-form').addEventListener('submit', event => {
   event.preventDefault();
   void action($('login-button'), async () => {
@@ -963,8 +1025,12 @@ window.addEventListener('message', event => {
     clearTimeout(switchTimer); transportSwitching = false; renderConnection(); return;
   }
   if (event.data?.type === 'codex-control-state') {
-    controlReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
+    controlReady = event.data.ready === true && frameState === 'connected' && ['direct', 'terminal'].includes(frameTransport);
     if (!controlReady) resetDirectControl();
+    renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-terminal-size' && terminalMode()) {
+    if (Number.isInteger(event.data.cols) && Number.isInteger(event.data.rows) && event.data.cols >= 2 && event.data.cols <= 500 && event.data.rows >= 1 && event.data.rows <= 200) terminalGeometry = { cols: event.data.cols, rows: event.data.rows };
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-control-result') {
@@ -988,7 +1054,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
-  if (event.data.state === 'connected') { frameState = 'connected'; frameTransport = event.data.transport === 'direct' ? 'direct' : 'relay'; sendDisplayPreferences(); }
+  if (event.data.state === 'connected') { frameState = 'connected'; frameTransport = terminalMode() ? 'terminal' : event.data.transport === 'direct' ? 'direct' : 'relay'; sendDisplayPreferences(); }
   else if (event.data.state === 'disconnected') { resetDirectControl(); frameState = 'reconnecting'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
   else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;

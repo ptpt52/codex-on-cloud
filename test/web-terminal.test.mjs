@@ -1,0 +1,88 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import WebSocket from 'ws';
+import { fixture } from './fixture.mjs';
+import { terminalPaste, TERMINAL_KEYS } from '../panel/terminal-bridge.mjs';
+
+function url(app, query = {}) { const target = new URL('/terminal/connect', app.config.origin); target.protocol = 'ws:'; target.search = new URLSearchParams({ viewer: app.viewer, terminalId: 'main', terminalToken: '%0:4000', ...query }); return target; }
+async function denied(app, query, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url(app, query), { headers: { cookie: app.cookie, origin: app.config.origin, ...headers } });
+    ws.on('unexpected-response', (_req, res) => { res.resume(); ws.terminate(); resolve(res.statusCode); }); ws.on('open', () => { ws.terminate(); reject(new Error('unexpected upgrade')); }); ws.on('error', () => {});
+  });
+}
+async function connected(app, csrf = app.csrf, acknowledge = true) {
+  const ws = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } }), records = [];
+  ws.on('error', () => {});
+  ws.on('message', bytes => { const value = JSON.parse(bytes); records.push(value); if (records.length > 64) records.shift(); if (value.type === 'output' && acknowledge) ws.send(JSON.stringify({ type: 'ack', bytes: Buffer.from(value.data, 'base64').length })); });
+  await once(ws, 'open'); ws.send(JSON.stringify({ type: 'auth', csrf }));
+  return { ws, records };
+}
+async function until(probe) { for (let i = 0; i < 150; i++) { if (probe()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error('web terminal mock deadline'); }
+
+test('terminal assets and WebSockets authenticate Host, Origin, viewer, target token and a CSRF handshake before launching a PTY', async t => {
+  const app = await fixture(); t.after(() => app.close());
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
+  assert.equal(await denied(app), 401); await app.login(); assert.equal(await denied(app), 409); await app.claim();
+  for (const headers of [{ origin: 'https://evil.test' }, { host: 'evil.test', origin: 'http://evil.test' }]) assert.equal(await denied(app, {}, headers), 403);
+  assert.equal(await denied(app, { terminalId: '../main' }), 400); assert.equal(await denied(app, { terminalToken: '%0:9999' }), 409);
+  for (const csrf of ['', 'bad', {}, { toString: 'invalid' }]) {
+    const { ws } = await connected(app, csrf); await once(ws, 'close'); assert.equal(app.terminalConnections, 0);
+  }
+  const malformed = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } });
+  await once(malformed, 'open'); const malformedClosed = once(malformed, 'close'); malformed.send('null'); await malformedClosed; assert.equal(app.terminalConnections, 0);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
+  const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
+  assert.equal(app.terminalConnections, 1); assert.equal(app.inputCalls.length, 0); assert.equal(app.terminalInputs.length, 0);
+});
+
+test('terminal paste and fixed keys preserve separate Enter, protect multiline paste and read remote clipboard only explicitly', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
+  ws.send(JSON.stringify({ type: 'control', id: 1, action: 'paste', text: '中文\n第二行', bracketed: true })); await until(() => records.some(item => item.id === 1));
+  assert.equal(app.terminalInputs[0].text, '\x1b[200~中文\n第二行\x1b[201~');
+  ws.send(JSON.stringify({ type: 'control', id: 2, action: 'key', key: 'Enter' })); await until(() => records.some(item => item.id === 2)); assert.equal(app.terminalInputs[1].text, '\r');
+  ws.send(JSON.stringify({ type: 'control', id: 3, action: 'paste', text: '不得\n自动提交', bracketed: false })); await until(() => records.some(item => item.id === 3));
+  assert.equal(records.find(item => item.id === 3).outcome, 'rejected'); assert.equal(app.terminalInputs.length, 2);
+  app.clipboardText.clipboard = '远程剪贴板'; ws.send(JSON.stringify({ type: 'control', id: 4, action: 'key', key: 'Ctrl+Shift+V', bracketed: true })); await until(() => records.some(item => item.id === 4));
+  assert.equal(app.terminalInputs[2].text, '\x1b[200~远程剪贴板\x1b[201~'); assert.deepEqual(app.clipboardReads, ['clipboard']); assert.equal(app.inputCalls.length, 0);
+  ws.send(JSON.stringify({ type: 'control', id: 5, action: 'paste', text: '\b'.repeat(32768), bracketed: true })); await until(() => records.some(item => item.id === 5));
+  assert.equal(records.find(item => item.id === 5).ok, true); assert.equal(Buffer.byteLength(app.terminalInputs[3].text), 32780);
+  const started = Date.now(); ws.send(JSON.stringify({ type: 'control', id: 6, action: 'key', key: 'Escape Escape' })); await until(() => records.some(item => item.id === 6));
+  assert.ok(Date.now() - started >= 75); assert.deepEqual(app.terminalInputs.slice(-2).map(item => item.text), ['\x1b', '\x1b']);
+  assert.equal(TERMINAL_KEYS['Ctrl+J'], '\n'); assert.equal(TERMINAL_KEYS.Enter, '\r');
+  assert.throws(() => terminalPaste('x\ny', false)); assert.throws(() => terminalPaste('x'.repeat(32769), true)); assert.throws(() => terminalPaste('x\0y', true));
+});
+
+test('terminal output pauses the producer until rendered-byte acknowledgments drain the bounded window', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  const { ws, records } = await connected(app, app.csrf, false); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
+  const child = app.terminalChildren[0];
+  for (let i = 0; i < 10; i++) child.stdout.write(JSON.stringify({ type: 'output', data: Buffer.alloc(8192, 65).toString('base64') }) + '\n');
+  await until(() => child.stdout.isPaused() && records.filter(item => item.type === 'output').length >= 8);
+  const rendered = records.filter(item => item.type === 'output').reduce((total, item) => total + Buffer.from(item.data, 'base64').length, 0);
+  ws.send(JSON.stringify({ type: 'ack', bytes: rendered })); await until(() => !child.stdout.isPaused());
+  assert.equal(app.terminalInputs.length, 0);
+});
+
+test('terminal streaming accepts bounded sizes and UTF-8 input, rejects repeated IDs and closes on takeover without replay', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  let active = await connected(app); await until(() => active.records.some(item => item.type === 'ready'));
+  active.ws.send(JSON.stringify({ type: 'resize', id: 1, cols: 120, rows: 30 })); active.ws.send(JSON.stringify({ type: 'input', id: 2, data: '中文键入' }));
+  await until(() => app.terminalInputs.length === 1); assert.deepEqual(app.terminalSizes, [{ terminalId: 'main', cols: 120, rows: 30 }]);
+  const closed = once(active.ws, 'close'); active.ws.send(JSON.stringify({ type: 'input', id: 2, data: '不能重放' })); await closed;
+  assert.equal(app.terminalInputs.length, 1);
+  active = await connected(app); await until(() => active.records.some(item => item.type === 'ready'));
+  const revoked = once(active.ws, 'close'); await app.claim('22222222-2222-4222-8222-222222222222'); await revoked;
+  assert.equal(app.terminalInputs.length, 1); assert.equal((await app.controls.get()).session.pid, 4000);
+});
+
+test('malformed, oversized and invalid output acknowledgments close the terminal without executing input', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  for (const value of ['not-json', JSON.stringify({ type: 'resize', id: 1, cols: 501, rows: 20 }), JSON.stringify({ type: 'ack', bytes: 999999 }), JSON.stringify({ type: 'input', id: 1, data: 'x'.repeat(8193) })]) {
+    const { ws, records } = await connected(app); await until(() => records.some(item => item.type === 'ready'));
+    const closed = once(ws, 'close'); ws.send(value); await closed;
+  }
+  assert.equal(app.terminalInputs.length, 0); assert.equal((await app.controls.listTerminals()).terminals.length, 1);
+});

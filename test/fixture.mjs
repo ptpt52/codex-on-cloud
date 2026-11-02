@@ -1,6 +1,8 @@
 import http from 'node:http';
 import net from 'node:net';
 import { once } from 'node:events';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,12 +13,13 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
   const clipboardReads = [];
   const clipboardText = { clipboard: '', primary: '' };
+  const terminalInputs = [], terminalSizes = [], terminalChildren = new Set(); let terminalConnections = 0;
   const files = new Map();
   const screenGeometry = { width: rfbSize?.width ?? 1600, height: rfbSize?.height ?? 1600 };
   const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0, viewportResizes: 0 };
@@ -166,6 +169,26 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
     webrtc, webrtcAddress: '127.0.0.1',
     webrtcIPv6, webrtcIPv6Address, webrtcStunUrl,
+    terminalLaunch(target) {
+      terminalConnections++;
+      const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); terminalChildren.add(child);
+      let ended = false, pending = '';
+      child.kill = () => { if (ended) return; ended = true; terminalChildren.delete(child); child.stdin.destroy(); child.stdout.destroy(); queueMicrotask(() => child.emit('close', 0)); };
+      const emit = value => { if (!ended) child.stdout.write(JSON.stringify(value) + '\n'); };
+      child.stdin.on('data', bytes => {
+        pending += bytes.toString(); let newline;
+        while ((newline = pending.indexOf('\n')) >= 0) {
+          const value = JSON.parse(pending.slice(0, newline)); pending = pending.slice(newline + 1);
+          void (async () => {
+            if (value.action === 'resize') terminalSizes.push({ terminalId: target.terminalId, cols: value.cols, rows: value.rows });
+            else { const data = Buffer.from(value.data, 'base64'), text = data.toString(); terminalInputs.push({ terminalId: target.terminalId, text }); await terminalHook?.(text); for (let offset = 0; offset < data.length; offset += 8192) emit({ type: 'output', data: data.subarray(offset, offset + 8192).toString('base64') }); }
+            emit({ type: 'result', id: value.id, ok: true });
+          })();
+        }
+      });
+      setTimeout(() => { emit({ type: 'ready' }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); }, 10);
+      return child;
+    },
   };
   const panel = await createPanel(config);
   panel.server.listen(port, '127.0.0.1'); await once(panel.server, 'listening');
@@ -187,7 +210,10 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats,
+    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes,
+    get terminalConnections() { return terminalConnections; },
+    get terminalChildren() { return [...terminalChildren]; },
+    disconnectTerminals() { for (const child of [...terminalChildren]) child.kill(); },
     disconnectViewers() { for (const client of clients) client.destroy(); },
     pauseViewers() { viewersPaused = true; for (const client of clients) client.destroy(); },
     resumeViewers() { viewersPaused = false; for (const client of clients) client.destroy(); },

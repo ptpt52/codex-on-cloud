@@ -97,6 +97,7 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     return terminal;
   }
   async function manage(body) {
+    if (body?.view !== undefined && body.view !== 'terminal') throw fail(400, '终端视图无效');
     if (body?.action === 'create') {
       const label = name(body.name);
       const before = await list();
@@ -110,14 +111,14 @@ export function createTerminalManager(config, { run, launch, parentPid = process
         await tmux(['set-option', '-t', slot.session, '@codex_cloud_name', label]);
         const result = await list();
         const created = result.terminals.find(item => item.id === slot.id);
-        await focus({ terminalId: created.id, terminalToken: created.token }, true);
+        if (body.view !== 'terminal') await focus({ terminalId: created.id, terminalToken: created.token }, true);
         return { ...result, created: slot.id, opened: slot.id };
       } catch { throw Object.assign(new Error('终端可能已创建，请刷新列表确认，不要重复新建'), { status: 503, outcome: 'unknown' }); }
     }
     if (!['rename', 'open'].includes(body?.action)) throw fail(400, '不支持的终端操作');
     const terminal = await selected(body);
     if (body.action === 'rename') await tmux(['set-option', '-t', definitions.get(terminal.id).session, '@codex_cloud_name', name(body.name)]);
-    else await focus(body, true);
+    else if (body.view !== 'terminal') await focus(body, true);
     return { ...(await list()), opened: body.action === 'open' ? terminal.id : undefined };
   }
   return { list, manage, focus, assertFocused };

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
+import { once } from 'node:events';
 import { createDesktopControls, desktopEnvironment, RESUME_COMMAND } from '../native/desktop-controls.mjs';
 import { runInputCommand } from '../native/input.mjs';
 
@@ -137,6 +138,45 @@ try {
   await recovered.manageTerminals({ action: 'create', name: '辅助 3' });
   await assert.rejects(recovered.manageTerminals({ action: 'create', name: '超额' }), { status: 409 });
   assert.equal((await recovered.get()).session, null, 'additional tasks must block destructive desktop recovery');
+  // Real PTY attachment is independent of the X window and never owns the shell.
+  const mainTarget = (await recovered.listTerminals()).terminals.find(item => item.id === 'main');
+  async function webClient() {
+    const child = spawn('python3', [join(source, 'desktop/web-terminal.py'), env.TMUX_SOCKET, 'main', mainTarget.token], { env, detached: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    children.push(child); const records = []; let pending = '';
+    child.stdout.on('data', bytes => {
+      pending += bytes.toString(); assert.ok(pending.length <= 128 * 1024);
+      let newline;
+      while ((newline = pending.indexOf('\n')) >= 0) { const value = JSON.parse(pending.slice(0, newline)); pending = pending.slice(newline + 1); if (value.type !== 'output') records.push(value); }
+    });
+    await eventually(() => records.some(item => item.type === 'ready'));
+    return { child, records };
+  }
+  let client = await webClient();
+  client.child.stdin.write(JSON.stringify({ id: 1, action: 'resize', cols: 72, rows: 18 }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 1 && item.ok));
+  const webText = '\x1b[200~printf "网页终端中文\\n" >> "$WORKSPACE_DIR/web-proof"\x1b[201~';
+  client.child.stdin.write(JSON.stringify({ id: 2, action: 'input', data: Buffer.from(webText).toString('base64') }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 2 && item.ok));
+  await assert.rejects(readFile(join(config.workspace, 'web-proof')), { code: 'ENOENT' });
+  client.child.stdin.write(JSON.stringify({ id: 3, action: 'input', data: Buffer.from('\r').toString('base64') }) + '\n');
+  await eventually(async () => (await readFile(join(config.workspace, 'web-proof'), 'utf8')) === '网页终端中文\n');
+  let ended = once(client.child, 'close'); client.child.stdin.end(); assert.equal((await ended)[0], 0);
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
+  client = await webClient(); ended = once(client.child, 'close'); client.child.kill('SIGTERM'); await ended;
+  assert.equal(await readFile(join(config.workspace, 'web-proof'), 'utf8'), '网页终端中文\n', 'attaching again cannot replay a command');
+  client = await webClient();
+  const webTTY = (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_pid}\t#{client_tty}'])).split('\n');
+  let targetTTY;
+  for (const line of webTTY) {
+    const [clientPid, clientTTY] = line.split('\t');
+    if ((await readFile(`/proc/${clientPid}/status`, 'utf8')).match(/^PPid:\s*(\d+)$/m)?.[1] === String(client.child.pid)) targetTTY = clientTTY;
+  }
+  assert.ok(targetTTY);
+  await run('tmux', ['-S', env.TMUX_SOCKET, 'switch-client', '-c', targetTTY, '-t', 'codex-aux1']);
+  ended = once(client.child, 'close');
+  client.child.stdin.write(JSON.stringify({ id: 1, action: 'input', data: Buffer.from('\r').toString('base64') }) + '\n');
+  await ended; assert.equal(client.records.find(item => item.id === 1)?.outcome, 'rejected');
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
   const cwd = join(config.workspace, "a'b $(never) `never`"), resumeId = '11111111-1111-4111-8111-111111111111';
   await mkdir(cwd);
   await writeFile(join(root, 'bin/codex'), '#!/usr/bin/env python3\nimport json, os, sys, time\nwith open(os.path.join(os.environ["WORKSPACE_DIR"], "resume-args.json"), "w") as f: json.dump({"args":sys.argv[1:], "cwd":os.getcwd()}, f)\ntime.sleep(30)\n', { mode: 0o700 });
@@ -146,7 +186,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log('✓ isolated real X11: four independent terminals, targeted literal Chinese paste, separate Enter, stale-target rejection, names, limits and reopening a running sleep preserve the main task; 24 key encodings, font/clipboard controls and dummy resume passed without starting Codex');
+  console.log('✓ isolated real X11 and PTY: browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, 24 key encodings, font/clipboard and dummy resume passed without starting Codex');
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
