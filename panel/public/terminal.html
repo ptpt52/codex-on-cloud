@@ -10,7 +10,14 @@
     <button id="history-program" type="button" aria-pressed="false" title="开启后将翻页操作发送给当前程序">程序翻页</button>
     <button id="history-up" type="button">上翻</button><button id="history-down" type="button">下翻</button>
     <button id="history-latest" type="button">回到实时</button>
-    <span id="history-state" role="status">本地回看：滚动不发送按键</span>
+    <div id="history-status-row"><span id="history-state" role="status">本地回看：滚动不发送按键</span><button id="history-tools-toggle" type="button" aria-expanded="false" aria-controls="history-tools">查找/复制</button></div>
+    <section id="history-tools" aria-label="历史查找与复制" hidden>
+      <div class="history-find-row"><input id="history-query" type="search" maxlength="128" placeholder="查找已加载内容" aria-label="查找已加载历史" autocomplete="off" spellcheck="false"><button id="history-find-prev" type="button" aria-label="上一个匹配">上一个</button><button id="history-find-next" type="button" aria-label="下一个匹配">下一个</button></div>
+      <p id="history-find-state" role="status">输入关键词</p>
+      <div class="history-copy-row"><button id="history-copy-selection" type="button">复制选区</button><button id="history-copy-all" type="button">复制当前快照</button><button id="history-tools-close" type="button">收起</button></div>
+      <p id="history-copy-state" role="status"></p>
+      <div id="history-copy-manual" hidden><label for="history-copy-text">文字已选中，请按 Ctrl+C 或长按复制</label><textarea id="history-copy-text" readonly inputmode="none" aria-label="手动复制历史文字" rows="3"></textarea><button id="history-copy-dismiss" type="button">关闭文字选框</button></div>
+    </section>
   </div>
   <div id="terminal" aria-label="远程文字终端"></div>
   <p id="terminal-status" role="status">正在连接原有终端…</p>

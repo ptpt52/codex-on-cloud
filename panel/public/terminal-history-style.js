@@ -7,6 +7,7 @@ const ansi = ['#2e3436', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', 
 export const TERMINAL_THEME = Object.freeze({ background: '#151d1a', foreground: '#e7eee9', cursor: '#a8d8b7', selectionBackground: '#3e6652',
   ...Object.fromEntries(names.map((name, index) => [name, ansi[index]])) });
 export const HISTORY_STYLE_LIMIT = 4096;
+export const HISTORY_TEXT_LIMIT = 65536, HISTORY_SEARCH_LIMIT = 1000, HISTORY_QUERY_LIMIT = 128;
 const defaults = () => ({ fg: null, bg: null, underlineColor: null, bold: false, dim: false, italic: false, underline: 0, inverse: false, hidden: false, strike: false, overline: false });
 const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
 const rgb = values => '#' + values.map(value => value.toString(16).padStart(2, '0')).join('');
@@ -74,22 +75,20 @@ function sgr(attrs, parameters) {
   }
   return attrs;
 }
+function appendRun(parsed, value, style) {
+  if (!value) return;
+  const { runs } = parsed, key = JSON.stringify(style), last = runs.at(-1);
+  if (!parsed.simplified && last?.key === key) { last.text += value; return; }
+  if (runs.length >= HISTORY_STYLE_LIMIT) {
+    parsed.simplified = true;
+    if (runs.length === HISTORY_STYLE_LIMIT) runs.push({ text: value, style: css(defaults()), key: '' });
+    else runs.at(-1).text += value;
+  } else runs.push({ text: value, style, key });
+}
 export function parseHistoryStyles(text, styled = true) {
-  if (typeof text !== 'string' || text.length > 65536) throw new RangeError('history text bound');
-  let attrs = defaults(), simplified = false, index = 0;
-  const runs = [];
-  function append(value) {
-    if (!value) return;
-    const style = css(simplified ? defaults() : attrs), key = JSON.stringify(style), last = runs.at(-1);
-    if (last?.key === key) { last.text += value; return; }
-    if (runs.length >= HISTORY_STYLE_LIMIT) {
-      simplified = true;
-      if (runs.length === HISTORY_STYLE_LIMIT) runs.push({ text: value, style: css(defaults()), key: '' });
-      else runs.at(-1).text += value;
-      return;
-    }
-    runs.push({ text: value, style, key });
-  }
+  if (typeof text !== 'string' || text.length > HISTORY_TEXT_LIMIT) throw new RangeError('history text bound');
+  let attrs = defaults(), index = 0;
+  const parsed = { runs: [], simplified: false };
   while (index < text.length) {
     const code = text.charCodeAt(index);
     if (code === 27 || [144, 152, 155, 157, 158, 159].includes(code)) {
@@ -120,17 +119,76 @@ export function parseHistoryStyles(text, styled = true) {
         if ((next < 32 && ![9, 10, 13].includes(next)) || (next >= 127 && next <= 159)) break;
         index++;
       }
-      append(text.slice(start, index));
+      appendRun(parsed, text.slice(start, index), css(attrs));
     }
   }
-  return { runs, simplified };
+  return parsed;
 }
-export function renderHistoryStyles(element, text, styled) {
-  const parsed = parseHistoryStyles(text, styled), fragment = element.ownerDocument.createDocumentFragment();
+export function findHistoryMatches(text, query) {
+  if (text.length > HISTORY_TEXT_LIMIT) throw new RangeError('history text bound');
+  query = query.slice(0, HISTORY_QUERY_LIMIT).replace(/[\uD800-\uDBFF]$/, '');
+  if (!query) return { matches: [], limited: false };
+  const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu'), matches = [];
+  let found;
+  while ((found = pattern.exec(text))) {
+    if (matches.length === HISTORY_SEARCH_LIMIT) return { matches, limited: true };
+    matches.push({ start: found.index, end: found.index + found[0].length });
+  }
+  return { matches, limited: false };
+}
+export function captureHistoryBuffer(term) {
+  const buffer = term.buffer.active, encoder = new TextEncoder(), rows = [], parsed = { runs: [], simplified: false };
+  let bytes = 0, truncated = false;
+  const first = Math.min(buffer.viewportY, buffer.length - 1), last = Math.min(buffer.length - 1, first + 2199);
+  function row(index, prepend = false) {
+    const line = buffer.getLine(index), text = line?.translateToString(true, 0, term.cols).slice(0, HISTORY_TEXT_LIMIT) || '';
+    const length = encoder.encode(text).length + 1;
+    if (bytes + length > HISTORY_TEXT_LIMIT) { truncated = true; return false; }
+    bytes += length; prepend ? rows.unshift({ index, text }) : rows.push({ index, text }); return true;
+  }
+  for (let index = first; index <= last; index++) if (!row(index)) break;
+  for (let index = first - 1; index >= 0; index--) if (!row(index, true)) break;
+  const cell = buffer.getNullCell();
+  for (let index = 0; index < rows.length; index++) {
+    const source = rows[index], line = buffer.getLine(source.index); let length = 0;
+    for (let col = 0; col < Math.min(line.length, term.cols) && length < source.text.length; col++) {
+      line.getCell(col, cell); if (!cell.getWidth()) continue;
+      const chars = (cell.getChars() || ' ').slice(0, source.text.length - length); length += chars.length;
+      const value = (foreground) => {
+        const mode = foreground ? cell.isFgRGB() : cell.isBgRGB(), palette = foreground ? cell.isFgPalette() : cell.isBgPalette();
+        const color = foreground ? cell.getFgColor() : cell.getBgColor();
+        return mode ? '#' + color.toString(16).padStart(6, '0') : palette ? color : null;
+      };
+      appendRun(parsed, chars, css({ ...defaults(), fg: value(true), bg: value(false), bold: !!cell.isBold(), dim: !!cell.isDim(), italic: !!cell.isItalic(),
+        underline: cell.isUnderline() ? 1 : 0, inverse: !!cell.isInverse(), hidden: !!cell.isInvisible(), strike: !!cell.isStrikethrough(), overline: !!cell.isOverline() }));
+    }
+    if (index < rows.length - 1) appendRun(parsed, '\n', css(defaults()));
+  }
+  return { ...parsed, truncated: truncated || rows[0]?.index > 0 || rows.at(-1)?.index < buffer.length - 1,
+    viewportRow: Math.max(0, first - (rows[0]?.index || 0)) };
+}
+export function renderHistoryRuns(element, parsed, matches = []) {
+  const fragment = element.ownerDocument.createDocumentFragment(), groups = matches.map(() => []);
+  let offset = 0, matchIndex = 0;
   for (const run of parsed.runs) {
     const span = element.ownerDocument.createElement('span');
-    span.textContent = run.text; Object.assign(span.style, run.style); fragment.appendChild(span);
+    Object.assign(span.style, run.style);
+    let cursor = 0;
+    while (cursor < run.text.length) {
+      while (matchIndex < matches.length && matches[matchIndex].end <= offset + cursor) matchIndex++;
+      const match = matches[matchIndex], end = offset + run.text.length;
+      if (!match || match.start >= end) { span.append(run.text.slice(cursor)); break; }
+      if (offset + cursor < match.start) { span.append(run.text.slice(cursor, match.start - offset)); cursor = match.start - offset; }
+      const boundary = Math.min(end, match.end) - offset, mark = element.ownerDocument.createElement('mark');
+      mark.textContent = run.text.slice(cursor, boundary); mark.dataset.match = String(matchIndex); groups[matchIndex].push(mark); span.appendChild(mark); cursor = boundary;
+    }
+    offset += run.text.length; fragment.appendChild(span);
   }
   element.replaceChildren(fragment);
+  return groups;
+}
+export function renderHistoryStyles(element, text, styled) {
+  const parsed = parseHistoryStyles(text, styled);
+  renderHistoryRuns(element, parsed);
   return parsed.simplified;
 }

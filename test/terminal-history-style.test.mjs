@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHistoryStyles, TERMINAL_THEME, HISTORY_STYLE_LIMIT } from '../panel/public/terminal-history-style.js';
+import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, TERMINAL_THEME, HISTORY_STYLE_LIMIT } from '../panel/public/terminal-history-style.js';
 
 const text = value => value.runs.map(run => run.text).join('');
 test('history styling preserves literal Unicode, spaces, indentation and line endings', () => {
@@ -48,4 +48,32 @@ test('style run bounds simplify excessive styling while retaining every characte
   const value = parseHistoryStyles('\x1b[31ma\x1b[32mb'.repeat(3000));
   assert.equal(value.simplified, true); assert.ok(value.runs.length <= HISTORY_STYLE_LIMIT + 1);
   assert.equal(text(value), 'ab'.repeat(3000));
+});
+
+test('history find is literal, case insensitive and keeps original Unicode offsets', () => {
+  assert.deepEqual(findHistoryMatches('a.*b A.*B <img> [x]', 'a.*b').matches, [{ start: 0, end: 4 }, { start: 5, end: 9 }]);
+  assert.deepEqual(findHistoryMatches('K k K 😀中文😀', 'k').matches, [{ start: 0, end: 1 }, { start: 2, end: 3 }, { start: 4, end: 5 }]);
+  assert.deepEqual(findHistoryMatches('K k K 😀中文😀', '😀').matches, [{ start: 6, end: 8 }, { start: 10, end: 12 }]);
+  assert.deepEqual(findHistoryMatches('[x]', '[x]').matches, [{ start: 0, end: 3 }]);
+  assert.deepEqual(findHistoryMatches('abc', ''), { matches: [], limited: false });
+});
+
+test('history find bounds query length and match count without regular expression execution', () => {
+  const matches = findHistoryMatches('a'.repeat(5000), 'a'); assert.equal(matches.matches.length, 1000); assert.equal(matches.limited, true);
+  assert.equal(findHistoryMatches('a'.repeat(128), 'a'.repeat(10000)).matches.length, 1);
+  assert.equal(findHistoryMatches('(a+)+$', '(a+)+$').matches.length, 1);
+  assert.throws(() => findHistoryMatches('x'.repeat(65537), 'x'), RangeError);
+});
+
+test('local history capture retains the reading window, colors and byte bounds using public buffer cells', () => {
+  const lines = Array.from({ length: 2000 }, (_, index) => `ROW-${String(index).padStart(4, '0')} ` + 'x'.repeat(190));
+  const cell = char => ({ getWidth: () => 1, getChars: () => char, isFgRGB: () => false, isFgPalette: () => true, getFgColor: () => 1,
+    isBgRGB: () => false, isBgPalette: () => false, getBgColor: () => 0, isBold: () => 1, isDim: () => 0, isItalic: () => 0,
+    isUnderline: () => 0, isInverse: () => 0, isInvisible: () => 0, isStrikethrough: () => 0, isOverline: () => 0 });
+  const buffer = { length: lines.length, viewportY: 600, getNullCell: () => ({}), getLine: index => ({ length: lines[index].length,
+    translateToString: () => lines[index], getCell: (col, target) => Object.assign(target, cell(lines[index][col])) }) };
+  const value = captureHistoryBuffer({ buffer: { active: buffer }, cols: 200 }), captured = text(value);
+  assert.ok(Buffer.byteLength(captured) <= 65536); assert.ok(captured.startsWith('ROW-0600')); assert.ok(!captured.includes('ROW-0000'));
+  assert.equal(value.truncated, true); assert.equal(value.viewportRow, 0); assert.equal(value.runs[0].style.color, TERMINAL_THEME.brightRed);
+  assert.equal(value.runs[0].style.fontWeight, 'bold'); assert.ok(value.runs.length <= HISTORY_STYLE_LIMIT + 1);
 });
