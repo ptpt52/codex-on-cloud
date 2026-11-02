@@ -39,6 +39,67 @@ async function seeded(page, app, count = 220) {
 async function wheel(frame, delta) { await frame.locator('#terminal').dispatchEvent('wheel', { deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true }); }
 async function reviewing(frame) { await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'true'); }
 
+test('styled snapshots preserve colors and decorations over direct transport, with literal markup and inert control strings', async ({ page }, info) => {
+  const source = '\x1b[31m红字\x1b[0m  \x1b[1m粗体\x1b[0m\n\x1b[3;4;9m样式\x1b[0m\n\x1b[38;2;1;128;255;48;5;22mRGB\x1b[0m\n' +
+    '\x1b]52;c;c2VjcmV0\x07\x1b[6n\x1bPignored\x1b\\<img src="/never-history-image" onerror="window.historyExecuted=true">\n' + lines(90, 'STYLED-HISTORY');
+  const app = await fixture({ webrtc: true, terminalHistory: source });
+  try {
+    if (info.project.name === 'mobile') await page.setViewportSize({ width: 320, height: 844 });
+    const frame = await seeded(page, app); await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100);
+    const archive = frame.locator('#history-archive'); await expect(archive).toContainText('红字  粗体');
+    const styles = await archive.evaluate(element => Object.fromEntries(['红字', '粗体', '样式', 'RGB'].map(text => {
+      const span = [...element.children].find(child => child.textContent === text), css = getComputedStyle(span);
+      return [text, { color: css.color, background: css.backgroundColor, weight: css.fontWeight, italic: css.fontStyle, decoration: css.textDecorationLine }];
+    })));
+    expect(styles['红字'].color).toBe('rgb(204, 0, 0)'); expect(styles['粗体'].weight).toBe('700');
+    expect(styles['样式'].italic).toBe('italic'); expect(styles['样式'].decoration).toContain('underline'); expect(styles['样式'].decoration).toContain('line-through');
+    expect(styles.RGB.color).toBe('rgb(1, 128, 255)'); expect(styles.RGB.background).toBe('rgb(0, 95, 0)');
+    expect(await archive.locator('img,script,iframe,a').count()).toBe(0); expect(await frame.evaluate(() => window.historyExecuted)).toBeUndefined();
+    expect(await archive.textContent()).not.toMatch(/\x1b|c2VjcmV0|ignored/); await expect(archive).toContainText('<img src="/never-history-image"');
+    await expect(frame.locator('#history-state')).toContainText('保留颜色与样式'); await expect(frame.locator('#history-new-output')).toBeHidden();
+    const before = await archive.evaluate(element => { element.scrollTop = 24; return element.scrollTop; }), reads = app.terminalHistoryReads.length;
+    const viewport = await frame.evaluate(() => ({ rows: window.historyTerminal.rows, height: document.getElementById('terminal').clientHeight }));
+    output(app, lines(90, 'AFTER-STYLED'));
+    await expect(frame.locator('#history-new-output')).toBeVisible(); await expect.poll(async () => (await buffer(frame)).all.includes('AFTER-STYLED-0089')).toBe(true);
+    expect(await archive.evaluate(element => element.scrollTop)).toBe(before); expect(await archive.textContent()).not.toContain('AFTER-STYLED');
+    expect(await frame.evaluate(() => ({ rows: window.historyTerminal.rows, height: document.getElementById('terminal').clientHeight }))).toEqual(viewport);
+    expect(app.terminalHistoryReads.length).toBe(reads); expect(app.terminalChildren.at(-1).stdout.isPaused()).toBe(false);
+    await page.screenshot({ path: `test-results/${info.project.name}-styled-history-new-output.png` });
+    await frame.locator('#history-new-output').press('Enter'); await expect(archive).toBeHidden(); await expect(frame.locator('#history-new-output')).toBeHidden();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await page.waitForTimeout(100);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('new output notification preserves local reading position and survives reconnect without replay or automatic history reads', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app); await wheel(frame, -320); await reviewing(frame); const before = await buffer(frame);
+    await expect(frame.locator('#history-new-output')).toBeHidden(); output(app, lines(20, 'UNSEEN-OUTPUT'));
+    await expect(frame.locator('#history-new-output')).toBeVisible(); expect((await buffer(frame)).first).toBe(before.first);
+    const box = await frame.locator('#history-new-output').boundingBox(); expect(box.height).toBeGreaterThanOrEqual(44);
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
+    app.disconnectTerminals(); await expect.poll(() => app.terminalConnections).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect(frame.locator('#history-new-output')).toBeVisible(); expect((await buffer(frame)).first).toBe(before.first);
+    expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect(app.terminalHistoryReads).toEqual([]);
+    await frame.locator('#history-new-output').click(); await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
+    expect((await buffer(frame)).view).toBe((await buffer(frame)).base); await expect(frame.locator('#history-new-output')).toBeHidden();
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('new output can return live during a pending snapshot without retrying it or accepting a late reply', async ({ page }) => {
+  let entered, release; const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  const app = await fixture({ terminalHistory: '\x1b[31mLATE-STYLED\x1b[0m', terminalHistoryHook: async () => { entered(); await hold; } });
+  try {
+    const frame = await seeded(page, app); await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100); await started;
+    output(app, 'OUTPUT-DURING-READ\r\n'); await expect(frame.locator('#history-new-output')).toBeVisible();
+    await frame.locator('#history-new-output').click(); await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
+    release(); await page.waitForTimeout(150); await expect(frame.locator('#history-archive')).toBeHidden(); await expect(frame.locator('#history-new-output')).toBeHidden();
+    expect(app.terminalHistoryReads.length).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.terminalConnections).toBe(1);
+  } finally { release(); await app.close(); }
+});
+
 test('alternate-screen redraws never become scrollback, and history preserves the live font, line height, spaces and wide rows', async ({ page }) => {
   const text = '列一            Column two             列三\n' + '    indented_code();  ' + 'x'.repeat(260) + '\n' + lines(60, 'FAITHFUL-HISTORY');
   const app = await fixture({ terminalHistory: text });
@@ -170,9 +231,11 @@ test('switching target discards the previous terminal buffer and history mode', 
   const app = await fixture();
   try {
     await app.controls.manageTerminals({ action: 'create', name: '另一个任务', view: 'terminal' }); const frame = await seeded(page, app);
-    await wheel(frame, -300); await reviewing(frame); await page.locator('#terminal-view-select').selectOption('aux1');
+    await wheel(frame, -300); await reviewing(frame); output(app, 'NEW-BEFORE-TARGET-SWITCH\r\n'); await expect(frame.locator('#history-new-output')).toBeVisible();
+    await page.locator('#terminal-view-select').selectOption('aux1');
     await expect(page.locator('#connection-status')).toContainText('终端在线'); const next = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
     expect((await buffer(next)).all).not.toContain('LOCAL-HISTORY'); await expect(next.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
+    await expect(next.locator('#history-new-output')).toBeHidden();
     await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
@@ -236,6 +299,19 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     clients[0].kill('SIGTERM'); await expect.poll(() => clients.length).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
     expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect(await frame.locator('#history-archive').textContent()).toBe(before);
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token); expect(await readFile(proof, 'utf8')).toBe('once\n');
+    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill("printf '\\033[1;31mNATIVE-STYLED-中文\\033[0m\\n'");
+    await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
+    await expect.poll(() => frame.evaluate(() => {
+      const buffer = window.historyTerminal.buffer.active;
+      for (let index = 0; index < buffer.length; index++) {
+        const line = buffer.getLine(index);
+        if (line.translateToString(true).trim() === 'NATIVE-STYLED-中文' && line.getCell(0).isBold()) return true;
+      }
+      return false;
+    })).toBe(true);
+    await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -120);
+    const nativeStyled = frame.locator('#history-archive span').filter({ hasText: /^NATIVE-STYLED-中文$/ }); await expect(nativeStyled).toBeVisible();
+    expect(await nativeStyled.evaluate(element => ({ color: getComputedStyle(element).color, weight: getComputedStyle(element).fontWeight }))).toEqual({ color: 'rgb(239, 41, 41)', weight: '700' });
     await writeFile(tui, `import os, select, termios, time, tty\nfd=0\nprevious=termios.tcgetattr(fd)\ndata=b''\ntry:\n tty.setraw(fd)\n os.write(1,b'\\x1b[?1049h\\x1b[2J\\x1b[HFULL-SCREEN-RECEIVER\\r\\n')\n with open(${JSON.stringify(tuiReady)},'w') as f: f.write('ready')\n deadline=time.monotonic()+12\n while len(data)<8 and time.monotonic()<deadline:\n  if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,8-len(data))\nfinally:\n termios.tcsetattr(fd,termios.TCSANOW,previous)\n os.write(1,b'\\x1b[?1049l')\n with open(${JSON.stringify(keys)},'w') as f: f.write(data.hex())\n`);
     await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('python3 "$HISTORY_TEST_TUI"'); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
@@ -243,13 +319,18 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     await frame.locator('#history-program').click(); await frame.locator('#history-up').click(); await page.waitForTimeout(200); await frame.locator('#history-down').click();
     await expect.poll(() => readFile(keys, 'utf8').catch(() => '')).toBe('1b5b357e1b5b367e');
     expect(await readFile(proof, 'utf8')).toBe('once\n');
-    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'LARGE-HISTORY-%04d %080d\\n\' "$i" 0; done');
+    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'\\033[1;31mLARGE-HISTORY-%04d %080d\\033[0m\\n\' "$i" 0; done');
     await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
     await expect.poll(async () => (await buffer(frame)).all.includes('LARGE-HISTORY-1000')).toBe(true);
+    // Explicit snapshot requests are limited to one per second.
+    await page.waitForTimeout(1100);
     await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100);
     await expect(frame.locator('#history-archive')).toBeVisible(); await expect(frame.locator('#history-archive')).toContainText('LARGE-HISTORY-1000');
+    const clippedStyle = frame.locator('#history-archive span').filter({ hasText: 'LARGE-HISTORY-1000' });
+    expect(await clippedStyle.evaluate(element => getComputedStyle(element).color)).toBe('rgb(239, 41, 41)');
+    expect(await frame.locator('#history-archive').textContent()).not.toContain('\x1b');
     expect(Buffer.byteLength(await frame.locator('#history-archive').textContent())).toBeLessThanOrEqual(65536);
-    const complete = await exec('tmux', ['-S', socket, 'capture-pane', '-p', '-t', token.split(':', 1)[0], '-S', '-2000'], { env, timeout: 3000, maxBuffer: 4 * 1024 * 1024 });
+    const complete = await exec('tmux', ['-S', socket, 'capture-pane', '-e', '-p', '-t', token.split(':', 1)[0], '-S', '-2000'], { env, timeout: 3000, maxBuffer: 4 * 1024 * 1024 });
     if (Buffer.byteLength(complete.stdout) > 65536) await expect(frame.locator('#history-state')).toContainText('64 KiB');
     else await expect(frame.locator('#history-state')).not.toContainText('截取');
     expect(await readFile(proof, 'utf8')).toBe('once\n');

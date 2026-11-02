@@ -44,7 +44,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   function command(action, value, clientId, history = false) {
     if (ended || !ready || !valid() || sequence >= 2147483647 || requests.size >= 64 || child.stdin.writableLength > 64 * 1024) throw new Error('terminal unavailable');
     const id = ++sequence;
-    requests.set(id, history ? { history: clientId, offset: value.offset } : clientId || 0);
+    requests.set(id, history ? { history: clientId, offset: value.offset, styled: value.styled } : clientId || 0);
     child.stdin.write(JSON.stringify({ id, action, ...value }) + '\n');
   }
   child.stdout.on('data', bytes => {
@@ -59,7 +59,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       try { value = JSON.parse(line); } catch { return close(); }
       if (!value || typeof value !== 'object' || Array.isArray(value)) return close();
       if (!valid()) return close();
-      if (value.type === 'ready' && !ready) { ready = true; clearTimeout(startTimer); send({ type: 'ready' }); }
+      if (value.type === 'ready' && !ready) { ready = true; clearTimeout(startTimer); send({ type: 'ready', historyStyles: true }); }
       else if (value.type === 'geometry' && ready && Number.isInteger(value.maxCols) && value.maxCols >= 2 && value.maxCols <= 500) {
         geometryMaxCols = value.maxCols;
         if (geometryEnabled) send({ type: 'geometry', maxCols: geometryMaxCols });
@@ -73,7 +73,8 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
         const request = requests.get(value.id), id = request.history; requests.delete(value.id); historyBusy = false;
         if (value.ok !== true) { send({ type: 'history', id, ok: false }); continue; }
         if (typeof value.data !== 'string' || value.data.length > 11000 || value.offset !== request.offset || !Number.isSafeInteger(value.next) || value.next < value.offset || value.next > 65536 || value.next - value.offset > 8192 || Buffer.from(value.data, 'base64').length !== value.next - value.offset || typeof value.done !== 'boolean' || (!value.done && value.next - value.offset !== 8192) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return close();
-        send({ ...value, id });
+        if ((value.styled === true) !== request.styled || (value.styled !== undefined && typeof value.styled !== 'boolean')) return close();
+        send({ ...value, id, styled: request.styled });
       } else if (value.type === 'result' && requests.has(value.id)) {
         const clientId = requests.get(value.id); requests.delete(value.id);
         if (typeof clientId !== 'number') return close();
@@ -102,10 +103,11 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
     lastClientId = value.id;
     try {
       if (value.type === 'history') {
-        if (bytes.length > 128 || Object.keys(value).length !== 3 || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 65536 || value.offset % 8192 !== 0) return close();
+        const fields = Object.keys(value);
+        if (bytes.length > 128 || fields.some(key => !['type', 'id', 'offset', 'styled'].includes(key)) || (value.styled !== undefined && value.styled !== true) || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 65536 || value.offset % 8192 !== 0) return close();
         if (historyBusy || (value.offset === 0 && Date.now() - historyAt < 1000)) { send({ type: 'history', id: value.id, ok: false }); return; }
         if (value.offset === 0) historyAt = Date.now();
-        historyBusy = true; command('history', { offset: value.offset }, value.id, true); return;
+        historyBusy = true; command('history', { offset: value.offset, styled: value.styled === true }, value.id, true); return;
       }
       if (value.type === 'resize') {
         if (!Number.isInteger(value.cols) || !Number.isInteger(value.rows) || value.cols < 2 || value.cols > 500 || value.rows < 1 || value.rows > 200 || (value.geometry !== undefined && value.geometry !== true) || (value.viewport !== undefined && typeof value.viewport !== 'boolean')) return close();

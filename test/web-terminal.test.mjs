@@ -23,7 +23,7 @@ async function until(probe) { for (let i = 0; i < 150; i++) { if (probe()) retur
 
 test('terminal assets and WebSockets authenticate Host, Origin, viewer, target token and a CSRF handshake before launching a PTY', async t => {
   const app = await fixture(); t.after(() => app.close());
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/terminal-history.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/terminal-history.js', '/terminal/terminal-history-style.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
   assert.equal(await denied(app), 401); await app.login(); assert.equal(await denied(app), 409); await app.claim();
   for (const headers of [{ origin: 'https://evil.test' }, { host: 'evil.test', origin: 'http://evil.test' }]) assert.equal(await denied(app, {}, headers), 403);
   assert.equal(await denied(app, { terminalId: '../main' }), 400); assert.equal(await denied(app, { terminalToken: '%0:9999' }), 409);
@@ -34,7 +34,7 @@ test('terminal assets and WebSockets authenticate Host, Origin, viewer, target t
     const malformed = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } });
     await once(malformed, 'open'); const malformedClosed = once(malformed, 'close'); malformed.send(first); await malformedClosed; assert.equal(app.terminalConnections, 0);
   }
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-history.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-history.js', '/terminal/terminal-history-style.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
   const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
   assert.equal(app.terminalConnections, 1); assert.equal(app.inputCalls.length, 0); assert.equal(app.terminalInputs.length, 0);
 });
@@ -168,5 +168,31 @@ test('malformed history records close before reading and takeover discards a del
   const { ws, records } = await connected(app); await until(() => records.some(value => value.type === 'ready'));
   ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0 })); await started;
   const closed = once(ws, 'close'); await app.claim('22222222-2222-4222-8222-222222222222'); release(); await closed;
+  assert.equal(records.some(value => value.type === 'history'), false); assert.deepEqual(app.terminalInputs, []);
+});
+
+test('history styling is explicitly requested; legacy readers remain plain and malformed format flags fail closed', async t => {
+  const source = '\x1b[1;31m红字\x1b[0m\n', app = await fixture({ terminalHistory: source }); t.after(() => app.close()); await app.login(); await app.claim();
+  const legacy = await connected(app); t.after(() => legacy.ws.terminate()); await until(() => legacy.records.some(value => value.type === 'ready'));
+  assert.equal(legacy.records.find(value => value.type === 'ready').historyStyles, true);
+  legacy.ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0 })); await until(() => legacy.records.some(value => value.type === 'history'));
+  const plain = legacy.records.find(value => value.type === 'history'); assert.equal(plain.styled, false); assert.equal(Buffer.from(plain.data, 'base64').toString(), '红字\n');
+  const modern = await connected(app); t.after(() => modern.ws.terminate()); await until(() => modern.records.some(value => value.type === 'ready'));
+  modern.ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0, styled: true })); await until(() => modern.records.some(value => value.type === 'history'));
+  const styled = modern.records.find(value => value.type === 'history'); assert.equal(styled.styled, true); assert.equal(Buffer.from(styled.data, 'base64').toString(), source);
+  for (const extra of [{ styled: false }, { styled: 'true' }, { styled: null }, { styled: true, command: 'invalid' }]) {
+    const active = await connected(app); await until(() => active.records.some(value => value.type === 'ready'));
+    const closed = once(active.ws, 'close'); active.ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0, ...extra })); await closed;
+  }
+  assert.equal(app.terminalHistoryReads.length, 2); assert.deepEqual(app.terminalInputs, []);
+});
+
+test('a helper cannot change a styled snapshot into another format while a read is pending', async t => {
+  let entered, release; const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  const app = await fixture({ terminalHistory: 'late', terminalHistoryHook: async () => { entered(); await hold; } }); t.after(() => { release(); return app.close(); }); await app.login(); await app.claim();
+  const { ws, records } = await connected(app); await until(() => records.some(value => value.type === 'ready'));
+  ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0, styled: true })); await started;
+  const closed = once(ws, 'close'); app.terminalChildren[0].stdout.write(JSON.stringify({ type: 'history', id: 1, offset: 0, next: 4, data: Buffer.from('late').toString('base64'), done: true,
+    alternate: false, truncated: false, styled: false, ok: true }) + '\n'); await closed;
   assert.equal(records.some(value => value.type === 'history'), false); assert.deepEqual(app.terminalInputs, []);
 });

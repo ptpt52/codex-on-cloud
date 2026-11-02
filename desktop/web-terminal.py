@@ -21,11 +21,11 @@ HISTORY_BYTES = 64 * 1024
 HISTORY_CHUNK = 8192
 
 
-def history_snapshot(socket, pane):
+def history_snapshot(socket, pane, styled=False):
     """Read only a fixed pane, retaining a bounded tail without a disk log."""
     alternate = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1).stdout.strip() == b'1'
-    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-2000'],
+    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-2000'] + (['-e'] if styled else []),
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     tail = bytearray()
     total = 0
@@ -48,6 +48,13 @@ def history_snapshot(socket, pane):
                 del tail[:-HISTORY_BYTES]
         if child.wait(timeout=0.5) != 0:
             raise ValueError('history unavailable')
+        # tmux starts each captured row with its own attributes. Drop a partial
+        # leading row when clipping styled output, so neither UTF-8 nor SGR
+        # sequences start halfway through and the first complete row is faithful.
+        if styled and total > HISTORY_BYTES:
+            boundary = tail.find(b'\n')
+            if 0 <= boundary < len(tail) - 1:
+                del tail[:boundary + 1]
         return bytes(tail).decode('utf8', errors='ignore').encode('utf8'), alternate, total > HISTORY_BYTES
     finally:
         child.stdout.close()
@@ -226,6 +233,7 @@ def main():
     history_at = 0
     history_alternate = False
     history_truncated = False
+    history_styled = False
     viewport_layout = False
 
     def emit(value):
@@ -304,11 +312,15 @@ def main():
                         offset = value['offset']
                         if type(offset) is not int or offset < 0 or offset > HISTORY_BYTES:
                             raise ValueError('invalid history offset')
+                        styled = value.get('styled', False)
+                        if type(styled) is not bool:
+                            raise ValueError('invalid history format')
                         try:
                             if offset == 0:
-                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0])
+                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0], styled)
+                                history_styled = styled
                                 history_offset = 0
-                            if offset != history_offset or (offset and not history):
+                            if offset != history_offset or (offset and not history) or styled != history_styled:
                                 raise ValueError('expired history')
                             if not verify():
                                 raise ValueError('history target changed')
@@ -317,7 +329,7 @@ def main():
                             history_at = time.monotonic()
                             emit({'type': 'history', 'id': ident, 'offset': offset, 'data': base64.b64encode(data).decode(),
                                   'next': history_offset, 'done': history_offset == len(history),
-                                  'alternate': history_alternate, 'truncated': history_truncated, 'ok': True})
+                                  'alternate': history_alternate, 'truncated': history_truncated, 'styled': history_styled, 'ok': True})
                             if history_offset == len(history):
                                 history = b''
                         except (ValueError, OSError, subprocess.SubprocessError):

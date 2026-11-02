@@ -1,6 +1,7 @@
 import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
+import { TERMINAL_THEME } from './terminal-history-style.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken');
@@ -10,6 +11,7 @@ let blocked = true, busy = false, fontSize = 15, lastSize = '', lastReport = '',
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
+let historyStyles = false;
 let candidateController, probeTimer, probeNetworkCheck = false, probeDelay = 15000, directFailed = false, directIssue = '', networkDetails = null, statsPending = false;
 let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastInteraction = 0, composing = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
@@ -44,11 +46,11 @@ function historyChunk(offset, signal) {
   if (signal.aborted || historyPending || !ready || blocked || busy || switching || pending || document.hidden || !navigator.onLine) return Promise.reject(new Error('当前连接或输入忙碌，请稍后重试'));
   if (offset === 0 && performance.now() - historyFetchAt < 1000) return Promise.reject(new Error('请稍后再补取历史'));
   return new Promise((resolve, reject) => {
-    const id = send({ type: 'history', offset }); if (!id) return reject(new Error('历史暂不可读取'));
+    const styled = historyStyles, id = send({ type: 'history', offset, ...(styled ? { styled: true } : {}) }); if (!id) return reject(new Error('历史暂不可读取'));
     if (offset === 0) historyFetchAt = performance.now();
     historySequence = id;
     const abort = () => finishHistory(new Error('历史读取已取消'));
-    historyPending = { id, offset, resolve, reject, signal, abort, timer: setTimeout(() => finishHistory(new Error('历史读取超时，未自动重试')), 5000) };
+    historyPending = { id, offset, styled, resolve, reject, signal, abort, timer: setTimeout(() => finishHistory(new Error('历史读取超时，未自动重试')), 5000) };
     signal.addEventListener('abort', abort, { once: true });
   });
 }
@@ -57,7 +59,7 @@ async function readHistory(signal) {
   for (let count = 0; count < 8; count++) {
     const value = await historyChunk(offset, signal); if (signal.aborted) throw new Error('历史读取已取消');
     text += decoder.decode(value.bytes, { stream: !value.done }); offset = value.next;
-    if (value.done) return { text, alternate: value.alternate, truncated: value.truncated };
+    if (value.done) return { text, styled: value.styled === true, alternate: value.alternate, truncated: value.truncated };
   }
   throw new Error('历史超过 64 KiB 上限');
 }
@@ -110,7 +112,7 @@ function createTerminal() {
   host.replaceChildren();
   term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: 2000,
     scrollOnUserInput: false, scrollOnEraseInDisplay: false,
-    cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: { background: '#151d1a', foreground: '#e7eee9', cursor: '#a8d8b7', selectionBackground: '#3e6652' } });
+    cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: TERMINAL_THEME });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
   // Applications may not silently write the browser's clipboard via OSC 52.
   term.parser.registerOscHandler(52, () => true);
@@ -189,7 +191,7 @@ function attachSocket(current) {
     if (value.type === 'ready') {
       if (ready) return retire(current);
       clearTimeout(connectingTimer); connectingTimer = undefined;
-      ready = true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
+      ready = true; historyStyles = value.historyStyles === true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
       if (current.direct) directIssue = '';
       finishSwitch(); reportNetwork(); void refreshNetwork(); scheduleProbe();
       health = createTerminalHealth(nonce => {
@@ -210,6 +212,7 @@ function attachSocket(current) {
       if (value.ok !== true) { finishHistory(new Error('当前终端历史不可读取')); return; }
       let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
       if (bytes.length > 8192 || value.offset !== historyPending.offset || value.next !== value.offset + bytes.length || value.next > 65536 || typeof value.done !== 'boolean' || (!value.done && bytes.length !== 8192) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return retire(current);
+      if ((value.styled === true) !== historyPending.styled || (value.styled !== undefined && typeof value.styled !== 'boolean')) return retire(current);
       finishHistory(null, { ...value, bytes }); return;
     }
     if (value.type === 'output' && ready && typeof value.data === 'string' && value.data.length <= 11000) {
