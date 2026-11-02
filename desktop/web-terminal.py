@@ -14,6 +14,43 @@ import termios
 import time
 
 SESSIONS = {'main': 'codex', 'aux1': 'codex-aux1', 'aux2': 'codex-aux2', 'aux3': 'codex-aux3'}
+HISTORY_BYTES = 64 * 1024
+HISTORY_CHUNK = 8192
+
+
+def history_snapshot(socket, pane):
+    """Read only a fixed pane, retaining a bounded tail without a disk log."""
+    alternate = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1).stdout.strip() == b'1'
+    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-2000'],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    tail = bytearray()
+    total = 0
+    deadline = time.monotonic() + 1
+    try:
+        os.set_blocking(child.stdout.fileno(), False)
+        while True:
+            if time.monotonic() >= deadline:
+                raise ValueError('history deadline')
+            if not select.select([child.stdout], [], [], 0.05)[0]:
+                continue
+            chunk = os.read(child.stdout.fileno(), 8192)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 4 * 1024 * 1024:
+                raise ValueError('history scan limit')
+            tail.extend(chunk)
+            if len(tail) > HISTORY_BYTES:
+                del tail[:-HISTORY_BYTES]
+        if child.wait(timeout=0.5) != 0:
+            raise ValueError('history unavailable')
+        return bytes(tail).decode('utf8', errors='ignore').encode('utf8'), alternate, total > HISTORY_BYTES
+    finally:
+        child.stdout.close()
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=0.5)
 
 
 def main():
@@ -35,6 +72,11 @@ def main():
     pending = bytearray()
     writes = collections.deque()
     queued = 0
+    history = b''
+    history_offset = 0
+    history_at = 0
+    history_alternate = False
+    history_truncated = False
 
     def emit(value):
         sys.stdout.write(json.dumps(value, separators=(',', ':')) + '\n')
@@ -55,6 +97,9 @@ def main():
         emit({'type': 'ready'})
         last_id = 0
         while child.poll() is None:
+            if history and time.monotonic() - history_at > 15:
+                history = b''
+                history_offset = 0
             readable, writable, _ = select.select([0, master], [master] if writes else [], [], 0.5)
             if 0 in readable:
                 data = os.read(0, 8192)
@@ -88,6 +133,30 @@ def main():
                             raise ValueError('input limit exceeded')
                         writes.append([ident, content, 0])
                         queued += len(content)
+                    elif value['action'] == 'history':
+                        offset = value['offset']
+                        if type(offset) is not int or offset < 0 or offset > HISTORY_BYTES:
+                            raise ValueError('invalid history offset')
+                        try:
+                            if offset == 0:
+                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0])
+                                history_offset = 0
+                            if offset != history_offset or (offset and not history):
+                                raise ValueError('expired history')
+                            if not verify():
+                                raise ValueError('history target changed')
+                            data = history[offset:offset + HISTORY_CHUNK]
+                            history_offset += len(data)
+                            history_at = time.monotonic()
+                            emit({'type': 'history', 'id': ident, 'offset': offset, 'data': base64.b64encode(data).decode(),
+                                  'next': history_offset, 'done': history_offset == len(history),
+                                  'alternate': history_alternate, 'truncated': history_truncated, 'ok': True})
+                            if history_offset == len(history):
+                                history = b''
+                        except (ValueError, OSError, subprocess.SubprocessError):
+                            history = b''
+                            history_offset = 0
+                            emit({'type': 'history', 'id': ident, 'ok': False})
                     else:
                         raise ValueError('invalid action')
             if master in readable:

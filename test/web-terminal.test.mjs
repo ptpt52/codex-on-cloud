@@ -23,7 +23,7 @@ async function until(probe) { for (let i = 0; i < 150; i++) { if (probe()) retur
 
 test('terminal assets and WebSockets authenticate Host, Origin, viewer, target token and a CSRF handshake before launching a PTY', async t => {
   const app = await fixture(); t.after(() => app.close());
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/terminal-history.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
   assert.equal(await denied(app), 401); await app.login(); assert.equal(await denied(app), 409); await app.claim();
   for (const headers of [{ origin: 'https://evil.test' }, { host: 'evil.test', origin: 'http://evil.test' }]) assert.equal(await denied(app, {}, headers), 403);
   assert.equal(await denied(app, { terminalId: '../main' }), 400); assert.equal(await denied(app, { terminalToken: '%0:9999' }), 409);
@@ -34,7 +34,7 @@ test('terminal assets and WebSockets authenticate Host, Origin, viewer, target t
     const malformed = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } });
     await once(malformed, 'open'); const malformedClosed = once(malformed, 'close'); malformed.send(first); await malformedClosed; assert.equal(app.terminalConnections, 0);
   }
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-history.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
   const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
   assert.equal(app.terminalConnections, 1); assert.equal(app.inputCalls.length, 0); assert.equal(app.terminalInputs.length, 0);
 });
@@ -117,4 +117,40 @@ test('terminal health rejects malformed, repeated, extra-field and rate-exceedin
   await until(() => current.records.filter(item => item.type === 'health').length === 8);
   closed = once(current.ws, 'close'); current.ws.send(JSON.stringify({ type: 'health', nonce: 9 })); await closed;
   assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.terminalSizes, []); assert.deepEqual(app.clipboardReads, []);
+});
+
+test('history pages use a separate bounded read-only slot without consuming or replaying accepted input', async t => {
+  let release, entered; const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const text = '中文历史😀\n'.repeat(6000), app = await fixture({ terminalHistory: text, terminalHook: async () => { entered(); await hold; } });
+  t.after(() => { release(); return app.close(); }); await app.login(); await app.claim();
+  const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(value => value.type === 'ready'));
+  ws.send(JSON.stringify({ type: 'control', id: 1, action: 'key', key: 'Enter' })); await started;
+  const parts = []; let id = 1, offset = 0;
+  for (let page = 0; page < 8; page++) {
+    ws.send(JSON.stringify({ type: 'history', id: ++id, offset })); await until(() => records.some(value => value.type === 'history' && value.id === id));
+    const value = records.find(value => value.type === 'history' && value.id === id), bytes = Buffer.from(value.data, 'base64');
+    assert.equal(value.ok, true); assert.ok(bytes.length <= 8192); parts.push(bytes); offset = value.next;
+    if (value.done) break;
+  }
+  assert.equal(Buffer.concat(parts).length, 65536); assert.deepEqual(Buffer.concat(parts), Buffer.from(text).subarray(-65536));
+  assert.equal(records.some(value => value.type === 'result'), false); assert.equal(app.terminalHistoryReads.length, 8);
+  ws.send(JSON.stringify({ type: 'history', id: ++id, offset: 0 })); await until(() => records.some(value => value.type === 'history' && value.id === id));
+  assert.equal(records.find(value => value.type === 'history' && value.id === id).ok, false); assert.equal(app.terminalHistoryReads.length, 8);
+  release(); await until(() => records.some(value => value.type === 'result' && value.id === 1));
+  assert.deepEqual(app.terminalInputs, [{ terminalId: 'main', text: '\r' }]); assert.deepEqual(app.inputCalls, []); assert.deepEqual(app.clipboardReads, []);
+});
+
+test('malformed history records close before reading and takeover discards a delayed snapshot', async t => {
+  let release, entered; const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const app = await fixture({ terminalHistory: '不得泄露的测试快照', terminalHistoryHook: async () => { entered(); await hold; } });
+  t.after(() => { release(); return app.close(); }); await app.login(); await app.claim();
+  for (const offset of [-1, 1, 65537, '0', true]) {
+    const { ws, records } = await connected(app); await until(() => records.some(value => value.type === 'ready'));
+    const closed = once(ws, 'close'); ws.send(JSON.stringify({ type: 'history', id: 1, offset })); await closed;
+  }
+  assert.equal(app.terminalHistoryReads.length, 0);
+  const { ws, records } = await connected(app); await until(() => records.some(value => value.type === 'ready'));
+  ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0 })); await started;
+  const closed = once(ws, 'close'); await app.claim('22222222-2222-4222-8222-222222222222'); release(); await closed;
+  assert.equal(records.some(value => value.type === 'history'), false); assert.deepEqual(app.terminalInputs, []);
 });

@@ -20,6 +20,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   const requests = new Map(); // At most 64 streamed records / 64 KiB in the helper.
   let rawWindow = Date.now(), rawBytes = 0;
   let lastHealthNonce = 0, healthWindow = Date.now(), healthCount = 0;
+  let historyBusy = false, historyAt = 0;
   let pressureTimer, escapeTimer;
   const close = () => {
     if (ended) return;
@@ -39,10 +40,10 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
     checking = true;
     void verify().then(ok => { if (!ok) close(); }, close).finally(() => { checking = false; });
   }, 3000).unref();
-  function command(action, value, clientId) {
+  function command(action, value, clientId, history = false) {
     if (ended || !ready || !valid() || sequence >= 2147483647 || requests.size >= 64 || child.stdin.writableLength > 64 * 1024) throw new Error('terminal unavailable');
     const id = ++sequence;
-    requests.set(id, clientId || 0);
+    requests.set(id, history ? { history: clientId, offset: value.offset } : clientId || 0);
     child.stdin.write(JSON.stringify({ id, action, ...value }) + '\n');
   }
   child.stdout.on('data', bytes => {
@@ -63,8 +64,14 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
         if (outstanding > 192 * 1024) return close();
         send({ type: 'output', data: value.data });
         if (outstanding >= 64 * 1024) { child.stdout.pause(); pressureTimer ||= setTimeout(close, 10000).unref(); }
+      } else if (value.type === 'history' && requests.get(value.id)?.history) {
+        const request = requests.get(value.id), id = request.history; requests.delete(value.id); historyBusy = false;
+        if (value.ok !== true) { send({ type: 'history', id, ok: false }); continue; }
+        if (typeof value.data !== 'string' || value.data.length > 11000 || value.offset !== request.offset || !Number.isSafeInteger(value.next) || value.next < value.offset || value.next > 65536 || value.next - value.offset > 8192 || Buffer.from(value.data, 'base64').length !== value.next - value.offset || typeof value.done !== 'boolean' || (!value.done && value.next - value.offset !== 8192) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return close();
+        send({ ...value, id });
       } else if (value.type === 'result' && requests.has(value.id)) {
         const clientId = requests.get(value.id); requests.delete(value.id);
+        if (typeof clientId !== 'number') return close();
         if (clientId) { busy = false; send({ type: 'result', id: clientId, ok: value.ok === true, outcome: value.ok ? 'success' : 'rejected' }); }
         if (value.ok !== true) return close();
       } else return close();
@@ -89,6 +96,12 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
     if (!ready || !Number.isSafeInteger(value?.id) || value.id <= lastClientId || value.id > 2147483647) return close();
     lastClientId = value.id;
     try {
+      if (value.type === 'history') {
+        if (bytes.length > 128 || Object.keys(value).length !== 3 || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 65536 || value.offset % 8192 !== 0) return close();
+        if (historyBusy || (value.offset === 0 && Date.now() - historyAt < 1000)) { send({ type: 'history', id: value.id, ok: false }); return; }
+        if (value.offset === 0) historyAt = Date.now();
+        historyBusy = true; command('history', { offset: value.offset }, value.id, true); return;
+      }
       if (value.type === 'resize') {
         if (!Number.isInteger(value.cols) || !Number.isInteger(value.rows) || value.cols < 2 || value.cols > 500 || value.rows < 1 || value.rows > 200) return close();
         command('resize', { cols: value.cols, rows: value.rows }); return;

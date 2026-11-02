@@ -6,6 +6,12 @@
   <link rel="stylesheet" href="./xterm.css"><link rel="stylesheet" href="./terminal.css">
 </head>
 <body>
+  <div id="terminal-tools" role="group" aria-label="终端历史滚动">
+    <button id="history-program" type="button" aria-pressed="false" title="开启后将翻页操作发送给当前程序">程序翻页</button>
+    <button id="history-up" type="button">上翻</button><button id="history-down" type="button">下翻</button>
+    <button id="history-latest" type="button">回到实时</button>
+    <span id="history-state" role="status">本地回看：滚动不发送按键</span>
+  </div>
   <div id="terminal" aria-label="远程文字终端"></div>
   <p id="terminal-status" role="status">正在连接原有终端…</p>
   <script src="./xterm.js"></script><script src="./fit.js"></script><script type="module" src="./terminal.js"></script>

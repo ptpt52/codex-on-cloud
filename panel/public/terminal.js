@@ -1,12 +1,14 @@
 import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
+import { createTerminalHistory } from './terminal-history.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken');
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
 let blocked = true, busy = false, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
-let health, connectingTimer;
+let health, connectingTimer, history;
+let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let candidateController, probeTimer, probeNetworkCheck = false, probeDelay = 15000, directFailed = false, directIssue = '', networkDetails = null, statsPending = false;
 let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastInteraction = 0, composing = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
@@ -32,6 +34,32 @@ function send(value) {
   if (!ready || switching || !navigator.onLine || socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > 64 * 1024 || sequence >= 2147483647) return false;
   socket.send(JSON.stringify({ ...value, id: ++sequence })); return sequence;
 }
+function finishHistory(error, value) {
+  if (!historyPending) return;
+  const current = historyPending; historyPending = undefined; clearTimeout(current.timer); current.signal.removeEventListener('abort', current.abort);
+  error ? current.reject(error) : current.resolve(value);
+}
+function historyChunk(offset, signal) {
+  if (signal.aborted || historyPending || !ready || blocked || busy || switching || pending || document.hidden || !navigator.onLine) return Promise.reject(new Error('当前连接或输入忙碌，请稍后重试'));
+  if (offset === 0 && performance.now() - historyFetchAt < 1000) return Promise.reject(new Error('请稍后再补取历史'));
+  return new Promise((resolve, reject) => {
+    const id = send({ type: 'history', offset }); if (!id) return reject(new Error('历史暂不可读取'));
+    if (offset === 0) historyFetchAt = performance.now();
+    historySequence = id;
+    const abort = () => finishHistory(new Error('历史读取已取消'));
+    historyPending = { id, offset, resolve, reject, signal, abort, timer: setTimeout(() => finishHistory(new Error('历史读取超时，未自动重试')), 5000) };
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+async function readHistory(signal) {
+  let offset = 0, text = ''; const decoder = new TextDecoder();
+  for (let count = 0; count < 8; count++) {
+    const value = await historyChunk(offset, signal); if (signal.aborted) throw new Error('历史读取已取消');
+    text += decoder.decode(value.bytes, { stream: !value.done }); offset = value.next;
+    if (value.done) return { text, alternate: value.alternate, truncated: value.truncated };
+  }
+  throw new Error('历史超过 64 KiB 上限');
+}
 function size() {
   cancelAnimationFrame(layout);
   if (stopped) return;
@@ -47,6 +75,8 @@ function size() {
 }
 function raw(data) {
   if (!ready || switching || !data) return;
+  // Keep terminal query replies alive while reviewing, without accepting edits.
+  if (history?.reviewing && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
   lastInteraction = performance.now();
   if (data.length > 32768 || new TextEncoder().encode(data).length > 32768) { message('一次输入不能超过 32 KiB，请分段发送。'); return; }
   let chunk = '', bytes = 0;
@@ -58,21 +88,31 @@ function raw(data) {
   if (chunk && !send({ type: 'input', data: chunk })) retire(socket, 0);
 }
 function createTerminal() {
-  term?.dispose(); host.replaceChildren();
+  if (term) { size(); return; }
+  host.replaceChildren();
   term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: 2000,
+    scrollOnUserInput: false, scrollOnEraseInDisplay: true,
     cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: { background: '#151d1a', foreground: '#e7eee9', cursor: '#a8d8b7', selectionBackground: '#3e6652' } });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
   // Applications may not silently write the browser's clipboard via OSC 52.
   term.parser.registerOscHandler(52, () => true);
+  history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !pending && !document.hidden && navigator.onLine,
+    read: readHistory,
+    page: direction => { lastInteraction = performance.now(); if (!send({ type: 'input', data: direction < 0 ? '\x1b[5~' : '\x1b[6~' })) retire(socket, 0); },
+    changed: reviewing => { inputState(); parent.postMessage({ type: 'codex-terminal-history', frame, reviewing }, location.origin); } });
   term.attachCustomKeyEventHandler(event => {
     if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyC' && term.hasSelection()) {
       const text = term.getSelection(); navigator.clipboard?.writeText(text).catch(() => {}); return false;
     }
+    if (history?.reviewing) { event.preventDefault(); return false; }
     return true;
   });
   size();
 }
-function inputState() { if (term) term.options.disableStdin = blocked || busy || switching || !ready || document.hidden || !navigator.onLine; }
+function inputState() {
+  if (term) { term.options.disableStdin = blocked || busy || switching || !ready || document.hidden || !navigator.onLine; if (term.textarea) term.textarea.readOnly = history?.reviewing === true; }
+  history?.update();
+}
 function reconnectLater(delay) {
   clearTimeout(retry); retry = undefined;
   if (!stopped && navigator.onLine && !document.hidden) retry = setTimeout(connect, delay);
@@ -86,6 +126,7 @@ function retire(current, delay = retryDelay) {
   stopProbe(); finishSwitch(); networkDetails = null; reportNetwork();
   clearTimeout(connectingTimer); connectingTimer = undefined;
   finish(null, { outcome: 'unknown' }); inputState(); controlState(); report('disconnected');
+  finishHistory(new Error('连接已中断，历史读取不会自动重试'));
   message(navigator.onLine ? '终端连接已断开，任务继续运行。正在重新连接；已发送输入不会重发。' : '等待网络恢复。原终端任务继续运行，已发送输入不会重发。');
   current.close();
   if (delay !== null) { reconnectLater(delay); retryDelay = Math.min(8000, retryDelay * 2); }
@@ -118,7 +159,7 @@ function attachSocket(current) {
   const previous = socket;
   socket = current; health?.close(); clearTimeout(connectingTimer);
   const currentEpoch = ++epoch;
-  ready = false; sequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
+  ready = false; sequence = 0; historySequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
   previous?.close(); networkDetails = null; reportNetwork();
   connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
   current.addEventListener('open', () => { if (socket === current && !current.direct) current.send(JSON.stringify({ type: 'auth', csrf })); });
@@ -141,6 +182,13 @@ function attachSocket(current) {
       return;
     }
     if (value.type === 'health' && ready) { health?.receive(value.nonce); void refreshNetwork(); return; }
+    if (value.type === 'history' && ready) {
+      if (value.id !== historyPending?.id) { if (Number.isSafeInteger(value.id) && value.id <= historySequence) return; return retire(current); }
+      if (value.ok !== true) { finishHistory(new Error('当前终端历史不可读取')); return; }
+      let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
+      if (bytes.length > 8192 || value.offset !== historyPending.offset || value.next !== value.offset + bytes.length || value.next > 65536 || typeof value.done !== 'boolean' || (!value.done && bytes.length !== 8192) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return retire(current);
+      finishHistory(null, { ...value, bytes }); return;
+    }
     if (value.type === 'output' && ready && typeof value.data === 'string' && value.data.length <= 11000) {
       let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
       term.write(bytes, () => { if (socket === current && current.readyState === WebSocket.OPEN && bytes.length) current.send(JSON.stringify({ type: 'ack', bytes: bytes.length })); }); return;
@@ -155,7 +203,7 @@ function attachSocket(current) {
 }
 function needsProbe() { return ready && socket && !socket.direct && !stopped && canTryDirect(); }
 function nativeIdle() { return !composing && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800; }
-function idleForSwitch() { return !blocked && !busy && !pending && !switching && nativeIdle(); }
+function idleForSwitch() { return !blocked && !busy && !pending && !switching && !history?.reviewing && nativeIdle(); }
 function stopProbe() {
   clearTimeout(probeTimer); probeTimer = undefined;
   probeNetworkCheck = false;
@@ -203,7 +251,7 @@ async function probeDirect() {
     await candidate.start(); await candidate.ping(); await waitStable(controller.signal); await candidate.ping();
     if (!needsProbe() || epoch !== currentEpoch || socket !== previous || !idleForSwitch() || controller.signal.aborted) return;
     requested = true;
-    if (!await prepareSwitch(controller.signal) || epoch !== currentEpoch || socket !== previous || stopped || document.hidden || !navigator.onLine || controller.signal.aborted || !nativeIdle() || pending) return;
+    if (!await prepareSwitch(controller.signal) || epoch !== currentEpoch || socket !== previous || stopped || document.hidden || !navigator.onLine || controller.signal.aborted || !nativeIdle() || pending || history?.reviewing) return;
     switching = true; switchingFrom = previous; health?.suspend(); inputState();
     await candidate.activate();
     if (epoch !== currentEpoch || socket !== previous || stopped || controller.signal.aborted) return;
@@ -236,7 +284,7 @@ window.addEventListener('message', event => {
   if (value.type !== 'codex-control-request') return;
   const body = value.body;
   let error;
-  if (!ready || blocked || switching || pending || document.hidden || !navigator.onLine) error = { message: '终端暂不可输入，本次操作未发送', outcome: 'rejected' };
+  if (!ready || blocked || switching || pending || history?.reviewing || document.hidden || !navigator.onLine) error = { message: '终端暂不可输入，请先回到实时画面；本次操作未发送', outcome: 'rejected' };
   else if (!body || typeof body !== 'object' || Array.isArray(body)) error = { message: '终端输入参数无效', outcome: 'rejected' };
   else if (body?.terminalId && (body.terminalId !== terminalId || body.terminalToken !== terminalToken)) error = { message: '输入目标与当前终端不一致，请重新选择', outcome: 'rejected' };
   else if (!['paste', 'key'].includes(value.action)) error = { message: '该操作不通过终端通道执行', outcome: 'rejected' };
@@ -258,12 +306,12 @@ function resume(replaceConnecting = false) {
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return resume(true);
-  health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; clearTimeout(connectingTimer); connectingTimer = undefined; inputState();
+  health?.suspend(); history?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; clearTimeout(connectingTimer); connectingTimer = undefined; inputState();
 });
 window.addEventListener('online', () => resume());
 window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
-window.addEventListener('pagehide', () => { stopped = true; stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); term?.dispose(); term = fit = undefined; });
+window.addEventListener('pagehide', event => { stopped = true; history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });
 for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(name, event => {
   lastInteraction = performance.now();

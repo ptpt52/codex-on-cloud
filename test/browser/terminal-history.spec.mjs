@@ -1,0 +1,231 @@
+import { test, expect } from '@playwright/test';
+import { fixture } from '../fixture.mjs';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+async function prepare(page) {
+  await page.addInitScript(() => {
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+    if (location.pathname !== '/terminal/index.html') return;
+    let Terminal; window.terminalInstances = 0;
+    Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,
+      set: Native => { Terminal = class extends Native { constructor(...args) { super(...args); window.historyTerminal = this; window.terminalInstances++; } }; } });
+  });
+}
+async function login(page, app) {
+  await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+  await expect(page.locator('#connection-status')).toContainText('终端在线', { timeout: 20000 });
+  return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
+}
+function output(app, text) {
+  const bytes = Buffer.from(text), child = app.terminalChildren.at(-1);
+  for (let i = 0; i < bytes.length; i += 8192) child.stdout.write(JSON.stringify({ type: 'output', data: bytes.subarray(i, i + 8192).toString('base64') }) + '\n');
+}
+const lines = (count, prefix = 'LOCAL-HISTORY') => Array.from({ length: count }, (_, index) => `${prefix}-${String(index).padStart(4, '0')} 中文`).join('\r\n') + '\r\n';
+const buffer = frame => frame.evaluate(() => {
+  const term = window.historyTerminal, buffer = term.buffer.active;
+  return { type: buffer.type, base: buffer.baseY, view: buffer.viewportY, length: buffer.length, rows: term.rows,
+    first: buffer.getLine(buffer.viewportY)?.translateToString(true), all: Array.from({ length: buffer.length }, (_, index) => buffer.getLine(index)?.translateToString(true)).join('\n') };
+});
+async function seeded(page, app, count = 220) {
+  await prepare(page); const frame = await login(page, app);
+  output(app, '\x1b[?1049h' + lines(count));
+  await expect.poll(async () => (await buffer(frame)).all.includes(`LOCAL-HISTORY-${String(count - 1).padStart(4, '0')}`)).toBe(true);
+  return frame;
+}
+async function wheel(frame, delta) { await frame.locator('#terminal').dispatchEvent('wheel', { deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true }); }
+async function reviewing(frame) { await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'true'); }
+
+test('local history stays in the browser, pauses input, and keeps its position while new output and protocol replies arrive', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app); expect((await buffer(frame)).type).toBe('normal'); await wheel(frame, -320); await reviewing(frame);
+    const before = await buffer(frame); await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
+    const selected = await frame.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedHistory = text; } } });
+      const term = window.historyTerminal; term.select(0, term.buffer.active.viewportY, 12); return term.getSelection();
+    });
+    await frame.locator('.xterm-helper-textarea').press('Control+Shift+C'); await expect.poll(() => frame.evaluate(() => window.copiedHistory)).toBe(selected);
+    await frame.locator('.xterm-helper-textarea').press('x'); expect(app.terminalInputs).toEqual([]);
+    output(app, lines(60, 'NEW-OUTPUT'));
+    await expect.poll(async () => (await buffer(frame)).all.includes('NEW-OUTPUT-0059')).toBe(true);
+    const after = await buffer(frame); expect(after.view).toBe(before.view); expect(after.first).toBe(before.first); expect(after.base).toBeGreaterThan(before.base);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.terminalChildren[0].stdout.isPaused()).toBe(false);
+    output(app, '\x1b[6n'); await expect.poll(() => app.terminalInputs.length).toBe(1); expect(app.terminalInputs[0].text).toMatch(/^\x1b\[\d+;\d+R$/);
+    expect((await buffer(frame)).view).toBe(before.view);
+    await frame.locator('#history-latest').click(); await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); expect((await buffer(frame)).view).toBe((await buffer(frame)).base);
+    expect(app.terminalInputs.length).toBe(1); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('history has a hard row bound, keeps screen clears and never stores terminal text in browser storage', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app, 2500); const value = await buffer(frame);
+    expect(value.length).toBeLessThanOrEqual(value.rows + 2000); expect(value.all).not.toContain('LOCAL-HISTORY-0000');
+    output(app, '\x1b[H\x1b[2JAFTER-CLEAR\r\n'); await expect.poll(async () => (await buffer(frame)).all.includes('AFTER-CLEAR')).toBe(true);
+    expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-2499');
+    expect(await frame.evaluate(() => [localStorage, sessionStorage].every(storage => Object.values(storage).every(value => !String(value).includes('LOCAL-HISTORY'))))).toBe(true);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('reconnect and cached page restoration keep the same renderer, history and reading position without replay', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app); await wheel(frame, -360); await reviewing(frame); const before = await buffer(frame);
+    app.disconnectTerminals(); await expect.poll(() => app.terminalConnections).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect((await buffer(frame)).first).toBe(before.first); expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-0000');
+    await frame.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    await frame.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await expect.poll(() => app.terminalConnections).toBe(3); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect((await buffer(frame)).first).toBe(before.first); expect(app.terminalInputs).toEqual([]);
+    await frame.locator('#history-latest').click(); await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
+  } finally { await app.close(); }
+});
+
+test('program paging is opt-in, rate bounded and never adds Enter; returning live only changes the local view', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app); await wheel(frame, -200); await reviewing(frame); expect(app.terminalInputs).toEqual([]);
+    await frame.locator('#history-program').click(); await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await frame.locator('#history-up').click();
+    await expect.poll(() => app.terminalInputs.length).toBe(1); expect(app.terminalInputs[0].text).toBe('\x1b[5~');
+    await frame.evaluate(() => { for (let i = 0; i < 20; i++) document.getElementById('terminal').dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true })); });
+    expect(app.terminalInputs.length).toBeLessThanOrEqual(2);
+    await page.waitForTimeout(200); await frame.locator('#history-down').click(); await expect.poll(() => app.terminalInputs.at(-1).text).toBe('\x1b[6~');
+    await page.locator('#desktop-mode').click(); await expect(frame.locator('#history-up')).toBeDisabled(); const before = app.terminalInputs.length;
+    await wheel(frame, -200); expect(app.terminalInputs.length).toBe(before); await page.locator('#cancel-confirmation').click();
+    await frame.locator('#history-latest').click(); await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
+    expect(app.terminalInputs.length).toBe(before); expect(app.terminalInputs.every(value => ['\x1b[5~', '\x1b[6~'].includes(value.text))).toBe(true);
+  } finally { await app.close(); }
+});
+
+test('single finger history scrolling is local and controls fit a narrow screen with touch targets', async ({ page }, info) => {
+  const app = await fixture();
+  try {
+    if (info.project.name === 'mobile') await page.setViewportSize({ width: 320, height: 844 });
+    const frame = await seeded(page, app);
+    await frame.evaluate(() => {
+      const host = document.getElementById('terminal'), touch = y => new Touch({ identifier: 1, target: host, clientX: 120, clientY: y });
+      host.dispatchEvent(new TouchEvent('touchstart', { touches: [touch(100)], bubbles: true }));
+      host.dispatchEvent(new TouchEvent('touchmove', { touches: [touch(270)], bubbles: true, cancelable: true }));
+      host.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true }));
+    });
+    await reviewing(frame); expect(app.terminalInputs).toEqual([]);
+    for (const id of ['history-program', 'history-up', 'history-down', 'history-latest']) {
+      const box = await frame.locator('#' + id).boundingBox(); expect(box.height).toBeGreaterThanOrEqual(44); expect(box.width).toBeGreaterThanOrEqual(44);
+    }
+    expect(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await frame.locator('#history-latest').click(); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('reading history postpones automatic direct promotion, then the route changes without discarding the buffer', async ({ page }) => {
+  const app = await fixture({ webrtc: true }); let offers = 0;
+  try {
+    await page.clock.install(); await page.route('**/api/terminal/rtc', route => ++offers === 1 ? route.fulfill({ status: 503, json: { error: '首次直连不可用' } }) : route.continue());
+    const frame = await seeded(page, app); await wheel(frame, -320); await reviewing(frame);
+    await page.clock.fastForward(16000); await page.waitForTimeout(100); expect(offers).toBe(1); expect(app.terminalConnections).toBe(1);
+    await frame.locator('#history-latest').click(); await frame.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect.poll(() => app.terminalConnections, { timeout: 15000 }).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-0000'); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('switching target discards the previous terminal buffer and history mode', async ({ page }) => {
+  const app = await fixture();
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '另一个任务', view: 'terminal' }); const frame = await seeded(page, app);
+    await wheel(frame, -300); await reviewing(frame); await page.locator('#terminal-view-select').selectOption('aux1');
+    await expect(page.locator('#connection-status')).toContainText('终端在线'); const next = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
+    expect((await buffer(next)).all).not.toContain('LOCAL-HISTORY'); await expect(next.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('tmux history is fetched only at the local edge, in bounded pages over the existing direct channel', async ({ page }) => {
+  const text = lines(1200, 'REMOTE-SNAPSHOT') + 'SNAPSHOT-END', app = await fixture({ webrtc: true, terminalHistory: text });
+  try {
+    const frame = await seeded(page, app); expect(app.terminalHistoryReads).toEqual([]);
+    await frame.evaluate(() => window.historyTerminal.scrollToTop()); expect(app.terminalHistoryReads).toEqual([]);
+    await wheel(frame, -120); await expect(frame.locator('#history-archive')).toBeVisible();
+    await expect(frame.locator('#history-archive')).toHaveText(text); expect((await frame.locator('#history-archive').textContent()).includes('\ufffd')).toBe(false);
+    expect(app.terminalHistoryReads.length).toBe(Math.ceil(Buffer.byteLength(text) / 8192)); expect(app.terminalHistoryReads.length).toBeLessThanOrEqual(8);
+    const before = await frame.locator('#history-archive').evaluate(element => { element.scrollTop = 25; return element.scrollTop; });
+    output(app, lines(30, 'LIVE-AFTER-SNAPSHOT')); await expect.poll(async () => (await buffer(frame)).all.includes('LIVE-AFTER-SNAPSHOT-0029')).toBe(true);
+    expect(await frame.locator('#history-archive').evaluate(element => element.scrollTop)).toBe(before);
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled(); await frame.locator('#history-latest').click();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.terminalConnections).toBe(1);
+  } finally { await app.close(); }
+});
+
+test('returning live cancels a snapshot without resending it and late replies cannot disrupt new input', async ({ page }) => {
+  let entered, release; const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  const app = await fixture({ terminalHistory: lines(600, 'CANCELLED-SNAPSHOT'), terminalHistoryHook: async () => { entered(); await hold; } });
+  try {
+    const frame = await seeded(page, app); await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100); await started;
+    await expect(frame.locator('#history-state')).toContainText('补取'); await frame.locator('#history-latest').click();
+    await page.locator('#toggle-input-button').click(); await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await page.locator('[data-key="Enter"]').click();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); release(); await page.waitForTimeout(200);
+    await expect(frame.locator('#history-archive')).toBeHidden(); expect(app.terminalHistoryReads.length).toBe(1); expect(app.terminalConnections).toBe(1);
+    expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: '\r' }]);
+  } finally { release(); await app.close(); }
+});
+
+test('real isolated tmux and Python PTY retain ordinary output across reconnect and page a full-screen receiver without replay', async ({ page }) => {
+  test.setTimeout(60000);
+  const directory = await mkdtemp(join(tmpdir(), 'codex-browser-history-')), socket = join(directory, 'tmux.sock'), clients = [];
+  const proof = join(directory, 'once'), tui = join(directory, 'tui.py'), tuiReady = join(directory, 'ready'), keys = join(directory, 'keys');
+  const env = { ...process.env, HOME: directory, HISTFILE: '/dev/null', TERM: 'xterm-256color',
+    PATH: `${resolve('data/host-tools/usr/bin')}:${process.env.PATH}`, HISTORY_TEST_PROOF: proof, HISTORY_TEST_TUI: tui };
+  delete env.TMUX; delete env.DISPLAY; delete env.XAUTHORITY;
+  const exec = promisify(execFile), run = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 8192 });
+  let app;
+  try {
+    await exec('tmux', ['-f', resolve('desktop/tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex', '-x', '80', '-y', '24', 'bash --noprofile --norc'], { env, timeout: 3000 });
+    const token = (await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim();
+    app = await fixture();
+    // The directory/manager remains mocked; the transport, tmux and helper are real.
+    app.config.terminalLaunch = () => {
+      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+      clients.push(child); return child;
+    };
+    await prepare(page); const frame = await login(page, app); await page.locator('#toggle-input-button').click();
+    await page.locator('#mobile-input').fill('printf \'once\\n\' >> "$HISTORY_TEST_PROOF"; printf \'NATIVE-HISTORY-%04d\\n\' {1..220}');
+    await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    await expect(readFile(proof, 'utf8')).rejects.toThrow();
+    await page.locator('[data-key="Enter"]').click(); await expect.poll(async () => (await buffer(frame)).all.includes('NATIVE-HISTORY-0220')).toBe(true);
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    expect(await readFile(proof, 'utf8')).toBe('once\n');
+    await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -400); await expect(frame.locator('#history-archive')).toBeVisible();
+    await expect(frame.locator('#history-archive')).toContainText('NATIVE-HISTORY-0001'); const before = await frame.locator('#history-archive').textContent();
+    clients[0].kill('SIGTERM'); await expect.poll(() => clients.length).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect(await frame.locator('#history-archive').textContent()).toBe(before);
+    expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token); expect(await readFile(proof, 'utf8')).toBe('once\n');
+    await writeFile(tui, `import os, select, termios, time, tty\nfd=0\nprevious=termios.tcgetattr(fd)\ndata=b''\ntry:\n tty.setraw(fd)\n os.write(1,b'\\x1b[?1049h\\x1b[2J\\x1b[HFULL-SCREEN-RECEIVER\\r\\n')\n with open(${JSON.stringify(tuiReady)},'w') as f: f.write('ready')\n deadline=time.monotonic()+12\n while len(data)<8 and time.monotonic()<deadline:\n  if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,8-len(data))\nfinally:\n termios.tcsetattr(fd,termios.TCSANOW,previous)\n os.write(1,b'\\x1b[?1049l')\n with open(${JSON.stringify(keys)},'w') as f: f.write(data.hex())\n`);
+    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('python3 "$HISTORY_TEST_TUI"'); await page.locator('#paste-button').click();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
+    await expect.poll(() => readFile(tuiReady, 'utf8').catch(() => '')).toBe('ready');
+    await frame.locator('#history-program').click(); await frame.locator('#history-up').click(); await page.waitForTimeout(200); await frame.locator('#history-down').click();
+    await expect.poll(() => readFile(keys, 'utf8').catch(() => '')).toBe('1b5b357e1b5b367e');
+    expect(await readFile(proof, 'utf8')).toBe('once\n');
+    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'LARGE-HISTORY-%04d %080d\\n\' "$i" 0; done');
+    await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
+    await expect.poll(async () => (await buffer(frame)).all.includes('LARGE-HISTORY-1000')).toBe(true);
+    await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100);
+    await expect(frame.locator('#history-archive')).toBeVisible(); await expect(frame.locator('#history-archive')).toContainText('LARGE-HISTORY-1000');
+    expect(Buffer.byteLength(await frame.locator('#history-archive').textContent())).toBeLessThanOrEqual(65536);
+    const complete = await exec('tmux', ['-S', socket, 'capture-pane', '-p', '-t', token.split(':', 1)[0], '-S', '-2000'], { env, timeout: 3000, maxBuffer: 4 * 1024 * 1024 });
+    if (Buffer.byteLength(complete.stdout) > 65536) await expect(frame.locator('#history-state')).toContainText('64 KiB');
+    else await expect(frame.locator('#history-state')).not.toContainText('截取');
+    expect(await readFile(proof, 'utf8')).toBe('once\n');
+  } finally {
+    await app?.close(); for (const child of clients) if (child.exitCode === null) child.kill('SIGTERM');
+    await run(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -20,7 +20,7 @@ let desktopSettings = null, settingsController = null, settingsTimer, settingsBu
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalController = null, terminalLoadAttempted = false;
-let frameTerminalKey = '', terminalGeometry = null;
+let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
 const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $('shortcuts-menu'), list: $('shortcuts-list'),
   canSend: () => !confirmation && canInput() && !inputBusy && !inputCollapsed(),
@@ -221,7 +221,7 @@ $('auto-resolution').addEventListener('change', () => {
   renderDesktopSettings(); scheduleViewport();
 });
 function canInput() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && (!terminalMode() || !terminalReviewing) && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
 function canManageTerminals() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
@@ -365,7 +365,7 @@ function stopFrame() {
   frameLoaded = false;
   frameState = 'idle';
   frameTransport = '';
-  frameTerminalKey = ''; terminalGeometry = null;
+  frameTerminalKey = ''; terminalGeometry = null; terminalReviewing = false;
   frameNetwork = null; directIssue = '';
   frameEpoch++;
   displayScale = 0;
@@ -1018,7 +1018,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
-    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !terminalBusy && !$('terminals-dialog').open && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !terminalBusy && !terminalReviewing && !$('terminals-dialog').open && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
     if (allowed) {
       transportSwitching = true;
       clearTimeout(switchTimer);
@@ -1039,6 +1039,9 @@ window.addEventListener('message', event => {
   if (event.data?.type === 'codex-terminal-size' && terminalMode()) {
     if (Number.isInteger(event.data.cols) && Number.isInteger(event.data.rows) && event.data.cols >= 2 && event.data.cols <= 500 && event.data.rows >= 1 && event.data.rows <= 200) terminalGeometry = { cols: event.data.cols, rows: event.data.rows };
     renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-terminal-history' && terminalMode() && typeof event.data.reviewing === 'boolean') {
+    terminalReviewing = event.data.reviewing; renderInputControls(); return;
   }
   if (event.data?.type === 'codex-control-result') {
     if (!controlPending || event.data.id !== controlPending.id) return;
