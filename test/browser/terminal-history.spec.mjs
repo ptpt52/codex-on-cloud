@@ -32,12 +32,41 @@ const buffer = frame => frame.evaluate(() => {
 });
 async function seeded(page, app, count = 220) {
   await prepare(page); const frame = await login(page, app);
-  output(app, '\x1b[?1049h' + lines(count));
+  output(app, lines(count));
   await expect.poll(async () => (await buffer(frame)).all.includes(`LOCAL-HISTORY-${String(count - 1).padStart(4, '0')}`)).toBe(true);
   return frame;
 }
 async function wheel(frame, delta) { await frame.locator('#terminal').dispatchEvent('wheel', { deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true }); }
 async function reviewing(frame) { await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'true'); }
+
+test('alternate-screen redraws never become scrollback, and history preserves the live font, line height, spaces and wide rows', async ({ page }) => {
+  const text = '列一            Column two             列三\n' + '    indented_code();  ' + 'x'.repeat(260) + '\n' + lines(60, 'FAITHFUL-HISTORY');
+  const app = await fixture({ terminalHistory: text });
+  try {
+    await prepare(page); const frame = await login(page, app);
+    output(app, '\x1b[?1049h' + Array.from({ length: 40 }, (_, index) => `\x1b[H\x1b[2JREDRAW-${index}\r\n\x1b[8;10HCURSOR-CONTENT`).join(''));
+    await expect.poll(async () => (await buffer(frame)).type).toBe('alternate');
+    await expect.poll(async () => (await buffer(frame)).all.includes('REDRAW-39')).toBe(true);
+    expect((await buffer(frame)).base).toBe(0); await wheel(frame, -200);
+    await expect(frame.locator('#history-archive')).toHaveText(text);
+    expect(await frame.locator('#history-archive').textContent()).not.toContain('REDRAW');
+    const reads = app.terminalHistoryReads.length;
+    for (let i = 0; i < 3; i++) await page.locator('#terminal-font-up').click();
+    await expect.poll(() => frame.evaluate(() => getComputedStyle(document.getElementById('history-archive')).fontSize)).toBe('18px');
+    const style = await frame.evaluate(() => {
+      const pre = document.getElementById('history-archive'), css = getComputedStyle(pre), term = window.historyTerminal;
+      return { font: css.fontFamily, expected: term.options.fontFamily, height: parseFloat(css.lineHeight), rowHeight: document.querySelector('.xterm-screen').getBoundingClientRect().height / term.rows,
+        whiteSpace: css.whiteSpace, width: pre.clientWidth, scrollWidth: pre.scrollWidth };
+    });
+    expect(style.font).toBe(style.expected); expect(style.height).toBeCloseTo(style.rowHeight, 1);
+    expect(style.whiteSpace).toBe('pre'); expect(style.scrollWidth).toBeGreaterThan(style.width);
+    expect(await frame.locator('#history-archive').textContent()).toBe(text);
+    output(app, '\x1b[H\x1b[2JNEW-REDRAW'); await page.waitForTimeout(150);
+    expect(app.terminalHistoryReads.length).toBe(reads); expect(app.terminalInputs).toEqual([]);
+    await frame.locator('#history-latest').click(); await expect(frame.locator('#history-archive')).toBeHidden();
+    expect((await buffer(frame)).type).toBe('alternate'); expect((await buffer(frame)).base).toBe(0);
+  } finally { await app.close(); }
+});
 
 test('local history stays in the browser, pauses input, and keeps its position while new output and protocol replies arrive', async ({ page }) => {
   const app = await fixture();
@@ -62,13 +91,13 @@ test('local history stays in the browser, pauses input, and keeps its position w
   } finally { await app.close(); }
 });
 
-test('history has a hard row bound, keeps screen clears and never stores terminal text in browser storage', async ({ page }) => {
+test('history has a hard row bound, respects screen clears and never stores terminal text in browser storage', async ({ page }) => {
   const app = await fixture();
   try {
     const frame = await seeded(page, app, 2500); const value = await buffer(frame);
     expect(value.length).toBeLessThanOrEqual(value.rows + 2000); expect(value.all).not.toContain('LOCAL-HISTORY-0000');
     output(app, '\x1b[H\x1b[2JAFTER-CLEAR\r\n'); await expect.poll(async () => (await buffer(frame)).all.includes('AFTER-CLEAR')).toBe(true);
-    expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-2499');
+    expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-2400');
     expect(await frame.evaluate(() => [localStorage, sessionStorage].every(storage => Object.values(storage).every(value => !String(value).includes('LOCAL-HISTORY'))))).toBe(true);
     expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }

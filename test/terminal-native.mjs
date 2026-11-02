@@ -141,7 +141,7 @@ try {
   // Real PTY attachment is independent of the X window and never owns the shell.
   const mainTarget = (await recovered.listTerminals()).terminals.find(item => item.id === 'main');
   async function webClient() {
-    const child = spawn('python3', [join(source, 'desktop/web-terminal.py'), env.TMUX_SOCKET, 'main', mainTarget.token], { env, detached: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    const child = spawn('python3', [join(source, 'desktop/web-terminal.py'), env.TMUX_SOCKET, 'main', mainTarget.token, '--geometry'], { env, detached: true, stdio: ['pipe', 'pipe', 'ignore'] });
     children.push(child); const records = []; let pending = '';
     child.stdout.on('data', bytes => {
       pending += bytes.toString(); assert.ok(pending.length <= 128 * 1024);
@@ -164,6 +164,24 @@ try {
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
   client = await webClient(); ended = once(client.child, 'close'); client.child.kill('SIGTERM'); await ended;
   assert.equal(await readFile(join(config.workspace, 'web-proof'), 'utf8'), '网页终端中文\n', 'attaching again cannot replay a command');
+  const desktopClients = await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex', '-F', '#{client_pid}']);
+  client = await webClient();
+  client.child.stdin.write(JSON.stringify({ id: 1, action: 'resize', cols: 233, rows: 40, viewport: true }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 1 && item.ok));
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}']) === '233');
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-view-main', '-F', '#{client_pid}']), desktopClients);
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
+  const overlapping = await webClient();
+  overlapping.child.stdin.write(JSON.stringify({ id: 1, action: 'resize', cols: 233, rows: 40, viewport: true }) + '\n');
+  await eventually(() => overlapping.records.some(item => item.id === 1 && item.ok));
+  ended = once(client.child, 'close'); client.child.kill('SIGKILL'); await ended;
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-view-main', '-F', '#{client_pid}']), desktopClients);
+  ended = once(overlapping.child, 'close'); overlapping.child.kill('SIGKILL'); await ended;
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex', '-F', '#{client_pid}']) === desktopClients);
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'has-session', '-t', '=codex-view-main']).then(() => false, () => true));
+  const viewerLock = await lstat(join(config.runtime, 'view-main.lock')); assert.equal(viewerLock.size, 0); assert.equal(viewerLock.mode & 0o777, 0o600);
+  assert.equal(await readFile(join(config.workspace, 'web-proof'), 'utf8'), '网页终端中文\n');
   client = await webClient();
   const webTTY = (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_pid}\t#{client_tty}'])).split('\n');
   let targetTTY;

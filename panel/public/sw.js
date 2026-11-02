@@ -1,4 +1,4 @@
-const CACHE = 'codex-cloud-shell-0.2.0-terminal-history';
+const CACHE = 'codex-cloud-shell-0.2.0-terminal-width';
 const SHELL = ['/', '/app.js', '/shortcut-menu.js', '/shortcuts.js', '/styles.css', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL))));
 // Updates activate after old pages close. Never interrupt an active input with an automatic reload.

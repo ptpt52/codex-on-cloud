@@ -13,13 +13,14 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalMaxCols = 500 } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
   const clipboardReads = [];
   const clipboardText = { clipboard: '', primary: '' };
   const terminalInputs = [], terminalSizes = [], terminalHistoryReads = [], terminalChildren = new Set(); let terminalConnections = 0;
+  const terminalGeometry = { maxCols: terminalMaxCols };
   const files = new Map();
   const screenGeometry = { width: rfbSize?.width ?? 1600, height: rfbSize?.height ?? 1600 };
   const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0, viewportResizes: 0 };
@@ -187,13 +188,13 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
               emit({ type: 'history', id: value.id, offset: value.offset, next: value.offset + data.length, data: data.toString('base64'), done: value.offset + data.length === bytes.length,
                 alternate: false, truncated: source.length > 65536, ok: true }); return;
             }
-            if (value.action === 'resize') terminalSizes.push({ terminalId: target.terminalId, cols: value.cols, rows: value.rows });
+            if (value.action === 'resize') { terminalSizes.push({ terminalId: target.terminalId, cols: value.cols, rows: value.rows }); emit({ type: 'geometry', maxCols: value.viewport ? 500 : terminalGeometry.maxCols }); }
             else { const data = Buffer.from(value.data, 'base64'), text = data.toString(); terminalInputs.push({ terminalId: target.terminalId, text }); await terminalHook?.(text); for (let offset = 0; offset < data.length; offset += 8192) emit({ type: 'output', data: data.subarray(offset, offset + 8192).toString('base64') }); }
             emit({ type: 'result', id: value.id, ok: true });
           })();
         }
       });
-      setTimeout(() => { emit({ type: 'ready' }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); }, 10);
+      setTimeout(() => { emit({ type: 'ready' }); emit({ type: 'geometry', maxCols: terminalMaxCols }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); }, 10);
       return child;
     },
   };
@@ -217,7 +218,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalHistoryReads,
+    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalHistoryReads, terminalGeometry,
     get terminalConnections() { return terminalConnections; },
     get terminalChildren() { return [...terminalChildren]; },
     disconnectTerminals() { for (const child of [...terminalChildren]) child.kill(); },

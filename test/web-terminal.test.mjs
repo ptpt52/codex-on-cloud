@@ -80,9 +80,25 @@ test('terminal streaming accepts bounded sizes and UTF-8 input, rejects repeated
   assert.equal(app.terminalInputs.length, 1); assert.equal((await app.controls.get()).session.pid, 4000);
 });
 
+test('read-only geometry forwards bounded client limits, rejects malformed values and cannot cross takeover', async t => {
+  const app = await fixture({ terminalMaxCols: 122 }); t.after(() => app.close()); await app.login(); await app.claim();
+  let active = await connected(app); await until(() => active.records.some(value => value.type === 'ready'));
+  assert.equal(active.records.some(value => value.type === 'geometry'), false, 'legacy pages receive only known record types');
+  active.ws.send(JSON.stringify({ type: 'resize', id: 1, cols: 233, rows: 44, geometry: true }));
+  await until(() => active.records.some(value => value.type === 'geometry'));
+  assert.deepEqual(active.records.find(value => value.type === 'geometry'), { type: 'geometry', maxCols: 122 });
+  for (const maxCols of [0, 501, '122', 12.5]) {
+    const closed = once(active.ws, 'close');
+    app.terminalChildren[0].stdout.write(JSON.stringify({ type: 'geometry', maxCols }) + '\n'); await closed;
+    active = await connected(app); await until(() => active.records.some(value => value.type === 'ready'));
+  }
+  const revoked = once(active.ws, 'close'); await app.claim('22222222-2222-4222-8222-222222222222'); await revoked;
+  assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.terminalSizes, [{ terminalId: 'main', cols: 233, rows: 44 }]); assert.equal(app.managementStats.restarts, 0);
+});
+
 test('malformed, oversized and invalid output acknowledgments close the terminal without executing input', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
-  for (const value of ['not-json', JSON.stringify({ type: 'resize', id: 1, cols: 501, rows: 20 }), JSON.stringify({ type: 'ack', bytes: 999999 }), JSON.stringify({ type: 'input', id: 1, data: 'x'.repeat(8193) })]) {
+  for (const value of ['not-json', JSON.stringify({ type: 'resize', id: 1, cols: 501, rows: 20 }), JSON.stringify({ type: 'resize', id: 1, cols: 233, rows: 40, viewport: 'true' }), JSON.stringify({ type: 'ack', bytes: 999999 }), JSON.stringify({ type: 'input', id: 1, data: 'x'.repeat(8193) })]) {
     const { ws, records } = await connected(app); await until(() => records.some(item => item.type === 'ready'));
     const closed = once(ws, 'close'); ws.send(value); await closed;
   }

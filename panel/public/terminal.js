@@ -7,6 +7,7 @@ const terminalId = query.get('terminalId'), terminalToken = query.get('terminalT
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
 let blocked = true, busy = false, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
+let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let candidateController, probeTimer, probeNetworkCheck = false, probeDelay = 15000, directFailed = false, directIssue = '', networkDetails = null, statsPending = false;
@@ -65,12 +66,29 @@ function size() {
   if (stopped) return;
   layout = requestAnimationFrame(() => {
     if (stopped || !term || !fit || !host.clientWidth || !host.clientHeight) return;
-    term.options.fontSize = fontSize;
-    const proposed = fit.proposeDimensions(); if (!proposed) return;
-    const cols = Math.max(2, Math.min(500, proposed.cols)), rows = Math.max(1, Math.min(200, proposed.rows));
+    const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${devicePixelRatio}`;
+    if (key !== layoutKey || !fittedSize) {
+      term.options.fontSize = fontSize;
+      let proposed = fit.proposeDimensions(); if (!proposed) return;
+      // Enlarge the actual font instead of stretching a canvas: selection,
+      // pointer coordinates, IME and the equal-width grid keep working.
+      if (widthMode === 'scale' && proposed.cols > columnLimit) {
+        term.options.fontSize = Math.round(Math.min(fontSize * 4, fontSize * (proposed.cols + 1) / (columnLimit + 1)) * 10) / 10;
+        proposed = fit.proposeDimensions(); if (!proposed) return;
+      }
+      fittedSize = { cols: Math.max(2, Math.min(widthMode === 'scale' ? columnLimit : 500, proposed.cols)), rows: Math.max(1, Math.min(200, proposed.rows)), fontSize: term.options.fontSize };
+      layoutKey = key;
+    }
+    const { cols, rows } = fittedSize;
     term.resize(cols, rows);
-    if (ready && lastSize !== `${cols}:${rows}` && send({ type: 'resize', cols, rows })) lastSize = `${cols}:${rows}`;
-    if (lastReport !== `${cols}:${rows}`) { lastReport = `${cols}:${rows}`; parent.postMessage({ type: 'codex-terminal-size', frame, cols, rows }, location.origin); }
+    host.style.setProperty('--terminal-font-size', `${fittedSize.fontSize}px`);
+    host.style.setProperty('--terminal-font-family', term.options.fontFamily);
+    const screenHeight = host.querySelector('.xterm-screen')?.getBoundingClientRect().height;
+    if (screenHeight > 0) host.style.setProperty('--terminal-line-height', `${screenHeight / rows}px`);
+    const sizeKey = `${cols}:${rows}:${widthMode}`;
+    if (ready && lastSize !== sizeKey && send({ type: 'resize', cols, rows, geometry: true, viewport: widthMode === 'viewport' })) lastSize = sizeKey;
+    const reportKey = `${cols}:${rows}:${fittedSize.fontSize}`;
+    if (lastReport !== reportKey) { lastReport = reportKey; parent.postMessage({ type: 'codex-terminal-size', frame, ...fittedSize }, location.origin); }
   });
 }
 function raw(data) {
@@ -91,7 +109,7 @@ function createTerminal() {
   if (term) { size(); return; }
   host.replaceChildren();
   term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: 2000,
-    scrollOnUserInput: false, scrollOnEraseInDisplay: true,
+    scrollOnUserInput: false, scrollOnEraseInDisplay: false,
     cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: { background: '#151d1a', foreground: '#e7eee9', cursor: '#a8d8b7', selectionBackground: '#3e6652' } });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
   // Applications may not silently write the browser's clipboard via OSC 52.
@@ -182,6 +200,11 @@ function attachSocket(current) {
       return;
     }
     if (value.type === 'health' && ready) { health?.receive(value.nonce); void refreshNetwork(); return; }
+    if (value.type === 'geometry' && ready) {
+      if (!Number.isInteger(value.maxCols) || value.maxCols < 2 || value.maxCols > 500) return retire(current);
+      if (columnLimit !== value.maxCols) { columnLimit = value.maxCols; size(); }
+      return;
+    }
     if (value.type === 'history' && ready) {
       if (value.id !== historyPending?.id) { if (Number.isSafeInteger(value.id) && value.id <= historySequence) return; return retire(current); }
       if (value.ok !== true) { finishHistory(new Error('当前终端历史不可读取')); return; }
@@ -275,6 +298,7 @@ window.addEventListener('message', event => {
   if (value?.type === 'codex-desktop-options') {
     blocked = value.blocked !== false; busy = value.busy === true;
     if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) fontSize = value.terminalFontSize;
+    if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;
     inputState();
     if (typeof value.csrf === 'string' && value.csrf.length <= 256 && value.csrf && !csrf) { csrf = value.csrf; connect(); }
     size(); return;
@@ -294,6 +318,8 @@ window.addEventListener('message', event => {
   pending = { id, parentId: value.id };
 });
 new ResizeObserver(size).observe(host);
+document.fonts?.ready.then(() => { layoutKey = ''; size(); });
+document.fonts?.addEventListener('loadingdone', () => { layoutKey = ''; size(); });
 window.visualViewport?.addEventListener('resize', size);
 function resume(replaceConnecting = false) {
   inputState();

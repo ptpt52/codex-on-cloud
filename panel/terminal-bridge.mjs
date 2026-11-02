@@ -15,12 +15,13 @@ export function terminalPaste(text, bracketed) {
   return bracketed ? `\x1b[200~${clean}\x1b[201~` : clean;
 }
 export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env, valid, verify, readClipboard, launch }) {
-  const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken, '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
   let ended = false, ready = false, pending = '', outstanding = 0, sequence = 0, lastClientId = 0, busy = false;
   const requests = new Map(); // At most 64 streamed records / 64 KiB in the helper.
   let rawWindow = Date.now(), rawBytes = 0;
   let lastHealthNonce = 0, healthWindow = Date.now(), healthCount = 0;
   let historyBusy = false, historyAt = 0;
+  let geometryEnabled = false, geometryMaxCols;
   let pressureTimer, escapeTimer;
   const close = () => {
     if (ended) return;
@@ -59,6 +60,10 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       if (!value || typeof value !== 'object' || Array.isArray(value)) return close();
       if (!valid()) return close();
       if (value.type === 'ready' && !ready) { ready = true; clearTimeout(startTimer); send({ type: 'ready' }); }
+      else if (value.type === 'geometry' && ready && Number.isInteger(value.maxCols) && value.maxCols >= 2 && value.maxCols <= 500) {
+        geometryMaxCols = value.maxCols;
+        if (geometryEnabled) send({ type: 'geometry', maxCols: geometryMaxCols });
+      }
       else if (value.type === 'output' && typeof value.data === 'string' && value.data.length <= 11000) {
         const size = Buffer.from(value.data, 'base64').length; outstanding += size;
         if (outstanding > 192 * 1024) return close();
@@ -103,8 +108,13 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
         historyBusy = true; command('history', { offset: value.offset }, value.id, true); return;
       }
       if (value.type === 'resize') {
-        if (!Number.isInteger(value.cols) || !Number.isInteger(value.rows) || value.cols < 2 || value.cols > 500 || value.rows < 1 || value.rows > 200) return close();
-        command('resize', { cols: value.cols, rows: value.rows }); return;
+        if (!Number.isInteger(value.cols) || !Number.isInteger(value.rows) || value.cols < 2 || value.cols > 500 || value.rows < 1 || value.rows > 200 || (value.geometry !== undefined && value.geometry !== true) || (value.viewport !== undefined && typeof value.viewport !== 'boolean')) return close();
+        // Existing pages never receive an unsolicited record they cannot parse.
+        if (value.geometry === true && !geometryEnabled) {
+          geometryEnabled = true;
+          if (geometryMaxCols !== undefined) send({ type: 'geometry', maxCols: geometryMaxCols });
+        }
+        command('resize', { cols: value.cols, rows: value.rows, viewport: value.viewport === true }); return;
       }
       if (value.type === 'input') {
         if (typeof value.data !== 'string' || !value.data || Buffer.byteLength(value.data) > 8192) return close();

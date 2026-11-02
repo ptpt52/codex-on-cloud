@@ -31,7 +31,7 @@ $('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalInputCollapsed: true };
+const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport', terminalInputCollapsed: true };
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
 const followsViewport = () => displayPreferences.autoResolution;
@@ -49,6 +49,7 @@ try {
         if (typeof value.keepAwake === 'boolean') displayPreferences.keepAwake = value.keepAwake;
         if (['desktop', 'terminal'].includes(value.mode)) displayPreferences.mode = value.mode;
         if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) displayPreferences.terminalFontSize = value.terminalFontSize;
+        if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) displayPreferences.terminalWidthMode = value.terminalWidthMode;
         if (typeof value.terminalInputCollapsed === 'boolean') displayPreferences.terminalInputCollapsed = value.terminalInputCollapsed;
       }
     }
@@ -58,7 +59,7 @@ function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    ...(terminalMode() ? { csrf, terminalFontSize: displayPreferences.terminalFontSize } : {}),
+    ...(terminalMode() ? { csrf, terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
     busy: inputBusy || terminalBusy || $('terminals-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
@@ -69,6 +70,10 @@ function renderDisplayControls() {
   $('fullscreen-button').setAttribute('aria-label', terminalMode() ? '全屏终端' : '全屏桌面');
   $('terminal-view-controls').hidden = !terminalMode();
   $('terminal-font-label').textContent = String(displayPreferences.terminalFontSize);
+  const fittedFont = terminalGeometry?.fontSize;
+  $('terminal-font-label').title = displayPreferences.terminalWidthMode === 'scale' && fittedFont > displayPreferences.terminalFontSize
+    ? `基础字号 ${displayPreferences.terminalFontSize}，适应宽度后为 ${fittedFont}` : `字号 ${displayPreferences.terminalFontSize}`;
+  $('terminal-width-mode').value = displayPreferences.terminalWidthMode;
   $('terminal-font-down').disabled = displayPreferences.terminalFontSize <= 10; $('terminal-font-up').disabled = displayPreferences.terminalFontSize >= 28;
   renderWakeStatus();
   $('auto-resolution').checked = followsViewport();
@@ -721,6 +726,7 @@ for (const mode of ['desktop', 'terminal']) $(`${mode}-mode`).addEventListener('
 $('terminal-view-select').addEventListener('change', () => { closeConfirmation(); selectedTerminal = $('terminal-view-select').value; renderTerminalList(); syncTerminalView(); });
 $('terminal-font-down').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.max(10, displayPreferences.terminalFontSize - 1) }));
 $('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));
+$('terminal-width-mode').addEventListener('change', () => updateDisplayPreferences({ terminalWidthMode: $('terminal-width-mode').value }));
 $('login-form').addEventListener('submit', event => {
   event.preventDefault();
   void action($('login-button'), async () => {
@@ -1037,7 +1043,8 @@ window.addEventListener('message', event => {
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-terminal-size' && terminalMode()) {
-    if (Number.isInteger(event.data.cols) && Number.isInteger(event.data.rows) && event.data.cols >= 2 && event.data.cols <= 500 && event.data.rows >= 1 && event.data.rows <= 200) terminalGeometry = { cols: event.data.cols, rows: event.data.rows };
+    if (Number.isInteger(event.data.cols) && Number.isInteger(event.data.rows) && event.data.cols >= 2 && event.data.cols <= 500 && event.data.rows >= 1 && event.data.rows <= 200) terminalGeometry = { cols: event.data.cols, rows: event.data.rows,
+      fontSize: Number.isFinite(event.data.fontSize) && event.data.fontSize >= 10 && event.data.fontSize <= 112 ? event.data.fontSize : displayPreferences.terminalFontSize };
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-terminal-history' && terminalMode() && typeof event.data.reviewing === 'boolean') {

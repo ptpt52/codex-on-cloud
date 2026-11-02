@@ -8,10 +8,9 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   let archiveOpen = false, archiveAlternate = false, archiveTruncated = false;
   const listeners = [], subscriptions = [];
   const listen = (target, name, handler, options) => { target.addEventListener(name, handler, options); listeners.push(() => target.removeEventListener(name, handler, options)); };
-  // tmux already owns the application's normal/alternate screens. Keep its
-  // outer client in the browser's normal buffer so scrolled rows are retained.
-  for (const final of ['h', 'l']) subscriptions.push(term.parser.registerCsiHandler({ prefix: '?', final }, params =>
-    params.length > 0 && params.every(value => [47, 1047, 1049].includes(value))));
+  // Respect alternate screens. Treating tmux's cursor-addressed redraws as
+  // ordinary scrollback mixes screen fragments into the history. Its alternate
+  // buffer has no scrollback, so an upward gesture reads one bounded snapshot.
   function update() {
     if (disposed) return;
     const buffer = term.buffer.active, next = archiveOpen || !!loading || buffer.viewportY < buffer.baseY;
@@ -20,7 +19,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     up.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop === 0 : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program;
-    state.textContent = loading ? '正在按需补取历史，最多 64 KiB…' : archiveOpen ? archiveAlternate ? '全屏程序快照；应用历史请开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 64 KiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : '本地回看；滚到顶部可按需补取历史');
+    state.textContent = loading ? '正在按需补取历史，最多 64 KiB…' : archiveOpen ? archiveAlternate ? '全屏程序快照；应用历史请开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 64 KiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     host.dataset.reviewing = String(reviewing);
     if (different) changed(reviewing);
   }
