@@ -14,6 +14,7 @@ import { validateInput } from '../native/input.mjs';
 import { clipboardSource } from '../native/clipboard.mjs';
 import { terminalTarget } from '../native/terminals.mjs';
 import { attachTerminal } from './terminal-bridge.mjs';
+import { attachRTCTerminal } from './rtc-terminal.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
@@ -36,6 +37,7 @@ const ASSETS = new Map([
   ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
   ['/terminal/terminal.js', ['terminal.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal-health.js', ['terminal-health.js', 'text/javascript; charset=utf-8']],
+  ['/terminal/terminal-rtc.js', ['terminal-rtc.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal.css', ['terminal.css', 'text/css; charset=utf-8']],
   ['/terminal/xterm.js', ['../../node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
   ['/terminal/fit.js', ['../../node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
@@ -120,6 +122,14 @@ export async function createPanel(config) {
     try { const status = await managerRequest(config, '/status', undefined, 1500); return { ...status, maintenance: maintenancePending || status.maintenance }; }
     catch { return { available: false, maintenance: maintenancePending, inputBusy: false }; }
   }
+  async function terminalAvailable(target) {
+    const catalog = await managerRequest(config, '/terminals');
+    return catalog.terminals.some(item => item.id === target.terminalId && item.token === target.terminalToken && item.supported);
+  }
+  const terminalOptions = (target, valid) => ({ ...target, socketPath: config.terminalSocket, env: config.terminalEnv, valid,
+    verify: () => terminalAvailable(target),
+    readClipboard: async () => { const result = await managerRequest(config, '/clipboard', { source: 'clipboard' }); if (!valid()) throw new Error('控制权已变化'); return result.text; },
+    launch: config.terminalLaunch ? () => config.terminalLaunch(target) : undefined });
   function closeSockets(predicate) {
     for (const [socket, state] of sockets) if (predicate(state)) socket.destroy();
   }
@@ -240,12 +250,18 @@ export async function createPanel(config) {
       owner = { viewer, session: session.hash };
       return reply(res, 200, { ok: true });
     }
-    if (path === '/api/desktop/rtc' && req.method === 'POST') {
+    if (['/api/desktop/rtc', '/api/terminal/rtc'].includes(path) && req.method === 'POST') {
+      const terminalMode = path === '/api/terminal/rtc';
       const expected = owner;
       const body = await ownedBody(req, 48 * 1024);
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
       let offer;
       try { offer = rtcOffer(body, { ipv6: config.webrtcIPv6 === true }); } catch (error) { throw new HttpError(400, error.message); }
+      let target;
+      if (terminalMode) {
+        try { target = terminalTarget(body); if (!target.terminalId) throw new Error(); }
+        catch { throw new HttpError(400, '终端目标无效'); }
+      }
       if (rtcBusy) throw new HttpError(429, '连接协商正在进行');
       rtcBusy = true;
       let bridge;
@@ -255,6 +271,9 @@ export async function createPanel(config) {
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         if (!controls.available || controls.maintenance || maintenancePending) throw new HttpError(503, '桌面暂不可连接');
+        if (terminalMode && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
+        requireOwner(req);
+        if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         // A candidate may negotiate while the current stream stays usable.
         closeSockets(state => state.rtcPending === true);
         await rtcClosing;
@@ -262,10 +281,15 @@ export async function createPanel(config) {
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         const token = cookieToken(req.headers.cookie);
         const state = { session: expected.session, token, socket: null, rtcPending: true };
+        let terminalSession;
+        if (terminalMode) state.inputIdle = () => terminalSession?.idle === true;
         const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state;
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
         bridge = createRTCBridge({ address, ipv6Address, vncSocket: config.vncSocket, valid,
+          ...(terminalMode ? { connectTerminal: (channel, authorized, fail) => {
+            terminalSession = attachRTCTerminal(channel, terminalOptions(target, authorized), fail); return terminalSession;
+          } } : {}),
           performControl: async (action, body, live) => {
             if (!valid()) throw new HttpError(409, '页面控制权已变化，本次操作未发送');
             if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, '控制参数无效');
@@ -273,13 +297,16 @@ export async function createPanel(config) {
             if (action === 'activate') {
               if (!state.rtcPending) return { active: true };
               const current = await controlStatus();
+              if (terminalMode && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
               if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化');
               if (!current.available || current.maintenance || current.inputBusy || current.clipboardBusy || current.viewportBusy) throw new HttpError(409, '当前操作未结束，暂不切换连接');
+              for (const value of sockets.values()) if (value !== state && value.inputIdle && !value.inputIdle()) throw new HttpError(409, '终端输入尚未完成，暂不切换连接');
               closeSockets(value => value.socket !== bridge);
               state.rtcPending = false;
               bridge.activate();
               return { active: true };
             }
+            if (terminalMode) throw new HttpError(400, '文字输入需通过终端通道执行');
             if (state.rtcPending) throw new HttpError(409, '直连尚未启用，本次操作未发送');
             if (action === 'clipboard') {
               const source = clipboardSource(body.source);
@@ -409,14 +436,12 @@ export async function createPanel(config) {
       let target;
       try { target = terminalTarget({ terminalId: url.searchParams.get('terminalId'), terminalToken: url.searchParams.get('terminalToken') }); }
       catch { return deny(400); }
-      const currentTarget = async () => {
-        const catalog = await managerRequest(config, '/terminals');
-        return catalog.terminals.some(item => item.id === target.terminalId && item.token === target.terminalToken && item.supported);
-      };
+      const currentTarget = () => terminalAvailable(target);
       if (!await currentTarget()) return deny(409);
       if (owner !== expected || !sessionOf(req) || closing || maintenancePending || socket.destroyed) return deny(409);
       closeSockets(state => state.socket !== socket);
       const state = { session: session.hash, token: cookieToken(req.headers.cookie), socket };
+      let terminalSession; state.inputIdle = () => terminalSession?.idle === true;
       sockets.set(socket, state); socket.once('close', () => sockets.delete(socket));
       const valid = () => owner === expected && sockets.get(socket) === state && !!auth.get(state.token) && !closing && !maintenancePending;
       terminalWss.handleUpgrade(req, socket, head, ws => {
@@ -427,9 +452,7 @@ export async function createPanel(config) {
           let first;
           try { if (binary || bytes.length > 1024) throw new Error(); first = JSON.parse(bytes.toString('utf8')); } catch { return ws.terminate(); }
           if (!valid() || first?.type !== 'auth' || typeof first.csrf !== 'string' || !equal(first.csrf, session.csrf)) return ws.terminate();
-          attachTerminal(ws, { ...target, socketPath: config.terminalSocket, env: config.terminalEnv, valid, verify: currentTarget,
-            readClipboard: async () => { const result = await managerRequest(config, '/clipboard', { source: 'clipboard' }); if (!valid()) throw new Error('控制权已变化'); return result.text; },
-            launch: config.terminalLaunch ? () => config.terminalLaunch(target) : undefined });
+          terminalSession = attachTerminal(ws, terminalOptions(target, valid));
         });
       });
       return;

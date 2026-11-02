@@ -19,7 +19,7 @@ export function rtcAddress(explicit) {
   return addresses.find(address => privateIPv4(address) && !address.startsWith('127.')) || '127.0.0.1';
 }
 
-export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl }) {
+export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl, connectTerminal }) {
   const allowed = host => peerAddress(host, !!ipv6Address);
   const pc = new RTCPeerConnection({
     iceServers: [], iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
@@ -28,7 +28,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host),
     maxMessageSize: MAX_MESSAGE,
   });
-  let channel, control, health, upstream, ended = false, closePromise, activated = false, videoReady = false, openVideo;
+  let channel, control, health, upstream, terminal, ended = false, closePromise, activated = false, videoReady = false, openVideo;
   let timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
   const handle = {
     activate() {
@@ -45,6 +45,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
       clearTimeout(timer);
       control?.close();
       health?.close();
+      terminal?.close();
       upstream?.destroy();
       closed();
       closePromise = pc.close().catch(() => {});
@@ -76,7 +77,9 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
       control = attachRTCControl(value, { valid: authorized, perform: performControl });
       return;
     }
-    if (channel || !authorized() || value.label !== 'codex-vnc' || !['rfb', 'rfb-ready-v1'].includes(value.protocol) || !value.ordered ||
+    const streamValid = connectTerminal ? value.label === 'codex-terminal' && value.protocol === 'terminal-v1'
+      : value.label === 'codex-vnc' && ['rfb', 'rfb-ready-v1'].includes(value.protocol);
+    if (channel || !authorized() || !streamValid || !value.ordered ||
         value.maxRetransmits != null || value.maxPacketLifeTime != null) { void handle.destroy(); return; }
     channel = value;
     videoReady = value.protocol === 'rfb'; // Old clients retain their original protocol until refreshed.
@@ -93,6 +96,10 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
         openVideo();
         return; // The fixed readiness byte never reaches VNC.
       }
+      if (connectTerminal) {
+        if (!activated || !authorized() || !terminal || !Buffer.isBuffer(bytes) || bytes.length > 16384) { void handle.destroy(); return; }
+        terminal.receive(bytes); return;
+      }
       if (!activated || !authorized() || !Buffer.isBuffer(bytes) || bytes.length > MAX_MESSAGE || !upstream || upstream.writableLength + bytes.length > HIGH_WATER) {
         void handle.destroy(); return;
       }
@@ -100,6 +107,11 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     });
     openVideo = () => {
       if (!activated || !videoReady || channel.readyState !== 'open') return;
+      if (connectTerminal) {
+        if (!authorized() || terminal) { void handle.destroy(); return; }
+        terminal = connectTerminal(channel, authorized, () => { void handle.destroy(); });
+        clearTimeout(timer); return;
+      }
       if (!authorized() || upstream) { void handle.destroy(); return; }
       upstream = net.createConnection({ path: vncSocket, highWaterMark: MAX_MESSAGE });
       upstream.once('connect', () => clearTimeout(timer));

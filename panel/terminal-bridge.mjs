@@ -32,7 +32,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   const startTimer = setTimeout(close, 4500).unref();
   let alive = true;
   ws.on('pong', () => { alive = true; });
-  const heartbeat = setInterval(() => { if (!alive || !valid()) return close(); alive = false; ws.ping(); }, 15000).unref();
+  const heartbeat = ws.ping ? setInterval(() => { if (!alive || !valid()) return close(); alive = false; ws.ping(); }, 15000).unref() : undefined;
   let checking = false;
   const guard = setInterval(() => {
     if (checking || ended) return;
@@ -121,5 +121,5 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   });
   for (const stream of [child, child.stdin, child.stdout]) stream.on('error', close);
   child.once('close', close); ws.once('close', close); ws.once('error', close);
-  return { close };
+  return { close, get idle() { return !ended && ready && !busy && requests.size === 0; } };
 }

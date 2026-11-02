@@ -23,7 +23,7 @@ async function until(probe) { for (let i = 0; i < 150; i++) { if (probe()) retur
 
 test('terminal assets and WebSockets authenticate Host, Origin, viewer, target token and a CSRF handshake before launching a PTY', async t => {
   const app = await fixture(); t.after(() => app.close());
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
   assert.equal(await denied(app), 401); await app.login(); assert.equal(await denied(app), 409); await app.claim();
   for (const headers of [{ origin: 'https://evil.test' }, { host: 'evil.test', origin: 'http://evil.test' }]) assert.equal(await denied(app, {}, headers), 403);
   assert.equal(await denied(app, { terminalId: '../main' }), 400); assert.equal(await denied(app, { terminalToken: '%0:9999' }), 409);

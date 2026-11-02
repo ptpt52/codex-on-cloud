@@ -7,7 +7,7 @@ export function canTryDirect() { return enabled && window.isSecureContext && !!w
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {} } = {}) {
+export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal } = {}) {
   if (signal?.aborted) return null;
   if (!canTryDirect()) { failed('unsupported'); return null; }
   const controller = new AbortController();
@@ -33,7 +33,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       controlChanged(value);
     });
     const health = createHealthClient(peer.createDataChannel('codex-health', { ordered: true, protocol: 'codex-health-v1' }));
-    const video = () => channel ||= peer.createDataChannel('codex-vnc', { ordered: true, protocol: 'rfb-ready-v1' });
+    const video = () => channel ||= peer.createDataChannel(terminal ? 'codex-terminal' : 'codex-vnc', { ordered: true, protocol: terminal ? 'terminal-v1' : 'rfb-ready-v1' });
     const viewerReady = () => {
       // Register after noVNC has attached its open handler. The server must not
       // send the RFB greeting before the browser has initialized that handler.
@@ -60,9 +60,9 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       try {
         await peer.setLocalDescription(await peer.createOffer());
         await gatherCandidates(peer, controller.signal);
-        const result = await fetch('/api/desktop/rtc', { method: 'POST', signal: controller.signal,
+        const result = await fetch(terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
-          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp }),
+          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}) }),
         });
         if (!result.ok) throw new Error('直连暂不可用');
         await peer.setRemoteDescription(await result.json());

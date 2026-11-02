@@ -57,7 +57,7 @@ systemctl --user restart codex-cloud-panel.service
 
 协商接口要求有效登录、Host、Origin、CSRF 及当前页面控制权。延迟请求体、协商过程中发生接管或退出均不能获得旧控制权。WebRTC 与 WebSocket 共用单一画面连接、退出、登录到期、接管和桌面维护的关闭机制；数据转发前再次检查授权，不将 Cookie 或 CSRF 发给 VNC。
 
-只接受一个 data m-section、有 SHA-256 指纹的 SDP；请求体最多 48 KiB，SDP 最多 32 KiB，最多保留 8 个去重 UDP 候选，两族均存在时各预留 4 个。允许私有 IPv4/mDNS host，以及启用 IPv6 时的普通公网 IPv6 host/srflx；去除 remote-candidates。候选配对及实际探测来源再次过滤，拒绝公网 IPv4、特殊 IPv6 和 relay。只允许各一个可靠、有序的 `codex-vnc`、`codex-control` 和 `codex-health` 数据通道，不接受媒体或任意代理目标。兼容没有心跳通道的旧客户端，主动心跳需刷新页面加载新版本。
+只接受一个 data m-section、有 SHA-256 指纹的 SDP；请求体最多 48 KiB，SDP 最多 32 KiB，最多保留 8 个去重 UDP 候选，两族均存在时各预留 4 个。允许私有 IPv4/mDNS host，以及启用 IPv6 时的普通公网 IPv6 host/srflx；去除 remote-candidates。候选配对及实际探测来源再次过滤，拒绝公网 IPv4、特殊 IPv6 和 relay。桌面连接只允许各一个可靠、有序的 `codex-vnc`、`codex-control` 和 `codex-health` 数据通道；文字终端连接用独立的 `codex-terminal` 取代 VNC，不接受媒体或任意代理目标。兼容没有心跳通道的旧桌面客户端，主动心跳需刷新页面加载新版本。
 
 公网 UDP 接收入口在固定版本 ICE agent 处理消息前验证会话、原始 STUN HMAC 与双方 ufrag，拒绝无凭据探测和未知端点的数据。每个 peer 的检查限制为每秒窗口 64 次、STUN 报文 2 KiB、最多 16 个已认证来源及 16 条 early checks；不写入日志或磁盘。
 
@@ -94,6 +94,10 @@ systemctl --user restart codex-cloud-panel.service
 连接状态中的“直连网络”显示实际选中 candidate pair 的 IPv4/IPv6 和 UDP，“直连两端”显示地址及端口，“直连往返”显示 ICE RTT。浏览器隐藏的地址明确标为隐藏，不从其他候选推测。路径在连接和成功心跳后更新，最多一个在途 stats 请求；换流、断线或接管丢弃旧详情。只保存一份内存状态，不记录 SDP、候选历史或地址日志。“直连检测”显示最近一次协商、心跳或连接失败，不将所有失败都断言为防火墙阻断。
 
 ## 验证与后续
+
+网页终端也使用同一套 IPv4/IPv6 候选、HTTPS 指纹认证与 DTLS 加密。`/api/terminal/rtc` 必须携带当前终端槽和 pane ID / PID token，并在启用时重新校验；专用 `codex-terminal` / `terminal-v1` 通道传输原有终端 JSON，记录最多 256 KiB、按 16 KiB 分块，沿用 PTY 背压、固定按键、保护粘贴与独立 Enter。该连接的控制通道只接受 `ping` 和 `activate`，不执行桌面输入；探测及未启用通道不附加 PTY。浏览器安装收包器并发送固定单字节 `0`、服务端确认启用后，才连接原有 tmux 任务。
+
+文字终端直连失败回退现有 WSS，中转期间按 15/30/60 秒持续探测，网络变化后约 1 秒提前探测。切换前还需结束中文组合输入、释放按键和指针、最近 800 毫秒没有交互，且父页面没有输入、确认框或其他阻塞操作；服务端也要求旧终端在途请求已清空。启用失败保留仍可用的旧流，失效输入标为未知且不补发。前台应用心跳继续按 3 秒间隔、2 秒期限检查；隐藏时暂停，离线主动释放附加客户端，上线后先恢复 WSS 再探测直连，原 tmux 任务保持运行。连接诊断同时显示文字终端实际路径、延迟与回退原因。
 
 自动化测试使用真实 Chrome、noVNC、WebRTC、DTLS 和 UDP，桌面源为模拟 RFB；检查加密状态、无需 WebSocket 的画面、接管、草稿保留和故障回退。Node 测试覆盖协商认证、延迟请求、候选与大小限制。这些测试不能代替另一台 LAN 设备的验收。
 
