@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
+import { join } from 'node:path';
 import { fixture } from './fixture.mjs';
 import { validateInput } from '../native/input.mjs';
 
@@ -36,7 +37,10 @@ test('three independent auxiliary slots keep literal names, survive repeated rea
   assert.deepEqual(await listed(app), before);
   assert.equal(calls.filter(item => item.args.includes('new-session')).length, 3);
   assert.equal(calls.find(item => item.args.includes('set-option')).args.at(-1), label);
-  assert.equal(calls.filter(item => item.args.includes('new-session')).every(item => item.args.at(-1) === 'bash --noprofile --norc -i'), true);
+  for (const call of calls.filter(item => item.args.includes('new-session'))) {
+    assert.deepEqual(call.args.slice(-2), ['bash', join(app.directory, 'desktop', 'codex-session')]);
+    assert.equal(call.args[call.args.indexOf('-c') + 1], '/test-workspace');
+  }
   assert.equal((await (await app.request('/api/desktop/settings')).json()).session, null);
   assert.equal(app.managementStats.restarts, 0); assert.equal(original.session.pid, 4000);
 });
