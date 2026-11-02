@@ -235,7 +235,7 @@ function renderInputControls() {
   $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= 4;
   $('refresh-terminals').disabled = !loggedIn || terminalBusy;
   $('paste-target').disabled = !!selectedTerminal;
-  $('desktop-mode').disabled = $('terminal-mode').disabled = inputBusy || terminalBusy || settingsBusy || maintenancePending || !!confirmation;
+  $('desktop-mode').disabled = $('terminal-mode').disabled = modeChangeBusy() || !!confirmation;
   $('terminal-view-select').disabled = !canManageTerminals();
   $('terminal-view-manage').disabled = !canManageTerminals();
   sendDisplayPreferences();
@@ -529,6 +529,7 @@ function confirmationValid(pending) {
   if (!loggedIn || accessExpired || pending.generation !== uiGeneration) return false;
   if (pending.kind === 'logout') return true;
   if (pending.epoch !== frameEpoch || pending.frameState !== frameState || pending.owned !== owned) return false;
+  if (pending.kind === 'mode') return !document.hidden && pending.body?.from === displayPreferences.mode && ['desktop', 'terminal'].includes(pending.body.mode) && pending.body.mode !== displayPreferences.mode && !modeChangeBusy();
   if (pending.destination && JSON.stringify(pending.destination) !== JSON.stringify(inputDestination(false))) return false;
   if (pending.kind === 'terminal-open' && !terminalCatalog.some(item => item.id === pending.body?.terminalId && item.token === pending.body.terminalToken && item.supported)) return false;
   if (['terminal-open', 'terminal-create'].includes(pending.kind)) return canManageTerminals();
@@ -555,6 +556,7 @@ function requestConfirmation(kind, key, body) {
     shortcut: shortcut ? [`发送 ${shortcut.key}？`, shortcut.description, `发送 ${shortcut.key}`] : null,
     'terminal-create': ['新建辅助终端？', `将创建并打开“${body?.name}”，原有任务继续运行。`, '确认新建'],
     'terminal-open': ['切换远程终端？', '将打开或切换到所选终端，并将输入助手的目标设为该终端。原有任务继续运行。', '确认切换'],
+    mode: [`切换到${body?.mode === 'terminal' ? '网页终端' : '桌面'}？`, '切换后会重新建立连接。当前任务继续运行，输入草稿会保留，已发送的输入不会重发。', '确认切换'],
   }[kind];
   if (!copy) return;
   confirmation = pending;
@@ -587,6 +589,7 @@ $('accept-confirmation').addEventListener('click', () => {
   });
   if (pending.kind === 'reconnect') return void action($('reconnect-button'), claim);
   if (pending.kind === 'terminal') return void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话');
+  if (pending.kind === 'mode') return changeMode(pending.body.mode);
   if (['terminal-create', 'terminal-open'].includes(pending.kind)) return void manageTerminals(pending.body);
   if (pending.kind === 'interrupt') void inputAction('/api/key', { key: 'Ctrl+C' }, '发送中断', 'Ctrl C 已发送', pending.destination);
   if (pending.kind === 'shortcut' && SHORTCUT_BY_KEY.get(pending.key)?.confirm) void inputAction('/api/key', { key: pending.key }, '发送按键', `${pending.key} 已发送`, pending.destination);
@@ -701,16 +704,20 @@ function syncTerminalView() {
   if (frameLoaded && frameTerminalKey === `${terminal.id}:${terminal.token}`) return;
   stopFrame(); openFrame(); renderConnection();
 }
+function modeChangeBusy() {
+  return inputBusy || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || transportSwitching || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy;
+}
 function changeMode(mode) {
-  if (!['desktop', 'terminal'].includes(mode) || mode === displayPreferences.mode || inputBusy || terminalBusy || settingsBusy || confirmation) return;
+  if (!['desktop', 'terminal'].includes(mode) || mode === displayPreferences.mode || modeChangeBusy() || confirmation) return;
   shortcutMenu.close(); closeConfirmation(); stopFrame();
   if (mode === 'terminal' && !selectedTerminal) selectedTerminal = 'main';
   updateDisplayPreferences({ mode }); renderTerminalList(); openFrame();
   if (mode === 'terminal' && !frameLoaded) void loadTerminals();
   renderConnection();
 }
-$('desktop-mode').addEventListener('click', () => changeMode('desktop'));
-$('terminal-mode').addEventListener('click', () => changeMode('terminal'));
+for (const mode of ['desktop', 'terminal']) $(`${mode}-mode`).addEventListener('click', () => {
+  if (mode !== displayPreferences.mode) requestConfirmation('mode', null, { from: displayPreferences.mode, mode });
+});
 $('terminal-view-select').addEventListener('change', () => { closeConfirmation(); selectedTerminal = $('terminal-view-select').value; renderTerminalList(); syncTerminalView(); });
 $('terminal-font-down').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.max(10, displayPreferences.terminalFontSize - 1) }));
 $('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));

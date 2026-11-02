@@ -56,7 +56,7 @@ async function login(page, app, target = 'main') {
   await expect(page.locator('#connection-status')).toContainText('桌面在线'); await expect(page.locator('#terminal-mode')).toBeEnabled();
   await page.locator('#mobile-input').fill('网络恢复后仍保留这段草稿');
   if (target !== 'main') await page.locator('#input-terminal').selectOption(target);
-  await page.locator('#terminal-mode').click(); await expect(page.locator('#connection-status')).toContainText('终端在线');
+  await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click(); await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
 async function online(page) { await expect(page.locator('#connection-status')).toContainText('终端在线', { timeout: 15000 }); }
@@ -99,7 +99,7 @@ test('network event bursts preserve a new connection while its terminal handshak
   try {
     await instrument(page, true);
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
-    await expect(page.locator('#connection-status')).toContainText('桌面在线'); await page.locator('#terminal-mode').click();
+    await expect(page.locator('#connection-status')).toContainText('桌面在线'); await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click();
     await expect.poll(() => page.frames().find(frame => frame.url().includes('/terminal/index.html'))?.url()).toBeTruthy();
     const frame = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
     await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.startup.length)).toBeGreaterThan(0);

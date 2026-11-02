@@ -5,7 +5,7 @@ async function login(page, app) {
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线'); await expect(page.locator('#terminal-mode')).toBeEnabled();
 }
-async function terminal(page) { await page.locator('#terminal-mode').click(); await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#input-dock')).toBeHidden(); }
+async function terminal(page) { await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click(); await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#input-dock')).toBeHidden(); }
 
 test('text mode shares the original task, uses native terminal input and separate paste/Enter, fits the viewport and returns to the desktop', async ({ page }, info) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, viewport: true });
@@ -32,7 +32,7 @@ test('text mode shares the original task, uses native terminal input and separat
     await page.locator('#terminal-font-up').click(); await expect(page.locator('#terminal-font-label')).toHaveText('16');
     await page.screenshot({ path: `test-results/${info.project.name}-web-terminal.png` });
     expect((await app.controls.get()).actual).toEqual({ width: 640, height: 480 }); expect(app.managementStats.restarts).toBe(0);
-    await page.locator('#desktop-mode').click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await page.locator('#desktop-mode').click(); await page.locator('#accept-confirmation').click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toBeVisible();
     expect((await app.controls.get()).session.pid).toBe(4000); await expect(page.locator('#mobile-input')).toHaveValue('中文\n第二行');
   } finally { await app.close(); }
