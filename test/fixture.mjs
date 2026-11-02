@@ -13,7 +13,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalMaxCols = 500 } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500 } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -184,12 +184,13 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
             if (value.action === 'history') {
               terminalHistoryReads.push({ terminalId: target.terminalId, offset: value.offset }); if (terminalHistoryReads.length > 128) terminalHistoryReads.shift();
               await terminalHistoryHook?.(value.offset);
-              const source = Buffer.from(value.styled ? terminalHistory : terminalHistory.replace(/\x1b\[[\d;:]*m/g, ''));
+              const historyText = typeof terminalHistory === 'function' ? terminalHistory() : terminalHistory;
+              const source = Buffer.from(value.styled ? historyText : historyText.replace(/\x1b\[[\d;:]*m/g, ''));
               let bytes = source.subarray(-65536);
               if (value.styled && source.length > 65536) { const boundary = bytes.indexOf(10); if (boundary >= 0 && boundary < bytes.length - 1) bytes = bytes.subarray(boundary + 1); }
               const data = bytes.subarray(value.offset, value.offset + 8192);
               emit({ type: 'history', id: value.id, offset: value.offset, next: value.offset + data.length, data: data.toString('base64'), done: value.offset + data.length === bytes.length,
-                alternate: false, truncated: source.length > 65536, styled: value.styled === true, ok: true }); return;
+                alternate: terminalHistoryAlternate, truncated: source.length > 65536, styled: value.styled === true, ok: true }); return;
             }
             if (value.action === 'resize') { terminalSizes.push({ terminalId: target.terminalId, cols: value.cols, rows: value.rows }); emit({ type: 'geometry', maxCols: value.viewport ? 500 : terminalGeometry.maxCols }); }
             else { const data = Buffer.from(value.data, 'base64'), text = data.toString(); terminalInputs.push({ terminalId: target.terminalId, text }); await terminalHook?.(text); for (let offset = 0; offset < data.length; offset += 8192) emit({ type: 'output', data: data.subarray(offset, offset + 8192).toString('base64') }); }

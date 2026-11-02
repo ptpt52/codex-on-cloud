@@ -32,7 +32,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     up.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program;
-    let label = loading ? '正在按需补取历史，最多 64 KiB…' : archiveOpen ? archiveAlternate ? '全屏程序快照；应用历史请开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 64 KiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
+    let label = loading ? '正在按需补取历史，最多 64 KiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 64 KiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 64 KiB）' : ''}`;
     if (reviewing && unseen) label += ' · 有新输出';
@@ -117,7 +117,13 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
       }
     } finally { copying = false; updateTools(); }
   }
-  async function fetchHistory() {
+  function rowHeight() { return Math.max(1, parseFloat(getComputedStyle(archive).lineHeight) || host.clientHeight / term.rows); }
+  function buttonLines() { return Math.max(1, Math.min(3, Math.floor((archiveOpen ? archive.clientHeight : host.clientHeight) / rowHeight() / 2))); }
+  function distance(fullPage = false) {
+    const line = rowHeight();
+    return fullPage ? Math.max(line, (archiveOpen ? archive.clientHeight : host.clientHeight) - line) : buttonLines() * line;
+  }
+  async function fetchHistory(back = distance()) {
     if (loading || !allowed()) return;
     const controller = loading = new AbortController(); notice = ''; update();
     try {
@@ -127,17 +133,21 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
       const parsed = parseHistoryStyles(value.text || '', archiveStyled);
       view = { parsed, text: parsed.runs.map(run => run.text).join('') }; archiveSimplified = parsed.simplified; search();
       archiveAlternate = value.alternate; archiveTruncated = value.truncated;
-      archiveOpen = true; archive.hidden = false; archive.scrollTop = Math.max(0, archive.scrollHeight - archive.clientHeight * 2);
+      archiveOpen = true; archive.hidden = false; updateTools();
+      // Start a few rows above the latest view. A fixed two-screen jump used
+      // to land at the very top whenever the snapshot was shorter than that.
+      archive.scrollTop = Math.max(0, archive.scrollHeight - archive.clientHeight - back);
     } catch (error) { if (!disposed && loading === controller && !controller.signal.aborted) notice = error.message; }
     finally { if (loading === controller) { loading = undefined; update(); } }
   }
-  function turn(direction) {
+  function turn(direction, fullPage = false) {
     notice = '';
     if (!program) {
-      if (archiveOpen && archiveLocal && direction < 0 && archive.scrollTop === 0) void fetchHistory();
-      else if (archiveOpen) archive.scrollBy(0, direction * Math.max(1, archive.clientHeight - 24));
-      else if (direction < 0 && term.buffer.active.viewportY === 0) void fetchHistory();
-      else term.scrollPages(direction);
+      if (archiveOpen && archiveLocal && direction < 0 && archive.scrollTop === 0) void fetchHistory(distance(fullPage));
+      else if (archiveOpen) archive.scrollBy(0, direction * distance(fullPage));
+      else if (direction < 0 && term.buffer.active.viewportY === 0) void fetchHistory(distance(fullPage));
+      else if (fullPage) term.scrollPages(direction);
+      else term.scrollLines(direction * buttonLines());
       update(); return;
     }
     const now = performance.now();
@@ -146,14 +156,14 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   }
   function scroll(delta, deltaMode = 0) {
     if (!Number.isFinite(delta) || !delta) return;
-    const line = Math.max(1, host.clientHeight / term.rows);
+    const line = rowHeight();
     const amount = delta * (deltaMode === 1 ? line : deltaMode === 2 ? host.clientHeight : 1);
     const step = program ? 40 : line;
     pixels = Math.max(-host.clientHeight * 2, Math.min(host.clientHeight * 2, pixels + amount));
     const count = Math.trunc(pixels / step);
     if (!count) return;
     if (program) { pixels = 0; turn(Math.sign(count)); }
-    else if (count < 0 && term.buffer.active.viewportY === 0) { pixels = 0; void fetchHistory(); }
+    else if (count < 0 && term.buffer.active.viewportY === 0) { pixels = 0; void fetchHistory(Math.min(distance(true), -count * line)); }
     else { pixels -= count * step; term.scrollLines(Math.max(-term.rows, Math.min(term.rows, count))); update(); }
   }
   listen(mode, 'click', () => { const next = !program; live(); program = next; update(); });
@@ -210,8 +220,8 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (!reviewing || event.ctrlKey || event.altKey || event.metaKey) return;
     if (!['PageUp', 'PageDown', 'Home', 'End', 'Escape'].includes(event.key)) return;
     event.preventDefault(); event.stopImmediatePropagation();
-    if (event.key === 'PageUp') turn(-1);
-    else if (event.key === 'PageDown') turn(1);
+    if (event.key === 'PageUp') turn(-1, true);
+    else if (event.key === 'PageDown') turn(1, true);
     else if (event.key === 'Home') { if (archiveOpen) archive.scrollTop = 0; else term.scrollToTop(); }
     else live();
     update();
