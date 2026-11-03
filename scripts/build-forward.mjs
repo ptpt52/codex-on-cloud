@@ -13,7 +13,7 @@ const origin = new URL(process.argv[2] || config.env.PUBLIC_ORIGIN || 'http://lo
 if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || !['http:', 'https:'].includes(origin.protocol) ||
   (origin.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname))) throw new Error('构建地址必须是 HTTPS 根地址；仅回环测试允许 HTTP');
 const revision = (await exec('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: config.root })).stdout.trim();
-const build = '0.1.0+' + revision;
+const build = '0.2.0+' + revision;
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid()) throw new Error('构建目录无效');
 const lock = await open(join(directory, '.build.lock'), 'wx', 0o600);

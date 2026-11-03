@@ -511,7 +511,7 @@ export async function createPanel(config) {
   }, 10_000).unref();
   async function close() {
     closing = true;
-    forwarding.close();
+    await forwarding.close();
     clearInterval(expiration);
     closeSockets(() => true);
     await rtcClosing;

@@ -222,3 +222,25 @@ test('unavailable target errors reach data clients and status, without stopping 
   await until(()=>retry.records.some(item=>item.binary));assert.equal(retry.records.find(item=>item.binary).data.toString(),'manual retry');retry.ws.terminate();
   status=await(await app.request('/api/forward')).json();assert.equal(status.mappings[0].errorCode,'');assert.equal(accepted,1);
 });
+
+test('direct signaling rejects invalid SDP before allocation and authenticates the mapping stream capability independently of page claims',async t=>{
+  let allocations=0,captured,destroyed=false;
+  const app=await fixture({webrtc:true,forwardPeerFactory:options=>{
+    allocations++;captured=options;
+    return {state:{id:options.id,available:false,reason:'rtc_connecting',family:null,rttMs:null},streams:0,
+      async answer(){return 'test answer: not a real DTLS connection';},
+      async destroy(){if(!destroyed){destroyed=true;options.closed();}}};
+  }});t.after(()=>app.close());await app.login();
+  const mapping=await created(app),control=await socket(app,'/forward/helper',mapping.code);
+  await until(()=>control.records.length===1);const ready=control.records[0].data;
+  control.ws.send('{"type":"listening","direct":1}');await until(()=>control.records.length===3);
+  assert.equal(control.records[2].data.type,'rtc_config');
+  control.ws.send(JSON.stringify({type:'rtc_offer',id:1,sdp:'not encrypted SDP'}));await until(()=>control.records.length===4);
+  assert.equal(allocations,0);assert.equal((await(await app.request('/api/forward')).json()).mappings[0].direct.reason,'rtc_negotiation_failed');
+  const sdp='v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 '+Array(32).fill('AB').join(':')+'\r\na=candidate:1 1 udp 123 127.0.0.1 40048 typ host\r\n';
+  control.ws.send(JSON.stringify({type:'rtc_offer',id:2,sdp}));await until(()=>captured);
+  assert.equal(allocations,1);assert.equal(captured.authenticate(ready.streamToken),true);assert.equal(captured.authenticate(mapping.code),false);assert.equal(captured.authenticate(token()),false);assert.equal(captured.valid(),true);
+  await app.claim();assert.equal(captured.valid(),true);await app.claim('22222222-2222-4222-8222-222222222222');assert.equal(captured.valid(),true);
+  await app.request('/api/logout',{method:'POST',body:{}});assert.equal(captured.valid(),false);assert.equal(destroyed,true);
+  assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
+});

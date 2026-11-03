@@ -163,7 +163,7 @@
   </dialog>
   <dialog id="forward-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-title">
     <div class="dialog-heading"><h2 id="forward-title">TCP 端口映射</h2><button id="forward-close" class="quiet" type="button" aria-label="关闭端口映射">✕</button></div>
-    <p class="muted">下载并运行 Windows 免安装助手，将本机端口连接到服务器允许的 TCP 服务。首版使用 WSS 加密中转。</p>
+    <p class="muted">下载并运行 Windows 免安装助手，将本机端口连接到服务器允许的 TCP 服务。新连接优先局域网或 IPv6 加密直连，不可用时走 WSS 中转；已有连接保持原通道。</p>
     <div id="forward-downloads" class="forward-downloads"></div>
     <form id="forward-form" class="forward-form">
       <label for="forward-local">Windows 本机端口<input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>

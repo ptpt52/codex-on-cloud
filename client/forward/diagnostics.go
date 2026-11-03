@@ -12,6 +12,15 @@ import (
 // Only fixed messages reach the console; TLS, proxy and network errors can
 // contain addresses or request metadata and must not be printed verbatim.
 var failureMessages = map[string]string{
+	"rtc_disabled":                 "管理员未启用直连，新连接使用 WSS 中转。",
+	"rtc_waiting_helper":           "等待新版助手启用直连探测。",
+	"rtc_connecting":               "正在探测加密直连；新连接可先使用 WSS 中转。",
+	"rtc_unavailable":              "直连暂不可用，新连接回退 WSS 中转。",
+	"rtc_negotiation_failed":       "直连协商未完成，稍后继续探测。",
+	"rtc_health_timeout":           "直连心跳超时，新连接使用 WSS 中转。",
+	"rtc_channel_failed":           "直连通道未能打开，新连接使用 WSS 中转。",
+	"rtc_busy":                     "直连资源暂忙，稍后继续探测。",
+	"rtc_draining":                 "直连通道正在轮换，新连接暂用 WSS 中转，已有连接保持原通道。",
 	"pair_invalid":                 "配对码无效，请从网页重新生成并完整复制。",
 	"pair_expired":                 "配对码已过期，请重新生成。",
 	"pair_used":                    "配对码已使用，请重新生成；现有助手无需重复配对。",

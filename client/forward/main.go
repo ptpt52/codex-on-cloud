@@ -77,6 +77,9 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 		return nil, errors.New("服务器转发协议不兼容")
 	}
 	c.SetReadLimit(chunkSize)
+	if path == "/forward/helper" {
+		c.SetReadLimit(48 * 1024)
+	}
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	c.SetPingHandler(func(data string) error {
 		c.SetReadDeadline(time.Now().Add(45 * time.Second))
@@ -93,12 +96,13 @@ type readyMessage struct {
 	LocalPort      int    `json:"localPort"`
 	TargetPort     int    `json:"targetPort"`
 	MaxConnections int    `json:"maxConnections"`
+	DirectProtocol int    `json:"directProtocol"`
 }
 
 type connections struct {
 	sync.Mutex
 	closed bool
-	items  map[*net.TCPConn]*websocket.Conn
+	items  map[*net.TCPConn]messageSocket
 }
 
 func (s *connections) add(tcp *net.TCPConn) bool {
@@ -110,7 +114,7 @@ func (s *connections) add(tcp *net.TCPConn) bool {
 	s.items[tcp] = nil
 	return true
 }
-func (s *connections) attach(tcp *net.TCPConn, ws *websocket.Conn) bool {
+func (s *connections) attach(tcp *net.TCPConn, ws messageSocket) bool {
 	s.Lock()
 	defer s.Unlock()
 	if s.closed {
@@ -136,11 +140,21 @@ func (s *connections) close() {
 	}
 }
 
-func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn, active *connections) error {
+func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn, active *connections, direct *directManager) error {
 	defer tcp.Close()
 	defer active.remove(tcp)
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	ws, err := dial(dialCtx, server, "/forward/data", token)
+	var ws messageSocket
+	var err error
+	if direct != nil {
+		if channel := direct.Open(dialCtx); channel != nil {
+			ws = channel
+		}
+	}
+	usingDirect := ws != nil
+	if ws == nil {
+		ws, err = dial(dialCtx, server, "/forward/data", token)
+	}
 	cancel()
 	if err != nil {
 		return err
@@ -148,6 +162,14 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 	defer ws.Close()
 	if !active.attach(tcp, ws) {
 		return nil
+	}
+	if usingDirect {
+		ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		// The target-open record ends preflight. Failure after this point never
+		// reconnects the same TCP stream through another transport.
+		if err := ws.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"open\"}")); err != nil {
+			return err
+		}
 	}
 	kind, first, err := ws.ReadMessage()
 	if err != nil {
@@ -247,6 +269,8 @@ func recordFailure(data []byte) error {
 }
 
 func run(ctx context.Context, server *url.URL, code string, output io.Writer) error {
+	ctx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	if !tokenPattern.MatchString(code) {
 		return errors.New("配对码格式不正确，请重新从网页复制")
 	}
@@ -282,7 +306,11 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 	}
 	defer listener.Close()
 	control.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := control.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"listening\"}")); err != nil {
+	listening := "{\"type\":\"listening\"}"
+	if ready.DirectProtocol == 1 {
+		listening = "{\"type\":\"listening\",\"direct\":1}"
+	}
+	if err := control.WriteMessage(websocket.TextMessage, []byte(listening)); err != nil {
 		return connectionFailure(err)
 	}
 	kind, data, err = control.ReadMessage()
@@ -293,10 +321,35 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 		return errors.New("服务器未确认映射启用")
 	}
 	control.SetReadDeadline(time.Now().Add(45 * time.Second))
-	active := &connections{items: make(map[*net.TCPConn]*websocket.Conn)}
+	active := &connections{items: make(map[*net.TCPConn]messageSocket)}
 	var workers sync.WaitGroup
 	var outputMu sync.Mutex
 	failures := 0
+	var signalMu sync.Mutex
+	var direct *directManager
+	if ready.DirectProtocol == 1 {
+		routes := 0
+		direct = newDirectManager(ctx, ready.StreamToken, func(value any) error {
+			bytes, err := json.Marshal(value)
+			if err != nil || len(bytes) > 48*1024 {
+				return failure("protocol_error")
+			}
+			signalMu.Lock()
+			defer signalMu.Unlock()
+			control.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			return control.WriteMessage(websocket.TextMessage, bytes)
+		}, func(text string) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			if routes < 20 {
+				fmt.Fprintln(output, text)
+				routes++
+				if routes == 20 {
+					fmt.Fprintln(output, "通道状态提示已达到本次运行的 20 条上限，最新状态请查看网页。")
+				}
+			}
+		})
+	}
 	acceptDone, watchDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
@@ -320,7 +373,7 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				if err := proxy(ctx, server, ready.StreamToken, tcp, active); err != nil {
+				if err := proxy(ctx, server, ready.StreamToken, tcp, active, direct); err != nil {
 					outputMu.Lock()
 					if failures < 20 {
 						fmt.Fprintln(output, "TCP 连接失败："+err.Error())
@@ -334,7 +387,16 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 			}()
 		}
 	}()
-	defer func() { listener.Close(); <-acceptDone; active.close(); workers.Wait() }()
+	defer func() {
+		cancelRun()
+		listener.Close()
+		<-acceptDone
+		active.close()
+		if direct != nil {
+			direct.Close()
+		}
+		workers.Wait()
+	}()
 	transport := "WSS 加密中转"
 	if server.Scheme == "http" {
 		transport = "本机 WS 测试"
@@ -344,14 +406,18 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 	fmt.Fprintln(output, "保持助手运行，Ctrl+C 停止。网页刷新、关闭或接管不影响映射；明确停止、退出创建映射的登录或授权过期会撤销授权。")
 	outputMu.Unlock()
 	for {
-		_, _, err := control.ReadMessage()
+		kind, bytes, err := control.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return fmt.Errorf("%s 不会自动重连，请在网页重新生成配对码。", connectionFailure(err))
 		}
-		return errors.New("服务器返回了不支持的控制消息")
+		var value directSignal
+		if direct == nil || kind != websocket.TextMessage || json.Unmarshal(bytes, &value) != nil || !strings.HasPrefix(value.Type, "rtc_") {
+			return errors.New("服务器返回了不支持的控制消息")
+		}
+		direct.accept(value)
 	}
 }
 

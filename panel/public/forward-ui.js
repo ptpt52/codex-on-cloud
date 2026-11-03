@@ -35,8 +35,14 @@ export function createForwardUI({ api, allowed }) {
     for (const item of data.mappings) {
       const row = document.createElement('div'); row.className = 'forward-row'; row.dataset.forward = item.id;
       const title = document.createElement('strong'); title.textContent = '本机 127.0.0.1:' + item.localPort + ' → 服务器 127.0.0.1:' + item.targetPort;
-      const state = document.createElement('p'); state.className = 'muted'; state.textContent = (item.state === 'active' ? '已连接 · ' + (location.protocol === 'https:' ? 'WSS 加密中转' : '本机 WebSocket 测试') : item.state === 'connecting' ? '助手连接中' : '等待配对') +
+      const direct = item.direct, relay = location.protocol === 'https:' ? 'WSS 加密中转' : '本机 WebSocket 测试';
+      const route = direct?.available ? direct.family + ' / UDP 加密直连' : relay;
+      const state = document.createElement('p'); state.className = 'muted'; state.textContent = (item.state === 'active' ? '已连接 · 新连接：' + route : item.state === 'connecting' ? '助手连接中' : '等待配对') +
         ' · ' + item.connections + '/' + data.maxConnections + ' 条连接 · 已发送 ' + item.sent + ' B / 接收 ' + item.received + ' B' + (item.error ? ' · ' + item.error : '');
+      const network = document.createElement('p'); network.className = 'muted forward-network';
+      network.textContent = '现有连接：直连 ' + (item.directConnections || 0) + ' / 中转 ' + (item.connections - (item.directConnections || 0)) +
+        (direct?.available && Number.isInteger(direct.rttMs) ? ' · 直连往返 ' + direct.rttMs + ' ms' : '') +
+        (direct?.reason && direct.note ? ' · ' + direct.note : '');
       const stop = document.createElement('button'); stop.type = 'button'; stop.className = 'secondary'; stop.textContent = '停止'; stop.disabled = busy;
       stop.addEventListener('click', () => {
         if (busy || !allowed()) return;
@@ -44,7 +50,7 @@ export function createForwardUI({ api, allowed }) {
         $('forward-confirm-description').textContent = '停止本机端口 ' + item.localPort + ' 的映射？通过此映射建立的 TCP 连接会断开。';
         confirmation.showModal(); $('forward-cancel-stop').focus({ preventScroll: true });
       });
-      row.append(title, state, stop); $('forward-list').append(row);
+      row.append(title, state); if (item.state === 'active') row.append(network); row.append(stop); $('forward-list').append(row);
     }
     if (!data.mappings.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '尚未创建映射。'; $('forward-list').append(empty); }
     $('forward-recent').replaceChildren();
@@ -65,7 +71,7 @@ export function createForwardUI({ api, allowed }) {
     for (const file of data.downloads) {
       const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small');
       row.className = 'forward-download'; link.href = file.href; link.download = file.name; link.textContent = file.arch === 'windows-amd64' ? '下载 Windows x64 助手' : '下载 Windows ARM64 助手';
-      hash.textContent = 'SHA256：' + file.sha256; row.append(link, hash); $('forward-downloads').append(row);
+      hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); $('forward-downloads').append(row);
     }
     if (!data.downloads.length) $('forward-downloads').textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
     $('forward-create').disabled = busy || !data.ports.length || data.mappings.length >= data.limit;

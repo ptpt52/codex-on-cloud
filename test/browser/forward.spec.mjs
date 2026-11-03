@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { fixture } from '../fixture.mjs';
+import { FORWARD_ERRORS } from '../../panel/forward-errors.mjs';
 
 async function login(page, app) {
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
@@ -111,5 +112,26 @@ test('a late clipboard denial cannot focus a cleared code or overwrite the conne
     await expect(page.locator('#forward-status')).toContainText('助手已连接');await expect(page.locator('#forward-pair')).toBeHidden();
     await page.evaluate(()=>window.rejectForwardCopy(new Error('denied')));
     await expect(page.locator('#forward-status')).toContainText('助手已连接');await expect(page.locator('#forward-code')).not.toBeFocused();
+  }finally{helper?.ws.terminate();await app.close();}
+});
+
+test('route diagnostics distinguish new-connection preference from mixed existing streams and explain fallback',async({page},info)=>{
+  const app=await fixture({rfb:true,rfbSize:{width:640,height:480}});let helper,available=true;
+  try{
+    if(info.project.name==='mobile')await page.setViewportSize({width:320,height:800});
+    await page.route('**/api/forward',async route=>{
+      if(route.request().method()!=='GET')return route.continue();
+      const response=await route.fetch(),data=await response.json();
+      if(data.mappings[0])Object.assign(data.mappings[0],{connections:2,directConnections:1,direct:{available,family:available?'IPv6':null,rttMs:available?9:null,reason:available?'':'rtc_health_timeout',note:available?'':FORWARD_ERRORS.rtc_health_timeout}});
+      await route.fulfill({response,json:data});
+    });
+    await login(page,app);await page.locator('#forward-button').click();await page.locator('#forward-create').click();await expect(page.locator('#forward-code')).not.toHaveValue('');
+    helper=await paired(app,await page.locator('#forward-code').inputValue());
+    await expect(page.locator('.forward-row')).toContainText('新连接：IPv6 / UDP 加密直连');await expect(page.locator('.forward-network')).toContainText('直连 1 / 中转 1');await expect(page.locator('.forward-network')).toContainText('9 ms');
+    expect(await page.locator('#forward-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+    await page.screenshot({path:'test-results/'+info.project.name+'-tcp-direct.png'});
+    available=false;await page.locator('#forward-refresh').click();await expect(page.locator('.forward-row')).toContainText('新连接：本机 WebSocket 测试');
+    await expect(page.locator('.forward-network')).toContainText('直连心跳超时');await expect(page.locator('.forward-network')).toContainText('直连 1 / 中转 1');
+    expect(helper.ws.readyState).toBe(WebSocket.OPEN);expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
   }finally{helper?.ws.terminate();await app.close();}
 });

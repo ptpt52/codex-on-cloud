@@ -13,7 +13,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -163,7 +163,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
   manager.listen(managerSocket); await once(manager, 'listening');
   const config = {
     host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
-    forwardPorts, forwardDownloadDir, agentPort: upstream.address().port,
+    forwardPorts, forwardDownloadDir, forwardPeerFactory, agentPort: upstream.address().port,
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
     tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
