@@ -7,7 +7,7 @@ import { createForwardPeer } from './forward-rtc.mjs';
 import { rtcOffer } from './rtc-network.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 
-export const FORWARD_LIMITS = Object.freeze({ mappings: 4, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, recent: 8, recentMs: 10 * 60000, closing: 8 });
+export const FORWARD_LIMITS = Object.freeze({ mappings: 4, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
 const digest = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -19,15 +19,17 @@ export function forwardPorts(value = '22') {
 }
 
 // Forwarding has its own lifetime: a desktop reconnect/mode change never
-// touches these sockets. Only revocation, expiry, stop or gateway exit does.
+// touches these sockets. Recovery replaces only this mapping's transports.
 export function createForwarding(config, { now = Date.now, createPeer = config.forwardPeerFactory || createForwardPeer } = {}) {
   const mappings = new Map(), recent = [], retiring = new Map(), peers = new Set();
   let negotiating = false;
   const controls = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 48 * 1024 });
   const streams = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: FORWARD_LIMITS.chunk });
   const ports = () => (config.forwardPorts ?? [22]).filter(port => ![config.port, config.agentPort, config.tunnelMetricsPort].includes(port));
-  const invalidReason = item => item.authorizationError() || (item.state === 'pending' && item.expires <= now() ? 'pair_expired' : '');
+  const invalidReason = item => item.authorizationError() || (item.state === 'pending' && item.expires <= now() ? 'pair_expired' : '') ||
+    (item.recoverUntil && item.recoverUntil <= now() ? 'resume_expired' : '');
   const authorized = item => mappings.get(item.id) === item && !invalidReason(item);
+  const active = item => authorized(item) && item.state === 'active' && item.control?.readyState === 1;
   function retire(ws, code) {
     if (ws.readyState !== 1) return ws.terminate();
     if (retiring.size >= FORWARD_LIMITS.closing) {
@@ -39,14 +41,31 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     ws.once('close', () => { clearTimeout(timeout); retiring.delete(ws); });
     ws.close(4000, code);
   }
+  function disconnectStreams(item) {
+    item.streamHash = undefined;
+    const peer = item.peer; item.peer = null;
+    void peer?.destroy();
+    for (const stream of item.streams) { stream.ws.terminate(); stream.tcp.destroy(); }
+    item.streams.clear();
+    item.directClient = false; item.direct = undefined;
+  }
   function remove(item, code = 'helper_disconnected') {
     if (mappings.get(item.id) !== item) return;
     mappings.delete(item.id); clearTimeout(item.timer);
-    void item.peer?.destroy();
-    for (const stream of item.streams) { stream.ws.terminate(); stream.tcp.destroy(); }
-    recent.unshift({ id: item.id, localPort: item.localPort, targetPort: item.targetPort, code, endedAt: now(), pairHash: item.pairHash });
+    disconnectStreams(item);
+    recent.unshift({ id: item.id, localPort: item.localPort, targetPort: item.targetPort, code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
     recent.splice(FORWARD_LIMITS.recent);
     if (item.control) retire(item.control, code);
+  }
+  function suspend(item, ws, code = 'helper_disconnected') {
+    if (mappings.get(item.id) !== item || item.control !== ws) return;
+    const invalid = invalidReason(item);
+    if (invalid || !item.resumeHash) return remove(item, invalid || code);
+    item.control = null; item.state = 'recovering'; item.errorCode = 'helper_reconnecting';
+    item.recoverUntil ||= now() + FORWARD_LIMITS.resumeMs;
+    clearTimeout(item.timer); disconnectStreams(item);
+    item.timer = setTimeout(() => remove(item, invalidReason(item) || 'resume_expired'), Math.max(1, item.recoverUntil - now())).unref();
+    retire(ws, 'helper_reconnecting');
   }
   function refresh() {
     for (const item of mappings.values()) { const code = invalidReason(item); if (code) remove(item, code); }
@@ -58,9 +77,9 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     refresh();
     return { ports: ports(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
       mappings: [...mappings.values()].map(item => ({ id: item.id, localPort: item.localPort, targetPort: item.targetPort,
-        state: item.state, expires: item.state === 'pending' ? item.expires : null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
+        state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws.transport === 'direct').length })),
-      recent: recent.map(({ pairHash: _private, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
+      recent: recent.map(({ pairHash: _pair, resumeHash: _resume, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
   function create(body, session, authorizationError) {
     refresh();
@@ -88,13 +107,21 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     ws.on('pong', () => { alive = true; });
     ws.once('close', () => clearInterval(interval)); ws.on('error', () => {});
   }
-  function control(item, ws) {
+  function control(item, ws, resume = false, capable = false) {
     clearTimeout(item.timer);
-    item.control = ws; heartbeat(ws, () => remove(item, 'heartbeat_timeout'));
-    item.timer = setTimeout(() => remove(item, 'pairing_timeout'), 5000).unref();
+    item.control = ws; item.generation = (item.generation || 0) + 1; item.peerId = 0; item.peerAt = -Infinity;
+    heartbeat(ws, () => suspend(item, ws, 'heartbeat_timeout'));
+    item.timer = setTimeout(() => suspend(item, ws, 'pairing_timeout'), Math.min(5000, item.recoverUntil ? Math.max(1, item.recoverUntil - now()) : 5000)).unref();
     const token = secret(); item.streamHash = digest(token);
-    ws.once('close', () => remove(item));
+    let resumeToken;
+    if (!resume && capable) { resumeToken = secret(); item.resumeHash = digest(resumeToken); }
+    ws.once('close', (code, reason) => {
+      if (item.control !== ws) return;
+      if (code === 1000 && reason.toString() === 'client_stopping') remove(item, 'helper_stopped');
+      else suspend(item, ws);
+    });
     ws.on('message', (data, binary) => {
+      if (item.control !== ws) return;
       let value;
       try { if (binary) throw new Error(); value = JSON.parse(data.toString('utf8')); } catch { return remove(item, 'protocol_error'); }
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
@@ -105,11 +132,12 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       }
       if (item.state === 'connecting' && value && Object.keys(value).sort().join(',') === 'code,type' && value.type === 'error' && ['local_port_in_use', 'local_listen_failed'].includes(value.code)) return remove(item, value.code);
       if (item.state !== 'connecting' || !value || !['type', 'direct,type'].includes(Object.keys(value).sort().join(',')) || value.type !== 'listening' || (Object.hasOwn(value, 'direct') && value.direct !== 1)) return remove(item, 'protocol_error');
-      clearTimeout(item.timer); item.state = 'active'; ws.send('{"type":"listening"}');
+      clearTimeout(item.timer); item.state = 'active'; item.recoverUntil = undefined; item.resumeAttempts = 0; item.errorCode = ''; ws.send('{"type":"listening"}');
       item.directClient = value.direct === 1;
       if (item.directClient) send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '' });
     });
-    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetPort: item.targetPort, maxConnections: FORWARD_LIMITS.connections, directProtocol: 1 }));
+    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetPort: item.targetPort, maxConnections: FORWARD_LIMITS.connections, directProtocol: 1,
+      ...(item.resumeHash ? { resumeProtocol: 1, resumeMs: item.recoverUntil ? Math.max(1, item.recoverUntil - now()) : FORWARD_LIMITS.resumeMs, ...(resumeToken ? { resumeToken } : {}) } : {}) }));
   }
   function send(item, record) {
     if (!authorized(item) || item.control?.readyState !== 1) return;
@@ -119,8 +147,10 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function report(item, value) { item.direct = value; send(item, { type: 'rtc_status', ...value }); }
   async function negotiate(item, value) {
+    const control = item.control, current = () => active(item) && item.control === control;
     if (Object.keys(value).sort().join(',') !== 'id,sdp,type' || !Number.isInteger(value.id) || value.id <= item.peerId || value.id > 2147483647) return remove(item, 'protocol_error');
     const rejected = reason => {
+      if (!current()) return;
       const state = { id: value.id, available: false, reason, family: null, rttMs: null };
       if (!item.peer) item.direct = state;
       send(item, { type: 'rtc_status', ...state });
@@ -131,20 +161,20 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     negotiating = true; item.peerAt = now();
     try {
       await item.peer?.destroy();
-      if (!authorized(item)) return;
+      if (!current()) return;
       const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress || '127.0.0.1';
       const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
       let peer;
       item.peerId = value.id;
-      peer = createPeer({ address, ipv6Address, id: value.id, valid: () => authorized(item) && item.peer === peer,
-        authenticate: token => typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token) && equal(digest(token), item.streamHash),
-        status: state => report(item, state), closed: () => { if (item.peer === peer) item.peer = null; },
-        connect: socket => { const reason = reserve(item); if (reason) { item.errorCode = reason; socket.close(4000, reason); } else transfer(item, socket); } });
+      peer = createPeer({ address, ipv6Address, id: value.id, valid: () => current() && item.peer === peer,
+        authenticate: token => current() && item.peer === peer && typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token) && equal(digest(token), item.streamHash),
+        status: state => { if (current() && item.peer === peer) report(item, state); }, closed: () => { if (item.peer === peer) item.peer = null; },
+        connect: socket => { if (!current() || item.peer !== peer) return socket.terminate(); const reason = reserve(item); if (reason) { item.errorCode = reason; socket.close(4000, reason); } else transfer(item, socket); } });
       peers.add(peer); const destroy = peer.destroy;
       peer.destroy = reason => { const result = destroy(reason); if (result) void Promise.resolve(result).finally(() => peers.delete(peer)); return result; };
       item.peer = peer; report(item, peer.state);
       const sdp = await peer.answer(offer);
-      if (authorized(item) && item.peer === peer) send(item, { type: 'rtc_answer', id: value.id, typeDescription: 'answer', sdp });
+      if (current() && item.peer === peer) send(item, { type: 'rtc_answer', id: value.id, typeDescription: 'answer', sdp });
     } catch { rejected('rtc_negotiation_failed'); }
     finally { negotiating = false; }
   }
@@ -155,19 +185,23 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     return '';
   }
   function transfer(item, ws) {
+    const generation = item.generation;
     const tcp = net.createConnection({ host: '127.0.0.1', port: item.targetPort, allowHalfOpen: true, highWaterMark: 32768 });
     const stream = { ws, tcp }; item.streams.add(stream); if (ws.transport !== 'direct') heartbeat(ws, () => abort('heartbeat_timeout'));
+    const live = () => active(item) && item.generation === generation && item.streams.has(stream);
     let connected = false, clientFin = false, pending = 0;
     const deadline = setTimeout(() => tcp.destroy(Object.assign(new Error('connect timeout'), { code: 'ETIMEDOUT' })), 5000).unref();
-    const abort = (code = 'protocol_error') => { item.errorCode = code; tcp.destroy(); retire(ws, code); };
+    const abort = (code = 'protocol_error') => { if (live()) item.errorCode = code; tcp.destroy(); retire(ws, code); };
     ws.once('close', () => { clearTimeout(deadline); tcp.destroy(); item.streams.delete(stream); });
     tcp.once('connect', () => {
       clearTimeout(deadline);
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
+      if (!live()) return tcp.destroy();
       connected = true; item.errorCode = ''; tcp.setNoDelay(true); tcp.setKeepAlive(true, 30000); ws.send('{"type":"ready"}');
     });
     ws.on('message', (data, binary) => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
+      if (!live()) return tcp.destroy();
       if (!connected || clientFin) return abort();
       if (!binary) {
         if (data.toString('utf8') !== '{"type":"fin"}') return abort();
@@ -180,6 +214,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     tcp.on('drain', () => { if (ws.readyState === 1) ws.resume(); });
     tcp.on('data', data => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
+      if (!live()) return tcp.destroy();
       if (ws.readyState !== 1) return tcp.destroy();
       item.received = Math.min(Number.MAX_SAFE_INTEGER, item.received + data.length);
       if (ws.bufferedAmount + data.length > FORWARD_LIMITS.buffer) return abort('buffer_limit');
@@ -193,6 +228,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     });
     tcp.once('end', () => { if (ws.readyState === 1) ws.send('{"type":"fin"}'); });
     tcp.once('error', error => {
+      if (!live()) return;
       item.errorCode = connected ? 'target_disconnected' : error.code === 'ETIMEDOUT' ? 'target_timeout' : 'target_unavailable';
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', code: item.errorCode }), () => ws.close(1011, item.errorCode));
     });
@@ -204,7 +240,27 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '');
     if (!match || req.headers['sec-websocket-protocol'] !== 'codex-forward-v1') return deny(401);
     const hash = digest(match[1]);
+    if (pathname === '/forward/resume') {
+      if (req.headers['x-codex-forward-resume'] !== '1') return deny(400, 'protocol_error');
+      const item = [...mappings.values()].find(item => item.resumeHash && equal(item.resumeHash, hash));
+      if (!item || !authorized(item)) {
+        const ended = recent.find(item => item.resumeHash && equal(item.resumeHash, hash));
+        return deny(401, ended?.code || 'resume_authorization_invalid');
+      }
+      if (item.state === 'connecting' && item.control?.readyState === 1) return deny(409, 'resume_busy');
+      if (item.state !== 'recovering') suspend(item, item.control);
+      if (!authorized(item)) return deny(401, invalidReason(item) || 'resume_authorization_invalid');
+      if ((item.resumeAttempts || 0) >= FORWARD_LIMITS.resumeAttempts) { remove(item, 'resume_expired'); return deny(401, 'resume_expired'); }
+      item.resumeAttempts = (item.resumeAttempts || 0) + 1; clearTimeout(item.timer); item.state = 'connecting';
+      item.timer = setTimeout(() => remove(item, 'resume_expired'), Math.max(1, item.recoverUntil - now())).unref();
+      const abandoned = () => { if (item.state === 'connecting' && !item.control) remove(item, 'resume_expired'); };
+      socket.once('close', abandoned);
+      try { controls.handleUpgrade(req, socket, head, ws => { socket.removeListener('close', abandoned); control(item, ws, true); }); } catch { remove(item, 'protocol_error'); socket.destroy(); }
+      return;
+    }
     if (pathname === '/forward/helper') {
+      const capable = req.headers['x-codex-forward-resume'] === '1';
+      if (req.headers['x-codex-forward-resume'] !== undefined && !capable) return deny(400, 'protocol_error');
       const item = [...mappings.values()].find(item => item.state === 'pending' && equal(item.pairHash, hash));
       if (!item || !authorized(item)) {
         const used = [...mappings.values()].some(value => equal(value.pairHash, hash));
@@ -217,8 +273,9 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       // Reserve synchronously before upgrading: the pairing code is single-use.
       item.state = 'connecting';
       item.timer = setTimeout(() => remove(item, 'pairing_timeout'), 5000).unref();
-      socket.once('close', () => { if (!item.control) remove(item); });
-      try { controls.handleUpgrade(req, socket, head, ws => control(item, ws)); } catch { remove(item); socket.destroy(); }
+      const abandoned = () => { if (!item.control) remove(item); };
+      socket.once('close', abandoned);
+      try { controls.handleUpgrade(req, socket, head, ws => { socket.removeListener('close', abandoned); control(item, ws, false, capable); }); } catch { remove(item); socket.destroy(); }
       return;
     }
     if (pathname !== '/forward/data') return deny(404);

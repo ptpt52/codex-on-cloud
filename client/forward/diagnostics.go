@@ -32,6 +32,11 @@ var failureMessages = map[string]string{
 	"authorization_expired":        "创建此映射的登录已过期，请重新登录并配对。",
 	"authorization_revoked":        "映射授权已失效，请重新登录并配对。",
 	"helper_disconnected":          "助手已关闭或网络连接已中断，请检查助手后重新配对。",
+	"helper_reconnecting":          "助手连接中断，正在等待自动恢复；已有 TCP 连接已关闭。",
+	"helper_stopped":               "助手已停止，映射已关闭。",
+	"resume_busy":                  "恢复握手正在进行，稍后重试。",
+	"resume_expired":               "映射未在恢复窗口内重新连接，请重新生成配对码。",
+	"resume_authorization_invalid": "恢复授权已失效，请重新生成配对码；面板重启后需重新配对。",
 	"heartbeat_timeout":            "连接心跳超时，请检查网络或设备是否休眠，然后重新配对。",
 	"server_stopping":              "网页服务正在重启或停止，请稍后重新配对。",
 	"protocol_error":               "助手与服务器通信格式无效，请更新助手后重新配对。",
@@ -74,6 +79,8 @@ func dialFailure(err error, response *http.Response, path string) error {
 			return failure("outer_auth_required")
 		case response.StatusCode == 401 && path == "/forward/helper":
 			return failure("authorization_failed")
+		case response.StatusCode == 401 && path == "/forward/resume":
+			return failure("resume_authorization_invalid")
 		case response.StatusCode == 401:
 			return failure("stream_authorization_invalid")
 		case response.StatusCode == 403:

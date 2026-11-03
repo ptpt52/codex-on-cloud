@@ -37,7 +37,8 @@ export function createForwardUI({ api, allowed }) {
       const title = document.createElement('strong'); title.textContent = '本机 127.0.0.1:' + item.localPort + ' → 服务器 127.0.0.1:' + item.targetPort;
       const direct = item.direct, relay = location.protocol === 'https:' ? 'WSS 加密中转' : '本机 WebSocket 测试';
       const route = direct?.available ? direct.family + ' / UDP 加密直连' : relay;
-      const state = document.createElement('p'); state.className = 'muted'; state.textContent = (item.state === 'active' ? '已连接 · 新连接：' + route : item.state === 'connecting' ? '助手连接中' : '等待配对') +
+      const remaining = Number.isFinite(item.recoverUntil) ? Math.max(0, Math.ceil((item.recoverUntil - Date.now()) / 1000)) : 0;
+      const state = document.createElement('p'); state.className = 'muted'; state.textContent = (item.state === 'active' ? '已连接 · 新连接：' + route : item.state === 'recovering' ? '正在自动恢复 · 剩余 ' + remaining + ' 秒' : item.state === 'connecting' ? item.recoverUntil ? '助手恢复握手中 · 剩余 ' + remaining + ' 秒' : '助手连接中' : '等待配对') +
         ' · ' + item.connections + '/' + data.maxConnections + ' 条连接 · 已发送 ' + item.sent + ' B / 接收 ' + item.received + ' B' + (item.error ? ' · ' + item.error : '');
       const network = document.createElement('p'); network.className = 'muted forward-network';
       network.textContent = '现有连接：直连 ' + (item.directConnections || 0) + ' / 中转 ' + (item.connections - (item.directConnections || 0)) +

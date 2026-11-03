@@ -29,7 +29,8 @@ try {
   await exec('go',['test','-race','./...'],{cwd:clientDirectory,env:{...process.env,GOTOOLCHAIN:'local'},timeout:180000,maxBuffer:16384});
   await exec('go',['build','-race','-mod=readonly','-buildvcs=false','-trimpath','-o',binary,'.'],{cwd:clientDirectory,env:{...process.env,GOTOOLCHAIN:'local',CGO_ENABLED:'1'},timeout:180000,maxBuffer:16384});
   await exec('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1'],{timeout:10000,maxBuffer:8192});
-  let accepted=0,receivedAfterServerFin,receivedBytes=0,dropDirectReady=false;
+  let accepted=0,receivedAfterServerFin,receivedBytes=0,dropDirectReady=false,blockResume=false;
+  const managementRequests={pair:0,resume:0};
   target=net.createServer({allowHalfOpen:true},socket=>{
     accepted++;connections.add(socket);socket.on('error',()=>{});socket.once('close',()=>connections.delete(socket));
     let first=true,afterFin=false,serverFin=false;const parts=[];
@@ -58,7 +59,10 @@ try {
   tls=https.createServer({key:await readFile(key),cert:await readFile(cert)},(_req,res)=>{res.writeHead(404);res.end();});
   tls.on('tlsClientError',()=>{});
   tls.on('upgrade',(req,socket,head)=>{
-    if(req.url==='/forward/helper'){controlLinks.add(socket);socket.once('close',()=>controlLinks.delete(socket));}
+    if(req.url==='/forward/helper')managementRequests.pair++;
+    if(req.url==='/forward/resume')managementRequests.resume++;
+    if(req.url==='/forward/resume'&&blockResume){socket.end('HTTP/1.1 503 Offline Test\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');return;}
+    if(['/forward/helper','/forward/resume'].includes(req.url)){controlLinks.add(socket);socket.once('close',()=>controlLinks.delete(socket));}
     const upstream=net.createConnection({host:'127.0.0.1',port:backendPort});
     for(const item of [socket,upstream]){connections.add(item);item.on('error',()=>{socket.destroy();upstream.destroy();});item.once('close',()=>{connections.delete(item);socket.destroy();upstream.destroy();});}
     upstream.once('connect',()=>{
@@ -118,7 +122,7 @@ try {
   const closed=once(live,'close'),finished=once(active.child,'exit');
   await request('/api/forward/stop',{id:active.mapping.id});await closed;await finished;
   assert.equal((await request('/api/forward')).mappings.length,0);
-  assert.equal(active.output.includes('不会自动重连'),true);
+  assert.equal(active.output.includes('正在自动恢复'),false);
   assert.match(active.output,/映射已由网页明确停止/);
   assert.equal(active.output.includes('DATA RACE'),false);
   assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
@@ -136,9 +140,35 @@ try {
   assert.equal((bad.output.match(/TCP 连接失败：/g)||[]).length,20);assert.match(bad.output,/目标端口无法连接/);
   assert.equal((await request('/api/forward')).mappings[0].errorCode,'target_unavailable');
   await request('/api/forward/stop',{id:bad.mapping.id});await bad.finished;
-  // A dropped transport reports the network failure and leaves a webpage reason.
-  const dropped=await helper(await freePort());for(const socket of controlLinks)socket.destroy();await dropped.finished;
-  assert.match(dropped.output,/网络连接已断开/);assert.equal((await request('/api/forward')).recent[0].code,'helper_disconnected');
+  // A real control disconnect drops old TCP, releases the local listener, and
+  // restores the same mapping after failed attempts without pairing or replay.
+  const droppedPort=await freePort(),dropped=await helper(droppedPort);
+  const lost=net.createConnection({host:'127.0.0.1',port:droppedPort});connections.add(lost);lost.on('error',()=>{});lost.once('close',()=>connections.delete(lost));
+  await once(lost,'connect');lost.write('only once before disconnect');await once(lost,'data');
+  const beforeRecovery={...managementRequests},beforeReceived=receivedBytes,beforeAccepted=accepted,lostClosed=new Promise(resolve=>lost.once('close',resolve));
+  blockResume=true;for(const socket of controlLinks)socket.destroy();await lostClosed;
+  await waitFor(()=>dropped.output.includes('正在自动恢复'),'Missing management recovery notice');
+  await waitFor(async()=>(await request('/api/forward')).mappings[0]?.state==='recovering','Mapping did not enter recovery');
+  await waitFor(()=>managementRequests.resume>beforeRecovery.resume,'Helper did not retry transient management failure');
+  const refused=net.createConnection({host:'127.0.0.1',port:droppedPort});let refusedError;refused.on('error',error=>{refusedError=error;});await new Promise(resolve=>refused.once('close',resolve));assert.equal(refusedError?.code,'ECONNREFUSED');
+  assert.equal(accepted,beforeAccepted);assert.equal(receivedBytes,beforeReceived);
+  blockResume=false;await waitFor(()=>dropped.output.includes('映射已恢复'),'Native listener did not recover',500);
+  assert.equal(managementRequests.pair,beforeRecovery.pair,'One-time pairing must never be replayed');
+  assert.equal((await request('/api/forward')).mappings[0].id,dropped.mapping.id);
+  assert.equal(accepted,beforeAccepted,'Recovery must not reopen a target TCP connection');assert.equal(receivedBytes,beforeReceived);
+  assert.deepEqual(await roundtrip(droppedPort,Buffer.from('explicit new client')),Buffer.from('explicit new client'));
+  await request('/api/forward/stop',{id:dropped.mapping.id});await dropped.finished;assert.match(dropped.output,/映射已由网页明确停止/);
+  // Stop while offline must be final when the helper next checks authorization.
+  const canceled=await helper(await freePort());blockResume=true;for(const socket of controlLinks)socket.destroy();
+  await waitFor(async()=>(await request('/api/forward')).mappings[0]?.state==='recovering','Expected offline mapping');
+  await request('/api/forward/stop',{id:canceled.mapping.id});blockResume=false;await canceled.finished;
+  assert.match(canceled.output,/映射已由网页明确停止/);assert.equal(canceled.output.includes('映射已恢复'),false);
+  // A sustained outage has a real absolute 30-second deadline, not an endless
+  // loop whose budget resets whenever an HTTP/TLS attempt partly succeeds.
+  const expired=await helper(await freePort()),beforeExpiry={...managementRequests};
+  blockResume=true;for(const socket of controlLinks)socket.destroy();await expired.finished;blockResume=false;
+  assert.match(expired.output,/恢复窗口/);assert.ok(managementRequests.resume-beforeExpiry.resume<=8);
+  assert.equal(managementRequests.pair,beforeExpiry.pair);assert.equal((await request('/api/forward')).recent[0].code,'resume_expired');
   // A certificate not trusted by the client must fail; there is no insecure flag.
   const untrustedMapping=await request('/api/forward',{localPort:await freePort(),targetPort:target.address().port});
   const insecure=launch(untrustedMapping,join(directory,'not-present'));
@@ -191,8 +221,16 @@ try {
   route=(await request('/api/forward')).mappings[0];assert.equal(route.directConnections,0);assert.equal(route.connections,2);
   const finalDirect=net.createConnection({host:'127.0.0.1',port:directPort});connections.add(finalDirect);finalDirect.on('error',()=>{});finalDirect.once('close',()=>connections.delete(finalDirect));
   await once(finalDirect,'connect');finalDirect.write('revoke both transports');await once(finalDirect,'data');
-  const allEnded=[once(finalDirect,'close'),once(pinned,'close'),once(fallback,'close')];
-  await request('/api/forward/stop',{id:direct.mapping.id});await Promise.all(allEnded);await direct.finished;
+  const allEnded=[finalDirect,pinned,fallback].map(socket=>new Promise(resolve=>socket.once('close',resolve)));
+  const beforeDirectRecovery=accepted,pairsBeforeDirectRecovery=managementRequests.pair;
+  for(const socket of controlLinks)socket.destroy();await Promise.all(allEnded);
+  await waitFor(()=>direct.output.includes('映射已恢复'),'Direct-capable helper did not restore management',500);
+  await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Direct peer did not rebuild after management recovery',1000);
+  assert.equal(accepted,beforeDirectRecovery);assert.equal(managementRequests.pair,pairsBeforeDirectRecovery);
+  assert.deepEqual(await roundtrip(directPort,Buffer.from('new direct client after management recovery')),Buffer.from('new direct client after management recovery'));
+  const finalRestored=net.createConnection({host:'127.0.0.1',port:directPort});connections.add(finalRestored);finalRestored.on('error',()=>{});finalRestored.once('close',()=>connections.delete(finalRestored));
+  await once(finalRestored,'connect');finalRestored.write('stop restored direct mapping');await once(finalRestored,'data');
+  const restoredClosed=once(finalRestored,'close');await request('/api/forward/stop',{id:direct.mapping.id});await restoredClosed;await direct.finished;
   assert.equal(direct.output.includes('DATA RACE'),false);
   const ipv6=rtcIPv6Address(undefined,rtcAddress());
   if(ipv6){
@@ -205,8 +243,8 @@ try {
   }else console.log('SKIP native IPv6: no assigned global IPv6; IPv4 does not count as IPv6 verification');
   assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
   for(const child of children)assert.notEqual(child.exitCode,66,'Go race detector failed');
-  console.log('✓ real TLS/WSS/TCP and UDP/DTLS/SCTP: 8 MiB, half-closes, heartbeat, pinned streams, relay fallback, background recovery, IPv6 when assigned, revocation and bounded diagnostics; no desktop or Codex input');
-  })(),new Promise((_,reject)=>{testDeadline=setTimeout(()=>reject(new Error('Native forwarding verification exceeded four minutes')),240000);})]);
+  console.log('✓ real TLS/WSS/TCP and UDP/DTLS/SCTP: 8 MiB, half-closes, heartbeat, pinned streams, relay fallback, management resume, 30-second expiry, no pairing/TCP replay, direct rebuild, IPv6 when assigned, revocation and bounded diagnostics; no desktop or Codex input');
+  })(),new Promise((_,reject)=>{testDeadline=setTimeout(()=>reject(new Error('Native forwarding verification exceeded five minutes')),300000);})]);
 } finally {
   clearTimeout(testDeadline);
   for(const child of children)if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');

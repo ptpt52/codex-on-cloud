@@ -65,7 +65,11 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 		u.Scheme = "ws"
 	}
 	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: 5 * time.Second, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{"codex-forward-v1"}}
-	c, response, err := d.DialContext(ctx, u.String(), http.Header{"Authorization": {"Bearer " + token}, "Origin": {server.String()}})
+	headers := http.Header{"Authorization": {"Bearer " + token}, "Origin": {server.String()}}
+	if path == "/forward/helper" || path == "/forward/resume" {
+		headers.Set("X-Codex-Forward-Resume", "1")
+	}
+	c, response, err := d.DialContext(ctx, u.String(), headers)
 	if err != nil {
 		if response != nil {
 			response.Body.Close()
@@ -77,7 +81,7 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 		return nil, errors.New("服务器转发协议不兼容")
 	}
 	c.SetReadLimit(chunkSize)
-	if path == "/forward/helper" {
+	if path == "/forward/helper" || path == "/forward/resume" {
 		c.SetReadLimit(48 * 1024)
 	}
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -97,6 +101,9 @@ type readyMessage struct {
 	TargetPort     int    `json:"targetPort"`
 	MaxConnections int    `json:"maxConnections"`
 	DirectProtocol int    `json:"directProtocol"`
+	ResumeProtocol int    `json:"resumeProtocol"`
+	ResumeToken    string `json:"resumeToken"`
+	ResumeMs       int    `json:"resumeMs"`
 }
 
 type connections struct {
@@ -268,17 +275,45 @@ func recordFailure(data []byte) error {
 	return failure("protocol_error")
 }
 
-func run(ctx context.Context, server *url.URL, code string, output io.Writer) error {
+func runSession(ctx context.Context, server *url.URL, token string, state *resumeState, output *runOutput) (result error) {
+	parentCtx := ctx
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
-	if !tokenPattern.MatchString(code) {
-		return errors.New("配对码格式不正确，请重新从网页复制")
+	path := "/forward/helper"
+	if state.token != "" {
+		path, token = "/forward/resume", state.token
 	}
-	control, err := dial(ctx, server, "/forward/helper", code)
+	dialCtx := ctx
+	cancelDial := func() {}
+	if !state.deadline.IsZero() {
+		dialCtx, cancelDial = context.WithDeadline(ctx, state.deadline)
+	}
+	control, err := dial(dialCtx, server, path, token)
+	cancelDial()
 	if err != nil {
 		return err
 	}
-	defer control.Close()
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			control.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "client_stopping"), time.Now().Add(time.Second))
+			control.Close()
+		case <-watchDone:
+		}
+	}()
+	defer func() {
+		if parentCtx.Err() != nil || result == nil || !canResume(result) {
+			control.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "client_stopping"), time.Now().Add(time.Second))
+		}
+		control.Close()
+	}()
+	handshakeDeadline := time.Now().Add(5 * time.Second)
+	if !state.deadline.IsZero() && state.deadline.Before(handshakeDeadline) {
+		handshakeDeadline = state.deadline
+	}
+	control.SetReadDeadline(handshakeDeadline)
 	kind, data, err := control.ReadMessage()
 	var ready readyMessage
 	if err != nil {
@@ -287,6 +322,12 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 	if kind != websocket.TextMessage || len(data) > 512 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
 		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || ready.TargetPort < 1 || ready.TargetPort > 65535 || ready.MaxConnections != connectionLimit {
 		return errors.New("服务器未返回有效映射授权")
+	}
+	if err := state.accept(ready); err != nil {
+		return err
+	}
+	if !state.deadline.IsZero() && state.deadline.Before(handshakeDeadline) {
+		control.SetReadDeadline(state.deadline)
 	}
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: ready.LocalPort})
 	if err != nil {
@@ -321,14 +362,12 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 		return errors.New("服务器未确认映射启用")
 	}
 	control.SetReadDeadline(time.Now().Add(45 * time.Second))
+	state.active = true
 	active := &connections{items: make(map[*net.TCPConn]messageSocket)}
 	var workers sync.WaitGroup
-	var outputMu sync.Mutex
-	failures := 0
 	var signalMu sync.Mutex
 	var direct *directManager
 	if ready.DirectProtocol == 1 {
-		routes := 0
 		direct = newDirectManager(ctx, ready.StreamToken, func(value any) error {
 			bytes, err := json.Marshal(value)
 			if err != nil || len(bytes) > 48*1024 {
@@ -339,26 +378,10 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 			control.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			return control.WriteMessage(websocket.TextMessage, bytes)
 		}, func(text string) {
-			outputMu.Lock()
-			defer outputMu.Unlock()
-			if routes < 20 {
-				fmt.Fprintln(output, text)
-				routes++
-				if routes == 20 {
-					fmt.Fprintln(output, "通道状态提示已达到本次运行的 20 条上限，最新状态请查看网页。")
-				}
-			}
+			output.print(1, "%s", text)
 		})
 	}
-	acceptDone, watchDone := make(chan struct{}), make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			control.Close()
-		case <-watchDone:
-		}
-	}()
-	defer close(watchDone)
+	acceptDone := make(chan struct{})
 	go func() {
 		defer close(acceptDone)
 		for {
@@ -374,15 +397,7 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 			go func() {
 				defer workers.Done()
 				if err := proxy(ctx, server, ready.StreamToken, tcp, active, direct); err != nil {
-					outputMu.Lock()
-					if failures < 20 {
-						fmt.Fprintln(output, "TCP 连接失败："+err.Error())
-						failures++
-						if failures == 20 {
-							fmt.Fprintln(output, "连接错误提示已达到本次运行的 20 条上限，后续错误请查看网页映射状态。")
-						}
-					}
-					outputMu.Unlock()
+					output.print(0, "TCP 连接失败：%s", connectionFailure(err))
 				}
 			}()
 		}
@@ -401,17 +416,20 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 	if server.Scheme == "http" {
 		transport = "本机 WS 测试"
 	}
-	outputMu.Lock()
-	fmt.Fprintf(output, "映射已开启：127.0.0.1:%d -> 服务器 127.0.0.1:%d（%s；最多 %d 条连接）\n", ready.LocalPort, ready.TargetPort, transport, connectionLimit)
-	fmt.Fprintln(output, "保持助手运行，Ctrl+C 停止。网页刷新、关闭或接管不影响映射；明确停止、退出创建映射的登录或授权过期会撤销授权。")
-	outputMu.Unlock()
+	label := "映射已开启"
+	if path == "/forward/resume" {
+		label = "映射已恢复"
+	} else {
+		output.print(2, "保持助手运行，Ctrl+C 停止。短暂断网自动恢复映射；停止、退出原登录或授权过期后需重新配对。")
+	}
+	output.print(2, "%s：127.0.0.1:%d -> 服务器 127.0.0.1:%d（%s；最多 %d 条连接）", label, ready.LocalPort, ready.TargetPort, transport, connectionLimit)
 	for {
 		kind, bytes, err := control.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("%s 不会自动重连，请在网页重新生成配对码。", connectionFailure(err))
+			return connectionFailure(err)
 		}
 		var value directSignal
 		if direct == nil || kind != websocket.TextMessage || json.Unmarshal(bytes, &value) != nil || !strings.HasPrefix(value.Type, "rtc_") {
