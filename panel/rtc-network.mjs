@@ -1,5 +1,6 @@
 import net from 'node:net';
 import { networkInterfaces } from 'node:os';
+import { openSync, readSync, closeSync } from 'node:fs';
 
 const global = new net.BlockList();
 global.addSubnet('2000::', 3, 'ipv6');
@@ -16,6 +17,32 @@ export function globalIPv6(address) {
   return typeof address === 'string' && !address.includes('%') && net.isIP(address) === 6 && global.check(address, 'ipv6') && !special.check(address, 'ipv6');
 }
 export function peerAddress(address, ipv6) { return privateIPv4(address) || (ipv6 && globalIPv6(address)); }
+
+function defaultRoutes() {
+  // Linux native deployment. Bound the read even if the routing table is large;
+  // other platforms and unavailable procfs retain interface-order selection.
+  let file;
+  try {
+    file = openSync('/proc/net/route', 'r');
+    const bytes = Buffer.alloc(65536), count = readSync(file, bytes);
+    return bytes.toString('utf8', 0, count).split('\n').slice(1, count === bytes.length ? -1 : undefined);
+  } catch { return []; }
+  finally { if (file !== undefined) closeSync(file); }
+}
+
+export function rtcAddress(explicit, interfaces = networkInterfaces(), routes = defaultRoutes()) {
+  const entries = Object.entries(interfaces), addresses = entries.flatMap(([, rows]) => rows.map(row => row.address));
+  if (explicit) {
+    if (!privateIPv4(explicit) || !addresses.includes(explicit)) throw new Error('WEBRTC_LAN_ADDRESS 必须是本机已分配的私有 IPv4 地址');
+    return explicit;
+  }
+  const usable = rows => rows.find(row => !row.internal && privateIPv4(row.address) && !row.address.startsWith('127.'))?.address;
+  const defaults = routes.map(line => line.trim().split(/\s+/)).filter(row => row.length >= 8 && row[1] === '00000000' && row[7] === '00000000' &&
+    /^[0-9a-f]+$/i.test(row[3]) && (parseInt(row[3], 16) & 1) && !(parseInt(row[3], 16) & 0x200) && /^\d+$/.test(row[6]));
+  defaults.sort((a, b) => Number(a[6]) - Number(b[6]));
+  for (const [name] of defaults) { const address = interfaces[name] && usable(interfaces[name]); if (address) return address; }
+  return entries.map(([, rows]) => usable(rows)).find(Boolean) || '127.0.0.1';
+}
 
 export function rtcIPv6Address(explicit, ipv4, interfaces = networkInterfaces()) {
   const entries = Object.entries(interfaces);

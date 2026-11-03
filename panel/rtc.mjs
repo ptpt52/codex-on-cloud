@@ -1,23 +1,14 @@
 import net from 'node:net';
-import { networkInterfaces } from 'node:os';
 import { RTCPeerConnection } from 'werift';
 import { attachRTCControl } from './rtc-control.mjs';
 import { attachRTCHealth } from './rtc-health.mjs';
-import { privateIPv4, peerAddress } from './rtc-network.mjs';
+import { peerAddress } from './rtc-network.mjs';
+import { createMDNSLookup } from './rtc-mdns.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
-export { privateIPv4, rtcOffer, rtcIPv6Address } from './rtc-network.mjs';
+export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network.mjs';
 
 export const RTC_TIMEOUT = 12000;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
-
-export function rtcAddress(explicit) {
-  const addresses = Object.values(networkInterfaces()).flat().map(item => item.address);
-  if (explicit) {
-    if (!privateIPv4(explicit) || !addresses.includes(explicit)) throw new Error('WEBRTC_LAN_ADDRESS 必须是本机已分配的私有 IPv4 地址');
-    return explicit;
-  }
-  return addresses.find(address => privateIPv4(address) && !address.startsWith('127.')) || '127.0.0.1';
-}
 
 export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl, connectTerminal }) {
   const allowed = host => peerAddress(host, !!ipv6Address);
@@ -28,6 +19,10 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host),
     maxMessageSize: MAX_MESSAGE,
   });
+  // One application m-section: prepare its transport before remote candidates
+  // arrive, so Chrome's masked addresses use our bounded, multi-record lookup.
+  pc.createSctpTransport();
+  for (const transport of pc.iceTransports) transport.connection.lookup = createMDNSLookup({ address, ipv6: !!ipv6Address });
   let channel, control, health, upstream, terminal, ended = false, closePromise, activated = false, videoReady = false, openVideo;
   let timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
   const handle = {

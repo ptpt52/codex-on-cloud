@@ -13,9 +13,14 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
-  let timedOut = false, failureReported = false;
+  let timedOut = false, failureReported = false, stage = 'signaling';
   const failure = reason => { if (!failureReported && !signal?.aborted) { failureReported = true; failed(reason); } };
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 12000);
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    failure(stage === 'signaling' ? 'signaling-timeout' : stage === 'connecting' ?
+      ['connected', 'completed'].includes(peer?.iceConnectionState) ? 'channel-timeout' : 'ice-timeout' : 'timeout');
+    controller.abort();
+  }, 12000);
   let peer;
   try {
     const response = await fetch('/api/me', { signal: controller.signal });
@@ -58,14 +63,18 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     return { get channel() { return channel; }, video, viewerReady, control, health, close,
       async stats() { return ended ? null : selectedRoute(await peer.getStats()); }, async start() {
       try {
+        stage = 'gathering';
         await peer.setLocalDescription(await peer.createOffer());
         await gatherCandidates(peer, controller.signal);
+        stage = 'signaling';
         const result = await fetch(terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
           body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}) }),
         });
         if (!result.ok) throw new Error('直连暂不可用');
-        await peer.setRemoteDescription(await result.json());
+        const answer = await result.json();
+        stage = 'connecting';
+        await peer.setRemoteDescription(answer);
         await ready;
         if (!probe) await control.request('activate', {});
       } catch (error) { failure(timedOut ? 'timeout' : 'negotiation'); close(); throw error; }

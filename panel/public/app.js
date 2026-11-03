@@ -15,7 +15,11 @@ let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
 let frameNetwork = null, directIssue = '';
 const directIssues = { unsupported: '当前浏览器环境不支持直连', disabled: '服务端已关闭直连', signaling: '直连协商请求未完成',
-  negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测', connection: '原直连已断开，正在恢复', heartbeat: '直连心跳无回复，已开始回退中转' };
+  negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测',
+  'signaling-timeout': '直连协商请求超时，等待后续探测',
+  'ice-timeout': '直连 UDP 探测超时；请检查浏览器本地网络权限及 UDP 通道',
+  'channel-timeout': '直连 UDP 已接通，加密数据通道建立超时',
+  connection: '原直连已断开，正在恢复', heartbeat: '直连心跳无回复，已开始回退中转' };
 let controlReady = false, controlPending = null, controlSequence = 0;
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;

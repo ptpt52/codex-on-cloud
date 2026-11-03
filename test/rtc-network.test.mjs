@@ -1,11 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { globalIPv6, rtcIPv6Address, rtcOffer, stunURL } from '../panel/rtc-network.mjs';
+import { globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL } from '../panel/rtc-network.mjs';
 import { selectedRoute, gatherCandidates } from '../panel/public/rtc-stats.js';
 
 const offer = candidates => ({ type: 'offer', sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
   'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'), ...candidates].join('\r\n') });
 const candidate = (host, type = 'host', port = 45000) => `a=candidate:1 1 udp 123 ${host} ${port} typ ${type}`;
+
+test('LAN selection prefers an up default route by metric, skips unusable VPNs and preserves explicit overrides', () => {
+  const interfaces = { lo: [{ address: '127.0.0.1', internal: true }], ethernet: [{ address: '192.168.15.224' }],
+    wifi: [{ address: '192.168.16.224' }], vpn: [{ address: '100.64.0.2' }] };
+  const route = (name, metric, flags = '0003', mask = '00000000') => `${name}\t00000000\t0100000A\t${flags}\t0\t0\t${metric}\t${mask}`;
+  const routes = [route('ethernet', 100, '0000'), route('wifi', 600), route('vpn', 1), route('ethernet', 2, '0201')];
+  assert.equal(rtcAddress(undefined, interfaces, routes), '192.168.16.224');
+  assert.equal(rtcAddress(undefined, interfaces, [...routes, route('ethernet', 50)]), '192.168.15.224');
+  assert.equal(rtcAddress('192.168.15.224', interfaces, routes), '192.168.15.224');
+  assert.equal(rtcAddress('127.0.0.1', interfaces, routes), '127.0.0.1');
+  assert.equal(rtcAddress(undefined, interfaces, [route('wifi', 1, '0003', '00FFFFFF'), 'malformed']), '192.168.15.224');
+  interfaces.wifi[0].address = '192.168.16.225';
+  assert.equal(rtcAddress(undefined, interfaces, routes), '192.168.16.225');
+  assert.equal(rtcAddress(undefined, {}, routes), '127.0.0.1');
+  assert.throws(() => rtcAddress('192.168.16.224', interfaces, routes));
+});
 
 test('IPv6 policy accepts ordinary global unicast and rejects scoped, mapped, multicast and reserved addresses', () => {
   for (const ip of ['2408:8000::1', '2606:4700:4700::1111', '2001:4860:4860::8888']) assert.equal(globalIPv6(ip), true);

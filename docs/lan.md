@@ -28,7 +28,7 @@ WebRTC 使用标准 DTLS 加密，不另设计密码协议。临时证书不需�
 
 ```dotenv
 WEBRTC_ENABLED=1
-# 可选；不填时选择本机第一个私有 IPv4，找不到则使用回环。
+# 可选；不填时优先选择默认路由网卡上的私有 IPv4，找不到则按网卡顺序选择。
 WEBRTC_LAN_ADDRESS=192.168.16.224
 WEBRTC_IPV6=1
 # 可选：固定本机已分配的普通公网 IPv6。
@@ -37,7 +37,7 @@ WEBRTC_STUN_URL=stun:stun.cloudflare.com:3478
 # 可设为空字符串关闭 STUN；只支持单个 UDP stun: URL。
 ```
 
-多网卡、VPN 或容器网桥环境建议明确指定 LAN 地址；必须是本机已分配的 RFC 1918 私有 IPv4 或回环地址。不指定时，每次协商重新选择当前接口，以适应 DHCP 地址变化；明确指定后则需手动更新配置并重启面板，建议在路由器预留地址。主机本身的浏览器也可连接该 LAN 地址。
+多网卡、VPN 或容器网桥环境可以明确指定 LAN 地址；必须是本机已分配的 RFC 1918 私有 IPv4 或回环地址。不指定时，每次协商重新选择当前接口，以适应 DHCP 地址变化。Linux 优先从有效默认路由中按 metric 选择有私有 IPv4 的网卡；默认路由不可读或无可用接口时，回退到网卡顺序，最后使用回环。明确指定后则需手动更新配置并重启面板，建议在路由器预留地址。主机本身的浏览器也可连接该 LAN 地址。
 
 WebRTC 仅在协商时绑定所选 IPv4/IPv6 地址的 **UDP 40000–40015**，每个 peer 至多两个 host socket，不监听公共 TCP VNC 端口。公网 IPv6 需要主机和路由器允许相应 UDP 入站，或允许 ICE 双向出站探测建立回复状态；本项目不自动修改防火墙。IPv6 不需要 NAT 端口映射，但仍可能被运营商或防火墙阻止。浏览器 mDNS 解析可能使用 UDP 5353，STUN 发现需要访问所配置的 UDP 服务。面板和 helper 仍仅监听回环，VNC 仍为私有 Unix socket，Tunnel 的 IPv6 优先策略保持原状。
 
@@ -60,6 +60,8 @@ systemctl --user restart codex-cloud-panel.service
 只接受一个 data m-section、有 SHA-256 指纹的 SDP；请求体最多 48 KiB，SDP 最多 32 KiB，最多保留 8 个去重 UDP 候选，两族均存在时各预留 4 个。允许私有 IPv4/mDNS host，以及启用 IPv6 时的普通公网 IPv6 host/srflx；去除 remote-candidates。候选配对及实际探测来源再次过滤，拒绝公网 IPv4、特殊 IPv6 和 relay。桌面连接只允许各一个可靠、有序的 `codex-vnc`、`codex-control` 和 `codex-health` 数据通道；文字终端连接用独立的 `codex-terminal` 取代 VNC，不接受媒体或任意代理目标。兼容没有心跳通道的旧桌面客户端，主动心跳需刷新页面加载新版本。
 
 公网 UDP 接收入口在固定版本 ICE agent 处理消息前验证会话、原始 STUN HMAC 与双方 ufrag，拒绝无凭据探测和未知端点的数据。每个 peer 的检查限制为每秒窗口 64 次、STUN 报文 2 KiB、最多 16 个已认证来源及 16 条 early checks；不写入日志或磁盘。
+
+浏览器隐藏的 `.local` 候选通过所选 LAN IPv4 接口进行 mDNS 查询。每个桌面/网页终端 peer 最多一个按需创建的 UDP 5353 socket、8 个名称；每个名称最多查询两次，保留原有的 10 秒解析期限，允许 mDNS 不可达时浏览器主动发起已认证 ICE 探测。解析在回复的前 64 条 answer/additional 记录中查找匹配名称，优先取有效私有 IPv4，开启 IPv6 时也接受普通公网 IPv6；忽略无关名称、过期/goodbye 记录及不允许的地址。连接关闭立即取消等待并释放 socket，没有磁盘缓存。直接使用已锁定的 `multicast-dns@7.2.5`，不修改 werift 安装文件。
 
 控制通道分派 `paste`、`key`、`clipboard` 三种固定业务动作，以及仅用于连接探测和启用的 `ping`、`activate`，每次处理前校验会话和页面认领对象，读取返回前再次校验。沿用私有管理 socket、输入互斥锁、文字 32 KiB 上限、固定快捷键及独立 Enter。请求 ID 单调递增，重复、并发或无权限的消息关闭控制通道，不重复执行。控制请求发出后，即使断线、超时或页面切换，也不会换成 HTTP 重发；后续新的明确操作才可使用 HTTP 回退。
 
@@ -94,6 +96,8 @@ systemctl --user restart codex-cloud-panel.service
 Windows 端口映射助手也支持这套 IPv4/IPv6 直连策略，但具有独立的授权和 peer，页面接管不结束其连接。转发 peer 的服务端 UDP 范围为 40016–40047，助手为 40048–40111，不占用桌面/网页终端的 40000–40015。新 TCP 连接按可用通道选择，已有连接不迁移；管理与协商仍经 WSS，行为和资源上限见[端口映射助手](forward.md)。
 
 连接状态中的“直连网络”显示实际选中 candidate pair 的 IPv4/IPv6 和 UDP，“直连两端”显示地址及端口，“直连往返”显示 ICE RTT。浏览器隐藏的地址明确标为隐藏，不从其他候选推测。路径在连接和成功心跳后更新，最多一个在途 stats 请求；换流、断线或接管丢弃旧详情。只保存一份内存状态，不记录 SDP、候选历史或地址日志。“直连检测”显示最近一次协商、心跳或连接失败，不将所有失败都断言为防火墙阻断。
+
+超时进一步区分为“直连协商请求超时”（HTTPS 请求未完成）、“直连 UDP 探测超时”（尚未建立 ICE 路径）和“直连 UDP 已接通，加密数据通道建立超时”。这些阶段提示不能单独证明是防火墙或 mDNS 故障。Mac 终端 ping 成功也不能验证 Chrome 的本地网络授权；可检查“系统设置 → 隐私与安全性 → 本地网络 → Google Chrome”的开关。[Apple：在 Mac 上控制对本地网络的访问](https://support.apple.com/zh-hans/guide/mac-help/mchla4f49138/mac)
 
 ## 验证与后续
 
