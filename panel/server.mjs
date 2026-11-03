@@ -15,12 +15,15 @@ import { clipboardSource } from '../native/clipboard.mjs';
 import { terminalTarget } from '../native/terminals.mjs';
 import { attachTerminal } from './terminal-bridge.mjs';
 import { attachRTCTerminal } from './rtc-terminal.mjs';
+import { createForwarding } from './forward.mjs';
+import { createForwardDownloads } from './forward-downloads.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/forward-ui.js', ['forward-ui.js', 'text/javascript; charset=utf-8']],
   ['/control.js', ['control.js', 'text/javascript; charset=utf-8']],
   ['/shortcuts.js', ['shortcuts.js', 'text/javascript; charset=utf-8']],
   ['/shortcut-menu.js', ['shortcut-menu.js', 'text/javascript; charset=utf-8']],
@@ -85,6 +88,8 @@ export async function createPanel(config) {
   let closing = false;
   let rtcBusy = false;
   let rtcClosing = Promise.resolve();
+  const forwarding = createForwarding(config);
+  const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -201,6 +206,7 @@ export async function createPanel(config) {
       await auth.revoke(cookieToken(req.headers.cookie));
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;
+      forwarding.refresh();
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', config, true) });
     }
     if (path === '/api/state' && req.method === 'GET') {
@@ -219,6 +225,23 @@ export async function createPanel(config) {
     if (path === '/api/terminals' && req.method === 'GET') {
       requireSession(req);
       return reply(res, 200, await managerRequest(config, '/terminals'));
+    }
+    if (path === '/api/forward' && req.method === 'GET') {
+      const session = requireSession(req);
+      if (!owner || owner.session !== session.hash || owner.viewer !== req.headers['x-viewer-id']) throw new HttpError(409, '请先接管当前页面');
+      const expected = owner, downloads = await forwardDownloads.list();
+      if (owner !== expected || !sessionOf(req)) throw new HttpError(409, '页面控制权已变化');
+      return reply(res, 200, { ...forwarding.list(owner), downloads });
+    }
+    if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
+      requireSession(req); return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res);
+    }
+    if (['/api/forward', '/api/forward/stop'].includes(path) && req.method === 'POST') {
+      const body = await ownedBody(req, 1024);
+      requireOwner(req);
+      const expected = owner, token = cookieToken(req.headers.cookie);
+      if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body, expected));
+      return reply(res, 200, forwarding.create(body, expected, () => !closing && owner === expected && !!auth.get(token)));
     }
     if (path === '/api/terminals' && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
@@ -250,6 +273,7 @@ export async function createPanel(config) {
       if (typeof viewer !== 'string' || !VIEWER.test(viewer)) throw new HttpError(400, '页面标识无效');
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
       owner = { viewer, session: session.hash };
+      forwarding.refresh();
       return reply(res, 200, { ok: true });
     }
     if (['/api/desktop/rtc', '/api/terminal/rtc'].includes(path) && req.method === 'POST') {
@@ -422,6 +446,11 @@ export async function createPanel(config) {
   async function upgrade(req, socket, head) {
     const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403);
+    const forwardURL = new URL(req.url, 'http://internal');
+    if (forwardURL.pathname.startsWith('/forward/')) {
+      if (closing || forwardURL.search) return deny(400);
+      return forwarding.upgrade(req, socket, head, forwardURL.pathname);
+    }
     const session = sessionOf(req);
     if (!session) return deny(401);
     const url = new URL(req.url, 'http://internal');
@@ -483,6 +512,7 @@ export async function createPanel(config) {
   }, 10_000).unref();
   async function close() {
     closing = true;
+    forwarding.close();
     clearInterval(expiration);
     closeSockets(() => true);
     await rtcClosing;

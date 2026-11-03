@@ -1,8 +1,10 @@
 import { createShortcutMenu } from './shortcut-menu.js';
 import { SHORTCUT_BY_KEY } from './shortcuts.js';
+import { createForwardUI } from './forward-ui.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
+let forwardingUI;
 const draftKey = 'codex-cloud.draft';
 let inputBusy = false;
 let inputController = null, inputFeedback = false, maintenancePending = false;
@@ -246,6 +248,7 @@ function renderInputControls() {
   sendDisplayPreferences();
 }
 function renderConnection() {
+  forwardingUI?.update();
   if (confirmation && !confirmationValid(confirmation)) closeConfirmation();
   syncScreenLock();
   let label;
@@ -412,6 +415,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  forwardingUI?.reset();
   uiGeneration++; closeConfirmation();
   clearClipboard();
   inputController?.abort(); inputController = null; inputBusy = false; inputFeedback = false;
@@ -1082,5 +1086,6 @@ document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!doc
 window.addEventListener('pagehide', () => { pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
 
+forwardingUI = createForwardUI({ api, allowed: () => loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' });
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});

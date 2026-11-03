@@ -4,6 +4,7 @@ import { environment, settings } from '../native/config.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { stunURL } from './rtc-network.mjs';
 import { desktopEnvironment } from '../native/desktop-controls.mjs';
+import { forwardPorts } from './forward.mjs';
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -35,6 +36,8 @@ export function readConfig(env = environment()) {
   const webrtcIPv6 = env.WEBRTC_IPV6 !== '0';
   return {
     host: '127.0.0.1', port, origin: origin.origin,
+    agentPort: native.agentPort, tunnelMetricsPort: native.tunnelMetricsPort,
+    forwardPorts: forwardPorts(env.TCP_FORWARD_PORTS), forwardDownloadDir: join(native.root, 'data', 'forward-client'),
     secureCookies: origin.protocol === 'https:', hosts,
     dataDir: join(native.root, 'data', 'panel'),
     username: env.ADMIN_USER || 'admin',
