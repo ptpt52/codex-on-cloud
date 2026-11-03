@@ -12,9 +12,9 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { fixture } from './fixture.mjs';
 
-const exec=promisify(execFile),directory=await mkdtemp(join(tmpdir(),'codex-forward-native-')),children=[],connections=new Set();
+const exec=promisify(execFile),directory=await mkdtemp(join(tmpdir(),'codex-forward-native-')),children=[],connections=new Set(),controlLinks=new Set();
 const clientDirectory=resolve('client/forward'),binary=join(directory,'forward-helper'),key=join(directory,'key.pem'),cert=join(directory,'cert.pem');
-let app,tls,target;
+let app,tls,target,occupied;
 async function waitFor(probe,message) {
   for(let i=0;i<250;i++){if(await probe())return;await new Promise(resolve=>setTimeout(resolve,20));}
   throw new Error(message);
@@ -45,6 +45,7 @@ try {
   tls=https.createServer({key:await readFile(key),cert:await readFile(cert)},(_req,res)=>{res.writeHead(404);res.end();});
   tls.on('tlsClientError',()=>{});
   tls.on('upgrade',(req,socket,head)=>{
+    if(req.url==='/forward/helper'){controlLinks.add(socket);socket.once('close',()=>controlLinks.delete(socket));}
     const upstream=net.createConnection({host:'127.0.0.1',port:backendPort});
     for(const item of [socket,upstream]){connections.add(item);item.on('error',()=>{socket.destroy();upstream.destroy();});item.once('close',()=>{connections.delete(item);socket.destroy();upstream.destroy();});}
     upstream.once('connect',()=>{
@@ -62,13 +63,16 @@ try {
       res.once('error',reject);res.once('end',()=>{assert.equal(res.statusCode,200);resolve(JSON.parse(Buffer.concat(chunks)));});
     });req.once('error',reject);req.end(payload);
   });
-  async function helper(port){
-    const mapping=await request('/api/forward',{localPort:port,targetPort:target.address().port});
-    const child=spawn(binary,['--server',app.config.origin],{env:{...process.env,SSL_CERT_FILE:cert},stdio:['pipe','pipe','pipe']});children.push(child);
+  function launch(mapping,certFile=cert){
+    const child=spawn(binary,['--server',app.config.origin],{env:{...process.env,SSL_CERT_FILE:certFile},stdio:['pipe','pipe','pipe']});children.push(child);const finished=once(child,'exit');
     let output='';const collect=bytes=>{output+=bytes.toString();if(Buffer.byteLength(output)>32768)throw new Error('Helper log bound');};
     child.stdout.on('data',collect);child.stderr.on('data',collect);child.stdin.end(mapping.code+'\n');
-    await waitFor(()=>output.includes('映射已开启'),'Native helper did not start: '+output);
-    assert.equal(output.includes(mapping.code),false);return{child,mapping,get output(){return output;}};
+    return{child,mapping,finished,get output(){return output;}};
+  }
+  async function helper(port,targetPort=target.address().port){
+    const mapping=await request('/api/forward',{localPort:port,targetPort}),active=launch(mapping);
+    await waitFor(()=>active.output.includes('映射已开启'),'Native helper did not start');
+    assert.equal(active.output.includes(mapping.code),false);return active;
   }
   async function roundtrip(port,payload){
     const socket=net.createConnection({host:'127.0.0.1',port,allowHalfOpen:true}),chunks=[];connections.add(socket);
@@ -77,6 +81,7 @@ try {
   }
   const port=await freePort(),active=await helper(port),payload=Buffer.concat([Buffer.from('literal\0\r\n中文'),randomBytes(8*1024*1024)]);
   assert.deepEqual(await roundtrip(port,payload),payload);assert.equal(accepted,1);
+  const reused=launch(active.mapping);await reused.finished;assert.match(reused.output,/配对码已使用/);assert.equal(reused.output.includes(active.mapping.code),false);
   const halfClose=Buffer.from('\x7f请求\0after EOF');
   assert.deepEqual(await roundtrip(port,halfClose),Buffer.concat([Buffer.from('after-fin:'),halfClose]));
   // A target's FIN must leave uploads and protocol heartbeats working. No browser
@@ -94,29 +99,52 @@ try {
   assert.deepEqual(await roundtrip(port,Buffer.from('after heartbeat')),Buffer.from('after heartbeat'));
   const live=net.createConnection({host:'127.0.0.1',port});connections.add(live);live.on('error',()=>{});live.once('close',()=>connections.delete(live));
   await once(live,'connect');live.write('still connected');await once(live,'data');
+  await request('/api/desktop/claim',{viewer:'22222222-2222-4222-8222-222222222222'});await request('/api/desktop/claim',{viewer:app.viewer});
+  const nextBytes=once(live,'data');live.write('after page claims');assert.equal((await nextBytes)[0].toString(),'after page claims');
+  assert.equal(active.output.includes('TCP 连接失败'),false,'Successful half-closes must not report network errors');
   const closed=once(live,'close'),finished=once(active.child,'exit');
   await request('/api/forward/stop',{id:active.mapping.id});await closed;await finished;
   assert.equal((await request('/api/forward')).mappings.length,0);
   assert.equal(active.output.includes('不会自动重连'),true);
+  assert.match(active.output,/映射已由网页明确停止/);
   assert.equal(active.output.includes('DATA RACE'),false);
   assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
+  // Report an actual local bind failure to both the operator and the webpage.
+  occupied=net.createServer();occupied.listen(0,'127.0.0.1');await once(occupied,'listening');
+  const blocked=launch(await request('/api/forward',{localPort:occupied.address().port,targetPort:target.address().port}));await blocked.finished;
+  assert.match(blocked.output,/端口已被占用/);assert.equal((await request('/api/forward')).recent[0].code,'local_port_in_use');
+  // Target errors keep the listener usable and have a fixed console output cap.
+  const unavailable=await freePort();app.config.forwardPorts.push(unavailable);
+  const badPort=await freePort(),bad=await helper(badPort,unavailable);
+  for(let i=0;i<22;i++){
+    const peer=net.createConnection({host:'127.0.0.1',port:badPort});connections.add(peer);peer.on('error',()=>{});peer.once('close',()=>connections.delete(peer));await once(peer,'close');
+  }
+  await waitFor(()=>bad.output.includes('20 条上限'),'Missing bounded connection diagnostics');
+  assert.equal((bad.output.match(/TCP 连接失败：/g)||[]).length,20);assert.match(bad.output,/目标端口无法连接/);
+  assert.equal((await request('/api/forward')).mappings[0].errorCode,'target_unavailable');
+  await request('/api/forward/stop',{id:bad.mapping.id});await bad.finished;
+  // A dropped transport reports the network failure and leaves a webpage reason.
+  const dropped=await helper(await freePort());for(const socket of controlLinks)socket.destroy();await dropped.finished;
+  assert.match(dropped.output,/网络连接已断开/);assert.equal((await request('/api/forward')).recent[0].code,'helper_disconnected');
   // A certificate not trusted by the client must fail; there is no insecure flag.
   const untrustedMapping=await request('/api/forward',{localPort:await freePort(),targetPort:target.address().port});
-  const insecure=spawn(binary,['--server',app.config.origin],{env:{...process.env,SSL_CERT_FILE:join(directory,'not-present')},stdio:['pipe','ignore','pipe']});children.push(insecure);
-  insecure.stdin.end(untrustedMapping.code+'\n');
+  const insecure=launch(untrustedMapping,join(directory,'not-present'));
   let trustDeadline;
   try {
-    const result=await Promise.race([once(insecure,'exit'),new Promise((_,reject)=>{trustDeadline=setTimeout(()=>reject(new Error('Client accepted an untrusted certificate')),10000);})]);
+    const result=await Promise.race([insecure.finished,new Promise((_,reject)=>{trustDeadline=setTimeout(()=>reject(new Error('Client accepted an untrusted certificate')),10000);})]);
     assert.notEqual(result[0],0);
   } finally { clearTimeout(trustDeadline); }
+  assert.match(insecure.output,/证书验证失败/);assert.equal(insecure.output.includes(untrustedMapping.code),false);
   assert.equal((await request('/api/forward')).mappings.find(item=>item.id===untrustedMapping.id).state,'pending','TLS failure must happen before consuming a valid pairing code');
   await request('/api/forward/stop',{id:untrustedMapping.id});
-  console.log('✓ real native helper, verified TLS/WSS and TCP: 8 MiB binary transfer, both half-close directions, post-FIN heartbeat/upload, browser-independent lifetime and stop/revocation; no desktop or Codex input');
+  for(const child of children)assert.notEqual(child.exitCode,66,'Go race detector failed');
+  console.log('✓ real TLS/WSS/TCP: 8 MiB, both half-closes, heartbeat, page claims preserve streams, explicit stop, occupied local port, unavailable target, bounded console diagnostics, network loss and certificate rejection; no desktop or Codex input');
 } finally {
   for(const child of children)if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');
   for(const socket of connections)socket.destroy();
   await app?.close();
   if(tls)await new Promise(resolve=>tls.close(resolve));
   if(target)await new Promise(resolve=>target.close(resolve));
+  if(occupied)await new Promise(resolve=>occupied.close(resolve));
   await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:50});
 }

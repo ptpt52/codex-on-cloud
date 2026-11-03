@@ -55,26 +55,32 @@ async function helper(app, code) {
 test('forward allowlists and pending authorizations are bounded, expire and never expose credentials in status', () => {
   assert.deepEqual(forwardPorts(), [22]); assert.deepEqual(forwardPorts('22,5432,22'), [22,5432]); assert.deepEqual(forwardPorts(''), []);
   for (const value of ['0', '65536', '-22', '22;echo x', '22,', Array(17).fill('22').join(',')]) assert.throws(() => forwardPorts(value));
-  let time = 10, valid = true;
+  let time = 10, invalid = '';
   const service = createForwarding({ forwardPorts: [22, 36080], port: 36080 }, { now: () => time }), owner = {};
   try {
-    const first = service.create({ localPort: 2222, targetPort: 22 }, owner, () => valid);
+    const first = service.create({ localPort: 2222, targetPort: 22 }, owner, () => invalid);
     assert.equal(first.code.length, 43); assert.deepEqual(service.list(owner).ports, [22]);
     assert.equal(JSON.stringify(service.list(owner)).includes(first.code), false);
-    assert.throws(() => service.create({ localPort: 2223, targetPort: 36080 }, owner, () => true), { status: 400 });
-    assert.throws(() => service.create({ localPort: 2222, targetPort: 22 }, owner, () => true), { status: 409 });
-    for (let i = 1; i <= 3; i++) service.create({ localPort: 2222 + i, targetPort: 22 }, owner, () => true);
-    assert.throws(() => service.create({ localPort: 2230, targetPort: 22 }, owner, () => true), { status: 409 });
+    assert.throws(() => service.create({ localPort: 2223, targetPort: 36080 }, owner, () => ''), { status: 400 });
+    assert.throws(() => service.create({ localPort: 2222, targetPort: 22 }, owner, () => ''), { status: 409 });
+    for (let i = 1; i <= 3; i++) service.create({ localPort: 2222 + i, targetPort: 22 }, owner, () => '');
+    assert.throws(() => service.create({ localPort: 2230, targetPort: 22 }, owner, () => ''), { status: 409 });
     time += 120001; assert.equal(service.list(owner).mappings.length, 0);
-    service.create({ localPort: 2222, targetPort: 22 }, owner, () => valid);
-    valid = false; service.refresh(); assert.equal(service.list(owner).mappings.length, 0);
+    let denied='';service.upgrade({headers:{authorization:'Bearer '+first.code,'sec-websocket-protocol':'codex-forward-v1'}},{end:value=>{denied=value;}},Buffer.alloc(0),'/forward/helper');
+    assert.match(denied,/410 Rejected/);assert.match(denied,/pair_expired/);
+    service.create({ localPort: 2222, targetPort: 22 }, owner, () => invalid);
+    invalid = 'authorization_expired'; service.refresh(); assert.equal(service.list(owner).mappings.length, 0);
+    assert.equal(service.list().recent[0].code,'authorization_expired');
+    for(let i=0;i<20;i++){const item=service.create({localPort:2222,targetPort:22},owner,()=> '');service.stop({id:item.id});}
+    assert.equal(service.list().recent.length,8);assert.equal(JSON.stringify(service.list()).includes('pairHash'),false);
+    time+=600001;assert.deepEqual(service.list().recent,[]);
   } finally { service.close(); }
 });
 
-test('forward APIs preserve login, ownership, Host, Origin and CSRF and accept only explicit loopback targets', async t => {
+test('forward APIs require login, Host, Origin and CSRF independently of desktop ownership and accept only loopback targets', async t => {
   const app = await fixture({ forwardPorts: [22,5432] }); t.after(() => app.close());
   assert.equal((await app.request('/api/forward')).status,401);
-  await app.login(); assert.equal((await app.request('/api/forward')).status,409); await app.claim();
+  await app.login(); assert.equal((await app.request('/api/forward')).status,200);
   assert.equal((await app.request('/api/forward')).status,200);
   const body = { localPort: 2222, targetPort: 22 };
   for (const headers of [{ origin: 'https://evil.test' }, { 'x-csrf-token': '' }]) assert.equal((await app.request('/api/forward', { method: 'POST', body, headers })).status,403);
@@ -93,7 +99,7 @@ test('native pairing is single-use and role-scoped, and forwards literal binary 
   assert.equal(await rejected(app,'/forward/helper',token()),401);
   assert.equal(await rejected(app,'/forward/data',mapping.code),401);
   const control = await helper(app,mapping.code); t.after(() => control.ws.terminate()); assert.equal(target.count,0);
-  assert.equal(await rejected(app,'/forward/helper',mapping.code),401);
+  assert.equal(await rejected(app,'/forward/helper',mapping.code),409);
   assert.equal(await rejected(app,'/forward/helper',control.ready.streamToken),401);
   const data = await socket(app,'/forward/data',control.ready.streamToken); t.after(() => data.ws.terminate());
   await until(() => data.records.some(record => record.data.type === 'ready'));
@@ -116,7 +122,7 @@ test('TCP half-close preserves a response produced after the client finishes wri
   assert.equal(data.records.some(record=>record.data.type==='fin'),true);
 });
 
-test('connection capacity, malformed records, stopping and takeover close only the authorized proxy sockets', async t => {
+test('connection limits and stop retain diagnostics, while page claims and other logins preserve active TCP streams', async t => {
   const target=await echo(t),app=await fixture({forwardPorts:[target.port]});t.after(()=>app.close());await app.login();await app.claim();
   const mapping=await created(app),control=await helper(app,mapping.code),clients=[];
   t.after(()=>{control.ws.terminate();for(const client of clients)client.ws.terminate();});
@@ -127,8 +133,18 @@ test('connection capacity, malformed records, stopping and takeover close only t
   const closed=clients.slice(1).map(client=>once(client.ws,'close')),ended=once(control.ws,'close');
   assert.equal((await app.request('/api/forward/stop',{method:'POST',body:{id:mapping.id}})).status,200);
   await Promise.all([...closed,ended]);assert.equal(await rejected(app,'/forward/data',control.ready.streamToken),401);
-  const next=await helper(app,(await created(app)).code);const revoked=once(next.ws,'close');
-  await app.claim('22222222-2222-4222-8222-222222222222');await revoked;
+  assert.equal((await ended)[1].toString(),'stopped');
+  const mapping2=await created(app),next=await helper(app,mapping2.code),live=await socket(app,'/forward/data',next.ready.streamToken);
+  await until(()=>live.records.length===1);
+  for(const viewer of [app.viewer,'22222222-2222-4222-8222-222222222222',app.viewer])await app.claim(viewer);
+  const firstLogin={cookie:app.cookie,'x-csrf-token':app.csrf};
+  await app.login();await app.claim();
+  assert.equal(next.ws.readyState,WebSocket.OPEN);live.ws.send(Buffer.from('still the same TCP stream'));
+  await until(()=>live.records.some(item=>item.binary));assert.equal(live.records.find(item=>item.binary).data.toString(),'still the same TCP stream');
+  assert.equal((await(await app.request('/api/forward')).json()).mappings[0].id,mapping2.id);
+  await app.request('/api/logout',{method:'POST',body:{}});assert.equal(next.ws.readyState,WebSocket.OPEN,'Logging out another session must not revoke the creator');
+  const revoked=once(next.ws,'close');await app.request('/api/logout',{method:'POST',body:{},headers:firstLogin});
+  assert.equal((await revoked)[1].toString(),'signed_out');
   assert.equal(app.managementStats.restarts,0);assert.deepEqual(app.inputCalls,[]);
 });
 
@@ -141,15 +157,21 @@ test('logout revokes both the helper and live TCP streams without consuming a ne
   assert.equal(await rejected(app,'/forward/data',control.ready.streamToken),401);
 });
 
-test('a delayed forwarding body cannot create authorizations after takeover',async t=>{
+test('a delayed forwarding body survives desktop takeover but cannot survive logout',async t=>{
   const app=await fixture();t.after(()=>app.close());await app.login();await app.claim();
   const body=JSON.stringify({localPort:2222,targetPort:22}),started=once(app.panel.server,'request');let pending;
   const response=new Promise((resolve,reject)=>{
     pending=http.request(app.config.origin+'/api/forward',{method:'POST',headers:{cookie:app.cookie,origin:app.config.origin,'x-csrf-token':app.csrf,'x-viewer-id':app.viewer,'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{res.resume();res.once('end',()=>resolve(res.statusCode));});
     pending.once('error',reject);pending.write(body.slice(0,1));
   });t.after(()=>pending.destroy());await started;
-  const newViewer='22222222-2222-4222-8222-222222222222';await app.claim(newViewer);pending.end(body.slice(1));assert.equal(await response,409);
-  const result=await(await app.request('/api/forward',{headers:{'x-viewer-id':newViewer}})).json();assert.deepEqual(result.mappings,[]);
+  const newViewer='22222222-2222-4222-8222-222222222222';await app.claim(newViewer);pending.end(body.slice(1));assert.equal(await response,200);
+  const result=await(await app.request('/api/forward')).json();assert.equal(result.mappings.length,1);
+  const started2=once(app.panel.server,'request');let pending2;
+  const response2=new Promise((resolve,reject)=>{
+    pending2=http.request(app.config.origin+'/api/forward',{method:'POST',headers:{cookie:app.cookie,origin:app.config.origin,'x-csrf-token':app.csrf,'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{res.resume();res.once('end',()=>resolve(res.statusCode));});pending2.once('error',reject);pending2.write(body.slice(0,1));
+  });t.after(()=>pending2.destroy());await started2;
+  await app.request('/api/logout',{method:'POST',body:{}});pending2.end(body.slice(1));assert.equal(await response2,401);
+  await app.login();assert.deepEqual((await(await app.request('/api/forward')).json()).mappings,[]);
 });
 
 test('oversized native frames close their stream and a gateway restart discards authorization without replay',async t=>{
@@ -172,4 +194,31 @@ test('helper downloads require authentication and use only fixed bounded regular
   const download=await app.request(path);assert.equal(download.status,200);assert.equal(download.headers.get('cache-control'),'no-store');assert.deepEqual(Buffer.from(await download.arrayBuffer()),bytes);
   assert.equal((await app.request('/api/forward/download/unknown')).status,404);
   await rm(join(directory,name));await symlink(join(directory,'manifest.json'),join(directory,name));assert.equal((await app.request(path)).status,502);
+});
+
+test('local listen errors are fixed records, free mapping slots and retain only bounded non-secret diagnostics',async t=>{
+  const app=await fixture();t.after(()=>app.close());await app.login();
+  for(const code of ['local_port_in_use','local_listen_failed','arbitrary error with secret']){
+    const mapping=await created(app),control=await socket(app,'/forward/helper',mapping.code);await until(()=>control.records.length===1);
+    const closed=once(control.ws,'close');control.ws.send(JSON.stringify({type:'error',code}));
+    const expected=code.startsWith('local_')?code:'protocol_error';assert.equal((await closed)[1].toString(),expected);
+    const data=await(await app.request('/api/forward')).json();assert.equal(data.mappings.length,0);assert.equal(data.recent[0].code,expected);
+    assert.equal(JSON.stringify(data).includes(mapping.code),false);assert.equal(JSON.stringify(data).includes('arbitrary error with secret'),false);
+    assert.equal(JSON.stringify(data).includes('pairHash'),false);assert.equal(JSON.stringify(data).includes('streamToken'),false);
+  }
+});
+
+test('unavailable target errors reach data clients and status, without stopping the mapping or retrying TCP',async t=>{
+  const target=net.createServer();target.listen(0,'127.0.0.1');await once(target,'listening');const port=target.address().port;await new Promise(resolve=>target.close(resolve));
+  const app=await fixture({forwardPorts:[port]});t.after(()=>app.close());await app.login();
+  const control=await helper(app,(await created(app)).code),data=await socket(app,'/forward/data',control.ready.streamToken);
+  await until(()=>data.records.length>0);assert.deepEqual(data.records[0].data,{type:'error',code:'target_unavailable'});
+  let status=await(await app.request('/api/forward')).json();assert.equal(status.mappings[0].state,'active');assert.equal(status.mappings[0].errorCode,'target_unavailable');
+  assert.match(status.mappings[0].error,/目标端口无法连接/);
+  let accepted=0;const peers=new Set();target.on('connection',socket=>{accepted++;peers.add(socket);socket.on('error',()=>{});socket.on('close',()=>peers.delete(socket));socket.on('data',bytes=>socket.end(bytes));});
+  target.listen(port,'127.0.0.1');await once(target,'listening');t.after(async()=>{for(const socket of peers)socket.destroy();await new Promise(resolve=>target.close(resolve));});
+  await new Promise(resolve=>setTimeout(resolve,30));assert.equal(accepted,0,'Failure must not retry TCP automatically');
+  const retry=await socket(app,'/forward/data',control.ready.streamToken);await until(()=>retry.records.length===1);retry.ws.send(Buffer.from('manual retry'));
+  await until(()=>retry.records.some(item=>item.binary));assert.equal(retry.records.find(item=>item.binary).data.toString(),'manual retry');retry.ws.terminate();
+  status=await(await app.request('/api/forward')).json();assert.equal(status.mappings[0].errorCode,'');assert.equal(accepted,1);
 });

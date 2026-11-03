@@ -43,7 +43,7 @@ test('Windows helper download, explicit pairing, status and default-cancel stop 
   }finally{helper?.ws.terminate();await app.close();await rm(directory,{recursive:true,force:true});}
 });
 
-test('takeover revokes the helper and clears pairing text; phone controls fit a narrow screen',async({page,context},info)=>{
+test('reload and takeover retain helper authorization and let either page manage it; phone controls fit a narrow screen',async({page,context},info)=>{
   const app=await fixture({rfb:true,rfbSize:{width:640,height:480}});let helper;
   try{
     if(info.project.name==='mobile')await page.setViewportSize({width:320,height:700});
@@ -55,11 +55,34 @@ test('takeover revokes the helper and clears pairing text; phone controls fit a 
       const box=await page.locator('#'+id).boundingBox();expect(box.height).toBeGreaterThanOrEqual(44);
     }
     helper=await paired(app,await page.locator('#forward-code').inputValue());await expect(page.locator('.forward-row')).toContainText('已连接');
-    const second=await context.newPage(),revoked=once(helper.ws,'close');
-    await second.goto(app.config.origin);await expect(second.locator('#connection-status')).toContainText('桌面在线');await revoked;
-    await expect(page.locator('#forward-dialog')).not.toBeVisible({timeout:10000});await expect(page.locator('#forward-code')).toHaveValue('');
+    await page.reload();await expect(page.locator('#connection-status')).toContainText('桌面在线');expect(helper.ws.readyState).toBe(WebSocket.OPEN);
+    await page.locator('#forward-button').click();await expect(page.locator('.forward-row')).toContainText('已连接');await expect(page.locator('#forward-code')).toHaveValue('');
+    const second=await context.newPage();
+    await second.goto(app.config.origin);await expect(second.locator('#connection-status')).toContainText('桌面在线');
+    await expect(page.locator('#takeover-button')).toBeVisible({timeout:10000});await expect(page.locator('#forward-dialog')).toBeVisible();expect(helper.ws.readyState).toBe(WebSocket.OPEN);
+    await second.locator('#forward-button').click();await expect(second.locator('.forward-row')).toContainText('已连接');
+    await page.locator('.forward-row button').click();const closed=once(helper.ws,'close');await page.locator('#forward-accept-stop').click();await closed;
+    await expect(page.locator('#forward-recent')).toContainText('映射已由网页明确停止');await expect(second.locator('#forward-recent')).toContainText('映射已由网页明确停止');
     expect(app.managementStats.restarts).toBe(0);await second.close();
   }finally{helper?.ws.terminate();await app.close();}
+});
+
+test('helper startup and target failures stay visible after refresh and lost pairing text is never restored',async({page})=>{
+  const closedTarget=net.createServer();closedTarget.listen(0,'127.0.0.1');await once(closedTarget,'listening');const port=closedTarget.address().port;await new Promise(resolve=>closedTarget.close(resolve));
+  const app=await fixture({rfb:true,rfbSize:{width:640,height:480},forwardPorts:[port]});let helper,data;
+  try{
+    await login(page,app);await page.locator('#forward-button').click();await page.locator('#forward-create').click();
+    await expect(page.locator('#forward-code')).not.toHaveValue('');const code=await page.locator('#forward-code').inputValue();
+    helper=new WebSocket(app.config.origin.replace('http','ws')+'/forward/helper','codex-forward-v1',{headers:{origin:app.config.origin,authorization:'Bearer '+code}});helper.on('error',()=>{});
+    helper.on('message',bytes=>{if(JSON.parse(bytes).type==='ready')helper.send('{"type":"error","code":"local_port_in_use"}');});const failed=once(helper,'close');await failed;
+    await expect(page.locator('#forward-status')).toContainText('端口已被占用');await expect(page.locator('#forward-code')).toHaveValue('');
+    await page.reload();await expect(page.locator('#forward-button')).toBeEnabled();await page.locator('#forward-button').click();
+    await expect(page.locator('#forward-recent')).toContainText('端口已被占用');await expect(page.locator('#forward-code')).toHaveValue('');
+    await page.locator('#forward-create').click();await expect(page.locator('#forward-code')).not.toHaveValue('');const active=await paired(app,await page.locator('#forward-code').inputValue());helper=active.ws;
+    await expect(page.locator('.forward-row')).toContainText('已连接');
+    data=new WebSocket(app.config.origin.replace('http','ws')+'/forward/data','codex-forward-v1',{headers:{origin:app.config.origin,authorization:'Bearer '+active.ready.streamToken}});data.on('error',()=>{});await once(data,'close');
+    await expect(page.locator('.forward-row')).toContainText('目标端口无法连接');expect(helper.readyState).toBe(WebSocket.OPEN);
+  }finally{helper?.terminate();data?.terminate();await app.close();}
 });
 
 test('a lost create response is not retried and can be reconciled through the mapping list',async({page})=>{

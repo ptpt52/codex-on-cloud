@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -69,7 +70,7 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 		if response != nil {
 			response.Body.Close()
 		}
-		return nil, errors.New("无法建立授权连接，请检查服务器地址、配对码和外层访问认证")
+		return nil, dialFailure(err, response, path)
 	}
 	if c.Subprotocol() != "codex-forward-v1" {
 		c.Close()
@@ -135,22 +136,25 @@ func (s *connections) close() {
 	}
 }
 
-func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn, active *connections) {
+func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn, active *connections) error {
 	defer tcp.Close()
 	defer active.remove(tcp)
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	ws, err := dial(dialCtx, server, "/forward/data", token)
 	cancel()
 	if err != nil {
-		return
+		return err
 	}
 	defer ws.Close()
 	if !active.attach(tcp, ws) {
-		return
+		return nil
 	}
 	kind, first, err := ws.ReadMessage()
-	if err != nil || kind != websocket.TextMessage || string(first) != "{\"type\":\"ready\"}" {
-		return
+	if err != nil {
+		return connectionFailure(err)
+	}
+	if kind != websocket.TextMessage || string(first) != "{\"type\":\"ready\"}" {
+		return recordFailure(first)
 	}
 	ws.SetReadDeadline(time.Now().Add(45 * time.Second))
 	results := make(chan error, 2)
@@ -181,7 +185,11 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 		for {
 			kind, data, err := ws.ReadMessage()
 			if err != nil {
-				results <- err
+				if remoteFin && websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
+					results <- io.EOF
+				} else {
+					results <- err
+				}
 				return
 			}
 			if kind == websocket.TextMessage {
@@ -195,11 +203,11 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 					// still upload after the remote peer's TCP half-close.
 					continue
 				}
-				results <- errors.New("forwarding ended")
+				results <- recordFailure(data)
 				return
 			}
 			if kind != websocket.BinaryMessage || remoteFin {
-				results <- errors.New("invalid frame")
+				results <- failure("protocol_error")
 				return
 			}
 			tcp.SetWriteDeadline(time.Now().Add(15 * time.Second))
@@ -209,11 +217,33 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 			}
 		}
 	}()
-	if err := <-results; err != nil {
+	firstErr := <-results
+	if firstErr != nil {
 		tcp.Close()
 		ws.Close()
 	}
-	<-results
+	secondErr := <-results
+	if firstErr == io.EOF {
+		return nil
+	}
+	if firstErr != nil && firstErr != io.EOF {
+		return connectionFailure(firstErr)
+	}
+	if secondErr != nil && secondErr != io.EOF {
+		return connectionFailure(secondErr)
+	}
+	return nil
+}
+
+func recordFailure(data []byte) error {
+	var record struct {
+		Type string `json:"type"`
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(data, &record) == nil && record.Type == "error" {
+		return failure(record.Code)
+	}
+	return failure("protocol_error")
 }
 
 func run(ctx context.Context, server *url.URL, code string, output io.Writer) error {
@@ -227,26 +257,46 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 	defer control.Close()
 	kind, data, err := control.ReadMessage()
 	var ready readyMessage
-	if err != nil || kind != websocket.TextMessage || len(data) > 512 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
+	if err != nil {
+		return connectionFailure(err)
+	}
+	if kind != websocket.TextMessage || len(data) > 512 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
 		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || ready.TargetPort < 1 || ready.TargetPort > 65535 || ready.MaxConnections != connectionLimit {
 		return errors.New("服务器未返回有效映射授权")
 	}
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: ready.LocalPort})
 	if err != nil {
-		return errors.New("本机端口无法监听，可能已被占用，请停止此映射并换一个本机端口")
+		code := "local_listen_failed"
+		// Windows reports Winsock WSAEADDRINUSE (10048), rather than Go's
+		// synthetic POSIX-compatible syscall.EADDRINUSE value on Windows.
+		if errors.Is(err, syscall.EADDRINUSE) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10048))) {
+			code = "local_port_in_use"
+		}
+		control.SetWriteDeadline(time.Now().Add(time.Second))
+		record, _ := json.Marshal(map[string]string{"type": "error", "code": code})
+		if control.WriteMessage(websocket.TextMessage, record) == nil {
+			control.SetReadDeadline(time.Now().Add(time.Second))
+			control.ReadMessage()
+		}
+		return failure(code)
 	}
 	defer listener.Close()
 	control.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err := control.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"listening\"}")); err != nil {
-		return errors.New("映射启用失败")
+		return connectionFailure(err)
 	}
 	kind, data, err = control.ReadMessage()
-	if err != nil || kind != websocket.TextMessage || string(data) != "{\"type\":\"listening\"}" {
+	if err != nil {
+		return connectionFailure(err)
+	}
+	if kind != websocket.TextMessage || string(data) != "{\"type\":\"listening\"}" {
 		return errors.New("服务器未确认映射启用")
 	}
 	control.SetReadDeadline(time.Now().Add(45 * time.Second))
 	active := &connections{items: make(map[*net.TCPConn]*websocket.Conn)}
 	var workers sync.WaitGroup
+	var outputMu sync.Mutex
+	failures := 0
 	acceptDone, watchDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
@@ -268,7 +318,20 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 				continue
 			}
 			workers.Add(1)
-			go func() { defer workers.Done(); proxy(ctx, server, ready.StreamToken, tcp, active) }()
+			go func() {
+				defer workers.Done()
+				if err := proxy(ctx, server, ready.StreamToken, tcp, active); err != nil {
+					outputMu.Lock()
+					if failures < 20 {
+						fmt.Fprintln(output, "TCP 连接失败："+err.Error())
+						failures++
+						if failures == 20 {
+							fmt.Fprintln(output, "连接错误提示已达到本次运行的 20 条上限，后续错误请查看网页映射状态。")
+						}
+					}
+					outputMu.Unlock()
+				}
+			}()
 		}
 	}()
 	defer func() { listener.Close(); <-acceptDone; active.close(); workers.Wait() }()
@@ -276,15 +339,17 @@ func run(ctx context.Context, server *url.URL, code string, output io.Writer) er
 	if server.Scheme == "http" {
 		transport = "本机 WS 测试"
 	}
+	outputMu.Lock()
 	fmt.Fprintf(output, "映射已开启：127.0.0.1:%d -> 服务器 127.0.0.1:%d（%s；最多 %d 条连接）\n", ready.LocalPort, ready.TargetPort, transport, connectionLimit)
-	fmt.Fprintln(output, "保持助手运行，Ctrl+C 停止。网页关闭后仍可使用；网页停止、退出登录或接管会撤销授权。")
+	fmt.Fprintln(output, "保持助手运行，Ctrl+C 停止。网页刷新、关闭或接管不影响映射；明确停止、退出创建映射的登录或授权过期会撤销授权。")
+	outputMu.Unlock()
 	for {
 		_, _, err := control.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return errors.New("映射已停止或连接中断。不会自动重连，请在网页重新生成配对码")
+			return fmt.Errorf("%s 不会自动重连，请在网页重新生成配对码。", connectionFailure(err))
 		}
 		return errors.New("服务器返回了不支持的控制消息")
 	}

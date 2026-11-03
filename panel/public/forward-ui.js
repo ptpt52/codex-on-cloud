@@ -4,7 +4,7 @@ export function createForwardUI({ api, allowed }) {
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
   function clearCode() { codeId = ''; codeExpires = 0; $('forward-code').value = ''; $('forward-pair').hidden = true; }
   function cancel() { generation++; controller?.abort(); controller = null; clearTimeout(timer); timer = null; busy = false; }
-  function reset() { cancel(); clearCode(); pendingStop = ''; if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); }
+  function reset() { cancel(); clearCode(); pendingStop = ''; if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
   function update() {
     $('forward-button').disabled = !allowed();
     if (!allowed()) reset();
@@ -26,6 +26,7 @@ export function createForwardUI({ api, allowed }) {
     } finally { clearTimeout(deadline); if (controller === abort) controller = null; }
   }
   function render(data) {
+    const recent = data.recent || [];
     room = data.mappings.length < data.limit;
     const target = $('forward-target'), selected = target.value;
     target.replaceChildren(...data.ports.map(port => { const option = document.createElement('option'); option.value = port; option.textContent = '服务器 127.0.0.1:' + port; return option; }));
@@ -46,8 +47,19 @@ export function createForwardUI({ api, allowed }) {
       row.append(title, state, stop); $('forward-list').append(row);
     }
     if (!data.mappings.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '尚未创建映射。'; $('forward-list').append(empty); }
+    $('forward-recent').replaceChildren();
+    if (recent.length) {
+      const title = document.createElement('strong'); title.textContent = '最近结束的映射（最多八条，保留十分钟）'; $('forward-recent').append(title);
+      for (const item of recent) {
+        const row = document.createElement('p'); row.className = 'muted'; row.textContent = '本机 ' + item.localPort + ' → 服务器 ' + item.targetPort + '：' + item.error;
+        $('forward-recent').append(row);
+      }
+    }
     const codeMapping = data.mappings.find(item => item.id === codeId);
     if (codeMapping?.state === 'active') $('forward-status').textContent = '助手已连接，可以使用对应的本机端口。';
+    const ended = recent.find(item => item.id === codeId);
+    if (ended) $('forward-status').textContent = ended.error;
+    else if (codeId && Date.now() >= codeExpires && codeMapping?.state === 'pending') $('forward-status').textContent = '配对码已过期，请重新生成。';
     if (codeId && (!codeMapping || codeMapping.state !== 'pending' || Date.now() >= codeExpires)) clearCode();
     $('forward-downloads').replaceChildren();
     for (const file of data.downloads) {
@@ -55,7 +67,7 @@ export function createForwardUI({ api, allowed }) {
       row.className = 'forward-download'; link.href = file.href; link.download = file.name; link.textContent = file.arch === 'windows-amd64' ? '下载 Windows x64 助手' : '下载 Windows ARM64 助手';
       hash.textContent = 'SHA256：' + file.sha256; row.append(link, hash); $('forward-downloads').append(row);
     }
-    if (!data.downloads.length) $('forward-downloads').textContent = '助手尚未构建，请先在服务器运行 npm run build:forward。';
+    if (!data.downloads.length) $('forward-downloads').textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
     $('forward-create').disabled = busy || !data.ports.length || data.mappings.length >= data.limit;
     if (!data.ports.length) $('forward-status').textContent = '尚未允许目标端口，请在服务器配置 TCP_FORWARD_PORTS。';
   }

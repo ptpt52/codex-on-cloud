@@ -203,7 +203,9 @@ export async function createPanel(config) {
     }
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);
-      await auth.revoke(cookieToken(req.headers.cookie));
+      const revoked = auth.revoke(cookieToken(req.headers.cookie));
+      forwarding.revoke(session.hash);
+      await revoked;
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;
       forwarding.refresh();
@@ -227,21 +229,19 @@ export async function createPanel(config) {
       return reply(res, 200, await managerRequest(config, '/terminals'));
     }
     if (path === '/api/forward' && req.method === 'GET') {
-      const session = requireSession(req);
-      if (!owner || owner.session !== session.hash || owner.viewer !== req.headers['x-viewer-id']) throw new HttpError(409, '请先接管当前页面');
-      const expected = owner, downloads = await forwardDownloads.list();
-      if (owner !== expected || !sessionOf(req)) throw new HttpError(409, '页面控制权已变化');
-      return reply(res, 200, { ...forwarding.list(owner), downloads });
+      requireSession(req);
+      const downloads = await forwardDownloads.list();
+      requireSession(req);
+      return reply(res, 200, { ...forwarding.list(), downloads });
     }
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
       requireSession(req); return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res);
     }
     if (['/api/forward', '/api/forward/stop'].includes(path) && req.method === 'POST') {
-      const body = await ownedBody(req, 1024);
-      requireOwner(req);
-      const expected = owner, token = cookieToken(req.headers.cookie);
-      if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body, expected));
-      return reply(res, 200, forwarding.create(body, expected, () => !closing && owner === expected && !!auth.get(token)));
+      requireWrite(req);
+      const body = await jsonBody(req, 1024), session = requireWrite(req), token = cookieToken(req.headers.cookie);
+      if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body));
+      return reply(res, 200, forwarding.create(body, session.hash, () => closing ? 'server_stopping' : auth.get(token) ? '' : session.expires <= Date.now() ? 'authorization_expired' : 'authorization_revoked'));
     }
     if (path === '/api/terminals' && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
@@ -273,7 +273,6 @@ export async function createPanel(config) {
       if (typeof viewer !== 'string' || !VIEWER.test(viewer)) throw new HttpError(400, '页面标识无效');
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
       owner = { viewer, session: session.hash };
-      forwarding.refresh();
       return reply(res, 200, { ok: true });
     }
     if (['/api/desktop/rtc', '/api/terminal/rtc'].includes(path) && req.method === 'POST') {

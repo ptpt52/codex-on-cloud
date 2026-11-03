@@ -173,8 +173,9 @@
     <div id="forward-pair" class="forward-pair" hidden><label for="forward-code">粘贴到助手窗口的配对码（两分钟内有效）</label><input id="forward-code" readonly autocomplete="off" spellcheck="false" aria-label="一次性配对码"><button id="forward-copy" class="secondary" type="button">复制配对码</button></div>
     <p id="forward-status" class="muted" role="status"></p>
     <div id="forward-list" class="forward-list"></div>
+    <div id="forward-recent" class="forward-recent" aria-label="最近结束的映射"></div>
     <button id="forward-refresh" class="secondary" type="button">刷新列表</button>
-    <p class="muted">助手只监听 Windows 的 127.0.0.1。关闭网页或此窗口可继续转发；停止映射、退出登录、接管、授权到期或连接中断时关闭 TCP 连接。断线后请重新配对。</p>
+    <p class="muted">助手只监听 Windows 的 127.0.0.1。刷新、关闭网页、切换模式或其他页面接管均保留映射；有效登录可以查看并明确停止映射。退出创建映射的登录、授权到期、网页服务重启或连接中断时关闭 TCP 连接。断线后请重新配对。</p>
   </dialog>
   <dialog id="forward-confirm" class="files-dialog action-confirmation" aria-labelledby="forward-confirm-title">
     <h2 id="forward-confirm-title">停止端口映射</h2><p id="forward-confirm-description" class="muted"></p>

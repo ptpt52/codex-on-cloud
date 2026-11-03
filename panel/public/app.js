@@ -1086,6 +1086,6 @@ document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!doc
 window.addEventListener('pagehide', () => { pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
 
-forwardingUI = createForwardUI({ api, allowed: () => loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' });
+forwardingUI = createForwardUI({ api, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online' });
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
