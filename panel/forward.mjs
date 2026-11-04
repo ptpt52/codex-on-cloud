@@ -11,11 +11,28 @@ export const FORWARD_LIMITS = Object.freeze({ mappings: 4, connections: 8, chunk
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
 const digest = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
-export function forwardPorts(value = '22') {
+export function forwardPorts(value = '*') {
+  if (value === '*') return '*';
   if (value === '') return [];
   const fields = String(value).split(',').map(item => item.trim());
-  if (fields.length > 16 || fields.some(item => !/^[1-9]\d{0,4}$/.test(item) || Number(item) > 65535)) throw new Error('TCP_FORWARD_PORTS 需为最多 16 个以逗号分隔的端口，或留空禁用');
+  if (fields.length > 16 || fields.some(item => !/^[1-9]\d{0,4}$/.test(item) || Number(item) > 65535)) throw new Error('TCP_FORWARD_PORTS 需为 *、最多 16 个以逗号分隔的端口，或留空禁用');
   return [...new Set(fields.map(Number))];
+}
+
+export function forwardTargetHost(value = '127.0.0.1') {
+  if (typeof value !== 'string' || value.length > 64) throw fail(400, '目标 IP 需为 IPv4 或 IPv6 地址');
+  let host = value.trim();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  const family = net.isIP(host);
+  if (!family || host.includes('%')) throw fail(400, '目标 IP 需为 IPv4 或 IPv6 地址，不含端口、域名或网卡标识');
+  if (family === 6) {
+    host = new URL(`http://[${host}]/`).hostname.slice(1, -1);
+    const mapped = /^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/.exec(host);
+    if (mapped) { const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16); host = [high >> 8, high & 255, low >> 8, low & 255].join('.'); }
+  }
+  const ipv4 = net.isIP(host) === 4;
+  if (host === '::' || !ipv4 && host.startsWith('ff') || ipv4 && (host === '0.0.0.0' || Number(host.split('.')[0]) >= 224)) throw fail(400, '目标 IP 需为具体的单播地址');
+  return host;
 }
 
 // Forwarding has its own lifetime: a desktop reconnect/mode change never
@@ -25,7 +42,9 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   let negotiating = false;
   const controls = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 48 * 1024 });
   const streams = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: FORWARD_LIMITS.chunk });
-  const ports = () => (config.forwardPorts ?? [22]).filter(port => ![config.port, config.agentPort, config.tunnelMetricsPort].includes(port));
+  const blockedPort = port => [config.port, config.agentPort, config.tunnelMetricsPort].includes(port);
+  const allPorts = () => (config.forwardPorts ?? '*') === '*';
+  const ports = () => (allPorts() ? [22] : config.forwardPorts).filter(port => !blockedPort(port));
   const invalidReason = item => item.authorizationError() || (item.state === 'pending' && item.expires <= now() ? 'pair_expired' : '') ||
     (item.recoverUntil && item.recoverUntil <= now() ? 'resume_expired' : '');
   const authorized = item => mappings.get(item.id) === item && !invalidReason(item);
@@ -53,7 +72,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (mappings.get(item.id) !== item) return;
     mappings.delete(item.id); clearTimeout(item.timer);
     disconnectStreams(item);
-    recent.unshift({ id: item.id, localPort: item.localPort, targetPort: item.targetPort, code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
+    recent.unshift({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
     recent.splice(FORWARD_LIMITS.recent);
     if (item.control) retire(item.control, code);
   }
@@ -75,22 +94,24 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   const timer = setInterval(refresh, 5000).unref();
   function list() {
     refresh();
-    return { ports: ports(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
-      mappings: [...mappings.values()].map(item => ({ id: item.id, localPort: item.localPort, targetPort: item.targetPort,
+    return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
+      mappings: [...mappings.values()].map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort,
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws.transport === 'direct').length })),
       recent: recent.map(({ pairHash: _pair, resumeHash: _resume, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
   function create(body, session, authorizationError) {
     refresh();
-    if (Object.keys(body).sort().join(',') !== 'localPort,targetPort' || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || !ports().includes(body.targetPort)) throw fail(400, '请选择允许的服务器端口，本机端口需在 1024–65535 之间');
+    if (!body || !['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')) || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535) throw fail(400, '本机端口需在 1024–65535 之间，请填写目标 IP 和端口');
+    if (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort)) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
+    const targetHost = forwardTargetHost(body.targetHost);
     if (authorizationError()) throw fail(401, '登录授权已失效，请重新登录');
     if (mappings.size >= FORWARD_LIMITS.mappings) throw fail(409, '最多保留 4 个映射，请先停止不用的映射');
     if ([...mappings.values()].some(item => item.session === session && item.localPort === body.localPort)) throw fail(409, '该本机端口已有待配对或活动映射');
     const code = secret(), item = { id: randomBytes(16).toString('hex'), session, authorizationError, pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
-      localPort: body.localPort, targetPort: body.targetPort, state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
+      localPort: body.localPort, targetHost, targetPort: body.targetPort, state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
     mappings.set(item.id, item);
-    return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetPort: item.targetPort };
+    return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort };
   }
   function stop(body) {
     if (Object.keys(body).join(',') !== 'id' || typeof body.id !== 'string' || !/^[a-f0-9]{32}$/.test(body.id)) throw fail(400, '映射标识无效');
@@ -136,7 +157,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       item.directClient = value.direct === 1;
       if (item.directClient) send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '' });
     });
-    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetPort: item.targetPort, maxConnections: FORWARD_LIMITS.connections, directProtocol: 1,
+    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, maxConnections: FORWARD_LIMITS.connections, directProtocol: 1,
       ...(item.resumeHash ? { resumeProtocol: 1, resumeMs: item.recoverUntil ? Math.max(1, item.recoverUntil - now()) : FORWARD_LIMITS.resumeMs, ...(resumeToken ? { resumeToken } : {}) } : {}) }));
   }
   function send(item, record) {
@@ -186,7 +207,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function transfer(item, ws) {
     const generation = item.generation;
-    const tcp = net.createConnection({ host: '127.0.0.1', port: item.targetPort, allowHalfOpen: true, highWaterMark: 32768 });
+    const tcp = net.createConnection({ host: item.targetHost, port: item.targetPort, allowHalfOpen: true, highWaterMark: 32768 });
     const stream = { ws, tcp }; item.streams.add(stream); if (ws.transport !== 'direct') heartbeat(ws, () => abort('heartbeat_timeout'));
     const live = () => active(item) && item.generation === generation && item.streams.has(stream);
     let connected = false, clientFin = false, pending = 0;

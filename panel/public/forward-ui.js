@@ -5,6 +5,8 @@ export function createForwardUI({ api, allowed }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
   let platform = { os: forwardOS(navigator), arch: null }, detection, downloads = [];
+  let policyReady = false, portsEnabled = false;
+  const targetAddress = item => { const host = item.targetHost || '127.0.0.1'; return (host.includes(':') ? '[' + host + ']' : host) + ':' + item.targetPort; };
   function renderDownloads() {
     const target = $('forward-downloads'); target.replaceChildren();
     const recommended = platform.arch && downloads.some(file => file.arch === platform.arch);
@@ -34,9 +36,9 @@ export function createForwardUI({ api, allowed }) {
   function update() {
     $('forward-button').disabled = !allowed();
     if (!allowed()) reset();
-    $('forward-create').disabled = !allowed() || busy || !room || !$('forward-target').options.length;
+    $('forward-create').disabled = !allowed() || busy || !room || !policyReady || !portsEnabled;
     $('forward-refresh').disabled = !allowed() || busy;
-    $('forward-local').disabled = $('forward-target').disabled = busy;
+    $('forward-local').disabled = $('forward-host').disabled = $('forward-target').disabled = busy;
   }
   async function request(path, options = {}) {
     const current = generation, abort = new AbortController(); controller = abort;
@@ -54,13 +56,14 @@ export function createForwardUI({ api, allowed }) {
   function render(data) {
     const recent = data.recent || [];
     room = data.mappings.length < data.limit;
-    const target = $('forward-target'), selected = target.value;
-    target.replaceChildren(...data.ports.map(port => { const option = document.createElement('option'); option.value = port; option.textContent = '服务器 127.0.0.1:' + port; return option; }));
-    if ([...target.options].some(option => option.value === selected)) target.value = selected;
+    portsEnabled = !!data.allPorts || data.ports.length > 0;
+    if (!policyReady && !data.allPorts && data.ports.length && !data.ports.includes(Number($('forward-target').value))) $('forward-target').value = data.ports[0];
+    policyReady = true;
+    $('forward-port-policy').textContent = data.allPorts ? '可自定义目标端口（1–65535），工作台管理端口除外。' : portsEnabled ? '服务器允许的目标端口：' + data.ports.join('、') : '端口映射已在服务器禁用。';
     $('forward-list').replaceChildren();
     for (const item of data.mappings) {
       const row = document.createElement('div'); row.className = 'forward-row'; row.dataset.forward = item.id;
-      const title = document.createElement('strong'); title.textContent = '本机 127.0.0.1:' + item.localPort + ' → 服务器 127.0.0.1:' + item.targetPort;
+      const title = document.createElement('strong'); title.textContent = '本机 127.0.0.1:' + item.localPort + ' → 目标 ' + targetAddress(item);
       const direct = item.direct, relay = location.protocol === 'https:' ? 'WSS 加密中转' : '本机 WebSocket 测试';
       const route = direct?.available ? direct.family + ' / UDP 加密直连' : relay;
       const remaining = Number.isFinite(item.recoverUntil) ? Math.max(0, Math.ceil((item.recoverUntil - Date.now()) / 1000)) : 0;
@@ -74,7 +77,7 @@ export function createForwardUI({ api, allowed }) {
       stop.addEventListener('click', () => {
         if (busy || !allowed()) return;
         pendingStop = item.id;
-        $('forward-confirm-description').textContent = '停止本机端口 ' + item.localPort + ' 的映射？通过此映射建立的 TCP 连接会断开。';
+        $('forward-confirm-description').textContent = '停止本机端口 ' + item.localPort + ' → ' + targetAddress(item) + ' 的映射？通过此映射建立的 TCP 连接会断开。';
         confirmation.showModal(); $('forward-cancel-stop').focus({ preventScroll: true });
       });
       row.append(title, state); if (item.state === 'active') row.append(network); row.append(stop); $('forward-list').append(row);
@@ -84,7 +87,7 @@ export function createForwardUI({ api, allowed }) {
     if (recent.length) {
       const title = document.createElement('strong'); title.textContent = '最近结束的映射（最多八条，保留十分钟）'; $('forward-recent').append(title);
       for (const item of recent) {
-        const row = document.createElement('p'); row.className = 'muted'; row.textContent = '本机 ' + item.localPort + ' → 服务器 ' + item.targetPort + '：' + item.error;
+        const row = document.createElement('p'); row.className = 'muted'; row.textContent = '本机 ' + item.localPort + ' → 目标 ' + targetAddress(item) + '：' + item.error;
         $('forward-recent').append(row);
       }
     }
@@ -95,8 +98,8 @@ export function createForwardUI({ api, allowed }) {
     else if (codeId && Date.now() >= codeExpires && codeMapping?.state === 'pending') $('forward-status').textContent = '配对码已过期，请重新生成。';
     if (codeId && (!codeMapping || codeMapping.state !== 'pending' || Date.now() >= codeExpires)) clearCode();
     downloads = (data.downloads || []).slice(0, 4).filter(file => Object.hasOwn(FORWARD_CLIENTS, file.arch)); renderDownloads();
-    $('forward-create').disabled = busy || !data.ports.length || data.mappings.length >= data.limit;
-    if (!data.ports.length) $('forward-status').textContent = '尚未允许目标端口，请在服务器配置 TCP_FORWARD_PORTS。';
+    update();
+    if (!portsEnabled) $('forward-status').textContent = '尚未允许目标端口，请在服务器配置 TCP_FORWARD_PORTS。';
   }
   async function load() {
     const current = generation;
@@ -106,14 +109,14 @@ export function createForwardUI({ api, allowed }) {
     if (data) render(data);
     if (generation === current && allowed() && dialog.open && !document.hidden && !busy) timer = setTimeout(load, 3000);
   }
-  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); $('forward-status').textContent = ''; dialog.showModal(); detectPlatform(); void load(); });
+  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); policyReady = false; portsEnabled = false; update(); $('forward-status').textContent = ''; dialog.showModal(); detectPlatform(); void load(); });
   $('forward-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { cancel(); clearCode(); if (confirmation.open) confirmation.close(); });
   $('forward-refresh').addEventListener('click', () => { $('forward-status').textContent = ''; void load(); });
   $('forward-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy || !allowed()) return;
     cancel();
-    const current = generation, body = { localPort: Number($('forward-local').value), targetPort: Number($('forward-target').value) };
+    const current = generation, body = { localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) };
     busy = true; clearTimeout(timer); update(); $('forward-status').textContent = '正在生成配对码…'; clearCode();
     const data = await request('/api/forward', { method: 'POST', body });
     if (generation !== current || !allowed() || !dialog.open) return;

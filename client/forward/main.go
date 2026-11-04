@@ -98,12 +98,27 @@ type readyMessage struct {
 	ID             string `json:"id"`
 	StreamToken    string `json:"streamToken"`
 	LocalPort      int    `json:"localPort"`
+	TargetHost     string `json:"targetHost"`
 	TargetPort     int    `json:"targetPort"`
 	MaxConnections int    `json:"maxConnections"`
 	DirectProtocol int    `json:"directProtocol"`
 	ResumeProtocol int    `json:"resumeProtocol"`
 	ResumeToken    string `json:"resumeToken"`
 	ResumeMs       int    `json:"resumeMs"`
+}
+
+func (r readyMessage) targetIP() string {
+	if r.TargetHost == "" {
+		return "127.0.0.1" // Servers before custom targets omit this field.
+	}
+	if len(r.TargetHost) > 64 {
+		return ""
+	}
+	ip := net.ParseIP(r.TargetHost)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 type connections struct {
@@ -320,9 +335,10 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		return connectionFailure(err)
 	}
 	if kind != websocket.TextMessage || len(data) > 512 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
-		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || ready.TargetPort < 1 || ready.TargetPort > 65535 || ready.MaxConnections != connectionLimit {
+		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || ready.targetIP() == "" || ready.TargetPort < 1 || ready.TargetPort > 65535 || ready.MaxConnections != connectionLimit {
 		return errors.New("服务器未返回有效映射授权")
 	}
+	ready.TargetHost = ready.targetIP()
 	if err := state.accept(ready); err != nil {
 		return err
 	}
@@ -422,7 +438,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	} else {
 		output.print(2, "保持助手运行，Ctrl+C 停止。短暂断网自动恢复映射；停止、退出原登录或授权过期后需重新配对。")
 	}
-	output.print(2, "%s：127.0.0.1:%d -> 服务器 127.0.0.1:%d（%s；最多 %d 条连接）", label, ready.LocalPort, ready.TargetPort, transport, connectionLimit)
+	output.print(2, "%s：127.0.0.1:%d -> 目标 %s（%s；最多 %d 条连接）", label, ready.LocalPort, net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)), transport, connectionLimit)
 	for {
 		kind, bytes, err := control.ReadMessage()
 		if err != nil {

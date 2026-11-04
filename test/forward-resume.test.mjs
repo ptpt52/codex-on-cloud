@@ -28,8 +28,8 @@ async function rejected(app, token, path = '/forward/resume', headers = {}) {
   });
 }
 const status = async app => (await (await app.request('/api/forward')).json());
-async function create(app, localPort = 2222) {
-  const response = await app.request('/api/forward', { method: 'POST', body: { localPort, targetPort: app.config.forwardPorts[0] } });
+async function create(app, localPort = 2222, targetHost = '127.0.0.1') {
+  const response = await app.request('/api/forward', { method: 'POST', body: { localPort, targetHost, targetPort: app.config.forwardPorts[0] } });
   assert.equal(response.status, 200); return response.json();
 }
 async function connected(app, path, token, direct = false) {
@@ -45,10 +45,11 @@ async function suspend(app, control) {
 test('recovery uses a separate capability, drops old TCP, rotates data authorization and opens targets only for new clients', async t => {
   const peers = new Set(); let accepted = 0, received = '';
   const target = net.createServer(socket => { accepted++; peers.add(socket); socket.on('error', () => {}); socket.on('close', () => peers.delete(socket)); socket.on('data', bytes => { received += bytes.toString(); socket.write(bytes); }); });
-  target.listen(0, '127.0.0.1'); await once(target, 'listening');
+  target.listen(0, '127.0.0.2'); await once(target, 'listening');
   const app = await fixture({ forwardPorts: [target.address().port] });
   t.after(async () => { await app.close(); for (const socket of peers) socket.destroy(); await new Promise(resolve => target.close(resolve)); });
-  await app.login(); const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code);
+  await app.login(); const mapping = await create(app, 2222, '127.0.0.2'), first = await connected(app, '/forward/helper', mapping.code);
+  assert.equal(first.ready.targetHost,'127.0.0.2');
   assert.equal(first.ready.resumeToken.length, 43); assert.equal(first.ready.resumeMs, FORWARD_LIMITS.resumeMs);
   assert.notEqual(first.ready.resumeToken, first.ready.streamToken); assert.notEqual(first.ready.resumeToken, mapping.code);
   assert.equal((await rejected(app, mapping.code)).status, 401); assert.equal((await rejected(app, first.ready.streamToken)).status, 401);
@@ -63,6 +64,7 @@ test('recovery uses a separate capability, drops old TCP, rotates data authoriza
   assert.equal((await rejected(app, first.ready.streamToken, '/forward/data')).status, 401);
   const second = await connected(app, '/forward/resume', first.ready.resumeToken);
   assert.equal(second.ready.id, mapping.id); assert.equal(second.ready.resumeToken, undefined); assert.notEqual(second.ready.streamToken, first.ready.streamToken);
+  assert.equal(second.ready.targetHost,'127.0.0.2'); assert.equal(second.ready.targetPort,target.address().port);
   assert.equal((await status(app)).mappings[0].recoverUntil, null); assert.equal(accepted, 1); assert.equal(received, 'sent once');
   assert.equal((await rejected(app, mapping.code, '/forward/helper')).code, 'pair_used');
   const fresh = await open(app, '/forward/data', second.ready.streamToken); await until(() => fresh.records.length === 1);

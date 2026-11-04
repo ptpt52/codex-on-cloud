@@ -34,6 +34,7 @@ func TestResumeAuthorizationKeepsMappingScopeAndCannotExtendDeadline(t *testing.
 	}
 	for _, mutation := range []func(*readyMessage){
 		func(r *readyMessage) { r.ID = strings.Repeat("c", 32) }, func(r *readyMessage) { r.LocalPort++ },
+		func(r *readyMessage) { r.TargetHost = "192.168.1.10" },
 		func(r *readyMessage) { r.TargetPort++ }, func(r *readyMessage) { r.ResumeProtocol = 0 },
 		func(r *readyMessage) { r.ResumeToken = first.ResumeToken }, func(r *readyMessage) { r.ResumeMs = 30001 },
 		func(r *readyMessage) { r.ResumeMs = 0 },
@@ -50,6 +51,33 @@ func TestResumeAuthorizationKeepsMappingScopeAndCannotExtendDeadline(t *testing.
 	first.ResumeToken = "invalid"
 	if (&resumeState{}).accept(first) == nil {
 		t.Fatal("Invalid resume capability accepted")
+	}
+}
+
+func TestCustomTargetRecoveryBindsIPv4AndIPv6AndKeepsOldServerCompatibility(t *testing.T) {
+	for _, host := range []string{"192.168.1.10", "2001:db8::1", "::1"} {
+		first := readyMessage{ID: strings.Repeat("a", 32), LocalPort: 2222, TargetHost: host, TargetPort: 5432, ResumeProtocol: 1, ResumeToken: strings.Repeat("b", 43), ResumeMs: 30000}
+		s := &resumeState{}
+		if err := s.accept(first); err != nil {
+			t.Fatal(err)
+		}
+		resumed := first
+		resumed.ResumeToken = ""
+		if host == "2001:db8::1" {
+			resumed.TargetHost = "2001:0DB8:0:0:0:0:0:1"
+		}
+		if err := s.accept(resumed); err != nil {
+			t.Fatal("Equivalent target rejected", err)
+		}
+		resumed.TargetHost = ""
+		if s.accept(resumed) == nil {
+			t.Fatal("Missing target changed custom mapping to loopback")
+		}
+	}
+	for _, host := range []string{"example.com", "127.0.0.1:22", "fe80::1%eth0", "1.2.3.4\ncommand", strings.Repeat("a", 65)} {
+		if (&resumeState{}).accept(readyMessage{TargetHost: host}) == nil {
+			t.Fatal("Invalid destination accepted")
+		}
 	}
 }
 

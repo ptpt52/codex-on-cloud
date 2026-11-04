@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import WebSocket from 'ws';
 import { fixture } from './fixture.mjs';
-import { createForwarding, forwardPorts } from '../panel/forward.mjs';
+import { createForwarding, forwardPorts, forwardTargetHost } from '../panel/forward.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 
 const token = () => randomBytes(32).toString('base64url');
@@ -24,7 +24,7 @@ async function echo(t, options = {}) {
     if (options.onSocket) return options.onSocket(socket);
     socket.on('data', bytes => socket.write(bytes)); socket.on('end', () => socket.end());
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  server.listen(0, options.host || '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { for (const socket of connections) socket.destroy(); await new Promise(resolve => server.close(resolve)); });
   return { port: server.address().port, get count() { return count; } };
 }
@@ -54,7 +54,7 @@ async function helper(app, code) {
 }
 
 test('forward allowlists and pending authorizations are bounded, expire and never expose credentials in status', () => {
-  assert.deepEqual(forwardPorts(), [22]); assert.deepEqual(forwardPorts('22,5432,22'), [22,5432]); assert.deepEqual(forwardPorts(''), []);
+  assert.equal(forwardPorts(), '*'); assert.equal(forwardPorts('*'), '*'); assert.deepEqual(forwardPorts('22,5432,22'), [22,5432]); assert.deepEqual(forwardPorts(''), []);
   for (const value of ['0', '65536', '-22', '22;echo x', '22,', Array(17).fill('22').join(',')]) assert.throws(() => forwardPorts(value));
   let time = 10, invalid = '';
   const service = createForwarding({ forwardPorts: [22, 36080], port: 36080 }, { now: () => time }), owner = {};
@@ -78,7 +78,7 @@ test('forward allowlists and pending authorizations are bounded, expire and neve
   } finally { service.close(); }
 });
 
-test('forward APIs require login, Host, Origin and CSRF independently of desktop ownership and accept only loopback targets', async t => {
+test('forward APIs require login, Host, Origin and CSRF independently of desktop ownership and preserve configured port restrictions', async t => {
   const app = await fixture({ forwardPorts: [22,5432] }); t.after(() => app.close());
   assert.equal((await app.request('/api/forward')).status,401);
   await app.login(); assert.equal((await app.request('/api/forward')).status,200);
@@ -86,11 +86,40 @@ test('forward APIs require login, Host, Origin and CSRF independently of desktop
   const body = { localPort: 2222, targetPort: 22 };
   for (const headers of [{ origin: 'https://evil.test' }, { 'x-csrf-token': '' }]) assert.equal((await app.request('/api/forward', { method: 'POST', body, headers })).status,403);
   assert.equal(await new Promise((resolve,reject)=>{const req=http.get(app.config.origin+'/api/forward',{headers:{host:'evil.test',cookie:app.cookie}},res=>{res.resume();res.once('end',()=>resolve(res.statusCode));});req.once('error',reject);}),400);
-  for (const invalid of [{ ...body, targetPort: 80 }, { ...body, targetHost: '192.168.1.1' }, { ...body, localPort: 0 }, { ...body, targetPort: '22' }]) assert.equal((await app.request('/api/forward', { method:'POST', body:invalid })).status,400);
+  for (const invalid of [{ ...body, targetPort: 80 }, { ...body, targetHost: 'server.example' }, { ...body, targetHost: '192.168.1.1', targetPort: 80 }, { ...body, localPort: 0 }, { ...body, targetPort: '22' }]) assert.equal((await app.request('/api/forward', { method:'POST', body:invalid })).status,400);
   for (const id of [null, 12, {toString:null,valueOf:null}, '../22']) assert.equal((await app.request('/api/forward/stop',{method:'POST',body:{id}})).status,400);
   const mapping = await created(app);
   const listed = await (await app.request('/api/forward')).json(); assert.equal(listed.mappings.length,1); assert.equal(JSON.stringify(listed).includes(mapping.code),false);
   assert.deepEqual(app.inputCalls,[]); assert.deepEqual(app.terminalInputs,[]); assert.equal(app.managementStats.restarts,0);
+});
+
+test('custom targets accept literal IPv4 and IPv6 without DNS, normalize aliases and keep authorizations bound to one destination', () => {
+  for (const [input, expected] of [[undefined, '127.0.0.1'], [' 192.168.1.10 ', '192.168.1.10'], ['[2001:DB8:0:0::1]', '2001:db8::1'], ['::1', '::1'], ['::ffff:127.0.0.2', '127.0.0.2']]) assert.equal(forwardTargetHost(input), expected);
+  for (const host of [null, 123, '', 'localhost', '1.2.3', '010.0.0.1', 'https://192.168.1.1', '192.168.1.1:22', '192.168.1.1;echo x', '1.2.3.4\nX-Host: evil', 'fe80::1%eth0', '0.0.0.0', '::', '224.0.0.1', 'ff02::1', '::ffff:224.0.0.1', '255.255.255.255', 'a'.repeat(65)]) assert.throws(() => forwardTargetHost(host), { status:400 });
+  const service = createForwarding({ forwardPorts:'*', port:36080, agentPort:36902, tunnelMetricsPort:36903 });
+  try {
+    const body = { localPort:2222, targetHost:'192.168.1.10', targetPort:5432 }, item = service.create(body, {}, () => '');
+    body.targetHost = '192.168.1.11'; body.targetPort = 3306;
+    assert.equal(item.targetHost, '192.168.1.10'); assert.equal(service.list().allPorts, true);
+    assert.equal(service.list().mappings[0].targetHost, '192.168.1.10'); assert.equal(service.list().mappings[0].targetPort, 5432);
+    for (const targetPort of [0, 65536, 22.5, '22', 36080, 36902, 36903]) assert.throws(() => service.create({ localPort:2223, targetHost:'::1', targetPort }, {}, () => ''), { status:400 });
+    service.stop({id:item.id}); assert.equal(service.list().recent[0].targetHost, '192.168.1.10');
+    const old = service.create({ localPort:2222, targetPort:65535 }, {}, () => ''); assert.equal(old.targetHost, '127.0.0.1');
+  } finally { service.close(); }
+  const disabled = createForwarding({forwardPorts:[]});
+  try { assert.throws(() => disabled.create({localPort:2222,targetHost:'192.168.1.10',targetPort:22}, {}, () => ''), {status:400}); } finally { disabled.close(); }
+});
+
+for (const host of ['127.0.0.2', '::1']) test(`custom ${host} destination receives binary data only when a client opens its authorized stream`, async t => {
+  const target = await echo(t, {host}), app = await fixture({forwardPorts:'*'}); t.after(() => app.close()); await app.login();
+  const response = await app.request('/api/forward', {method:'POST',body:{localPort:2222,targetHost:host,targetPort:target.port}}); assert.equal(response.status,200);
+  const mapping = await response.json(), control = await helper(app, mapping.code); t.after(() => control.ws.terminate());
+  assert.equal(control.ready.targetHost,host); assert.equal(control.ready.targetPort,target.port); assert.equal(target.count,0);
+  const stream = await socket(app,'/forward/data',control.ready.streamToken); t.after(() => stream.ws.terminate());
+  await until(() => stream.records.some(record => record.data.type === 'ready'));
+  const bytes = Buffer.concat([Buffer.from('\0中文\r\n'),randomBytes(8192)]); stream.ws.send(bytes);
+  await until(() => stream.records.some(record => record.binary)); assert.deepEqual(Buffer.concat(stream.records.filter(record => record.binary).map(record => record.data)),bytes); assert.equal(target.count,1);
+  assert.deepEqual(app.inputCalls,[]); assert.deepEqual(app.terminalInputs,[]);
 });
 
 test('native pairing is single-use and role-scoped, and forwards literal binary bytes without entering the terminal', async t => {

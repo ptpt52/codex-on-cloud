@@ -16,7 +16,7 @@ import { rtcAddress, rtcIPv6Address } from '../panel/rtc.mjs';
 
 const exec=promisify(execFile),directory=await mkdtemp(join(tmpdir(),'codex-forward-native-')),children=[],connections=new Set(),controlLinks=new Set();
 const clientDirectory=resolve('client/forward'),binary=join(directory,'forward-helper'),key=join(directory,'key.pem'),cert=join(directory,'cert.pem');
-let app,tls,target,occupied,testDeadline;
+let app,tls,target,target6,occupied,testDeadline;
 async function waitFor(probe,message,attempts=250) {
   for(let i=0;i<attempts;i++){if(await probe())return;await new Promise(resolve=>setTimeout(resolve,20));}
   throw new Error(message);
@@ -31,7 +31,7 @@ try {
   await exec('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1'],{timeout:10000,maxBuffer:8192});
   let accepted=0,receivedAfterServerFin,receivedBytes=0,dropDirectReady=false,blockResume=false;
   const managementRequests={pair:0,resume:0};
-  target=net.createServer({allowHalfOpen:true},socket=>{
+  const echoConnection=socket=>{
     accepted++;connections.add(socket);socket.on('error',()=>{});socket.once('close',()=>connections.delete(socket));
     let first=true,afterFin=false,serverFin=false;const parts=[];
     socket.on('data',bytes=>{
@@ -43,11 +43,14 @@ try {
     });
     socket.on('drain',()=>socket.resume());
     socket.on('end',()=>{if(serverFin)receivedAfterServerFin=Buffer.concat(parts);else socket.end(afterFin?Buffer.concat([Buffer.from('after-fin:'),...parts]):undefined);});
-  });
-  target.listen(0,'127.0.0.1');await once(target,'listening');
+  };
+  target=net.createServer({allowHalfOpen:true},echoConnection);
+  target.listen(0,'127.0.0.2');await once(target,'listening');
+  target6=net.createServer({allowHalfOpen:true},echoConnection);
+  target6.listen(0,'::1');await once(target6,'listening');
   const directPeers=[];let onlySix=false;
   const ipv6Only=sdp=>sdp.split(/\r?\n/).filter(line=>!line.startsWith('a=candidate:')||line.split(' ')[4]?.includes(':')).join('\r\n');
-  app=await fixture({forwardPorts:[target.address().port],forwardPeerFactory:options=>{
+  app=await fixture({forwardPorts:'*',forwardPeerFactory:options=>{
     const peer=createForwardPeer({...options,connect:socket=>{
       if(dropDirectReady){dropDirectReady=false;const send=socket.send;socket.send=(value,...args)=>{if(value==='{"type":"ready"}'){socket.terminate();return;}send(value,...args);};}
       options.connect(socket);
@@ -86,10 +89,10 @@ try {
     child.stdout.on('data',collect);child.stderr.on('data',collect);child.stdin.end(mapping.code+'\n');
     return{child,mapping,finished,get output(){return output;}};
   }
-  async function helper(port,targetPort=target.address().port){
-    const mapping=await request('/api/forward',{localPort:port,targetPort}),active=launch(mapping);
+  async function helper(port,targetPort=target.address().port,targetHost='127.0.0.2'){
+    const mapping=await request('/api/forward',{localPort:port,targetHost,targetPort}),active=launch(mapping);
     await waitFor(()=>active.output.includes('映射已开启'),'Native helper did not start');
-    assert.equal(active.output.includes(mapping.code),false);return active;
+    assert.equal(active.output.includes(mapping.code),false);assert.ok(active.output.includes(net.isIP(targetHost)===6?'['+targetHost+']:'+targetPort:targetHost+':'+targetPort));return active;
   }
   async function roundtrip(port,payload){
     const socket=net.createConnection({host:'127.0.0.1',port,allowHalfOpen:true}),chunks=[];connections.add(socket);
@@ -131,7 +134,7 @@ try {
   const blocked=launch(await request('/api/forward',{localPort:occupied.address().port,targetPort:target.address().port}));await blocked.finished;
   assert.match(blocked.output,/端口已被占用/);assert.equal((await request('/api/forward')).recent[0].code,'local_port_in_use');
   // Target errors keep the listener usable and have a fixed console output cap.
-  const unavailable=await freePort();app.config.forwardPorts.push(unavailable);
+  const unavailable=await freePort();
   const badPort=await freePort(),bad=await helper(badPort,unavailable);
   for(let i=0;i<22;i++){
     const peer=net.createConnection({host:'127.0.0.1',port:badPort});connections.add(peer);peer.on('error',()=>{});peer.once('close',()=>connections.delete(peer));await once(peer,'close');
@@ -235,7 +238,7 @@ try {
   const ipv6=rtcIPv6Address(undefined,rtcAddress());
   if(ipv6){
     app.config.webrtcIPv6=true;app.config.webrtcIPv6Address=ipv6;onlySix=true;
-    const ipv6Port=await freePort(),six=await helper(ipv6Port);
+    const ipv6Port=await freePort(),six=await helper(ipv6Port,target6.address().port,'::1');
     await waitFor(async()=> (await request('/api/forward')).mappings[0].direct.available,'Native global IPv6 direct path did not become ready',1000);
     assert.equal((await request('/api/forward')).mappings[0].direct.family,'IPv6');
     assert.deepEqual(await roundtrip(ipv6Port,payload),payload);
@@ -243,7 +246,11 @@ try {
   }else console.log('SKIP native IPv6: no assigned global IPv6; IPv4 does not count as IPv6 verification');
   assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
   for(const child of children)assert.notEqual(child.exitCode,66,'Go race detector failed');
-  console.log('✓ real TLS/WSS/TCP and UDP/DTLS/SCTP: 8 MiB, half-closes, heartbeat, pinned streams, relay fallback, management resume, 30-second expiry, no pairing/TCP replay, direct rebuild, IPv6 when assigned, revocation and bounded diagnostics; no desktop or Codex input');
+  app.config.webrtc=false;
+  const target6Port=await freePort(),sixRelay=await helper(target6Port,target6.address().port,'::1');
+  assert.deepEqual(await roundtrip(target6Port,Buffer.from('IPv6 target through WSS')),Buffer.from('IPv6 target through WSS'));
+  await request('/api/forward/stop',{id:sixRelay.mapping.id});await sixRelay.finished;
+  console.log('✓ real TLS/WSS/TCP and UDP/DTLS/SCTP: custom IPv4/IPv6 targets, 8 MiB, half-closes, heartbeat, pinned streams, relay fallback, management resume, 30-second expiry, no pairing/TCP replay, direct rebuild, IPv6 when assigned, revocation and bounded diagnostics; no desktop or Codex input');
   })(),new Promise((_,reject)=>{testDeadline=setTimeout(()=>reject(new Error('Native forwarding verification exceeded five minutes')),300000);})]);
 } finally {
   clearTimeout(testDeadline);
@@ -252,6 +259,7 @@ try {
   await app?.close();
   if(tls)await new Promise(resolve=>tls.close(resolve));
   if(target)await new Promise(resolve=>target.close(resolve));
+  if(target6)await new Promise(resolve=>target6.close(resolve));
   if(occupied)await new Promise(resolve=>occupied.close(resolve));
   await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:50});
 }

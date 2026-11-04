@@ -75,7 +75,7 @@ test('reload and takeover retain helper authorization and let either page manage
     await expect(page.locator('#forward-code')).not.toHaveValue('');
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
     expect(await page.locator('#forward-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
-    for(const id of ['forward-create','forward-local','forward-target','forward-copy']){
+    for(const id of ['forward-create','forward-local','forward-host','forward-target','forward-copy']){
       const box=await page.locator('#'+id).boundingBox();expect(box.height).toBeGreaterThanOrEqual(44);
     }
     helper=await paired(app,await page.locator('#forward-code').inputValue());await expect(page.locator('.forward-row')).toContainText('已连接');
@@ -157,6 +157,50 @@ test('route diagnostics distinguish new-connection preference from mixed existin
     await expect(page.locator('.forward-network')).toContainText('直连心跳超时');await expect(page.locator('.forward-network')).toContainText('直连 1 / 中转 1');
     expect(helper.ws.readyState).toBe(WebSocket.OPEN);expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
   }finally{helper?.ws.terminate();await app.close();}
+});
+
+for (const host of ['192.168.1.10', '2001:db8:1234:5678:9abc:def0:1234:5678']) {
+  test(`custom ${host} target stays bound across form edits, polling and recovery`, async ({page},info) => {
+    const app=await fixture({rfb:true,rfbSize:{width:640,height:480},forwardPorts:'*'}); let helper,resumed;
+    const destination=(host.includes(':')?'['+host+']':host)+':5432';
+    try {
+      if(info.project.name==='mobile')await page.setViewportSize({width:320,height:800});
+      await login(page,app);await page.locator('#forward-button').click();
+      await expect(page.locator('#forward-port-policy')).toContainText('可自定义目标端口');
+      await page.locator('#forward-host').fill(host);await page.locator('#forward-target').fill('5432');
+      const create=page.waitForRequest(request=>request.method()==='POST'&&new URL(request.url()).pathname==='/api/forward');
+      await page.locator('#forward-create').click();expect((await create).postDataJSON()).toEqual({localPort:2222,targetHost:host,targetPort:5432});
+      await expect(page.locator('#forward-code')).not.toHaveValue('');const code=await page.locator('#forward-code').inputValue();
+      await expect(page.locator('.forward-row')).toContainText(destination);
+      await page.locator('#forward-host').fill('192.168.1.20');await page.locator('#forward-target').fill('3306');await page.locator('#forward-refresh').click();
+      await expect(page.locator('#forward-host')).toHaveValue('192.168.1.20');await expect(page.locator('#forward-target')).toHaveValue('3306');
+      helper=await paired(app,code,'/forward/helper',true);await expect(page.locator('.forward-row')).toContainText('已连接');
+      expect(helper.ready.targetHost).toBe(host);expect(helper.ready.targetPort).toBe(5432);
+      const closed=once(helper.ws,'close');helper.ws.terminate();await closed;await page.locator('#forward-refresh').click();await expect(page.locator('.forward-row')).toContainText('正在自动恢复');
+      resumed=await paired(app,helper.ready.resumeToken,'/forward/resume',true);await page.locator('#forward-refresh').click();await expect(page.locator('.forward-row')).toContainText('已连接');
+      expect(resumed.ready.targetHost).toBe(host);expect(resumed.ready.targetPort).toBe(5432);
+      await page.locator('.forward-row button').click();await expect(page.locator('#forward-confirm-description')).toContainText(destination);
+      await page.keyboard.press('Enter');expect(resumed.ws.readyState).toBe(WebSocket.OPEN);
+      expect(await page.locator('#forward-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+      await page.locator('.forward-row button').click();await page.locator('#forward-accept-stop').click();
+      await expect(page.locator('#forward-recent')).toContainText(destination);
+      expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
+    } finally { helper?.ws.terminate();resumed?.ws.terminate();await app.close(); }
+  });
+}
+
+test('custom target validation retains drafts and server port restrictions while an empty policy disables creation',async({page})=>{
+  const app=await fixture({rfb:true,rfbSize:{width:640,height:480},forwardPorts:[5432]});
+  try {
+    await login(page,app);await page.locator('#forward-button').click();await expect(page.locator('#forward-target')).toHaveValue('5432');
+    await expect(page.locator('#forward-port-policy')).toContainText('5432');
+    await page.locator('#forward-host').fill('example.com');await page.locator('#forward-create').click();await expect(page.locator('#forward-status')).toContainText('目标 IP 需为 IPv4 或 IPv6');
+    await expect(page.locator('#forward-host')).toHaveValue('example.com');await expect(page.locator('.forward-row')).toHaveCount(0);
+    await page.locator('#forward-host').fill('192.168.1.10');await page.locator('#forward-target').fill('3306');await page.locator('#forward-create').click();
+    await expect(page.locator('#forward-status')).toContainText('服务器端口限制');await expect(page.locator('.forward-row')).toHaveCount(0);
+    app.config.forwardPorts=[];await page.locator('#forward-refresh').click();await expect(page.locator('#forward-create')).toBeDisabled();await expect(page.locator('#forward-port-policy')).toContainText('禁用');
+    expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
 });
 
 for (const architecture of ['arm', 'x86', 'unavailable']) {

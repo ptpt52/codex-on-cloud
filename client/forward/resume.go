@@ -16,6 +16,7 @@ const resumeAttempts = 8
 
 type resumeState struct {
 	token, id             string
+	targetHost            string
 	localPort, targetPort int
 	deadline              time.Time
 	active                bool
@@ -24,8 +25,12 @@ type resumeState struct {
 var mappingPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 func (s *resumeState) accept(ready readyMessage) error {
+	host := ready.targetIP()
+	if host == "" {
+		return failure("protocol_error")
+	}
 	if s.token != "" {
-		if ready.ResumeProtocol != 1 || ready.ResumeToken != "" || ready.ID != s.id || ready.LocalPort != s.localPort || ready.TargetPort != s.targetPort || ready.ResumeMs < 1 || ready.ResumeMs > int(resumeWindow/time.Millisecond) {
+		if ready.ResumeProtocol != 1 || ready.ResumeToken != "" || ready.ID != s.id || ready.LocalPort != s.localPort || host != s.targetHost || ready.TargetPort != s.targetPort || ready.ResumeMs < 1 || ready.ResumeMs > int(resumeWindow/time.Millisecond) {
 			return failure("protocol_error")
 		}
 		deadline := time.Now().Add(time.Duration(ready.ResumeMs) * time.Millisecond)
@@ -41,6 +46,7 @@ func (s *resumeState) accept(ready readyMessage) error {
 		return failure("protocol_error")
 	}
 	s.token, s.id, s.localPort, s.targetPort = ready.ResumeToken, ready.ID, ready.LocalPort, ready.TargetPort
+	s.targetHost = host
 	return nil
 }
 
