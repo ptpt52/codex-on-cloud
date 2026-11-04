@@ -95,6 +95,10 @@ systemctl --user restart codex-cloud-desktop.service
 
 Node/Codex 安装路径发生变化时重新运行 `npm run native:install`，刷新服务捕获的 PATH。该命令不重启正在运行的服务。
 
+## 界面主题
+
+工作台采用 [X-Wrt 主题](https://raw.githubusercontent.com/x-wrt/luci/master/themes/luci-theme-x-wrt/htdocs/luci-static/x-wrt/cascade.css)的橙灰配色：橙色 `#f7971d`、深色导航 `#231815`、灰白内容区，并跟随系统切换深浅模式。登录、工具栏、弹窗、快捷键和端口映射使用统一配色；在线、警告与错误分别保留绿、黄、红状态。网页终端的实时显示与历史共用底色和选区颜色，ANSI 文字颜色保持原样。
+
 ## 桌面显示
 
 - 电脑与手机统一默认使用 1600×3200 的固定桌面，按浏览器可用宽度缩放；高度超出可用区域时上下滚动查看，不再把桌面挤到只有几百像素高。

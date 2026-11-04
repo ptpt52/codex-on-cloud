@@ -4,7 +4,7 @@ const names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'wh
   'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'];
 const ansi = ['#2e3436', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf',
   '#555753', '#ef2929', '#8ae234', '#fce94f', '#729fcf', '#ad7fa8', '#34e2e2', '#eeeeec'];
-export const TERMINAL_THEME = Object.freeze({ background: '#151d1a', foreground: '#e7eee9', cursor: '#a8d8b7', selectionBackground: '#3e6652',
+export const TERMINAL_THEME = Object.freeze({ background: '#222222', foreground: '#e7eee9', cursor: '#f7971d', selectionBackground: '#584329',
   ...Object.fromEntries(names.map((name, index) => [name, ansi[index]])) });
 export const HISTORY_STYLE_LIMIT = 4096;
 export const HISTORY_TEXT_LIMIT = 65536, HISTORY_SEARCH_LIMIT = 1000, HISTORY_QUERY_LIMIT = 128;

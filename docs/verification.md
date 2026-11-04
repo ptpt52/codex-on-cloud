@@ -346,3 +346,13 @@ Mac ZIP 固定含同一目录内的程序、Start.command 和 README.txt，程�
 `npm run test:forward:package` 以固定 Go 1.26.4 实际交叉编译 darwin/arm64 与 darwin/amd64，检查真实 Mach-O 的架构、可执行类型、macOS 12 目标、ARM64 签名结构范围，核对 ZIP 程序逐字节相等、CRC、执行权限和 Go 构建元数据。`npm run test:forward` 的同源 Linux 助手及 race 检测也通过，保留 8 MiB、TLS/WSS/TCP、UDP/DTLS/SCTP、半关闭、原配对/字节不重放、真实 30 秒预算、恢复后重建直连及已分配公网 IPv6 检查；执行器仍为 fixture，没有操作生产终端或真实 SSH 服务。
 
 用户确认可用的真机为 Apple Silicon（M 系列）。当前服务器是 Linux，上述交叉编译与启动脚本替身测试不等于在 Mac 上运行；首次打开、实际配对、SSH/SFTP、短暂断网恢复与明确停止的 M 系列设备验收需在下载新版后确认。Intel Mac 和跨运营商验收仍需对应环境。
+
+## XWRT 界面配色
+
+2026-11-04：参照官方 [luci-theme-x-wrt 配色](https://raw.githubusercontent.com/x-wrt/luci/master/themes/luci-theme-x-wrt/htdocs/luci-static/x-wrt/cascade.css)，统一登录、导航、工具栏、弹窗、文件、快捷键、端口映射、图标和 PWA 的橙灰主题，跟随系统深浅模式。网页终端实时与历史共用背景、光标及选区颜色，保留原 ANSI 调色板。仅修改前端显示与公开 Service Worker 缓存版本，保留现有防误触、独立粘贴/Enter 和输入恢复规则；没有修改远程 XFCE 主题或重启桌面任务。
+
+`npm run check` 的 125 项脚本检查、`node --test test/terminal-history-style.test.mjs` 的 9 项测试通过。`npm run test:browser` 分手机和电脑各运行 36 项，共 72 项通过，覆盖工作台、显示控件、防误触、端口映射、终端切换、历史检索/复制与宽屏排版。首次合并运行被 SIGTERM 中止后，清理测试实例并完整重跑两批；没有将被中止的运行算作通过。测试使用模拟 RFB/管理执行器，运行实际 noVNC、网页终端与认证网关；宽度专项另有隔离的真实 tmux 用例，没有对生产终端发送输入。
+
+另用真实 Chrome 渲染 1440×1000 和 390×844 的深浅模式，检查登录、工作台和文件弹窗截图；四种组合均无横向溢出。主要按钮文字对比度为 7.75:1，文件下载链接在浅色/深色弹窗分别为 6.98:1 和 9.04:1。截图使用 fixture，与真实 Xvfb/noVNC/Codex/Cloudflare 部署验收分开。
+
+部署仅重启网页面板，前后核对桌面、管理器、Tunnel 与持久桌面进程身份、终端目录摘要、显示设置、偏好及登录会话均保持一致，VNC socket 仍为 0600。面板和助手继续只监听回环地址；本地/公网健康检查、助手就绪检查通过，公网五项静态资源与本地 SHA256 一致，三项私有样式/主题资源未登录均返回 401。没有通过生产登录或发送输入进行验收；面板重启后的已有端口映射需重新配对。
