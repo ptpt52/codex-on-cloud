@@ -163,10 +163,12 @@
   </dialog>
   <dialog id="forward-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-title">
     <div class="dialog-heading"><h2 id="forward-title">TCP 端口映射</h2><button id="forward-close" class="quiet" type="button" aria-label="关闭端口映射">✕</button></div>
-    <p class="muted">下载并运行 Windows 免安装助手，将本机端口连接到服务器允许的 TCP 服务。新连接优先局域网或 IPv6 加密直连，不可用时走 WSS 中转；已有连接保持原通道。</p>
+    <p class="muted">下载并运行 Mac 或 Windows 免安装助手，将本机端口连接到服务器允许的 TCP 服务。新连接优先局域网或 IPv6 加密直连，不可用时走 WSS 中转；已有连接保持原通道。</p>
+    <p id="forward-platform-note" class="muted">请选择运行助手的电脑版本。</p>
     <div id="forward-downloads" class="forward-downloads"></div>
+    <details id="forward-mac-help" class="forward-mac-help" hidden><summary>Mac 首次运行说明</summary><p>需要 macOS 12 或更新版本。解压 ZIP，双击文件夹内的 Start.command，在终端窗口粘贴配对码；也可在终端进入该文件夹运行 ./codex-cloud-forward。</p><p>如系统阻止打开，请先核对下载包的 SHA256，再按<a href="https://support.apple.com/zh-cn/102445" target="_blank" rel="noopener noreferrer">Apple 的首次打开说明</a>，在“系统设置 → 隐私与安全性”中确认。本版尚未进行 Developer ID 签名及 Apple 公证。</p></details>
     <form id="forward-form" class="forward-form">
-      <label for="forward-local">Windows 本机端口<input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
+      <label for="forward-local">本机端口<input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
       <label for="forward-target">服务器目标端口<select id="forward-target" required></select></label>
       <button id="forward-create" class="primary" type="submit" disabled>生成一次性配对码</button>
     </form>
@@ -175,7 +177,7 @@
     <div id="forward-list" class="forward-list"></div>
     <div id="forward-recent" class="forward-recent" aria-label="最近结束的映射"></div>
     <button id="forward-refresh" class="secondary" type="button">刷新列表</button>
-    <p class="muted">助手只监听 Windows 的 127.0.0.1。刷新、关闭网页或切换模式均保留映射。新版助手在检测到短暂断网后可于 30 秒内自动恢复，已有 TCP 连接需由原客户端重连。停止、退出原登录或授权过期后结束恢复；网页服务重启后需重新配对。</p>
+    <p class="muted">助手只监听本机的 127.0.0.1。刷新、关闭网页或切换模式均保留映射。新版助手在检测到短暂断网后可于 30 秒内自动恢复，已有 TCP 连接需由原客户端重连。停止、退出原登录或授权过期后结束恢复；网页服务重启后需重新配对。</p>
   </dialog>
   <dialog id="forward-confirm" class="files-dialog action-confirmation" aria-labelledby="forward-confirm-title">
     <h2 id="forward-confirm-title">停止端口映射</h2><p id="forward-confirm-description" class="muted"></p>

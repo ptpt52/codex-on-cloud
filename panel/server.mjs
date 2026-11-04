@@ -24,6 +24,7 @@ const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/forward-ui.js', ['forward-ui.js', 'text/javascript; charset=utf-8']],
+  ['/forward-platform.js', ['forward-platform.js', 'text/javascript; charset=utf-8']],
   ['/control.js', ['control.js', 'text/javascript; charset=utf-8']],
   ['/shortcuts.js', ['shortcuts.js', 'text/javascript; charset=utf-8']],
   ['/shortcut-menu.js', ['shortcut-menu.js', 'text/javascript; charset=utf-8']],

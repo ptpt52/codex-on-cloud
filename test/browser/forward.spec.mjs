@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { fixture } from '../fixture.mjs';
 import { FORWARD_ERRORS } from '../../panel/forward-errors.mjs';
+import { FORWARD_CLIENTS } from '../../panel/public/forward-platform.js';
 
 async function login(page, app) {
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
@@ -157,3 +158,39 @@ test('route diagnostics distinguish new-connection preference from mixed existin
     expect(helper.ws.readyState).toBe(WebSocket.OPEN);expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
   }finally{helper?.ws.terminate();await app.close();}
 });
+
+for (const architecture of ['arm', 'x86', 'unavailable']) {
+  test(`Mac ${architecture} hints recommend the matching package or leave chip choice manual while preserving all downloads`, async ({ page }) => {
+    const directory = await mkdtemp(join(tmpdir(), 'codex-mac-downloads-')), files = [];
+    for (const [arch, client] of Object.entries(FORWARD_CLIENTS)) {
+      const bytes = Buffer.from('download fixture ' + arch); await writeFile(join(directory, client.name), bytes);
+      files.push({ arch, name: client.name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), build: 'mac-browser-test' });
+    }
+    await writeFile(join(directory, 'manifest.json'), JSON.stringify({ version: 1, files }));
+    const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, forwardDownloadDir: directory });
+    try {
+      await page.addInitScript(architecture => {
+        Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+        Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 });
+        Object.defineProperty(navigator, 'userAgentData', { configurable: true, value: { platform: 'macOS',
+          async getHighEntropyValues() { if (architecture === 'unavailable') throw new Error('denied'); return { architecture, bitness: '64' }; } } });
+      }, architecture);
+      await login(page, app); await page.locator('#forward-button').click(); await expect(page.locator('.forward-download')).toHaveCount(4);
+      const expected = architecture === 'arm' ? 'darwin-arm64' : 'darwin-amd64';
+      if (architecture === 'unavailable') {
+        await expect(page.locator('#forward-platform-note')).toContainText('浏览器未确认芯片架构'); await expect(page.locator('.forward-download.recommended')).toHaveCount(0);
+      } else {
+        await expect(page.locator('.forward-download.recommended')).toHaveAttribute('data-arch', expected);
+        await expect(page.locator('.forward-download').first()).toHaveAttribute('data-arch', expected);
+      }
+      const manual = architecture === 'arm' ? 'darwin-amd64' : 'darwin-arm64';
+      const downloading = page.waitForEvent('download'); await page.locator(`.forward-download[data-arch="${manual}"] a`).click();
+      expect((await downloading).suggestedFilename()).toBe(FORWARD_CLIENTS[manual].name);
+      await page.locator('#forward-mac-help summary').click(); await expect(page.locator('#forward-mac-help')).toContainText('Start.command');
+      await expect(page.locator('#forward-mac-help')).toContainText('macOS 12');
+      expect(await page.locator('#forward-dialog').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+      await page.locator('#forward-refresh').click(); await expect(page.locator('.forward-download')).toHaveCount(4);
+      expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+    } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+}

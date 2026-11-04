@@ -1,7 +1,33 @@
+import { FORWARD_CLIENTS, forwardOS, detectForwardClient } from './forward-platform.js';
+
 // The browser grants one short-lived capability; raw TCP bytes never enter it.
 export function createForwardUI({ api, allowed }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
+  let platform = { os: forwardOS(navigator), arch: null }, detection, downloads = [];
+  function renderDownloads() {
+    const target = $('forward-downloads'); target.replaceChildren();
+    const recommended = platform.arch && downloads.some(file => file.arch === platform.arch);
+    $('forward-platform-note').textContent = recommended ? '推荐：' + FORWARD_CLIENTS[platform.arch].label + '。也可手动下载其他版本。' : platform.os === 'darwin' ?
+      '检测到 Mac，请按“关于本机”的芯片选择 M 系列或 Intel；浏览器未确认芯片架构。' : platform.os === 'windows' ?
+      '检测到 Windows，请按电脑系统类型选择 x64 或 ARM64。' : '请选择运行助手的电脑版本；手机和平板可代为下载。';
+    const ordered = downloads.slice().sort((a, b) => {
+      const rank = file => file.arch === platform.arch ? 0 : FORWARD_CLIENTS[file.arch].os === platform.os ? 1 : 2;
+      return rank(a) - rank(b);
+    });
+    for (const file of ordered) {
+      const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small');
+      row.className = 'forward-download'; row.dataset.arch = file.arch;
+      link.href = file.href; link.download = file.name; link.textContent = '下载 ' + FORWARD_CLIENTS[file.arch].label + ' 助手';
+      if (file.arch === platform.arch) { row.classList.add('recommended'); link.setAttribute('aria-description', '推荐版本'); }
+      hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); target.append(row);
+    }
+    if (!downloads.length) target.textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
+    $('forward-mac-help').hidden = !downloads.some(file => FORWARD_CLIENTS[file.arch].os === 'darwin');
+  }
+  function detectPlatform() {
+    detection ||= detectForwardClient(navigator).then(value => { platform = value; if (dialog.open && allowed()) renderDownloads(); });
+  }
   function clearCode() { codeId = ''; codeExpires = 0; $('forward-code').value = ''; $('forward-pair').hidden = true; }
   function cancel() { generation++; controller?.abort(); controller = null; clearTimeout(timer); timer = null; busy = false; }
   function reset() { cancel(); clearCode(); pendingStop = ''; if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
@@ -68,13 +94,7 @@ export function createForwardUI({ api, allowed }) {
     if (ended) $('forward-status').textContent = ended.error;
     else if (codeId && Date.now() >= codeExpires && codeMapping?.state === 'pending') $('forward-status').textContent = '配对码已过期，请重新生成。';
     if (codeId && (!codeMapping || codeMapping.state !== 'pending' || Date.now() >= codeExpires)) clearCode();
-    $('forward-downloads').replaceChildren();
-    for (const file of data.downloads) {
-      const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small');
-      row.className = 'forward-download'; link.href = file.href; link.download = file.name; link.textContent = file.arch === 'windows-amd64' ? '下载 Windows x64 助手' : '下载 Windows ARM64 助手';
-      hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); $('forward-downloads').append(row);
-    }
-    if (!data.downloads.length) $('forward-downloads').textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
+    downloads = (data.downloads || []).slice(0, 4).filter(file => Object.hasOwn(FORWARD_CLIENTS, file.arch)); renderDownloads();
     $('forward-create').disabled = busy || !data.ports.length || data.mappings.length >= data.limit;
     if (!data.ports.length) $('forward-status').textContent = '尚未允许目标端口，请在服务器配置 TCP_FORWARD_PORTS。';
   }
@@ -86,7 +106,7 @@ export function createForwardUI({ api, allowed }) {
     if (data) render(data);
     if (generation === current && allowed() && dialog.open && !document.hidden && !busy) timer = setTimeout(load, 3000);
   }
-  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); $('forward-status').textContent = ''; dialog.showModal(); void load(); });
+  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); $('forward-status').textContent = ''; dialog.showModal(); detectPlatform(); void load(); });
   $('forward-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { cancel(); clearCode(); if (confirmation.open) confirmation.close(); });
   $('forward-refresh').addEventListener('click', () => { $('forward-status').textContent = ''; void load(); });

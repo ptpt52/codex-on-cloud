@@ -25,6 +25,7 @@
     "test:viewport": "node test/viewport-native.mjs",
     "build:forward": "node scripts/build-forward.mjs",
     "test:forward": "node test/forward-native.mjs",
+    "test:forward:package": "node test/forward-package-native.mjs",
     "demo": "node scripts/demo.mjs"
   },
   "dependencies": {

@@ -330,3 +330,19 @@ Linux 自动选址现在按有效默认路由的 metric 优先选有私有 IPv4 
 `npm run test:forward` 使用带 race 检测的 Linux 同源助手、临时 TLS 证书、真实 WSS/TCP 与 Pion/werift UDP/DTLS/SCTP 通过。保留 8 MiB、双向半关闭、心跳、数据就绪丢失不重复连接、通道固定、回退/恢复和本机实际已分配公网 IPv6 检查；新增关闭管理 TCP、暂时返回 503 后恢复同一映射及监听、原 TCP 关闭、原始字节与一次性配对不重放、恢复中明确停止、持续故障的真实 30 秒预算耗尽，以及管理恢复后重建直连 peer。代理故障和直连健康失效为受控注入，传输仍经真实协议栈；本机检查不代替 Windows 真机休眠或跨设备、跨运营商验收。
 
 构建脚本将新版 Windows x64/ARM64 助手标为 0.3.0，仍使用固定 Go 1.26.4 和锁定依赖；产物、manifest 和恢复凭据均不提交 Git。部署只需重启网页面板，保留桌面、tmux、Codex 和 Tunnel；更新后在网页重新下载并配对一次。
+
+## Mac Apple Silicon 与 Intel 助手
+
+2026-11-04：0.4.0 增加两种 Mac ZIP，沿用原有一次性配对、回环监听、局域网/公网 IPv6 直连、WSS 回退及 30 秒断网恢复。下载目录固定为两个 Windows exe、两个 Mac ZIP 和一个最多 4 KiB 的 manifest；每项最多 32 MiB，拒绝重复架构，仍最多同时两项认证下载，ZIP 使用 application/zip。Windows 下载和旧两项 manifest 继续兼容。构建期间新增至多一个 32 MiB package.tmp，所有临时文件清理后才释放构建锁。
+
+Mac ZIP 固定含同一目录内的程序、Start.command 和 README.txt，程序与启动器保留 Unix 0755，说明为 0644，解压后的程序不依赖 Go/Node/Python。启动器引用同目录程序并保留字面参数，支持含空格和中文的路径，不插入配对码、不读取认证缓存、不修改 Codex 配置或注册自启动。Mac 交互终端出错时保留错误并等待 Enter。首次打开说明链接 Apple 的隐私与安全设置；没有提供关闭 Gatekeeper 或自动去除隔离属性的动作。构建没有 Developer ID 或 Apple 公证，ARM64 文件含 Go 链接器的 ad-hoc 签名结构，最低系统为固定 Go 1.26.4 的 macOS 12。
+
+网页在打开下载窗口时读取平台与 architecture/bitness 提示，最多等待 500 毫秒；确认架构后推荐对应版本并排在前面，四种下载始终可手动选择。MacIntel 平台字符串不被当作 Intel 芯片证明，提示缺失、拒绝、未知或超时则保留手选；iPad 桌面模式不误判为 Mac。架构信息不写入存储或发送给服务端。共享的四平台固定清单由下载、构建与前端复用，Service Worker 只新增公开平台模块缓存，不缓存包、凭据或私有 API。
+
+125 项脚本语法检查、132 项 Node、10 项 Python 检查通过，Python 包含原 7 项桌面测试和 3 项打包/启动器测试。下载测试使用真实认证 HTTP，四种文件的完整字节、SHA256、Content-Type、Content-Disposition 和未登录拒绝均验证，超项、重复架构及超过 4 KiB 的 manifest 被拒绝。前端平台单元测试覆盖架构提示与降级期限。Python 检查固定 ZIP 内容、CRC、权限、可重复打包、损坏/错架构/缺少 ARM64 签名结构的拒绝，以及启动器保持字面参数。
+
+62 项唯一手机/电脑浏览器相关回归通过，包括六项 Mac 推荐/手选专项、Windows 下载、映射断网恢复、防误触、桌面/文字终端直连、实际 IPv6 与回退。Mac 架构提示为注入数据，下载文件为 fixture；没有将这些用例当成 Mac 系统的实际执行。
+
+`npm run test:forward:package` 以固定 Go 1.26.4 实际交叉编译 darwin/arm64 与 darwin/amd64，检查真实 Mach-O 的架构、可执行类型、macOS 12 目标、ARM64 签名结构范围，核对 ZIP 程序逐字节相等、CRC、执行权限和 Go 构建元数据。`npm run test:forward` 的同源 Linux 助手及 race 检测也通过，保留 8 MiB、TLS/WSS/TCP、UDP/DTLS/SCTP、半关闭、原配对/字节不重放、真实 30 秒预算、恢复后重建直连及已分配公网 IPv6 检查；执行器仍为 fixture，没有操作生产终端或真实 SSH 服务。
+
+用户确认可用的真机为 Apple Silicon（M 系列）。当前服务器是 Linux，上述交叉编译与启动脚本替身测试不等于在 Mac 上运行；首次打开、实际配对、SSH/SFTP、短暂断网恢复与明确停止的 M 系列设备验收需在下载新版后确认。Intel Mac 和跨运营商验收仍需对应环境。

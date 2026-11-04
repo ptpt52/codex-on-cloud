@@ -479,7 +479,7 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "无法继续："+err.Error())
-		if info, statErr := os.Stdin.Stat(); runtime.GOOS == "windows" && statErr == nil && info.Mode()&os.ModeCharDevice != 0 {
+		if info, statErr := os.Stdin.Stat(); (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && statErr == nil && info.Mode()&os.ModeCharDevice != 0 {
 			fmt.Print("按 Enter 退出…")
 			readLine()
 		}
