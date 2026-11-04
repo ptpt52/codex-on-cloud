@@ -1,0 +1,140 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, readFile, rm, copyFile, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
+import http from 'node:http';
+import { once } from 'node:events';
+import { deploy, options, checkHealth } from '../scripts/deploy.mjs';
+
+async function harness(t, { active = [], installed = true, failure = '', bus = 'degraded\n', healthError } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'codex deploy 中文 '));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const calls = [], logs = []; let healthy = false;
+  const config = 'PUBLIC_ORIGIN=http://localhost:36080\nPANEL_PORT=36080\n';
+  const context = {root, platform:'linux',uid:1000,username:'test-user',nodeVersion:'24.0.0',log:text=>logs.push(text),
+    health:async()=>{if(healthError)throw new Error(healthError);healthy=true;},
+    run:async(command,args,flags)=>{
+      calls.push({command,args:[...args],capture:flags.capture});assert.ok(calls.length<=40);
+      if(args.includes('is-system-running'))return{status:bus?'degraded'===bus.trim()?1:0:1,stdout:bus};
+      if(args.includes('is-active'))return{status:active.includes(args.at(-1))||calls.some(c=>c.args.includes('start'))?0:3};
+      if(command==='npm'&&args[0]==='ls')return{status:installed?0:1};
+      if(args.includes(failure))return{status:1};
+      if(args[0]==='scripts/setup.mjs'){
+        await mkdir(join(root,'secrets'),{recursive:true});
+        try{await writeFile(join(root,'.env'),config,{flag:'wx'});}catch(error){if(error.code!=='EEXIST')throw error;}
+      }
+      if(args[0]==='scripts/provision-cloudflare.mjs'){
+        await writeFile(join(root,'.env'),'PUBLIC_ORIGIN=https://desktop.example.com\n');
+        await writeFile(join(root,'secrets','tunnel_token'),'fake_tunnel_token');
+      }
+      return{status:0,stdout:''};
+    }};
+  return {root,calls,logs,context,get healthy(){return healthy;}};
+}
+
+test('deploy options validate public configuration before work and do not accept unknown flags',()=>{
+  assert.equal(options([]).check,undefined);assert.equal(options(['--check','--install-deps']).check,true);
+  for(const args of [['--domain','desktop.example.com'],['--zone','example.com'],['--origin','https://user:password@example.com'],['--origin','https://example.com/path'],['--restart-desktop'],['--domain','elsewhere.test','--zone','example.com','--api-token-file','file']])assert.throws(()=>options(args));
+  assert.equal(options(['--help']).help,true);
+});
+
+test('unsupported host, root and old Node are rejected before any subprocess or changes',async t=>{
+  const h=await harness(t);
+  for(const override of [{platform:'darwin'},{uid:0},{nodeVersion:'20.1.0'}])await assert.rejects(deploy({}, {...h.context,...override}));
+  assert.equal(h.calls.length,0);
+  await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
+});
+
+test('check-only tolerates a degraded user manager and performs no installs, setup, service or Cloudflare mutations',async t=>{
+  const h=await harness(t);await deploy(options(['--check','--install-deps','--enable-linger','--build-forward']),h.context);
+  assert.deepEqual(h.calls.map(c=>c.args),[['--user','is-system-running'],['scripts/native.mjs','doctor']]);
+  assert.equal(h.healthy,false);await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
+});
+
+test('missing user bus stops before initialization rather than reporting a working deployment',async t=>{
+  const h=await harness(t,{bus:''});await assert.rejects(deploy({},h.context),/systemd 用户服务/);assert.equal(h.calls.length,1);
+});
+
+test('first deployment installs locked dependencies and initializes, enables and starts services before checking readiness',async t=>{
+  const h=await harness(t);await deploy({},h.context);
+  const actions=h.calls.filter(c=>!c.capture).map(c=>c.args);
+  assert.deepEqual(actions,[['ci'],['scripts/setup.mjs'],['scripts/native.mjs','install'],['scripts/native.mjs','start']]);
+  assert.equal(h.healthy,true);assert.ok(h.logs.some(line=>line.includes('部署完成')));
+  assert.ok(h.calls.every(c=>c.command!=='sudo'&&!c.args.includes('restart')));
+});
+
+test('rerunning with active or partially started services preserves dependencies, credentials and desktop lifetime',async t=>{
+  const h=await harness(t,{active:['codex-cloud-desktop.service']});
+  await writeFile(join(h.root,'.env'),'PUBLIC_ORIGIN=http://existing.test:36080\nDESKTOP_SIZE=1920x2000\n');
+  await mkdir(join(h.root,'secrets'));await writeFile(join(h.root,'secrets','credentials.txt'),'retained test credential');
+  await deploy({},h.context);
+  assert.ok(h.calls.every(c=>!c.args.includes('ci')&&!c.args.includes('restart')&&!c.args.includes('stop')));
+  assert.match(await readFile(join(h.root,'.env'),'utf8'),/1920x2000/);
+  assert.equal(await readFile(join(h.root,'secrets','credentials.txt'),'utf8'),'retained test credential');
+});
+
+test('active services with broken dependencies stop before sudo, npm ci or changing configuration',async t=>{
+  const h=await harness(t,{active:['codex-cloud-panel.service'],installed:false});
+  await assert.rejects(deploy({'install-deps':true},h.context),/保留当前任务/);
+  assert.ok(h.calls.every(c=>c.capture));await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
+});
+
+test('system packages and linger require their explicit flags, and failed steps do not continue',async t=>{
+  const h=await harness(t);await deploy({'install-deps':true,'enable-linger':true},h.context);
+  const sudo=h.calls.filter(c=>c.command==='sudo');assert.equal(sudo.length,3);
+  assert.deepEqual(sudo.at(-1).args,['loginctl','enable-linger','test-user']);
+  assert.ok(sudo[1].args.includes('fonts-noto-cjk'));
+  assert.ok(sudo[1].args.includes('--no-upgrade'));assert.ok(sudo[1].args.includes('--no-remove'));
+  const failed=await harness(t,{failure:'install'});await assert.rejects(deploy({},failed.context),/失败/);
+  assert.ok(failed.calls.every(c=>!c.args.includes('start')));assert.equal(failed.healthy,false);
+});
+
+test('explicit public deployment passes token file as an argument, builds after origin setup and restarts only an existing panel',async t=>{
+  const h=await harness(t,{active:['codex-cloud-desktop.service','codex-cloud-panel.service']});
+  const file=join(h.root,'api token $(literal).txt'),secret='fake_test_api_token_never_log';await writeFile(file,secret);
+  await deploy(options(['--domain','desktop.example.com','--zone','example.com','--api-token-file',file,'--build-forward']),h.context);
+  const actions=h.calls.filter(c=>!c.capture);
+  assert.ok(actions.find(c=>c.args[0]==='scripts/setup.mjs').args.includes('https://desktop.example.com'));
+  assert.ok(actions.find(c=>c.args[0]==='scripts/provision-cloudflare.mjs').args.includes(file));
+  assert.ok(actions.findIndex(c=>c.args[0]==='scripts/provision-cloudflare.mjs')<actions.findIndex(c=>c.args[0]==='scripts/build-forward.mjs'));
+  assert.deepEqual(actions.filter(c=>c.args.includes('restart')).map(c=>c.args),[['--user','restart','codex-cloud-panel.service']]);
+  assert.ok(actions.some(c=>c.args[0]==='scripts/native.mjs'&&c.args[1]==='tunnel'));
+  assert.equal(JSON.stringify([h.calls,h.logs]).includes(secret),false);assert.equal(h.healthy,true);
+});
+
+test('oversized token files and failed health do not produce a success message or repeat service operations',async t=>{
+  const h=await harness(t);const file=join(h.root,'oversized');await writeFile(file,'x'.repeat(4097));
+  await assert.rejects(deploy({'api-token-file':file},h.context),/大小限制/);assert.equal(h.calls.length,1);
+  const failed=await harness(t,{healthError:'fixture is not ready'});await assert.rejects(deploy({},failed.context),/not ready/);
+  assert.ok(failed.logs.every(line=>!line.includes('部署完成')));assert.equal(failed.calls.filter(c=>c.args[1]==='start').length,1);
+});
+
+test('real isolated setup uses the documented desktop size and preserves existing credentials and configuration on rerun',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'codex-real-setup-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+  for(const folder of ['scripts','native'])await mkdir(join(directory,folder));
+  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs'])await copyFile(resolve(file),join(directory,file));
+  const exec=promisify(execFile);await exec(process.execPath,[join(directory,'scripts/setup.mjs')],{maxBuffer:8192});
+  const files=['.env','secrets/panel_password','secrets/agent_secret','secrets/credentials.txt'];
+  const before=await Promise.all(files.map(file=>readFile(join(directory,file),'utf8')));
+  assert.match(before[0],/DESKTOP_SIZE=1600x3200/);
+  const result=await exec(process.execPath,[join(directory,'scripts/setup.mjs'),'--origin','https://other.example.com','--username','other'],{maxBuffer:8192});
+  assert.deepEqual(await Promise.all(files.map(file=>readFile(join(directory,file),'utf8'))),before);
+  assert.equal(result.stdout.includes(before[1].trim()),false);
+  assert.equal((await stat(join(directory,'secrets','panel_password'))).mode&0o777,0o600);
+});
+
+test('real readiness HTTP uses the configured Host and helper authorization without logging or sending terminal input',async t=>{
+  const requests=[];
+  const server=http.createServer((req,res)=>{
+    requests.push(req.url);assert.ok(requests.length<=2);
+    res.setHeader('content-type','application/json');
+    if(req.url==='/healthz') {assert.equal(req.headers.host,'desktop.example.test');res.end('{"ok":true}');}
+    else {assert.equal(req.url,'/health');assert.equal(req.headers.authorization,'Bearer synthetic_test_secret');res.end('{"ready":true}');}
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
+  await checkHealth({port:server.address().port,agentPort:server.address().port,origin:'https://desktop.example.test',agentSecret:'synthetic_test_secret'});
+  assert.deepEqual(requests.sort(),['/health','/healthz']);
+});

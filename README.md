@@ -16,6 +16,38 @@
 
 面板与桌面使用独立的 systemd 用户服务。关闭浏览器、切换网络或重启面板，都不会主动停止桌面任务。VNC 不监听 TCP 端口，内部输入接口只监听回环地址。
 
+## 快速部署
+
+先准备带 systemd 的 Linux 主机、Node.js 22+ 和本机 Codex CLI，通过普通用户登录。Ubuntu/Debian 可用下面的统一入口安装桌面依赖、初始化、安装并启动用户服务，以及启用开机自启：
+
+```bash
+git clone https://github.com/ptpt52/codex-on-cloud.git
+cd codex-on-cloud
+npm run deploy -- --install-deps --enable-linger
+```
+
+已有系统依赖时运行 `npm run deploy` 即可。系统包和 linger 两步会按所选参数使用 sudo，其余步骤以当前用户运行。apt 安装使用 `--no-upgrade --no-remove`，保留列出的已安装包并拒绝移除包。安装器按锁文件安装项目依赖，保留已有密码与 `.env`，不安装或修改 Codex；服务运行时保留现有依赖，若其不完整或版本不符则停止并提示另行维护。重复运行只启动缺失的服务，不重启桌面；最后检查服务状态、面板健康与桌面就绪，失败后停止后续步骤。
+
+只检查环境、不执行安装：
+
+```bash
+npm run deploy -- --check
+```
+
+完成后本机访问 `http://localhost:36080`，账号密码见 `secrets/credentials.txt`。面板保持回环监听；若部署在远程服务器上，可用 SSH 本地端口转发后访问 localhost，或配置下面的公网入口。安装器不会自动打开防火墙或将面板改为公网监听。
+
+有 Cloudflare 托管域名时，把具备所需权限的 API token 存为仅含 token 的文件，增加以下参数即可复用现有发布脚本配置域名、Tunnel 和 HTTPS 入口（[授权准备](docs/cloudflare.md)）：
+
+```bash
+npm run deploy -- --install-deps --enable-linger \
+  --domain desktop.example.com --zone example.com \
+  --api-token-file /path/to/cloudflare-api-token
+```
+
+公网配置会重启已运行的网页面板，已有端口映射需要重新配对，桌面与 Codex 任务保留。API token 不进入命令行内容或日志；安装器只把文件路径交给发布脚本。若已配置 HTTPS 与 Tunnel token，重复部署也会启用该 Tunnel。公网入口配置和系统软件包安装仍需主机网络可用。
+
+需要提供端口映射助手下载时，可再加 `--build-forward`，使用已有的固定 Go 1.26.4 构建四平台助手；普通网页桌面部署不需要 Go。全部参数见 `npm run deploy -- --help`。下面保留分步安装与维护说明。
+
 ## 环境与安装
 
 需要 Linux、可运行的 Node.js 22+、Python 3.8+ 和本机 Codex CLI。已在本机 Ubuntu 18.04、Node 24、Python 3.11 上实测。Ubuntu 18.04 的系统默认 Node/Python 版本不满足要求，不要直接用旧系统包替换已有环境。
@@ -32,7 +64,7 @@ sudo apt-get install -y --no-install-recommends \
 普通用户初始化、检查和安装服务：
 
 ```bash
-cd /home/ptpt52/Sources2/codex-on-cloud
+cd codex-on-cloud
 npm ci
 npm run setup
 npm run native:doctor

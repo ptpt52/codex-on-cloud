@@ -368,3 +368,13 @@ Mac ZIP 固定含同一目录内的程序、Start.command 和 README.txt，程�
 44 项手机/电脑浏览器回归通过，覆盖自定义目标、长 IPv6 地址、输入草稿与轮询、恢复及停止确认、禁用/端口限制、Mac/Windows 下载、既有防误触和网页终端。模拟 RFB、管理执行器和配对助手，不把该浏览器检查当作 Mac/Windows 执行验收。另用真实 Chrome 检查手机浅色、电脑深色表单截图，无横向溢出。
 
 `npm run test:forward` 使用真实同源 Linux 助手、临时 TLS、WSS/TCP 和 Pion/werift UDP/DTLS/SCTP，通过自定义 IPv4 与 IPv6 目标、8 MiB 数据、双向半关闭、心跳、通道固定/回退、真实 30 秒恢复耗尽、管理恢复后重建直连、已分配公网 IPv6 直连和撤销检查；IPv6 目标另经 WSS 实测。桌面执行器仍为 fixture，没有连接生产 SSH 或向 Codex 输入。跨设备 Mac/Windows 真机与实际远端局域网目标仍需对应环境验收。
+
+## 统一部署入口
+
+2026-11-04：新增 npm run deploy，串联锁文件依赖安装、保留式初始化、现有环境检查、systemd 用户服务安装/启动和健康验收。--check 只检查；--install-deps、--enable-linger 分别显式调用 sudo 安装 apt 桌面组件和开启 linger。apt 使用 --no-upgrade --no-remove；服务运行时跳过 npm ci，依赖缺失或版本不符则先停止安装。重复执行不停止或重启桌面；明确传入 domain、zone、api-token-file 才复用 Cloudflare 发布脚本，并在需要时只重启面板。可选 --build-forward 使用已有固定 Go 工具链；不安装、登录或改写 Codex。首次初始化的旧 1600×1600 已与当前默认统一为 1600×3200，已有 .env 和密码保留。
+
+不新增持久状态、队列或日志；短命令捕获上限 8 KiB、期限 15 秒，.env 读取上限 64 KiB，API token/Tunnel token 文件上限 4 KiB。健康检查仅连接回环面板和助手，保持正确 Host 与助手认证，每次响应最多 4 KiB、一次请求超时一秒，最多二十轮；不创建工作台登录或发送终端输入。密码只提示其保存位置，API token 只通过已有发布脚本的文件参数读取。
+
+127 项脚本检查、147 项 Node 测试和 10 项 Python 测试通过。十二项安装相关 Node 检查覆盖参数/平台/权限拒绝、用户服务不可用、只读模式、初装/重复执行、运行中依赖异常、显式 sudo 范围、中途失败、公网配置只重启面板、token 文件上限及无成功误报。apt/systemd/Cloudflare 编排使用替身；另在隔离临时项目中实际运行初始化两次，验证配置/密钥逐字节保留、默认尺寸和 0600 权限，并用真实 HTTP 验证健康检查的 Host/Authorization。
+
+当前主机实际运行 deploy --check 和只读健康检查均通过。前后核对所有服务及持久桌面进程身份、终端目录、显示设置、偏好和登录会话保持一致，VNC socket 仍为 0600；没有安装系统包、执行 Cloudflare 发布、重启生产服务或操作 Codex。全新 Ubuntu/Debian 主机从安装依赖到公网发布的完整实装仍待对应环境验收；本轮未修改浏览器行为，未运行浏览器回归。
