@@ -109,6 +109,7 @@ try {
     ['Ctrl+J', '0a'], ['Enter', '0d'], ['Ctrl+R', '12'], ['Ctrl+G', '07'], ['Ctrl+O', '0f'], ['Ctrl+L', '0c'],
     ['Ctrl+A', '01'], ['Ctrl+E', '05'], ['Ctrl+U', '15'], ['Ctrl+K', '0b'], ['Ctrl+W', '17'], ['Ctrl+Y', '19'],
     ['Ctrl+ArrowLeft', '1b5b313b3544'], ['Ctrl+ArrowRight', '1b5b313b3543'], ['Alt+B', '1b62'], ['Alt+F', '1b66'],
+    ['Shift+ArrowLeft', '1b5b313b3244'], ['Shift+ArrowRight', '1b5b313b3243'],
     ['Alt+D', '1b64'], ['Alt+Backspace', '1b7f'], ['Delete', '1b5b337e'], ['Shift+Tab', '1b5b5a'],
     ['Ctrl+C', '03'], ['Ctrl+D', '04'], ['Ctrl+Z', '1a'], ['Escape Escape', '1b1b'],
   ];
@@ -241,7 +242,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log('✓ isolated real X11 and PTY: browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, 24 key encodings, font/clipboard and dummy resume passed without starting Codex');
+  console.log(`✓ isolated real X11 and PTY: browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, ${keyCases.length} key encodings, font/clipboard and dummy resume passed without starting Codex`);
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }

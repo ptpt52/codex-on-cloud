@@ -10,6 +10,7 @@ const KEYS = Object.freeze({ Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Back
   'Alt+Backspace': Object.freeze(['Escape', 'BackSpace']), 'Alt+D': Object.freeze(['Escape', 'd']),
   'Alt+B': Object.freeze(['Escape', 'b']), 'Alt+F': Object.freeze(['Escape', 'f']),
   'Ctrl+ArrowLeft': 'ctrl+Left', 'Ctrl+ArrowRight': 'ctrl+Right', 'Shift+Tab': 'shift+Tab',
+  'Shift+ArrowLeft': 'shift+Left', 'Shift+ArrowRight': 'shift+Right',
   Home: 'Home', End: 'End', Delete: 'Delete', PageUp: 'Prior', PageDown: 'Next',
   'Ctrl+Shift+V': 'ctrl+shift+v', 'Ctrl+V': 'ctrl+v', 'Ctrl+Z': 'ctrl+z',
   'Escape Escape': Object.freeze(['Escape', 'Escape']),

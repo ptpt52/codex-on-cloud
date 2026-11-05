@@ -67,7 +67,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     entry?.panel.dispatchEvent(new Event('codex-history-reset'));
     restore(); entry?.marker.remove(); entry = undefined; composing(false);
   }
-  function layout() {
+  function layout(focus = false) {
     if (!entry) return;
     if (!valid(entry.frame) || entry.marker.ownerDocument !== frame.contentDocument) return reset();
     if (!entry.floating) {
@@ -75,8 +75,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
       moving = true;
       try { container.append(entry.panel); } finally { moving = false; }
       entry.panel.classList.add('history-tools-floating'); entry.floating = true;
-      if (focused) focused.focus({ preventScroll: true });
-      else if (!entry.mounted) entry.panel.focus({ preventScroll: true });
+      entry.focus = focused || (!entry.mounted ? entry.panel : null);
       entry.mounted = true;
     }
     const visible = window.visualViewport;
@@ -91,6 +90,15 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     entry.panel.style.maxHeight = `${height}px`; entry.panel.style.setProperty('--history-panel-height', `${height}px`);
     entry.panel.classList.toggle('history-tools-short', height < 96);
     notify(); composing(entry.panel.dataset.composing === 'true');
+    // Firefox ignores focus while adoption is still inside the iframe's click
+    // handler. Use the same bounded layout callback after that event completes.
+    if (entry.focus && focus) {
+      const target = entry.focus; entry.focus = null;
+      if (!entry.panel.contains(document.activeElement)) {
+        window.focus();
+        HTMLElement.prototype.focus.call(target, { preventScroll: true });
+      }
+    } else if (entry.focus) schedule();
   }
   frame.addEventListener('codex-history-tools', event => {
     const detail = event.detail;
@@ -104,7 +112,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     }
     composing(detail.composing); layout();
   });
-  const schedule = () => { cancelAnimationFrame(layoutFrame); layoutFrame = requestAnimationFrame(layout); };
+  const schedule = () => { cancelAnimationFrame(layoutFrame); layoutFrame = requestAnimationFrame(() => { layoutFrame = 0; layout(true); }); };
   window.addEventListener('resize', schedule);
   window.visualViewport?.addEventListener('resize', schedule); window.visualViewport?.addEventListener('scroll', schedule);
   document.addEventListener('fullscreenchange', schedule);

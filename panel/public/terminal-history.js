@@ -51,8 +51,14 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (different) changed(reviewing);
   }
   function cancelRead() { const current = loading; loading = undefined; current?.abort(); }
+  function focusControl(element) {
+    // These controls can be adopted into the parent page. Firefox needs its
+    // browsing context focused before an iframe shortcut can focus the field.
+    const owner = element.ownerDocument.defaultView;
+    owner.focus(); owner.HTMLElement.prototype.focus.call(element, { preventScroll: true });
+  }
   function clearCopy() { copyGeneration++; if (manual.open) manual.close(); manual.hidden = true; copyText.value = ''; copyState.textContent = ''; copyResult.textContent = '关闭窗口会清空这里的文字。'; }
-  function selectCopy() { copyText.focus({ preventScroll: true }); copyText.select(); }
+  function selectCopy() { focusControl(copyText); copyText.select(); }
   function dismissCopy() { clearCopy(); updateTools(); }
   async function copyFromWindow() {
     if (copying || disposed || !toolsOpen || !manual.open || !copyText.value) return;
@@ -141,7 +147,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (!archiveOpen && !loading) freezeLocal();
     toolsOpen = true; tools.hidden = false; placeTools(); updateTools();
     if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    if (focus && !query.disabled) query.focus({ preventScroll: true });
+    if (focus && !query.disabled) focusControl(query);
   }
   function live() {
     cancelRead(); closeTools(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
@@ -158,7 +164,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     } catch {
       if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) {
         copying = false; updateTools();
-        source.focus({ preventScroll: true });
+        focusControl(source);
         manual.hidden = false; copyText.value = text; copyState.textContent = '请手动复制窗口内已选中的文字';
         manual.showModal(); selectCopy();
       }

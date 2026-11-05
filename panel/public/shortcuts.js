@@ -24,6 +24,8 @@ export const SHORTCUTS = Object.freeze([
   { key: 'ArrowDown', group: '光标导航', label: '向下 / 下一条历史', description: '移动选择或光标；输入框中可浏览草稿历史。' },
   { key: 'ArrowLeft', group: '光标导航', label: '光标左移', description: '向左移动一个字符。' },
   { key: 'ArrowRight', group: '光标导航', label: '光标右移', description: '向右移动一个字符。' },
+  { key: 'Shift+ArrowLeft', group: '光标导航', label: 'Shift+← / 向左扩展选择', description: '发送 Shift 与左方向键组合；选择行为由当前程序决定。' },
+  { key: 'Shift+ArrowRight', group: '光标导航', label: 'Shift+→ / 向右扩展选择', description: '发送 Shift 与右方向键组合；选择行为由当前程序决定。' },
   { key: 'Ctrl+ArrowLeft', group: '光标导航', label: '向左移动一个词', description: '按词移动；也可尝试 Alt+B。' },
   { key: 'Ctrl+ArrowRight', group: '光标导航', label: '向右移动一个词', description: '按词移动；也可尝试 Alt+F。' },
   { key: 'Alt+B', group: '光标导航', label: '向左移动一个词', description: '终端编辑器常用的按词移动键。' },

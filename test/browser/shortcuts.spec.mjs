@@ -17,7 +17,7 @@ test('opening, dismissing and navigating shortcuts sends nothing; selecting one 
     await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('菜单选择后仍保留这段草稿');
     await open(page); await expect(page.locator('#shortcuts-button')).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('#shortcuts-menu')).toBeFocused();
-    await expect(page.getByRole('menuitem')).toHaveCount(37);
+    await expect(page.getByRole('menuitem')).toHaveCount(39);
     await page.keyboard.press('Enter'); expect(app.inputCalls).toEqual([]);
     await page.keyboard.press('ArrowDown'); await expect(item(page, 'Enter')).toBeFocused();
     await page.keyboard.press('ArrowDown'); await expect(item(page, 'Tab')).toBeFocused();
@@ -136,7 +136,7 @@ test('the public offline shell includes shortcut modules and never caches authen
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await context.setOffline(true); await page.reload();
     await expect(page.locator('#login-view')).toBeVisible();
-    await expect(page.locator('[data-shortcut]')).toHaveCount(37); await expect(page.locator('#shortcuts-button')).toBeDisabled();
+    await expect(page.locator('[data-shortcut]')).toHaveCount(39); await expect(page.locator('#shortcuts-button')).toBeDisabled();
     const { paths, names } = await page.evaluate(async () => {
       const names = (await caches.keys()).filter(name => name.startsWith('codex-cloud-shell-'));
       const cache = await caches.open(names[0]);

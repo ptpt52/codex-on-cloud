@@ -54,6 +54,7 @@ test('terminal paste and fixed keys preserve separate Enter, protect multiline p
   const started = Date.now(); ws.send(JSON.stringify({ type: 'control', id: 6, action: 'key', key: 'Escape Escape' })); await until(() => records.some(item => item.id === 6));
   assert.ok(Date.now() - started >= 75); assert.deepEqual(app.terminalInputs.slice(-2).map(item => item.text), ['\x1b', '\x1b']);
   assert.equal(TERMINAL_KEYS['Ctrl+J'], '\n'); assert.equal(TERMINAL_KEYS.Enter, '\r');
+  assert.equal(TERMINAL_KEYS['Shift+ArrowLeft'], '\x1b[1;2D'); assert.equal(TERMINAL_KEYS['Shift+ArrowRight'], '\x1b[1;2C');
   assert.throws(() => terminalPaste('x\ny', false)); assert.throws(() => terminalPaste('x'.repeat(32769), true)); assert.throws(() => terminalPaste('x\0y', true));
 });
 

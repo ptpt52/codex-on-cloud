@@ -5,6 +5,7 @@ const helper = fileURLToPath(new URL('../desktop/web-terminal.py', import.meta.u
 export const TERMINAL_KEYS = Object.freeze({ Enter: '\r', Tab: '\t', Escape: '\x1b', Backspace: '\x7f', Delete: '\x1b[3~',
   ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowLeft: '\x1b[D', ArrowRight: '\x1b[C', Home: '\x1b[H', End: '\x1b[F',
   PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Shift+Tab': '\x1b[Z', 'Ctrl+ArrowLeft': '\x1b[1;5D', 'Ctrl+ArrowRight': '\x1b[1;5C',
+  'Shift+ArrowLeft': '\x1b[1;2D', 'Shift+ArrowRight': '\x1b[1;2C',
   'Alt+Backspace': '\x1b\x7f', 'Alt+D': '\x1bd', 'Alt+B': '\x1bb', 'Alt+F': '\x1bf', 'Escape Escape': '\x1b\x1b',
   ...Object.fromEntries('ACDEGJKLORUVWYZ'.split('').map(key => [`Ctrl+${key}`, String.fromCharCode(key.charCodeAt(0) - 64)])),
 });

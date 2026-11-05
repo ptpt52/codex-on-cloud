@@ -21,6 +21,7 @@
     "test": "node --test test/*.test.mjs",
     "test:desktop": "python3 -m unittest discover -s test -p '*_test.py'",
     "test:browser": "playwright test",
+    "test:compat": "playwright test -c playwright.compat.config.mjs",
     "test:native": "node test/native-smoke.mjs",
     "test:display": "node test/terminal-native.mjs",
     "test:viewport": "node test/viewport-native.mjs",
