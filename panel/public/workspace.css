@@ -1,0 +1,100 @@
+/* Workspace controls use the existing X-Wrt tokens. Panels never reserve
+   framebuffer space, so opening tools cannot resize or clip the desktop. */
+.desktop-toolbar,
+.desktop-card.controls-collapsed .desktop-toolbar {
+  min-height: 52px;
+  padding: 4px 10px;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.desktop-title { flex: 1; min-width: 0; }
+.desktop-header-actions { width: auto; flex-wrap: nowrap; gap: 6px; }
+.desktop-header-actions > button { min-height: 44px; min-width: 44px; }
+.desktop-stage { min-height: 0; flex: 1 1 0; }
+.connection-status { white-space: nowrap; }
+.workspace-panel {
+  position: fixed;
+  z-index: 25;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 12px 48px #0003;
+  overflow: auto;
+  overscroll-behavior: contain;
+  outline-offset: -3px;
+}
+.workspace-panel:focus-visible { outline: 3px solid var(--focus); }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.panel-heading h2 { margin: 0; font-size: 16px; }
+.panel-heading button { min-width: 44px; min-height: 44px; }
+.tools-panel { inset: 116px 16px 42px auto; width: min(380px, calc(100vw - 32px)); }
+.tools-panel .desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.tools-panel .display-controls { display: flex; flex-direction: column; align-items: stretch; padding: 16px 0 0; margin-top: 16px; border: 0; border-top: 1px solid var(--line); background: none; gap: 18px; }
+.tools-panel .zoom-controls { display: flex; flex-wrap: wrap; flex: none; justify-content: flex-start; gap: 8px; }
+.tools-panel .view-actions { width: auto; display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+.tools-panel .terminal-view-controls { flex-wrap: wrap; gap: 8px; }
+.tools-panel .terminal-view-controls label { width: 100%; }
+.tools-panel .terminal-view-controls select { flex: 1; max-width: 100%; }
+.pointer-options { display: grid; gap: 12px; }
+.pointer-options label { display: grid; gap: 6px; font-size: 12px; }
+.pointer-options select { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.pointer-options .muted { font-size: 12px; }
+.input-dock.workspace-panel { inset: auto 16px calc(42px + var(--workspace-keyboard-inset, 0px)) auto; width: min(660px, calc(100vw - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 130px); display: flex; flex-direction: column; overflow: hidden; }
+.input-dock .panel-heading { flex: none; }
+.assistant-directions { display: flex; gap: 8px; margin-bottom: 12px; flex: none; }
+.assistant-directions button { flex: 1; font-size: 12px; min-height: 44px; }
+.assistant-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.input-dock .terminal-destination { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 6px 10px; margin: 0 0 10px; }
+.input-dock .terminal-destination label { display: grid; gap: 5px; width: auto; font-size: 12px; }
+.input-dock .terminal-destination select { width: 100%; min-width: 0; font-size: 14px; }
+.input-dock #terminal-target-note { grid-column: 1 / -1; font-size: 12px; }
+.input-dock .composer textarea { min-height: 80px; max-height: 30dvh; }
+.input-dock .dock-bottom { flex: none; }
+.input-dock .keys { display: flex; gap: 6px; flex-wrap: nowrap; }
+.input-dock .keys button { min-width: 44px; flex: 1 1 auto; font-size: 12px; }
+.input-dock .keys .shortcuts-entry { flex: 1 0 auto; min-width: 96px; }
+.input-dock .keys .interrupt-key { margin-left: 4px; }
+.input-dock .dock-note { font-size: 11px; }
+.input-dock .input-status { flex: none; max-height: 4.5em; overflow: auto; }
+.clipboard-dialog { position: fixed; inset: auto 16px calc(42px + var(--workspace-keyboard-inset, 0px)) auto; margin: 0; width: min(660px, calc(100vw - 32px)); max-width: none; max-height: calc(var(--workspace-visible-height, 100dvh) - 130px); border-radius: 14px; }
+.clipboard-dialog .dialog-heading h2 { margin: 0; font-size: 16px; }
+.clipboard-dialog .dialog-heading button { min-height: 44px; min-width: 44px; }
+.desktop-card:fullscreen .workspace-panel { bottom: 8px; max-height: calc(100dvh - 72px); }
+.desktop-card:fullscreen .tools-panel { top: 60px; }
+.desktop-card:fullscreen .input-dock { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
+.workspace-keyboard-open .input-dock .assistant-directions { display: none; }
+.workspace-keyboard-open .input-dock #terminal-target-note, .workspace-keyboard-open .input-dock .dock-note { display: none; }
+@media (max-width: 700px) {
+  .desktop-toolbar,
+  .desktop-card.controls-collapsed .desktop-toolbar { min-height: 52px; padding: 4px; gap: 4px; }
+  .desktop-title { gap: 0; }
+  .desktop-title > strong, .desktop-title > .monitor-icon { display: none; }
+  .connection-status { font-size: 10px; padding: 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .mode-switch { margin-left: 0; gap: 2px; }
+  .mode-switch button, .desktop-header-actions > button { font-size: 11px; padding-inline: 7px; }
+  .desktop-header-actions { width: auto; gap: 4px; }
+  .fullscreen-entry { display: none; }
+  .workspace-panel { left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); width: auto; border-radius: 16px; padding: 12px; max-height: min(70dvh, calc(100dvh - 118px)); }
+  .tools-panel { top: auto; }
+  .input-dock.workspace-panel, .clipboard-dialog { top: auto; left: 8px; right: 8px; bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--workspace-keyboard-inset, 0px)); width: auto; max-height: min(70dvh, calc(var(--workspace-visible-height, 100dvh) - 16px)); margin: 0; }
+  .input-dock .terminal-destination { grid-template-columns: minmax(0, 1fr) 100px; }
+  .input-dock .composer .primary { min-width: 76px; height: auto; min-height: 44px; align-self: stretch; }
+  .input-dock .terminal-destination select { min-height: 44px; font-size: 16px; }
+  .workspace-keyboard-open .input-dock .panel-heading { margin-bottom: 4px; }
+  .workspace-keyboard-open .input-dock #terminal-target-note { display: none; }
+  .workspace-keyboard-open .input-dock .composer textarea { min-height: 72px; }
+  .workspace-keyboard-open .input-dock .dock-note { display: none; }
+}
+@media (max-width: 360px) {
+  .input-dock .keys { gap: 4px; }
+  .input-dock .keys button { font-size: 11px; padding-inline: 4px; }
+  .input-dock .keys .shortcuts-entry { min-width: 80px; }
+}
+@media (max-height: 540px) and (orientation: landscape) {
+  .desktop-toolbar, .desktop-card.controls-collapsed .desktop-toolbar { min-height: 44px; padding-block: 0; }
+  .tools-panel { top: 106px; bottom: 8px; }
+  .input-dock.workspace-panel { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
+}

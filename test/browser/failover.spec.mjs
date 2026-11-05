@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -49,11 +50,12 @@ async function relay(page) {
 
 test('silent LAN loss after network change promptly starts relay and preserves tall desktop position and draft', async ({ page }) => {
   test.setTimeout(60000);
+  await page.setViewportSize({ ...page.viewportSize(), height: 600 });
   const app = await fixture({ rfb: true, rfbSize: { width: 1600, height: 3200 }, viewport: true, webrtc: true });
   const counts = writes(page);
   try {
     await instrument(page); const frame = await login(page, app);
-    await page.locator('#mobile-input').fill('切到移动网络后保留草稿');
+    await openInput(page); await page.locator('#mobile-input').fill('切到移动网络后保留草稿');
     const top = await frame.evaluate(() => {
       const viewport = document.getElementById('viewport');
       viewport.scrollTop = (viewport.scrollHeight - viewport.clientHeight) / 2;
@@ -104,7 +106,7 @@ test('network checks coexist with pending input; lost replies remain unknown wit
   const counts = writes(page);
   try {
     await instrument(page); const frame = await login(page, app);
-    await page.getByRole('button', { name: 'Enter ↵' }).click(); await started;
+    await openInput(page); await page.locator('[data-key="Enter"]').click(); await started;
     await frame.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect.poll(() => frame.evaluate(() => window.healthTest.replies)).toBeGreaterThan(0);
     expect(counts.ws).toBe(0); expect(app.inputCalls).toHaveLength(1);

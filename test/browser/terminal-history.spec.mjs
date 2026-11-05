@@ -1,3 +1,4 @@
+import { openTools, openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { spawn, execFile } from 'node:child_process';
@@ -112,6 +113,7 @@ test('alternate-screen redraws never become scrollback, and history preserves th
     await expect(frame.locator('#history-archive')).toHaveText(text);
     expect(await frame.locator('#history-archive').textContent()).not.toContain('REDRAW');
     const reads = app.terminalHistoryReads.length;
+    await openTools(page);
     for (let i = 0; i < 3; i++) await page.locator('#terminal-font-up').click();
     await expect.poll(() => frame.evaluate(() => getComputedStyle(document.getElementById('history-archive')).fontSize)).toBe('18px');
     const style = await frame.evaluate(() => {
@@ -232,7 +234,7 @@ test('switching target discards the previous terminal buffer and history mode', 
   try {
     await app.controls.manageTerminals({ action: 'create', name: '另一个任务', view: 'terminal' }); const frame = await seeded(page, app);
     await wheel(frame, -300); await reviewing(frame); output(app, 'NEW-BEFORE-TARGET-SWITCH\r\n'); await expect(frame.locator('#history-new-output')).toBeVisible();
-    await page.locator('#terminal-view-select').selectOption('aux1');
+    await openTools(page); await page.locator('#terminal-view-select').selectOption('aux1');
     await expect(page.locator('#connection-status')).toContainText('终端在线'); const next = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
     expect((await buffer(next)).all).not.toContain('LOCAL-HISTORY'); await expect(next.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
     await expect(next.locator('#history-new-output')).toBeHidden();
@@ -262,7 +264,7 @@ test('returning live cancels a snapshot without resending it and late replies ca
   try {
     const frame = await seeded(page, app); await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100); await started;
     await expect(frame.locator('#history-state')).toContainText('补取'); await frame.locator('#history-latest').click();
-    await page.locator('#toggle-input-button').click(); await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await page.locator('[data-key="Enter"]').click();
+    await page.locator('#toggle-input-button').click(); await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); release(); await page.waitForTimeout(200);
     await expect(frame.locator('#history-archive')).toBeHidden(); expect(app.terminalHistoryReads.length).toBe(1); expect(app.terminalConnections).toBe(1);
     expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: '\r' }]);
@@ -288,10 +290,10 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
       clients.push(child); return child;
     };
     await prepare(page); const frame = await login(page, app); await page.locator('#toggle-input-button').click();
-    await page.locator('#mobile-input').fill('printf \'once\\n\' >> "$HISTORY_TEST_PROOF"; printf \'NATIVE-HISTORY-%04d\\n\' {1..220}');
-    await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    await openInput(page); await page.locator('#mobile-input').fill('printf \'once\\n\' >> "$HISTORY_TEST_PROOF"; printf \'NATIVE-HISTORY-%04d\\n\' {1..220}');
+    await openInput(page); await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     await expect(readFile(proof, 'utf8')).rejects.toThrow();
-    await page.locator('[data-key="Enter"]').click(); await expect.poll(async () => (await buffer(frame)).all.includes('NATIVE-HISTORY-0220')).toBe(true);
+    await openInput(page); await page.locator('[data-key="Enter"]').click(); await expect.poll(async () => (await buffer(frame)).all.includes('NATIVE-HISTORY-0220')).toBe(true);
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     expect(await readFile(proof, 'utf8')).toBe('once\n');
     await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -400); await expect(frame.locator('#history-archive')).toBeVisible();
@@ -299,8 +301,8 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     clients[0].kill('SIGTERM'); await expect.poll(() => clients.length).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
     expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect(await frame.locator('#history-archive').textContent()).toBe(before);
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token); expect(await readFile(proof, 'utf8')).toBe('once\n');
-    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill("printf '\\033[1;31mNATIVE-STYLED-中文\\033[0m\\n'");
-    await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
+    await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill("printf '\\033[1;31mNATIVE-STYLED-中文\\033[0m\\n'");
+    await openInput(page); await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(() => frame.evaluate(() => {
       const buffer = window.historyTerminal.buffer.active;
       for (let index = 0; index < buffer.length; index++) {
@@ -313,14 +315,14 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     const nativeStyled = frame.locator('#history-archive span').filter({ hasText: /^NATIVE-STYLED-中文$/ }); await expect(nativeStyled).toBeVisible();
     expect(await nativeStyled.evaluate(element => ({ color: getComputedStyle(element).color, weight: getComputedStyle(element).fontWeight }))).toEqual({ color: 'rgb(239, 41, 41)', weight: '700' });
     await writeFile(tui, `import os, select, termios, time, tty\nfd=0\nprevious=termios.tcgetattr(fd)\ndata=b''\ntry:\n tty.setraw(fd)\n os.write(1,b'\\x1b[?1049h\\x1b[2J\\x1b[HFULL-SCREEN-RECEIVER\\r\\n')\n with open(${JSON.stringify(tuiReady)},'w') as f: f.write('ready')\n deadline=time.monotonic()+12\n while len(data)<8 and time.monotonic()<deadline:\n  if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,8-len(data))\nfinally:\n termios.tcsetattr(fd,termios.TCSANOW,previous)\n os.write(1,b'\\x1b[?1049l')\n with open(${JSON.stringify(keys)},'w') as f: f.write(data.hex())\n`);
-    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('python3 "$HISTORY_TEST_TUI"'); await page.locator('#paste-button').click();
-    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
+    await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill('python3 "$HISTORY_TEST_TUI"'); await openInput(page); await page.locator('#paste-button').click();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(() => readFile(tuiReady, 'utf8').catch(() => '')).toBe('ready');
     await frame.locator('#history-program').click(); await frame.locator('#history-up').click(); await page.waitForTimeout(200); await frame.locator('#history-down').click();
     await expect.poll(() => readFile(keys, 'utf8').catch(() => '')).toBe('1b5b357e1b5b367e');
     expect(await readFile(proof, 'utf8')).toBe('once\n');
-    await frame.locator('#history-latest').click(); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'\\033[1;31mLARGE-HISTORY-%04d %080d\\033[0m\\n\' "$i" 0; done');
-    await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await page.locator('[data-key="Enter"]').click();
+    await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'\\033[1;31mLARGE-HISTORY-%04d %080d\\033[0m\\n\' "$i" 0; done');
+    await openInput(page); await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(async () => (await buffer(frame)).all.includes('LARGE-HISTORY-1000')).toBe(true);
     // Explicit snapshot requests are limited to one per second.
     await page.waitForTimeout(1100);

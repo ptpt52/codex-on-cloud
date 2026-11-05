@@ -1,3 +1,4 @@
+import { openInput, openTools } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -34,8 +35,8 @@ test('background negotiation keeps relay alive until encrypted direct activation
   });
   try {
     await loginRelay(page, app);
-    await page.locator('#mobile-input').fill('网络路径切换后保留草稿');
-    await page.locator('#actual-size-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill('网络路径切换后保留草稿');
+    await openTools(page); await page.locator('#actual-size-button').click();
     await page.clock.fastForward(16000); await answered.promise;
     expect(closed).toBe(0); expect(app.vncConnections).toBe(1);
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
@@ -69,7 +70,7 @@ test('failed probes keep the relay and later network change promotes direct with
     await expect.poll(() => offers).toBe(2);
     expect(closed).toBe(0); expect(app.vncConnections).toBe(1);
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
-    await page.getByRole('button', { name: 'Enter ↵' }).click(); await started.promise;
+    await openInput(page); await page.locator('[data-key="Enter"]').click(); await started.promise;
     available = true;
     await page.frames().find(frame => frame.url().includes('/desktop/index.html')).evaluate(() => window.dispatchEvent(new Event('online')));
     await page.waitForTimeout(1500);

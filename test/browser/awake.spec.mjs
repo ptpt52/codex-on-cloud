@@ -1,3 +1,4 @@
+import { openTools } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -33,9 +34,9 @@ test('screen wake lock is opt-in, resumes in foreground and releases on confirme
   const app = await fixture({ rfb: true }); await setup(page);
   try {
     await login(page, app); expect((await stats(page)).requests).toBe(0);
-    await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
+    await openTools(page); await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
     expect((await stats(page)).active).toBe(1);
-    expect((await page.evaluate(() => localStorage.getItem('codex-cloud.display.v1'))).length).toBeLessThanOrEqual(256);
+    expect((await page.evaluate(() => localStorage.getItem('codex-cloud.display.v1'))).length).toBeLessThanOrEqual(512);
     await page.evaluate(() => { window.fakeVisible = false; document.dispatchEvent(new Event('visibilitychange')); });
     await expect.poll(async () => (await stats(page)).active).toBe(0);
     await page.evaluate(() => { window.fakeVisible = true; document.dispatchEvent(new Event('visibilitychange')); });
@@ -50,9 +51,9 @@ test('screen wake lock is opt-in, resumes in foreground and releases on confirme
 test('disabling a pending screen lock releases a late grant without acquiring another lock', async ({ page }) => {
   const app = await fixture({ rfb: true }); await setup(page, { mode: 'hold' });
   try {
-    await login(page, app); await page.locator('#awake-button').click();
+    await login(page, app); await openTools(page); await page.locator('#awake-button').click();
     await expect(page.locator('#awake-button')).toHaveText('亮屏申请中');
-    await page.locator('#awake-button').click(); await page.evaluate(() => window.resolveWake());
+    await openTools(page); await page.locator('#awake-button').click(); await page.evaluate(() => window.resolveWake());
     await expect.poll(async () => (await stats(page)).releases).toBe(1);
     expect((await stats(page)).active).toBe(0); expect((await stats(page)).requests).toBe(1);
     await expect(page.locator('#awake-button')).toHaveAttribute('aria-pressed', 'false');
@@ -62,9 +63,9 @@ test('disabling a pending screen lock releases a late grant without acquiring an
 test('quick off/on and page hide/show keep at most one native wake lock', async ({ page }) => {
   const app = await fixture({ rfb: true }); await setup(page, { mode: 'hold' });
   try {
-    await login(page, app); await page.locator('#awake-button').click();
+    await login(page, app); await openTools(page); await page.locator('#awake-button').click();
     await expect.poll(async () => (await stats(page)).requests).toBe(1);
-    await page.locator('#awake-button').click(); await page.locator('#awake-button').click();
+    await openTools(page); await page.locator('#awake-button').click(); await openTools(page); await page.locator('#awake-button').click();
     await page.evaluate(() => { window.wakeMode = 'grant'; window.resolveWake(); });
     await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
     expect((await stats(page)).requests).toBe(2); expect((await stats(page)).releases).toBe(1); expect((await stats(page)).maximum).toBe(1);
@@ -79,11 +80,11 @@ test('quick off/on and page hide/show keep at most one native wake lock', async 
 test('system release or denial is shown as paused without retry loops; explicit toggle retries', async ({ page }) => {
   const app = await fixture({ rfb: true }); await setup(page, { mode: 'deny' });
   try {
-    await login(page, app); await page.locator('#awake-button').click();
+    await login(page, app); await openTools(page); await page.locator('#awake-button').click();
     await expect(page.locator('#awake-button')).toHaveText('亮屏已暂停');
     await page.waitForTimeout(4500); expect((await stats(page)).requests).toBe(1);
-    await page.locator('#awake-button').click(); await page.evaluate(() => { window.wakeMode = 'grant'; });
-    await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
+    await openTools(page); await page.locator('#awake-button').click(); await page.evaluate(() => { window.wakeMode = 'grant'; });
+    await openTools(page); await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
     await page.evaluate(() => window.testLocks.at(-1).release());
     await expect(page.locator('#awake-button')).toHaveText('亮屏已暂停');
     await page.waitForTimeout(4500); expect((await stats(page)).requests).toBe(2); expect((await stats(page)).maximum).toBe(1);
@@ -93,7 +94,7 @@ test('system release or denial is shown as paused without retry loops; explicit 
 test('unsupported browser is clear and refreshing restores the enabled preference without desktop actions', async ({ page, context }) => {
   const app = await fixture({ rfb: true }); await setup(page);
   try {
-    await login(page, app); await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
+    await login(page, app); await openTools(page); await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await expect(page.locator('#awake-button')).toHaveText('亮屏已开启'); expect((await stats(page)).requests).toBe(1);
     const second = await context.newPage(); await setup(second, { unsupported: true }); await second.goto(app.config.origin);

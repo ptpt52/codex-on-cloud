@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -21,7 +22,7 @@ async function staleAccept(page) { await page.locator('#accept-confirmation').ev
 test('mode changes in both directions require explicit confirmation, preserve the stream on cancel and switch only once', async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } }), counts = writes(page);
   try {
-    await login(page, app); await page.locator('#mobile-input').fill('确认切换后仍保留草稿');
+    await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('确认切换后仍保留草稿');
     const originalFrame = await page.locator('#desktop-frame').getAttribute('src');
     await page.locator('#desktop-mode').click(); await expect(page.locator('#action-confirmation')).toBeHidden();
     await page.locator('#terminal-mode').dblclick(); await expect(page.locator('#confirmation-title')).toHaveText('切换到网页终端？');
@@ -79,7 +80,7 @@ test('takeover clears a pending mode change and does not carry its target into t
 test('an accepted pending input disables mode changes and cannot queue a later switch', async ({ page }) => {
   const entered = gate(), hold = gate(), app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, inputHook: async () => { entered.release(); await hold.promise; } });
   try {
-    await login(page, app); await page.locator('[data-key="Enter"]').click(); await entered.promise;
+    await login(page, app); await openInput(page); await page.locator('[data-key="Enter"]').click(); await entered.promise;
     await expect(page.locator('#desktop-mode')).toBeDisabled(); await expect(page.locator('#terminal-mode')).toBeDisabled();
     await page.locator('#terminal-mode').dispatchEvent('click'); await expect(page.locator('#action-confirmation')).toBeHidden();
     hold.release(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await expect(page.locator('#terminal-mode')).toBeEnabled();

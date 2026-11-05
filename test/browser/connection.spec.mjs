@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -30,7 +31,7 @@ test('healthy polling cannot hide a disconnected framebuffer and diagnostics sho
     await page.getByRole('button', { name: '关闭连接状态' }).click();
     app.pauseViewers();
     await expect(page.locator('#connection-status')).toContainText('画面重连中');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
     const polled = page.waitForResponse(response => response.url().endsWith('/api/state') && response.status() === 200);
     const state = await (await polled).json();
     expect(state.desktop.ready).toBe(true);
@@ -42,7 +43,7 @@ test('healthy polling cannot hide a disconnected framebuffer and diagnostics sho
     await page.getByRole('button', { name: '关闭连接状态' }).click();
     app.resumeViewers();
     await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 10000 });
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeEnabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
     expect(writes).toEqual({ input: 0, claims: 1, logins: 1 });
   } finally { await app.close(); }
 });
@@ -52,13 +53,13 @@ test('network loss and recovery preserve the draft without reclaiming or replayi
   const writes = observeWrites(page);
   try {
     await login(page, app);
-    await page.getByLabel('要粘贴到桌面的文字').fill('网络恢复后不要自动提交');
+    await openInput(page); await page.getByLabel('要粘贴到桌面的文字').fill('网络恢复后不要自动提交');
     await context.setOffline(true);
     await expect(page.locator('#connection-status')).toContainText('等待网络');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
     await context.setOffline(false);
     await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 10000 });
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeEnabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
     await expect(page.getByLabel('要粘贴到桌面的文字')).toHaveValue('网络恢复后不要自动提交');
     expect(writes).toEqual({ input: 0, claims: 1, logins: 1 });
   } finally { await context.setOffline(false); await app.close(); }
@@ -76,7 +77,7 @@ test('desktop readiness and an active picture are reported separately', async ({
     });
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(page.locator('#connection-status')).toContainText('桌面未就绪');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
     await page.getByRole('button', { name: '连接状态', exact: true }).click();
     await expect(page.locator('#diag-desktop')).toHaveText('未就绪');
     await expect(page.locator('#diag-frame')).toHaveText('已连接');
@@ -89,7 +90,7 @@ test('desktop readiness and an active picture are reported separately', async ({
     await page.unroute('**/api/state');
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeEnabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
   } finally { await app.close(); }
 });
 
@@ -115,7 +116,7 @@ test('outer access expiry stops retries and offers a manual refresh', async ({ p
     await expect(page.locator('#connection-status')).toContainText('访问验证已过期');
     await expect(page.locator('#access-refresh-button')).toBeVisible();
     await expect(page.locator('#desktop-frame')).toHaveAttribute('src', 'about:blank');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
     expect(writes).toEqual({ input: 0, claims: 1, logins: 1 });
   } finally { await app.close(); }
 });

@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -9,7 +10,7 @@ async function login(page, app) {
   await expect(page.locator('#connection-status')).toContainText('桌面在线');
 }
 async function open(page) {
-  await page.locator('#clipboard-button').click();
+  await openInput(page); await page.locator('#clipboard-button').click();
   await expect(page.getByRole('heading', { name: '取回远程文字' })).toBeVisible();
 }
 
@@ -23,7 +24,7 @@ test('remote text is read only on request, copied after preview and cleared when
   });
   try {
     await login(page, app);
-    await page.locator('#mobile-input').fill('保留原草稿');
+    await openInput(page); await page.locator('#mobile-input').fill('保留原草稿');
     await open(page); expect(app.clipboardReads).toHaveLength(0);
     await expect(page.locator('#copy-clipboard')).toBeDisabled();
     await page.locator('#read-clipboard').click();

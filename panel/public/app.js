@@ -1,12 +1,14 @@
 import { createShortcutMenu } from './shortcut-menu.js';
 import { SHORTCUT_BY_KEY } from './shortcuts.js';
 import { createForwardUI } from './forward-ui.js';
+import { createWorkspacePanels } from './workspace-panels.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
 const draftKey = 'codex-cloud.draft';
 let inputBusy = false;
+let inputComposing = false;
 let inputController = null, inputFeedback = false, maintenancePending = false;
 let controlsState = { available: false, maintenance: false, inputBusy: false };
 let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = false, clipboardText = '';
@@ -32,12 +34,15 @@ const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $
   canSend: () => !confirmation && canInput() && !inputBusy && !inputCollapsed(),
   send: key => sendShortcut(key), changed: () => { sendDisplayPreferences(); scheduleViewport(); } });
 const wakeSupported = window.isSecureContext && typeof navigator.wakeLock?.request === 'function';
-try { $('mobile-input').value = sessionStorage.getItem(draftKey) || ''; } catch {}
-$('mobile-input').addEventListener('input', () => { try { sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
+try { const draft = sessionStorage.getItem(draftKey); if (draft && draft.length <= 32768) $('mobile-input').value = draft; } catch {}
+$('mobile-input').addEventListener('input', () => { try { if ($('mobile-input').value.length <= 32768) sessionStorage.setItem(draftKey, $('mobile-input').value); } catch {} });
+$('mobile-input').addEventListener('compositionstart', () => { inputComposing = true; renderInputControls(); sendDisplayPreferences(); });
+$('mobile-input').addEventListener('compositionend', () => { inputComposing = false; renderInputControls(); sendDisplayPreferences(); });
+$('mobile-input').addEventListener('blur', () => { inputComposing = false; renderInputControls(); sendDisplayPreferences(); });
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: false, controlsCollapsed: false, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport', terminalInputCollapsed: true };
+const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport', terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' };
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
 const followsViewport = () => displayPreferences.autoResolution;
@@ -45,10 +50,11 @@ const fixedSize = () => controlsState.viewport?.fixed || { width: 1600, height: 
 let displayScale = 0, displayRevision = 0, scaleRevision = -1;
 try {
   const stored = localStorage.getItem(displayKey);
-  if (stored && stored.length <= 256) {
+  if (stored && stored.length <= 512) {
     const value = JSON.parse(stored);
     if (value && (['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) && typeof value.pan === 'boolean' && typeof value.collapsed === 'boolean' && (value.controlsCollapsed === undefined || typeof value.controlsCollapsed === 'boolean')) {
-      Object.assign(displayPreferences, { pan: value.pan, collapsed: value.collapsed, controlsCollapsed: value.controlsCollapsed === true });
+      Object.assign(displayPreferences, { pan: value.pan, collapsed: value.collapsed });
+      if (typeof value.controlsCollapsed === 'boolean') displayPreferences.controlsCollapsed = value.controlsCollapsed;
       if (value.layout === 2) {
         displayPreferences.zoom = value.zoom;
         if (typeof value.autoResolution === 'boolean') displayPreferences.autoResolution = value.autoResolution;
@@ -57,16 +63,35 @@ try {
         if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) displayPreferences.terminalFontSize = value.terminalFontSize;
         if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) displayPreferences.terminalWidthMode = value.terminalWidthMode;
         if (typeof value.terminalInputCollapsed === 'boolean') displayPreferences.terminalInputCollapsed = value.terminalInputCollapsed;
+        if (['touch', 'trackpad'].includes(value.pointerMode)) displayPreferences.pointerMode = value.pointerMode;
+        if (['viewport', 'remote'].includes(value.scrollTarget)) displayPreferences.scrollTarget = value.scrollTarget;
       }
     }
   }
 } catch {}
+const workspacePanels = createWorkspacePanels({ tools: $('workspace-tools'), input: $('input-dock'),
+  toolsButton: $('toggle-controls-button'), inputButton: $('toggle-input-button'), close: closeWorkspacePanel });
+function closeWorkspacePanel(name = workspacePanels.active) {
+  shortcutMenu.close();
+  updateDisplayPreferences(name === 'tools' ? { controlsCollapsed: true } : terminalMode() ? { terminalInputCollapsed: true } : { collapsed: true });
+}
+function hideWorkspacePanels() {
+  if (workspacePanels.active) updateDisplayPreferences({ controlsCollapsed: true, collapsed: true, terminalInputCollapsed: true });
+}
+function toggleWorkspacePanel(name) {
+  const opening = workspacePanels.active !== name;
+  shortcutMenu.close();
+  updateDisplayPreferences({ controlsCollapsed: name !== 'tools' || !opening,
+    ...(terminalMode() ? { terminalInputCollapsed: name !== 'input' || !opening } : { collapsed: name !== 'input' || !opening }) });
+  if (opening) { workspacePanels.focus(); if (name === 'input') $('mobile-input').focus({ preventScroll: true }); }
+}
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
+    pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     ...(terminalMode() ? { csrf, terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
-    busy: inputBusy || terminalBusy || $('terminals-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
+    busy: inputBusy || inputComposing || terminalBusy || $('terminals-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
@@ -93,14 +118,15 @@ function renderDisplayControls() {
   $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
   $('actual-size-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 1));
   $('pan-button').setAttribute('aria-pressed', String(displayPreferences.pan));
-  $('toggle-input-button').setAttribute('aria-expanded', String(!inputCollapsed()));
-  $('toggle-input-button').textContent = inputCollapsed() ? '展开输入' : '收起输入';
-  $('input-dock').hidden = inputCollapsed();
-  $('desktop-actions').hidden = displayPreferences.controlsCollapsed;
-  $('display-controls').hidden = displayPreferences.controlsCollapsed;
+  $('pointer-mode').value = displayPreferences.pointerMode;
+  $('scroll-target').value = displayPreferences.scrollTarget;
+  $('pointer-options').hidden = terminalMode();
+  // Older saved preferences could have both inline sections expanded.
+  // Input takes the shared panel slot until the user chooses another tool.
+  workspacePanels.render(!inputCollapsed() ? 'input' : !displayPreferences.controlsCollapsed ? 'tools' : '');
+  $('tools-title').textContent = terminalMode() ? '终端工具' : '桌面工具';
+  $('terminal-button').hidden = terminalMode();
   $('desktop-card').classList.toggle('controls-collapsed', displayPreferences.controlsCollapsed);
-  $('toggle-controls-button').setAttribute('aria-expanded', String(!displayPreferences.controlsCollapsed));
-  $('toggle-controls-button').textContent = displayPreferences.controlsCollapsed ? '展开控件' : '收起控件';
   const base = zoomBase(), ready = frameLoaded && frameState === 'connected';
   $('zoom-label').textContent = base ? `${Math.round(base * 100)}%` : '—';
   $('zoom-out-button').disabled = !ready || !base || base <= 0.1;
@@ -172,8 +198,14 @@ $('pan-button').addEventListener('click', () => {
   updateDisplayPreferences({ pan: !displayPreferences.pan });
   toast(displayPreferences.pan ? '拖动模式：移动画面，不会点击远程桌面' : '操作模式：可以点击远程桌面');
 });
-$('toggle-input-button').addEventListener('click', () => { shortcutMenu.close(); updateDisplayPreferences(terminalMode() ? { terminalInputCollapsed: !inputCollapsed() } : { collapsed: !inputCollapsed() }); });
-$('toggle-controls-button').addEventListener('click', () => updateDisplayPreferences({ controlsCollapsed: !displayPreferences.controlsCollapsed }));
+$('pointer-mode').addEventListener('change', () => updateDisplayPreferences({ pointerMode: $('pointer-mode').value, pan: false }));
+$('scroll-target').addEventListener('change', () => updateDisplayPreferences({ scrollTarget: $('scroll-target').value }));
+$('toggle-input-button').addEventListener('click', () => toggleWorkspacePanel('input'));
+$('toggle-controls-button').addEventListener('click', () => toggleWorkspacePanel('tools'));
+$('close-input-button').addEventListener('click', () => closeWorkspacePanel('input'));
+$('close-controls-button').addEventListener('click', () => closeWorkspacePanel('tools'));
+$('tools-fullscreen-button').addEventListener('click', () => { closeWorkspacePanel('tools'); $('fullscreen-button').click(); });
+for (const id of ['input-keyboard-button', 'assistant-send-button']) $(id).addEventListener('click', () => $('mobile-input').focus({ preventScroll: true }));
 renderDisplayControls();
 
 function inputPaused() { return viewportResizing || controlsState.viewportBusy || transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
@@ -238,7 +270,7 @@ function canManageTerminals() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
 }
 function renderInputControls() {
-  const disabled = inputBusy || !canInput();
+  const disabled = inputBusy || inputComposing || !canInput();
   for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
   if (disabled) shortcutMenu.close();
   for (const control of [$('terminals-button'), $('create-terminal'), ...$('terminal-list').querySelectorAll('button, input')]) control.disabled = !canManageTerminals() || control.closest('.terminal-row')?.dataset.supported === 'false';
@@ -331,6 +363,7 @@ async function loadDiagnostics() {
 }
 function expireAccess() {
   accessExpired = true;
+  hideWorkspacePanels();
   stopPolling();
   stopFrame();
   stopDiagnostics();
@@ -486,6 +519,7 @@ async function poll() {
     $('version-label').textContent = state.desktop.version;
     if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
     if (!mine) {
+      hideWorkspacePanels();
       terminalController?.abort();
       stopFrame();
     } else if (state.desktop.ready) openFrame();
@@ -621,7 +655,7 @@ function inputMessage(outcome, message) {
   $('input-status').textContent = message;
 }
 async function inputAction(path, body, label, success, destination) {
-  if (inputBusy || !canInput()) return;
+  if (inputBusy || inputComposing || !canInput()) return;
   if (['/api/key', '/api/paste'].includes(path)) {
     try { body = { ...body, ...(destination || inputDestination()) }; }
     catch (error) { return inputMessage('rejected', error.message); }
@@ -718,7 +752,7 @@ function syncTerminalView() {
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
-  return inputBusy || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || transportSwitching || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy;
+  return inputBusy || inputComposing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || transportSwitching || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy;
 }
 function changeMode(mode) {
   if (!['desktop', 'terminal'].includes(mode) || mode === displayPreferences.mode || modeChangeBusy() || confirmation) return;
@@ -750,6 +784,7 @@ $('terminal-button').addEventListener('click', () => requestConfirmation('termin
 $('paste-button').addEventListener('click', () => {
   const text = $('mobile-input').value;
   if (!text) return inputMessage('rejected', '先输入要粘贴的文字');
+  if (text.includes('\0') || new TextEncoder().encode(text).length > 32768) return inputMessage('rejected', '请输入不超过 32 KiB 的文字');
   void inputAction('/api/paste', { text, target: $('paste-target').value }, '粘贴', '已粘贴。确认内容后，按 Enter 提交');
 });
 for (const button of document.querySelectorAll('[data-key]')) button.addEventListener('click', () => {
@@ -839,6 +874,7 @@ $('clipboard-button').addEventListener('click', async () => {
   renderClipboard();
 });
 $('close-clipboard').addEventListener('click', () => $('clipboard-dialog').close());
+$('clipboard-send-button').addEventListener('click', () => { $('clipboard-dialog').close(); if (workspacePanels.active !== 'input') toggleWorkspacePanel('input'); $('mobile-input').focus({ preventScroll: true }); });
 $('clipboard-dialog').addEventListener('close', () => { clearClipboard(); renderInputControls(); renderDesktopSettings(); renderClipboard(); });
 $('clipboard-source').addEventListener('change', () => { clearClipboard(); renderClipboard(); renderInputControls(); renderDesktopSettings(); });
 $('read-clipboard').addEventListener('click', async () => {
@@ -1022,6 +1058,10 @@ for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data?.type === 'codex-pointer-options') {
+    if (!terminalMode() && canInput() && ['viewport', 'remote'].includes(event.data.scrollTarget)) updateDisplayPreferences({ scrollTarget: event.data.scrollTarget });
+    return;
+  }
   if (event.data?.type === 'codex-transport') {
     if (typeof event.data.issue === 'string' && (Object.hasOwn(directIssues, event.data.issue) || event.data.issue === '')) directIssue = event.data.issue;
     const route = event.data.details;

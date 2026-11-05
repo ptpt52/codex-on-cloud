@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -18,13 +19,13 @@ test('direct paste, separate Enter and maximum escaped clipboard use encrypted c
   try {
     await login(page, app);
     const text = '中文\n$(literal) `literal` ' + '中'.repeat(10000);
-    await page.locator('#mobile-input').fill(text); await page.locator('#paste-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill(text); await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     expect(app.inputCalls).toEqual([{ action: 'paste', text, target: 'terminal' }]);
-    await page.getByRole('button', { name: 'Enter ↵' }).click();
+    await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     expect(app.inputCalls).toHaveLength(2); expect(app.inputCalls[1]).toEqual({ action: 'key', key: 'Enter' });
-    await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click();
+    await openInput(page); await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click();
     await expect(page.locator('#clipboard-preview')).toHaveValue(app.clipboardText.clipboard);
     expect(app.clipboardReads).toEqual(['clipboard']); expect(http).toBe(0);
     await page.locator('#close-clipboard').click();
@@ -39,7 +40,7 @@ test('lost direct input result stays unknown without HTTP resend or reconnect re
   page.on('request', request => { if (request.method() === 'POST' && /\/api\/(paste|key)$/.test(request.url())) http++; });
   try {
     await login(page, app);
-    await page.getByRole('button', { name: 'Enter ↵' }).click(); await entered;
+    await openInput(page); await page.locator('[data-key="Enter"]').click(); await entered;
     app.disconnectViewers();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown');
     release();
@@ -55,7 +56,7 @@ test('takeover discards a pending direct clipboard result and never reads it aga
   app.clipboardText.clipboard = '旧页面不应看到这段文字';
   try {
     await login(page, app);
-    await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click(); await entered;
+    await openInput(page); await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click(); await entered;
     const second = await context.newPage(); await second.goto(app.config.origin);
     await expect(page.locator('#takeover-button')).toBeVisible({ timeout: 15000 });
     release();

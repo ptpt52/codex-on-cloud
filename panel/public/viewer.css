@@ -8,3 +8,9 @@ body { touch-action: none; }
 #pan-layer[hidden] { display: none; }
 #status { position: fixed; inset: auto 12px 12px; margin: 0; padding: 10px; background: #222222e6; color: #eeeeee; font: 13px sans-serif; pointer-events: none; }
 #status[hidden] { display: none; }
+#touch-cursor { position: fixed; width: 18px; height: 18px; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: #f7971d; box-shadow: 0 0 0 2px #231815, 0 2px 6px #0008; pointer-events: none; z-index: 2; }
+#touch-cursor[hidden], #pointer-controls[hidden], #pointer-controls button[hidden] { display: none; }
+#pointer-controls { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; padding: 5px; border: 1px solid #666; border-radius: 10px; background: #231815ed; max-width: calc(100% - 16px); z-index: 3; }
+#pointer-controls button { min-width: 44px; min-height: 44px; padding: 6px 9px; border: 1px solid #68615d; border-radius: 7px; color: #eee; background: #333; font: 12px sans-serif; white-space: nowrap; touch-action: manipulation; }
+#pointer-controls button:focus-visible { outline: 3px solid #f7971d; outline-offset: -3px; }
+#pointer-controls button[aria-pressed=true] { background: #f7971d; color: #231815; border-color: #f7971d; }

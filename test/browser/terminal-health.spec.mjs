@@ -1,3 +1,4 @@
+import { openInput, openTools } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -54,8 +55,8 @@ async function login(page, app, target = 'main') {
   await instrument(page);
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线'); await expect(page.locator('#terminal-mode')).toBeEnabled();
-  await page.locator('#mobile-input').fill('网络恢复后仍保留这段草稿');
-  if (target !== 'main') await page.locator('#input-terminal').selectOption(target);
+  await openInput(page); await page.locator('#mobile-input').fill('网络恢复后仍保留这段草稿');
+  if (target !== 'main') { await openInput(page); await page.locator('#input-terminal').selectOption(target); }
   await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click(); await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
@@ -66,7 +67,7 @@ test('periodic probes replace a silently lost OPEN socket without waiting for cl
   try {
     await app.controls.manageTerminals({ action: 'create', name: '保留任务', view: 'terminal' });
     const before = (await app.controls.listTerminals()).terminals.map(({ id, token }) => ({ id, token }));
-    const frame = await login(page, app, 'aux1'); await page.locator('#terminal-font-up').click(); await page.locator('#terminal-font-up').click();
+    const frame = await login(page, app, 'aux1'); await openTools(page); await page.locator('#terminal-font-up').click(); await openTools(page); await page.locator('#terminal-font-up').click();
     const began = Date.now();
     expect(await frame.evaluate(() => { const state = window.terminalHealthTest; state.dropSocket = state.socket; state.stallClose = true; return state.socket.readyState; })).toBe(1);
     await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.opened), { timeout: 6000, intervals: [100] }).toBe(2);
@@ -120,7 +121,7 @@ test('probes coexist with accepted input and a lost result stays unknown after r
   let entered, release; const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, terminalHook: async () => { entered(); await hold; } }), counts = writes(page);
   try {
-    const frame = await login(page, app); await page.locator('#toggle-input-button').click(); await page.locator('[data-key="Enter"]').click(); await started;
+    const frame = await login(page, app); await page.locator('#toggle-input-button').click(); await openInput(page); await page.locator('[data-key="Enter"]').click(); await started;
     await frame.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.replies.length)).toBeGreaterThan(0);
     expect(app.terminalConnections).toBe(1); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'pending');

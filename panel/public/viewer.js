@@ -1,5 +1,6 @@
 import RFB from './novnc/core/rfb.js';
 import { desktopTransport, canTryDirect } from './rtc.js';
+import { createDesktopPointer } from './desktop-pointer.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -7,7 +8,7 @@ const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
-const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1 };
+const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
 let rfb, retry, stopping = false;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
@@ -16,6 +17,9 @@ let networkDetails = null, directIssue = '', statsPending = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 let lastInteraction = 0, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
+const pointerControls = createDesktopPointer({ viewport, screen, cursor: document.getElementById('touch-cursor'), controls: document.getElementById('pointer-controls'),
+  changed: () => { lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); },
+  chooseScroll: scrollTarget => parent.postMessage({ type: 'codex-pointer-options', frame, scrollTarget }, location.origin) });
 function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
 }
@@ -59,7 +63,7 @@ function reportView() {
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
     const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height,
-      idle: !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800 };
+      idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800 };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -91,6 +95,8 @@ function applyView() {
   const scrollTop = viewport.scrollTop;
   screen.style.width = widthFit ? `${viewport.clientWidth}px` : manual ? `${Math.round(canvas.width * preferences.zoom)}px` : '100%';
   screen.style.height = widthFit ? `${Math.ceil(canvas.height * viewport.clientWidth / canvas.width)}px` : manual ? `${Math.round(canvas.height * preferences.zoom)}px` : '100%';
+  // Release a synthetic drag on its original stream before viewOnly changes.
+  pointerControls.update(canvas, viewing, preferences);
   if (rfb) {
     // Resize the local container through public APIs; remote pixels and input coordinates stay intact.
     rfb.scaleViewport = true;
@@ -130,9 +136,11 @@ window.addEventListener('message', event => {
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
   preferences.zoom = value.zoom;
   preferences.pan = value.pan;
+  if (['touch', 'trackpad'].includes(value.pointerMode)) preferences.pointerMode = value.pointerMode;
+  if (['viewport', 'remote'].includes(value.scrollTarget)) preferences.scrollTarget = value.scrollTarget;
   // Let an already held key/pointer release on the old stream. A handoff is
   // refused below if native input raced with the parent's idle confirmation.
-  preferences.blocked = value.handoff === true && (pressedKeys.size || pressedPointers.size) ? false : value.blocked;
+  preferences.blocked = value.handoff === true && (pressedKeys.size || pressedPointers.size || pointerControls.busy) ? false : value.blocked;
   preferences.busy = value.busy === true;
   preferences.revision = value.revision ?? 0;
   applyView();
@@ -142,20 +150,21 @@ window.addEventListener('message', event => {
 // them into remote drags. Taps and native mouse/keyboard input remain with noVNC.
 for (const name of ['gesturestart', 'gesturemove', 'gestureend']) screen.addEventListener(name, event => {
   if (!['drag', 'twodrag'].includes(event.detail?.type)) return;
-  if (!scrollGesture && (preferences.zoom !== 'width' || preferences.pan || preferences.blocked)) return;
+  if (!scrollGesture && (preferences.scrollTarget !== 'viewport' || preferences.pan || preferences.blocked)) return;
   event.stopImmediatePropagation();
   const y = event.detail.type === 'twodrag' ? event.detail.magnitudeY : event.detail.clientY;
   if (name === 'gesturestart') scrollGesture = { y, instance: rfb };
   if (name === 'gesturemove' && scrollGesture) {
-    if (scrollGesture.instance === rfb && preferences.zoom === 'width' && !preferences.pan && !preferences.blocked) viewport.scrollTop += scrollGesture.y - y;
+    if (scrollGesture.instance === rfb && preferences.scrollTarget === 'viewport' && !preferences.pan && !preferences.blocked) viewport.scrollTop += scrollGesture.y - y;
     scrollGesture.y = y;
   }
   if (name === 'gestureend') scrollGesture = null;
 }, true);
 viewport.addEventListener('wheel', event => {
-  if (preferences.zoom !== 'width' || preferences.pan || preferences.blocked) return;
+  if (preferences.scrollTarget !== 'viewport' || preferences.pan || preferences.blocked) return;
   event.preventDefault(); event.stopImmediatePropagation();
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+  viewport.scrollLeft += event.deltaX * unit;
   viewport.scrollTop += event.deltaY * unit;
 }, { capture: true, passive: false });
 
@@ -237,7 +246,7 @@ function monitorDirect(delay = 3000) {
   healthTimer = setTimeout(tick, delay);
 }
 function idleForSwitch() {
-  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800;
+  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800;
 }
 function scheduleProbe(delay = probeDelay) {
   if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;
@@ -291,7 +300,7 @@ async function probeDirect() {
     requested = true;
     prepared = await prepareSwitch(controller.signal);
     if (!prepared || epoch !== connectionEpoch || stopping || controller.signal.aborted) return;
-    if (pressedKeys.size || pressedPointers.size || performance.now() - lastInteraction < 800) return;
+    if (pressedKeys.size || pressedPointers.size || pointerControls.busy || performance.now() - lastInteraction < 800) return;
     switching = true; switchingFrom = rfb;
     await candidate.control.request('activate', {});
     if (epoch !== connectionEpoch || stopping || controller.signal.aborted) return;
@@ -310,6 +319,7 @@ async function probeDirect() {
   }
 }
 function attachViewer(direct) {
+  pointerControls.update(canvas, false, preferences);
   rememberView(); stopHealth();
   restoringView = !!viewAnchor;
   viewing = false; connecting = true;
@@ -342,6 +352,7 @@ function attachViewer(direct) {
   instance.addEventListener('disconnect', () => {
     if (rfb !== instance || stopping) return;
     stopHealth(); viewing = false; connecting = false;
+    pointerControls.update(canvas, false, preferences);
     if (switching && switchingFrom === instance) return;
     if (switching) finishSwitch();
     if (direct) directFailed = true;
@@ -394,6 +405,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  pointerControls.update(canvas, false, preferences);
   stopHealth();
   scrollGesture = null;
   clearTimeout(idleTimer);

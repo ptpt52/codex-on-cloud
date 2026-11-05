@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -31,7 +32,7 @@ test('real WebRTC and noVNC connect over UDP without a WebSocket; takeover and r
     expect(transport.dtlsCipher).toBeTruthy();
     expect(transport.selectedCandidatePairId).toBeTruthy();
     await page.getByRole('button', { name: '关闭连接状态' }).click();
-    await page.getByLabel('要粘贴到桌面的文字').fill('保持草稿，不要重放');
+    await openInput(page); await page.getByLabel('要粘贴到桌面的文字').fill('保持草稿，不要重放');
     const second = await context.newPage();
     await second.goto(app.config.origin);
     await expect(second.locator('#connection-status')).toContainText('桌面在线', { timeout: 20000 });

@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -7,13 +8,13 @@ async function login(page, app) {
 }
 const item = (page, key) => page.locator(`[data-shortcut="${key}"]`);
 async function open(page) {
-  await page.locator('#shortcuts-button').click(); await expect(page.locator('#shortcuts-menu')).toBeVisible();
+  await openInput(page); await page.locator('#shortcuts-button').click(); await expect(page.locator('#shortcuts-menu')).toBeVisible();
 }
 
 test('opening, dismissing and navigating shortcuts sends nothing; selecting one key sends exactly once and preserves the draft', async ({ page }, info) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } });
   try {
-    await login(page, app); await page.locator('#mobile-input').fill('菜单选择后仍保留这段草稿');
+    await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('菜单选择后仍保留这段草稿');
     await open(page); await expect(page.locator('#shortcuts-button')).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('#shortcuts-menu')).toBeFocused();
     await expect(page.getByRole('menuitem')).toHaveCount(37);
@@ -136,12 +137,15 @@ test('the public offline shell includes shortcut modules and never caches authen
     await context.setOffline(true); await page.reload();
     await expect(page.locator('#login-view')).toBeVisible();
     await expect(page.locator('[data-shortcut]')).toHaveCount(37); await expect(page.locator('#shortcuts-button')).toBeDisabled();
-    const paths = await page.evaluate(async () => {
-      const cache = await caches.open('codex-cloud-shell-0.2.0-text-terminal');
-      return (await cache.keys()).map(request => new URL(request.url).pathname);
+    const { paths, names } = await page.evaluate(async () => {
+      const names = (await caches.keys()).filter(name => name.startsWith('codex-cloud-shell-'));
+      const cache = await caches.open(names[0]);
+      return { names, paths: (await cache.keys()).map(request => new URL(request.url).pathname) };
     });
+    expect(names).toHaveLength(1);
     expect(paths).toContain('/shortcuts.js'); expect(paths).toContain('/shortcut-menu.js');
-    expect(paths.length).toBeLessThanOrEqual(7);
+    expect(paths).toContain('/workspace-panels.js'); expect(paths).toContain('/workspace.css');
+    expect(paths.length).toBeLessThanOrEqual(11);
     expect(paths.some(path => path.startsWith('/api/') || path.startsWith('/desktop/'))).toBe(false);
     expect(app.inputCalls).toEqual([]);
   } finally { await context.setOffline(false); await app.close(); }

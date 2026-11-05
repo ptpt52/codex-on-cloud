@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { rtcAddress, rtcIPv6Address } from '../../panel/rtc.mjs';
@@ -54,8 +55,8 @@ test('real IPv6 UDP/DTLS direct path reports selected addresses and survives rel
     const frame = page.frames().find(f => f.url().includes('/desktop/index.html'));
     expect(await frame.evaluate(async () => [...(await window.testPeer.getStats()).values()].find(row => row.type === 'transport').dtlsState)).toBe('connected');
     await page.locator('#close-connection').click();
-    await page.locator('#mobile-input').fill('IPv6 往返切换保留草稿');
-    await page.getByRole('button', { name: 'Enter ↵' }).click();
+    await openInput(page); await page.locator('#mobile-input').fill('IPv6 往返切换保留草稿');
+    await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     await frame.evaluate(() => {
       window.dropHealth = true; window.dispatchEvent(new Event('online'));

@@ -1,3 +1,4 @@
+import { openTools } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { spawn, execFile } from 'node:child_process';
@@ -38,10 +39,10 @@ test('viewport layout keeps the chosen font and reflows columns from phone to wi
       await expect.poll(async () => { const size = await dimensions(frame); return size.font === 15 && size.width <= size.hostWidth && size.width / size.hostWidth > (width < 400 ? .88 : .96); }).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
-    await page.locator('#terminal-font-up').click(); await expect.poll(async () => (await dimensions(frame)).font).toBe(16);
+    await openTools(page); await page.locator('#terminal-font-up').click(); await expect.poll(async () => (await dimensions(frame)).font).toBe(16);
     expect((await dimensions(frame)).cols).toBeGreaterThan(170);
-    await page.locator('#terminal-width-mode').selectOption('scale'); await expect.poll(async () => (await dimensions(frame)).font).toBeGreaterThan(20);
-    await page.locator('#terminal-width-mode').selectOption('viewport'); await expect.poll(async () => (await dimensions(frame)).font).toBe(16);
+    await openTools(page); await page.locator('#terminal-width-mode').selectOption('scale'); await expect.poll(async () => (await dimensions(frame)).font).toBeGreaterThan(20);
+    await openTools(page); await page.locator('#terminal-width-mode').selectOption('viewport'); await expect.poll(async () => (await dimensions(frame)).font).toBe(16);
     expect((await dimensions(frame)).cols).toBeGreaterThan(170);
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
@@ -59,12 +60,12 @@ test('width fit fills a wide screen through the direct channel, restores narrow 
     const records = app.terminalSizes.length; await page.waitForTimeout(300); expect(app.terminalSizes.length - records).toBeLessThanOrEqual(1);
     await page.screenshot({ path: `test-results/${info.project.name}-terminal-wide-fit.png` });
 
-    await page.locator('#terminal-width-mode').selectOption('manual'); await expect.poll(async () => (await dimensions(frame)).font).toBe(15);
+    await openTools(page); await page.locator('#terminal-width-mode').selectOption('manual'); await expect.poll(async () => (await dimensions(frame)).font).toBe(15);
     expect((await dimensions(frame)).cols).toBeGreaterThan(180); await expect(page.locator('#terminal-width-mode')).toHaveValue('manual');
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('终端在线');
     const next = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
     await expect(page.locator('#terminal-width-mode')).toHaveValue('manual'); expect((await dimensions(next)).font).toBe(15);
-    await page.locator('#terminal-width-mode').selectOption('scale'); await expect.poll(async () => (await dimensions(next)).font).toBeGreaterThan(20);
+    await openTools(page); await page.locator('#terminal-width-mode').selectOption('scale'); await expect.poll(async () => (await dimensions(next)).font).toBeGreaterThan(20);
     const connections = app.terminalConnections;
     for (const width of [2560, 1280, 700, 320, 390, 1920]) {
       await page.setViewportSize({ width, height: 1000 });

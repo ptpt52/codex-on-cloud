@@ -1,3 +1,4 @@
+import { openInput, openTools } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { rtcAddress, rtcIPv6Address } from '../../panel/rtc.mjs';
@@ -60,14 +61,14 @@ test('real terminal UDP/DTLS shares the original task, routes Chinese paste and 
     const transport = await frame.evaluate(async () => [...(await window.terminalPeers.at(-1).getStats()).values()].find(value => value.type === 'transport'));
     expect(transport.dtlsState).toBe('connected'); expect(transport.dtlsCipher).toBeTruthy(); expect(transport.selectedCandidatePairId).toBeTruthy();
     await page.locator('#close-connection').click(); await page.locator('#toggle-input-button').click();
-    await page.locator('#mobile-input').fill('中文\n第二行'); await page.locator('#paste-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill('中文\n第二行'); await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: '\x1b[200~中文\n第二行\x1b[201~' }]);
-    await page.locator('[data-key="Enter"]').click(); await expect.poll(() => app.terminalInputs.length).toBe(2); expect(app.terminalInputs[1].text).toBe('\r');
+    await openInput(page); await page.locator('[data-key="Enter"]').click(); await expect.poll(() => app.terminalInputs.length).toBe(2); expect(app.terminalInputs[1].text).toBe('\r');
     await page.frameLocator('#desktop-frame').locator('.xterm-helper-textarea').press('a'); await expect.poll(() => app.terminalInputs.at(-1).text).toBe('a');
     await page.keyboard.insertText('直输中文'); await expect.poll(() => app.terminalInputs.at(-1).text).toBe('直输中文');
-    await page.locator('#toggle-input-button').click(); await page.locator('#terminal-font-up').click();
-    await page.locator('#terminal-view-select').selectOption('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线', { timeout: 15000 });
+    await page.locator('#toggle-input-button').click(); await openTools(page); await page.locator('#terminal-font-up').click();
+    await openTools(page); await page.locator('#terminal-view-select').selectOption('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线', { timeout: 15000 });
     await expect(page.locator('#terminal-font-label')).toHaveText('16'); await expect(page.locator('#mobile-input')).toHaveValue('中文\n第二行');
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 0, rtc: 2 }); expect(app.terminalConnections).toBe(2); expect(app.vncConnections).toBe(0);
     expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
@@ -95,8 +96,8 @@ test('periodic probing keeps WSS and its sole PTY alive until direct activation,
       if (++offers < 3) return route.fulfill({ status: 503, json: { error: '等待网络恢复' } });
       const response = await route.fetch(); answered.release(); await hold.promise; await route.fulfill({ response }).catch(() => {});
     });
-    const frame = await login(page, app); await page.locator('#toggle-input-button').click(); await page.locator('#mobile-input').fill('自动换通道保留草稿');
-    await page.locator('#toggle-input-button').click(); await page.locator('#terminal-font-up').click();
+    const frame = await login(page, app); await page.locator('#toggle-input-button').click(); await openInput(page); await page.locator('#mobile-input').fill('自动换通道保留草稿');
+    await page.locator('#toggle-input-button').click(); await openTools(page); await page.locator('#terminal-font-up').click();
     await page.clock.fastForward(16000); await expect.poll(() => offers).toBe(2);
     await frame.waitForFunction(() => window.terminalPeers.at(-1).connectionState === 'closed'); expect(app.terminalConnections).toBe(1);
     await page.clock.fastForward(31000); await answered.promise;
@@ -114,7 +115,7 @@ test('accepted input and IME composition defer automatic promotion; server also 
   try {
     await prepare(page); await page.clock.install(); await page.route('**/api/terminal/rtc', route => { offers++; return available ? route.continue() : route.fulfill({ status: 503, json: { error: '直连暂不可用' } }); });
     const frame = await login(page, app); await page.clock.fastForward(14000); await page.waitForTimeout(100);
-    await page.locator('#toggle-input-button').click(); await page.locator('[data-key="Enter"]').click(); await entered.promise;
+    await page.locator('#toggle-input-button').click(); await openInput(page); await page.locator('[data-key="Enter"]').click(); await entered.promise;
     available = true; await page.clock.fastForward(2000); expect(offers).toBe(1); expect(app.terminalConnections).toBe(1);
     const status = await frame.evaluate(async () => {
       const { terminalDirect } = await import('/terminal/terminal-rtc.js'), query = new URLSearchParams(location.search);
@@ -135,8 +136,8 @@ test('a silent OPEN direct connection loses an accepted result once, falls back 
   test.setTimeout(60000);
   const entered = gate(), hold = gate(), app = await fixture({ webrtc: true, terminalHook: async () => { entered.release(); await hold.promise; } }), counts = writes(page);
   try {
-    await prepare(page); const frame = await login(page, app); await page.locator('#toggle-input-button').click(); await page.locator('#mobile-input').fill('切网仍保留');
-    await page.locator('[data-key="Enter"]').click(); await entered.promise;
+    await prepare(page); const frame = await login(page, app); await page.locator('#toggle-input-button').click(); await openInput(page); await page.locator('#mobile-input').fill('切网仍保留');
+    await openInput(page); await page.locator('[data-key="Enter"]').click(); await entered.promise;
     await frame.evaluate(() => { window.dropHealthChannel = window.terminalChannels.at(-1); window.dispatchEvent(new Event('online')); });
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown', { timeout: 3500 });
     await expect.poll(() => app.terminalConnections, { timeout: 10000 }).toBe(2); hold.release();
@@ -209,7 +210,7 @@ test('held native keys and a dangerous-key confirmation postpone promotion until
     await prepare(page); await page.clock.install(); await page.route('**/api/terminal/rtc', route => ++offers === 1 ? route.fulfill({ status: 503, json: { error: '首次直连不可用' } }) : route.continue());
     const frame = await login(page, app); await page.frameLocator('#desktop-frame').locator('.xterm-helper-textarea').focus(); await page.keyboard.down('Shift');
     await page.clock.fastForward(16000); await page.waitForTimeout(100); expect(offers).toBe(1); expect(app.terminalConnections).toBe(1);
-    await page.keyboard.up('Shift'); await page.locator('#toggle-input-button').click(); await page.locator('[data-key="Ctrl+C"]').click();
+    await page.keyboard.up('Shift'); await page.locator('#toggle-input-button').click(); await openInput(page); await page.locator('[data-key="Ctrl+C"]').click();
     await network(frame); await page.clock.fastForward(2000); expect(offers).toBe(1); expect(app.terminalInputs).toEqual([]);
     await page.locator('#cancel-confirmation').click(); await network(frame);
     await expect.poll(() => app.terminalConnections, { timeout: 15000 }).toBe(2); await diagnostics(page, DIRECT); expect(app.terminalInputs).toEqual([]);

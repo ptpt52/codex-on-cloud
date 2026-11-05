@@ -1,3 +1,4 @@
+import { openInput, openTools } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -11,7 +12,7 @@ test('logout requires an explicit confirmation; double tap, default Enter and Es
   const app = await fixture({ rfb: true }); let logouts = 0;
   page.on('request', request => { if (request.url().endsWith('/api/logout')) logouts++; });
   try {
-    await login(page, app); await page.locator('#mobile-input').fill('误触后保留草稿');
+    await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('误触后保留草稿');
     await page.locator('#logout-button').dblclick();
     await expect(page.locator('#action-confirmation')).toBeVisible();
     await expect(page.locator('#confirmation-description')).toContainText('任务会继续保留');
@@ -36,15 +37,16 @@ test('opening terminal and reconnecting require their own confirmation and execu
   try {
     await login(page, app);
     for (const id of ['terminal-button', 'reconnect-button']) {
+      await openTools(page);
       await page.locator('#' + id).click(); await expect(page.locator('#cancel-confirmation')).toBeFocused();
       await page.locator('#cancel-confirmation').click();
     }
     expect(app.inputCalls).toEqual([]); expect(claims).toBe(1); expect(streams).toBe(1);
-    await page.locator('#terminal-button').click(); await expect(page.locator('#accept-confirmation')).toHaveText('确认打开终端');
+    await openTools(page); await page.locator('#terminal-button').click(); await expect(page.locator('#accept-confirmation')).toHaveText('确认打开终端');
     await page.locator('#accept-confirmation').click();
     await expect.poll(() => app.inputCalls).toEqual([{ action: 'terminal' }]);
     await expect(page.locator('#terminal-button')).toBeEnabled();
-    await page.locator('#reconnect-button').click(); await expect(page.locator('#accept-confirmation')).toHaveText('确认重新连接');
+    await openTools(page); await page.locator('#reconnect-button').click(); await expect(page.locator('#accept-confirmation')).toHaveText('确认重新连接');
     await page.locator('#accept-confirmation').click();
     await expect.poll(() => streams).toBe(2); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     expect(claims).toBe(2); expect(app.inputCalls).toEqual([{ action: 'terminal' }]); expect(app.managementStats.restarts).toBe(0);
@@ -56,11 +58,12 @@ test('interrupt button is confirmed separately while Enter remains a direct expl
   try {
     await login(page, app);
     const interrupt = page.locator('[data-key="Ctrl+C"]');
+    await openInput(page);
     await interrupt.click(); await page.locator('#cancel-confirmation').click(); expect(app.inputCalls).toEqual([]);
     await interrupt.click(); await expect(page.locator('#confirmation-title')).toContainText('中断');
     await page.locator('#accept-confirmation').click();
     await expect.poll(() => app.inputCalls).toEqual([{ action: 'key', key: 'Ctrl+C' }]);
-    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await page.locator('[data-key="Enter"]').click();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(() => app.inputCalls).toEqual([{ action: 'key', key: 'Ctrl+C' }, { action: 'key', key: 'Enter' }]);
     await expect(page.locator('#action-confirmation')).toBeHidden();
   } finally { await app.close(); }
@@ -69,7 +72,7 @@ test('interrupt button is confirmed separately while Enter remains a direct expl
 test('takeover discards an unconfirmed terminal action rather than keeping it for a new stream', async ({ page, context }) => {
   const app = await fixture({ rfb: true });
   try {
-    await login(page, app); await page.locator('#terminal-button').click();
+    await login(page, app); await openTools(page); await page.locator('#terminal-button').click();
     await expect(page.locator('#action-confirmation')).toBeVisible();
     const second = await context.newPage(); await second.goto(app.config.origin);
     await expect(second.locator('#connection-status')).toContainText('桌面在线');
@@ -86,11 +89,14 @@ test('touch targets remain separate and the narrow mobile layout stays within th
     if (info.project.name === 'mobile') await page.setViewportSize({ width: 320, height: 844 });
     await login(page, app);
     for (const selector of ['#logout-button', '#terminal-button', '#reconnect-button', '[data-key="Ctrl+C"]']) {
+      if (selector.startsWith('[data-key=')) await openInput(page);
+      else if (selector !== '#logout-button') await openTools(page);
       const rect = await page.locator(selector).boundingBox(); expect(rect.width).toBeGreaterThanOrEqual(44); expect(rect.height).toBeGreaterThanOrEqual(44);
     }
     const files = await page.locator('#files-button').boundingBox(), logout = await page.locator('#logout-button').boundingBox();
     expect(logout.x - files.x - files.width).toBeGreaterThanOrEqual(8);
     const card = await page.locator('#desktop-card').boundingBox();
+    await openTools(page);
     for (const id of ['width-button', 'fit-button', 'actual-size-button', 'zoom-out-button', 'zoom-in-button', 'awake-button']) {
       const rect = await page.locator('#' + id).boundingBox();
       expect(rect.x).toBeGreaterThanOrEqual(card.x); expect(rect.x + rect.width).toBeLessThanOrEqual(card.x + card.width);
@@ -101,7 +107,7 @@ test('touch targets remain separate and the narrow mobile layout stays within th
     if (info.project.name === 'desktop') {
       await page.locator('#cancel-confirmation').click(); await page.locator('#fullscreen-button').click();
       await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
-      await page.locator('#terminal-button').click(); await expect(page.locator('#action-confirmation')).toBeVisible();
+      await openTools(page); await page.locator('#terminal-button').click(); await expect(page.locator('#action-confirmation')).toBeVisible();
       await expect(page.locator('#cancel-confirmation')).toBeFocused(); await page.locator('#cancel-confirmation').click();
       expect(await page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
       await page.evaluate(() => document.exitFullscreen());

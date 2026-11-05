@@ -9,6 +9,7 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/workspace.css">
   <title>Codex on Cloud</title>
 </head>
 <body>
@@ -43,10 +44,14 @@
         <div class="desktop-title"><span class="monitor-icon" aria-hidden="true">▣</span><strong id="view-title">开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span></div>
         <div class="mode-switch" role="group" aria-label="操作模式"><button id="desktop-mode" class="view-button" type="button" aria-pressed="true">桌面</button><button id="terminal-mode" class="view-button" type="button" aria-pressed="false">网页终端</button></div>
         <div class="desktop-header-actions">
-          <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="quiet" title="打开或返回已有的 Codex 终端">打开终端</button><button id="reconnect-button" class="quiet">重新连接</button><button id="fullscreen-button" class="quiet" aria-label="全屏桌面" title="全屏桌面">⛶</button></div>
-          <button id="toggle-controls-button" class="quiet controls-toggle" type="button" aria-expanded="true" aria-controls="desktop-actions display-controls">收起控件</button>
+          <button id="toggle-controls-button" class="view-button controls-toggle" type="button" aria-expanded="false" aria-controls="workspace-tools">工具</button>
+          <button id="toggle-input-button" class="view-button controls-toggle" type="button" aria-expanded="false" aria-controls="input-dock">输入</button>
+          <button id="fullscreen-button" class="quiet fullscreen-entry" aria-label="全屏桌面" title="全屏桌面">⛶</button>
         </div>
       </div>
+      <aside id="workspace-tools" class="workspace-panel tools-panel" role="dialog" aria-labelledby="tools-title" tabindex="-1" hidden>
+        <div class="panel-heading"><h2 id="tools-title">桌面工具</h2><button id="close-controls-button" class="quiet" type="button" aria-label="关闭工具面板">✕</button></div>
+        <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
       <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
         <div id="terminal-view-controls" class="terminal-view-controls" hidden><label for="terminal-view-select">终端<select id="terminal-view-select" aria-label="网页终端目标"></select></label><button id="terminal-view-manage" class="view-button" type="button">管理</button><select id="terminal-width-mode" aria-label="终端宽度适配"><option value="viewport">界面适应宽度</option><option value="scale">内容放大适宽</option><option value="manual">手动字号</option></select><button id="terminal-font-down" class="view-button" type="button" aria-label="缩小终端字号">A−</button><output id="terminal-font-label">15</output><button id="terminal-font-up" class="view-button" type="button" aria-label="放大终端字号">A＋</button></div>
         <div class="zoom-controls">
@@ -57,26 +62,34 @@
           <output id="zoom-label" class="zoom-label" aria-label="当前显示比例">—</output>
           <button id="zoom-in-button" class="view-button zoom-step" aria-label="放大画面" disabled>＋</button></span>
         </div>
+        <div id="pointer-options" class="pointer-options">
+          <label for="pointer-mode">触控方式<select id="pointer-mode"><option value="touch">触屏：点按位置</option><option value="trackpad">触控板：滑动指针</option></select></label>
+          <label for="scroll-target">滚动目标<select id="scroll-target"><option value="viewport">整张桌面画面</option><option value="remote">远程程序内容</option></select></label>
+          <p class="muted">触控板单指移动，点一下左键，双指点按右键、上下滑动滚动。需要移动窗口或选择文字时，开启画面下方的“拖动”。</p>
+        </div>
         <div class="view-actions">
           <button id="desktop-settings-button" class="view-button">桌面设置</button>
           <button id="awake-button" class="view-button" type="button" aria-pressed="false" aria-describedby="awake-description">保持亮屏</button>
           <span id="awake-description" class="sr-only">在支持的浏览器中，保持当前设备屏幕亮起。切到后台或系统省电时可能暂停。</span>
           <button id="pan-button" class="view-button" aria-pressed="false" aria-describedby="pan-description">拖动画面</button>
           <span id="pan-description" class="sr-only">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
-          <button id="toggle-input-button" class="view-button" aria-expanded="true" aria-controls="input-dock">收起输入</button>
         </div>
       </div>
+      </aside>
       <div id="desktop-stage" class="desktop-stage">
         <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
         <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button><button id="access-refresh-button" class="primary" hidden>刷新页面验证</button></div>
       </div>
-    </section>
-    <section id="input-dock" class="input-dock" aria-label="手机输入辅助">
-      <div class="dock-heading"><div><strong>输入助手</strong><span class="muted">中文、长指令都可以在这里输入</span></div><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="clipboard-button" class="view-button clipboard-entry" type="button" disabled>取回文字</button><label class="target-label" for="paste-target">粘贴到<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label></div>
-      <div class="terminal-destination"><label for="input-terminal">输入目标<select id="input-terminal" disabled><option value="">当前窗口（跟随桌面焦点）</option></select></label><span id="terminal-target-note" class="muted">发送到桌面当前获得焦点的位置。</span></div>
-      <div class="composer"><textarea id="mobile-input" rows="2" placeholder="先点选桌面中的输入位置，再在这里写下指令…" aria-label="要粘贴到桌面的文字"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
+    <section id="input-dock" class="input-dock workspace-panel" role="dialog" aria-label="输入助手" tabindex="-1" hidden>
+      <div class="panel-heading"><h2>输入与剪贴板</h2><div><button id="input-keyboard-button" class="quiet" type="button" aria-label="打开输入键盘">键盘</button><button id="close-input-button" class="quiet" type="button" aria-label="关闭输入助手">✕</button></div></div>
+      <div class="assistant-directions" role="group" aria-label="文字传输方向"><button id="assistant-send-button" class="view-button" type="button" aria-pressed="true">发送到远程 →</button><button id="clipboard-button" class="view-button clipboard-entry" type="button" aria-pressed="false" disabled>← 取回文字</button></div>
+      <div class="assistant-body">
+      <div class="terminal-destination"><label for="input-terminal">输入目标<select id="input-terminal" disabled><option value="">当前窗口（跟随桌面焦点）</option></select></label><label class="target-label" for="paste-target">粘贴方式<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label><span id="terminal-target-note" class="muted">发送到桌面当前获得焦点的位置。</span></div>
+      <div class="composer"><textarea id="mobile-input" rows="2" maxlength="32768" placeholder="在这里写下中文或长指令；粘贴后不会自动执行…" aria-label="要粘贴到桌面的文字" aria-describedby="terminal-target-note"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
+      </div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button><button id="shortcuts-button" class="shortcuts-entry" type="button" aria-haspopup="menu" aria-controls="shortcuts-menu" aria-expanded="false" disabled>更多按键 ▾</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       <p id="input-status" class="input-status" role="status" hidden></p>
+    </section>
     </section>
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，桌面继续运行</span><span id="version-label"></span></footer>
   </main>
@@ -104,6 +117,7 @@
   </dialog>
   <dialog id="clipboard-dialog" class="files-dialog clipboard-dialog">
     <div class="dialog-heading"><h2>取回远程文字</h2><button id="close-clipboard" class="quiet" aria-label="关闭远程文字">✕</button></div>
+    <div class="assistant-directions" role="group" aria-label="文字传输方向"><button id="clipboard-send-button" class="view-button" type="button" aria-pressed="false">发送到远程 →</button><button class="view-button" type="button" aria-pressed="true">← 取回文字</button></div>
     <p class="muted">从远程桌面取回文字，预览后复制到本机。</p>
     <label class="settings-label" for="clipboard-source">读取来源</label>
     <select id="clipboard-source"><option value="clipboard">远程剪贴板（复制的文字）</option><option value="primary">选中文字（鼠标选区）</option></select>

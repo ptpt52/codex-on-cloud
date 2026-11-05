@@ -1,3 +1,4 @@
+import { openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 
 test('login, Chinese input without automatic submit, files and logout work on a real page', async ({ page }, info) => {
@@ -15,15 +16,15 @@ test('login, Chinese input without automatic submit, files and logout work on a 
   let releasePaste;
   const pasteGate = new Promise(resolve => { releasePaste = resolve; });
   await page.route('**/api/paste', async route => { await pasteGate; await route.continue(); });
-  await page.getByLabel('要粘贴到桌面的文字').fill(text);
+  await openInput(page); await page.getByLabel('要粘贴到桌面的文字').fill(text);
   const paste = page.waitForRequest(request => request.url().endsWith('/api/paste') && request.method() === 'POST');
   await page.getByRole('button', { name: '粘贴文字' }).click();
   expect((await paste).postDataJSON()).toEqual({ text, target: 'terminal' });
-  await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+  await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
   releasePaste();
   await expect(page.getByRole('status').filter({ hasText: '已粘贴' })).toBeVisible();
   const enter = page.waitForRequest(request => request.url().endsWith('/api/key') && request.method() === 'POST');
-  await page.getByRole('button', { name: 'Enter ↵' }).click();
+  await openInput(page); await page.locator('[data-key="Enter"]').click();
   expect((await enter).postDataJSON()).toEqual({ key: 'Enter' });
   await page.screenshot({ path: `test-results/${info.project.name}-workspace.png`, fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

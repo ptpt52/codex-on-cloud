@@ -1,3 +1,4 @@
+import { openInput, openTools, closePanels } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -14,15 +15,15 @@ test('input stays busy until the result and shows success without submitting Ent
   const app = await fixture({ rfb: true, inputHook: async value => { if (value.action === 'paste') await hold.promise; } });
   try {
     await login(page, app);
-    await page.locator('#mobile-input').fill('中文输入保持草稿');
-    await page.locator('#paste-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill('中文输入保持草稿');
+    await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'pending');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
     expect(app.inputCalls).toEqual([{ action: 'paste', text: '中文输入保持草稿', target: 'terminal' }]);
     hold.release();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     await expect(page.locator('#input-status')).toContainText('已粘贴');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeEnabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
     expect(app.inputCalls).toHaveLength(1);
     await expect(page.locator('#mobile-input')).toHaveValue('中文输入保持草稿');
   } finally { hold.release(); await app.close(); }
@@ -35,7 +36,7 @@ test('a lost response is unknown and neither reconnect nor refresh replays the a
   try {
     await login(page, app);
     await page.route('**/api/key', async route => { await route.fetch(); await route.abort('failed'); });
-    await page.getByRole('button', { name: 'Enter ↵' }).click();
+    await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown');
     await expect(page.locator('#input-status')).toContainText('先查看桌面确认');
     expect(app.inputCalls).toEqual([{ action: 'key', key: 'Enter' }]);
@@ -53,14 +54,14 @@ test('rejected input and uncertain execution have distinct feedback', async ({ p
   const app = await fixture({ rfb: true, inputHook: () => { throw new Error('mock execution error'); } });
   try {
     await login(page, app);
-    await page.getByRole('button', { name: 'Enter ↵' }).click();
+    await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown');
     expect(app.inputCalls).toHaveLength(1);
     await page.reload();
     await expect(page.locator('#input-status')).toContainText('上一项输入结果未知');
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await page.route('**/api/key', route => route.fulfill({ status: 409, json: { error: '当前繁忙，本次输入未发送', outcome: 'rejected' } }));
-    await page.getByRole('button', { name: 'Enter ↵' }).click();
+    await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'rejected');
     await expect(page.locator('#input-status')).toContainText('未发送');
     expect(app.inputCalls).toHaveLength(1);
@@ -73,8 +74,8 @@ test('a stalled write times out once, preserves the draft and does not resend', 
   try {
     await login(page, app);
     await page.route('**/api/paste', async route => { writes++; await hold.promise; await route.abort().catch(() => {}); });
-    await page.locator('#mobile-input').fill('超时后仍保留的草稿');
-    await page.locator('#paste-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill('超时后仍保留的草稿');
+    await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown', { timeout: 10000 });
     await expect(page.locator('#mobile-input')).toHaveValue('超时后仍保留的草稿');
     expect(writes).toBe(1); expect(app.inputCalls).toHaveLength(0);
@@ -94,13 +95,14 @@ test('closing settings during a font update keeps input blocked until maintenanc
   }));
   try {
     await login(page, app);
-    await page.locator('#desktop-settings-button').click();
+    await openTools(page); await page.locator('#desktop-settings-button').click();
     await expect(page.locator('#apply-terminal-font')).toBeEnabled();
     await page.locator('#apply-terminal-font').click();
     await started.promise;
     await page.locator('#close-desktop-settings').click();
+    await closePanels(page);
     await expect(page.locator('#connection-status')).toContainText('桌面操作进行中');
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
     await expect(page.locator('#desktop-overlay')).toBeVisible();
     const before = { ...frames };
     await page.locator('#desktop-overlay').click();
@@ -108,7 +110,7 @@ test('closing settings during a font update keeps input blocked until maintenanc
     expect(frames).toEqual(before); expect(app.inputCalls).toHaveLength(0);
     hold.release();
     await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 10000 });
-    await expect(page.getByRole('button', { name: 'Enter ↵' })).toBeEnabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
     expect(app.inputCalls).toHaveLength(0);
   } finally { hold.release(); await app.close(); }
 });

@@ -11,6 +11,11 @@
     <div id="screen"></div>
   </div>
   <div id="pan-layer" tabindex="0" role="region" aria-label="拖动查看桌面，点击和按键不会发送到远程桌面" hidden></div>
+  <div id="touch-cursor" aria-hidden="true" hidden></div>
+  <div id="pointer-controls" role="group" aria-label="桌面触控操作" hidden>
+    <button id="pointer-left" type="button">左键</button><button id="pointer-right" type="button">右键</button><button id="pointer-drag" type="button" aria-pressed="false">拖动</button>
+    <button id="pointer-scroll" type="button" aria-label="滚动目标：整张桌面画面，点击切换到远程程序">滚动画面</button>
+  </div>
   <p id="status" role="status">正在连接独立桌面…</p>
   <script type="module" src="./viewer.js"></script>
 </body>

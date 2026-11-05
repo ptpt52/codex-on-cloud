@@ -36,6 +36,7 @@ async function connect(mobile = false) {
   await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveJSProperty('width', actualSize[0], { timeout: 30000 });
   await page.frameLocator('#desktop-frame').locator('#status').waitFor({ state: 'hidden', timeout: 30000 });
   assert.deepEqual(await page.frameLocator('#desktop-frame').locator('#screen canvas').evaluate(canvas => [canvas.width, canvas.height]), actualSize);
+  if (await page.locator('#toggle-input-button').getAttribute('aria-expanded') !== 'true') await page.locator('#toggle-input-button').click();
   return page;
 }
 async function eventually(probe) {

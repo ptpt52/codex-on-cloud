@@ -1,3 +1,4 @@
+import { openTools, openInput } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
@@ -6,7 +7,7 @@ async function open(page, app) {
   await page.getByLabel('密码', { exact: true }).fill(app.config.password);
   await page.getByRole('button', { name: '连接工作空间' }).click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线');
-  await page.locator('#desktop-settings-button').click();
+  await openTools(page); await page.locator('#desktop-settings-button').click();
   await expect(page.locator('#settings-current')).toContainText('1600 × 1600');
 }
 
@@ -23,7 +24,7 @@ test('save persists pending settings; only explicit confirmed apply restarts and
     expect(app.managementStats.restarts).toBe(0);
     await page.reload();
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
-    await page.locator('#desktop-settings-button').click();
+    await openTools(page); await page.locator('#desktop-settings-button').click();
     await expect(page.locator('#desktop-width')).toHaveValue('1920');
     await expect(page.locator('#terminal-font-size')).toHaveValue('18');
     await expect(page.locator('#settings-recovery')).toContainText('11111111-1111-4111-8111-111111111111');
@@ -78,8 +79,8 @@ test('saved in-range resolution applies exact pixels without restart, reconnect 
     await page.goto(app.config.origin); await page.getByLabel('密码', { exact: true }).fill(app.config.password);
     await page.getByRole('button', { name: '连接工作空间' }).click();
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
-    await page.locator('#mobile-input').fill('手动应用后保留草稿');
-    await page.locator('#desktop-settings-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill('手动应用后保留草稿');
+    await openTools(page); await page.locator('#desktop-settings-button').click();
     await expect(page.locator('#settings-current')).toContainText('1600 × 3200');
     await page.locator('#desktop-width').fill('1366'); await page.locator('#desktop-height').fill('777');
     await page.locator('#save-desktop-settings').click();
@@ -108,7 +109,7 @@ test('oversized saved resolution requires explicit restart confirmation and neve
   try {
     await page.goto(app.config.origin); await page.getByLabel('密码', { exact: true }).fill(app.config.password);
     await page.getByRole('button', { name: '连接工作空间' }).click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
-    await page.locator('#desktop-settings-button').click();
+    await openTools(page); await page.locator('#desktop-settings-button').click();
     await page.locator('#desktop-width').fill('1920'); await page.locator('#save-desktop-settings').click();
     await expect(page.locator('#settings-pending')).toContainText('需确认重启');
     await expect(page.locator('#desktop-restart-notice')).toBeVisible();
@@ -126,7 +127,7 @@ test('lost live-apply response never repeats the action or falls back to restart
   try {
     await page.goto(app.config.origin); await page.getByLabel('密码', { exact: true }).fill(app.config.password);
     await page.getByRole('button', { name: '连接工作空间' }).click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
-    await page.locator('#desktop-settings-button').click();
+    await openTools(page); await page.locator('#desktop-settings-button').click();
     await page.locator('#desktop-width').fill('1366'); await page.locator('#desktop-height').fill('777');
     await page.locator('#save-desktop-settings').click(); await expect(page.locator('#apply-desktop-settings')).toBeEnabled();
     await page.locator('#apply-desktop-settings').click();
