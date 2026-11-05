@@ -1,6 +1,7 @@
 import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute } from './rtc-stats.js';
+import { disconnectGrace } from './transport-policy.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -29,7 +30,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     if (controller.signal.aborted) throw new Error('连接已取消');
     if (!webrtc) { failure('disabled'); enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
     peer = new RTCPeerConnection({ iceServers: typeof rtcStunUrl === 'string' && rtcStunUrl.length <= 256 && rtcStunUrl.startsWith('stun:') ? [{ urls: rtcStunUrl }] : [] });
-    let channel, ended = false, videoReadySent = false, resolveReady, rejectReady;
+    let channel, ended = false, videoReadySent = false, resolveReady, rejectReady, grace;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     void ready.catch(() => {});
     const control = createControlClient(peer.createDataChannel('codex-control', { ordered: true, protocol: 'codex-control-v1' }), value => {
@@ -53,13 +54,12 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     if (!probe) video();
     const close = () => {
       if (ended) return;
-      ended = true; clearTimeout(timeout); signal?.removeEventListener('abort', cancel);
+      ended = true; grace?.close(); clearTimeout(timeout); signal?.removeEventListener('abort', cancel);
       rejectReady(new Error('直连已关闭')); controller.abort(); control.close(); health.close(); peer.close();
     };
     controller.signal.addEventListener('abort', close, { once: true });
-    peer.addEventListener('connectionstatechange', () => {
-      if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) { if (!ended) failure('connection'); close(); }
-    });
+    grace = disconnectGrace(() => { if (!ended) failure('connection'); close(); });
+    peer.addEventListener('connectionstatechange', () => grace.state(peer.connectionState));
     return { get channel() { return channel; }, video, viewerReady, control, health, close,
       async stats() { return ended ? null : selectedRoute(await peer.getStats()); }, async start() {
       try {

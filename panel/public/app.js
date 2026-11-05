@@ -8,6 +8,7 @@ import { createTerminalTabs } from './terminal-tabs.js';
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
+let fastConnectEnabled = false;
 let draftStorage;
 try { draftStorage = sessionStorage; } catch {}
 const terminalState = createTerminalState(draftStorage);
@@ -560,6 +561,7 @@ function showLogin(message = '') {
 }
 function frameUrl() {
   const query = new URLSearchParams({ viewer, frame: String(frameEpoch) });
+  if (fastConnectEnabled) query.set('fast', '1');
   if (terminalMode()) {
     const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
     query.set('terminalId', terminal.id); query.set('terminalToken', terminal.token);
@@ -636,7 +638,7 @@ async function claim() {
 }
 async function showWorkspace(user) {
   uiGeneration++; closeConfirmation();
-  loggedIn = true; csrf = user.csrf;
+  loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true;
   accessExpired = false; panelState = 'online'; desktopReady = null;
   initializeTerminalSelection();
   $('user-label').textContent = user.username;

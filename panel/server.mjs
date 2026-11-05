@@ -41,6 +41,8 @@ const ASSETS = new Map([
   ['/desktop/viewer.js', ['viewer.js', 'text/javascript; charset=utf-8']],
   ['/desktop/desktop-pointer.js', ['desktop-pointer.js', 'text/javascript; charset=utf-8']],
   ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/transport-policy.js', ['transport-policy.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/frame-hold.js', ['frame-hold.js', 'text/javascript; charset=utf-8']],
   ['/desktop/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
   ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
@@ -200,11 +202,11 @@ export async function createPanel(config) {
       }
       failures.delete(key);
       const { token, session } = await auth.create();
-      return reply(res, 200, { username: config.username, csrf: session.csrf }, { 'set-cookie': sessionCookie(token, config) });
+      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { username: config.username, csrf: session.csrf, webrtc: config.webrtc === true,
+      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/logout' && req.method === 'POST') {

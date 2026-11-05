@@ -1,11 +1,14 @@
 import RFB from './novnc/core/rfb.js';
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { createDesktopPointer } from './desktop-pointer.js';
+import { createFrameHold } from './frame-hold.js';
+import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
 const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
+const frameHold = createFrameHold(viewport), fastConnect = new URLSearchParams(location.search).get('fast') === '1', routes = routePolicy();
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
 const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
@@ -15,7 +18,7 @@ let viewing = false, connecting = false, switching = false, switchingFrom, probe
 let healthTimer, healthGeneration = 0, healthNetworkCheck = false, viewAnchor, restoringView = false;
 let networkDetails = null, directIssue = '', statsPending = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
-let lastInteraction = 0, idleTimer;
+let lastInteraction = -Infinity, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
 const pointerControls = createDesktopPointer({ viewport, screen, cursor: document.getElementById('touch-cursor'), controls: document.getElementById('pointer-controls'),
   changed: () => { lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); },
@@ -250,7 +253,7 @@ function idleForSwitch() {
 }
 function scheduleProbe(delay = probeDelay) {
   if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;
-  probeTimer = setTimeout(() => { probeTimer = null; void probeDirect(); }, delay);
+  probeTimer = setTimeout(() => { probeTimer = null; void probeDirect(); }, fastConnect ? Math.max(delay, routes.remaining()) : delay);
 }
 function finishSwitch() {
   switching = false; switchingFrom = undefined;
@@ -278,7 +281,7 @@ window.addEventListener('message', event => {
 function waitStable(signal) {
   return new Promise((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(new Error('探测已取消')); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 500);
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, fastConnect ? STABLE_ROUTE : 500);
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
   });
@@ -302,10 +305,11 @@ async function probeDirect() {
     if (!prepared || epoch !== connectionEpoch || stopping || controller.signal.aborted) return;
     if (pressedKeys.size || pressedPointers.size || pointerControls.busy || performance.now() - lastInteraction < 800) return;
     switching = true; switchingFrom = rfb;
+    frameHold.capture(canvas);
     await candidate.control.request('activate', {});
     if (epoch !== connectionEpoch || stopping || controller.signal.aborted) return;
     attachViewer(candidate);
-    promoted = true; probeDelay = 15000;
+    promoted = true; probeDelay = 15000; routes.changed();
   } catch {
     probeDelay = Math.min(60000, probeDelay * 2);
   } finally {
@@ -346,7 +350,8 @@ function attachViewer(direct) {
     reportNetwork(); void refreshNetwork();
     clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
     if (switching) finishSwitch();
-    scheduleProbe();
+    frameHold.painted(screen.querySelector('canvas'));
+    scheduleProbe(fastConnect && !direct ? 0 : probeDelay);
     monitorDirect();
   });
   instance.addEventListener('disconnect', () => {
@@ -355,7 +360,7 @@ function attachViewer(direct) {
     pointerControls.update(canvas, false, preferences);
     if (switching && switchingFrom === instance) return;
     if (switching) finishSwitch();
-    if (direct) directFailed = true;
+    if (direct) { directFailed = true; routes.changed(); }
     if (direct && !directIssue) directIssue = 'connection';
     networkDetails = null; reportNetwork();
     direct?.close();
@@ -376,7 +381,8 @@ async function connect() {
   transportName = ''; viewing = false;
   announce('connecting');
   status.hidden = false; status.textContent = '正在连接独立桌面…';
-  const direct = directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure });
+  frameHold.capture(canvas);
+  const direct = fastConnect || directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure });
   if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
   const instance = attachViewer(direct);
   // RFB handlers are attached before negotiation can deliver video bytes.
@@ -405,6 +411,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  frameHold.clear();
   pointerControls.update(canvas, false, preferences);
   stopHealth();
   scrollGesture = null;

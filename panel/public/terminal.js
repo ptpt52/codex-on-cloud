@@ -2,8 +2,11 @@ import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
 import { TERMINAL_THEME } from './terminal-history-style.js';
+import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
+const fastConnect = query.get('fast') === '1', routes = routePolicy();
+let probed = false;
 const terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken');
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
@@ -13,7 +16,7 @@ let health, connectingTimer, history;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
 let candidateController, probeTimer, probeNetworkCheck = false, probeDelay = 15000, directFailed = false, directIssue = '', networkDetails = null, statsPending = false;
-let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastInteraction = 0, composing = false;
+let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastInteraction = -Infinity, composing = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 const report = (state, extra = {}) => parent.postMessage({ type: 'codex-desktop', frame, state, transport: socket?.direct ? 'direct' : 'terminal', ...extra }, location.origin);
 const controlState = () => parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin);
@@ -142,7 +145,7 @@ function retire(current, delay = retryDelay) {
   // Clear the logical connection before close(): a blackholed TCP connection
   // may never deliver a close event, and late events must not touch its successor.
   socket = null; ready = false; health?.close(); health = undefined;
-  if (current.direct) { directFailed = true; if (!directIssue) directFailure('connection'); }
+  if (current.direct) { directFailed = true; routes.changed(); if (!directIssue) directFailure('connection'); }
   stopProbe(); finishSwitch(); networkDetails = null; reportNetwork();
   clearTimeout(connectingTimer); connectingTimer = undefined;
   finish(null, { outcome: 'unknown' }); inputState(); controlState(); report('disconnected');
@@ -155,7 +158,7 @@ async function connect() {
   clearTimeout(retry); retry = undefined;
   if (stopped || socket || candidateController || !csrf || !navigator.onLine || document.hidden) return;
   message('正在连接原有终端…'); report('connecting');
-  if (!directFailed && canTryDirect()) {
+  if (!fastConnect && !directFailed && canTryDirect()) {
     const controller = candidateController = new AbortController(); let candidate;
     try {
       candidate = await makeCandidate(controller); if (!candidate) throw new Error('直连未就绪');
@@ -193,7 +196,7 @@ function attachSocket(current) {
       clearTimeout(connectingTimer); connectingTimer = undefined;
       ready = true; historyStyles = value.historyStyles === true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
       if (current.direct) directIssue = '';
-      finishSwitch(); reportNetwork(); void refreshNetwork(); scheduleProbe();
+      finishSwitch(); reportNetwork(); void refreshNetwork(); scheduleProbe(fastConnect && !probed ? 0 : probeDelay); probed = true;
       health = createTerminalHealth(nonce => {
         if (socket !== current || current.readyState !== WebSocket.OPEN || current.bufferedAmount > 64 * 1024) return false;
         current.send(JSON.stringify({ type: 'health', nonce })); return true;
@@ -239,7 +242,7 @@ function scheduleProbe(delay = probeDelay, network = false) {
   if (!needsProbe() || candidateController || document.hidden || !navigator.onLine) return;
   if (probeTimer !== undefined && (!network || probeNetworkCheck)) return;
   clearTimeout(probeTimer); probeNetworkCheck = network;
-  probeTimer = setTimeout(() => { probeTimer = undefined; probeNetworkCheck = false; void probeDirect(); }, delay);
+  probeTimer = setTimeout(() => { probeTimer = undefined; probeNetworkCheck = false; void probeDirect(); }, fastConnect ? Math.max(delay, routes.remaining()) : delay);
 }
 function makeCandidate(controller) {
   return terminalDirect(viewer, { terminalId, terminalToken }, { signal: controller.signal,
@@ -263,7 +266,7 @@ function prepareSwitch(signal) {
 function waitStable(signal) {
   return new Promise((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(new Error('探测已取消')); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 500);
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, fastConnect ? STABLE_ROUTE : 500);
     signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
   });
 }
@@ -281,7 +284,7 @@ async function probeDirect() {
     switching = true; switchingFrom = previous; health?.suspend(); inputState();
     await candidate.activate();
     if (epoch !== currentEpoch || socket !== previous || stopped || controller.signal.aborted) return;
-    attachSocket(candidate.socket); candidate.attach(); promoted = true; probeDelay = 15000;
+    attachSocket(candidate.socket); candidate.attach(); promoted = true; probeDelay = 15000; routes.changed();
   } catch { if (!controller.signal.aborted) { probeDelay = Math.min(60000, probeDelay * 2); if (!directIssue) directFailure('negotiation'); } }
   finally {
     if (!promoted) candidate?.close();

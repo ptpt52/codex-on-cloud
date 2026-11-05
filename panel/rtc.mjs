@@ -5,6 +5,7 @@ import { attachRTCHealth } from './rtc-health.mjs';
 import { peerAddress } from './rtc-network.mjs';
 import { createMDNSLookup } from './rtc-mdns.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
+import { disconnectGrace } from './public/transport-policy.js';
 export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network.mjs';
 
 export const RTC_TIMEOUT = 12000;
@@ -37,7 +38,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     destroy() {
       if (ended) return closePromise;
       ended = true;
-      clearTimeout(timer);
+      clearTimeout(timer); grace.close();
       control?.close();
       health?.close();
       terminal?.close();
@@ -58,9 +59,8 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     },
   };
   const authorized = () => !ended && valid();
-  pc.connectionStateChange.subscribe(state => {
-    if (['closed', 'failed', 'disconnected'].includes(state)) void handle.destroy();
-  });
+  const grace = disconnectGrace(() => { void handle.destroy(); });
+  pc.connectionStateChange.subscribe(state => grace.state(state));
   pc.onDataChannel.subscribe(value => {
     if (value.label === 'codex-health' && value.protocol === 'codex-health-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null) {
       if (health || !authorized()) { void handle.destroy(); return; }
