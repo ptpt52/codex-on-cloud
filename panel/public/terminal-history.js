@@ -50,7 +50,9 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (different) changed(reviewing);
   }
   function cancelRead() { const current = loading; loading = undefined; current?.abort(); }
-  function clearCopy() { copyGeneration++; manual.hidden = true; copyText.value = ''; copyState.textContent = ''; }
+  function clearCopy() { copyGeneration++; if (manual.open) manual.close(); manual.hidden = true; copyText.value = ''; copyState.textContent = ''; }
+  function selectCopy() { copyText.focus({ preventScroll: true }); copyText.select(); }
+  function dismissCopy() { clearCopy(); updateTools(); }
   function selectedText() {
     const selection = window.getSelection();
     if (archiveOpen && selection?.rangeCount && selection.rangeCount <= 8 && archive.contains(selection.anchorNode) && archive.contains(selection.focusNode)) return selection.toString();
@@ -70,7 +72,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     copyAll.disabled = copying || !view?.text.length; copySelection.disabled = copying || !selectedText();
     const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
     const description = !view ? '等待历史读取完成' : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
-    const feedback = !manual.hidden ? '手动复制文字 ↓' : copying ? '复制中…' : copyState.textContent;
+    const feedback = !manual.hidden ? '手动复制窗口已打开' : copying ? '复制中…' : copyState.textContent;
     findState.textContent = floating() && view ? feedback || result : description;
     findState.title = feedback || description; findState.setAttribute('aria-label', feedback || description);
     // Only the read-only view yields space to these tools. The live terminal's
@@ -121,7 +123,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     cancelRead(); closeTools(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
     archiveOpen = false; archive.hidden = true; unseen = false; notice = ''; program = false; pixels = 0; term.scrollToBottom(); update();
   }
-  async function copy(text, label) {
+  async function copy(text, label, source) {
     if (copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 64 KiB，请缩小选区'; return; }
     clearCopy(); const generation = copyGeneration; copying = true; updateTools();
@@ -131,9 +133,10 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
       if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) copyState.textContent = `已复制${label}`;
     } catch {
       if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) {
-        manual.hidden = false; copyText.value = text; copyState.textContent = '请手动复制下方已选中的文字';
-        copyText.focus({ preventScroll: true }); copyText.select();
-        const content = tools.querySelector('.history-tools-content'); content.scrollTop = content.scrollHeight;
+        copying = false; updateTools();
+        source.focus({ preventScroll: true });
+        manual.hidden = false; copyText.value = text; copyState.textContent = '请手动复制窗口内已选中的文字';
+        manual.showModal(); selectCopy();
       }
     } finally { copying = false; updateTools(); }
   }
@@ -201,6 +204,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   listen(query, 'keydown', event => { if (event.key === 'Enter' && !event.isComposing && !queryComposing && event.keyCode !== 229) { event.preventDefault(); event.stopImmediatePropagation(); moveMatch(event.shiftKey ? -1 : 1); } });
   const toolKeys = event => {
     if (event.isComposing || queryComposing || event.keyCode === 229) return;
+    if (manual.open) return;
     if (event.key === 'Escape' && toolsOpen && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault(); event.stopImmediatePropagation(); closeTools(); toggle.focus({ preventScroll: true });
     } else if (reviewing && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
@@ -209,11 +213,14 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   };
   listen(window, 'keydown', toolKeys, true); listen(tools, 'keydown', toolKeys, true);
   listen(tools, 'codex-history-layout', updateTools);
+  listen(tools, 'codex-history-reset', clearCopy);
   listen(window, 'pageshow', () => { if (toolsOpen) placeTools(); });
   listen(copySelection, 'mousedown', event => event.preventDefault());
-  listen(copySelection, 'click', () => { void copy(selectedText(), '选区'); });
-  listen(copyAll, 'click', () => { void copy(view?.text || '', '当前快照'); });
-  listen(document.getElementById('history-copy-dismiss'), 'click', clearCopy);
+  listen(copySelection, 'click', () => { void copy(selectedText(), '选区', copySelection); });
+  listen(copyAll, 'click', () => { void copy(view?.text || '', '当前快照', copyAll); });
+  listen(document.getElementById('history-copy-dismiss'), 'click', dismissCopy);
+  listen(document.getElementById('history-copy-select'), 'click', selectCopy);
+  listen(manual, 'cancel', event => { event.preventDefault(); dismissCopy(); });
   listen(document, 'selectionchange', updateTools);
   listen(host, 'wheel', event => {
     if (event.ctrlKey || event.metaKey || !event.deltaY) return;

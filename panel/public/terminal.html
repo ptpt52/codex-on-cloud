@@ -18,7 +18,12 @@
       <div class="history-find-row"><input id="history-query" type="search" maxlength="128" placeholder="查找已加载内容" aria-label="查找已加载历史" autocomplete="off" spellcheck="false"><button id="history-find-prev" type="button" aria-label="上一个匹配">上一个</button><button id="history-find-next" type="button" aria-label="下一个匹配">下一个</button></div>
       <div class="history-copy-row"><button id="history-copy-selection" type="button">复制选区</button><button id="history-copy-all" type="button">复制当前快照</button><p id="history-find-state" role="status">输入关键词</p></div>
       <p id="history-copy-state" role="status"></p>
-      <div id="history-copy-manual" hidden><label for="history-copy-text">文字已选中，请按 Ctrl+C 或长按复制</label><textarea id="history-copy-text" readonly inputmode="none" aria-label="手动复制历史文字" rows="3"></textarea><button id="history-copy-dismiss" type="button">关闭文字选框</button></div>
+      <dialog id="history-copy-manual" aria-labelledby="history-copy-title" aria-describedby="history-copy-help" hidden>
+        <div class="history-copy-heading"><h2 id="history-copy-title">手动复制文字</h2><button id="history-copy-dismiss" type="button" aria-label="关闭手动复制">关闭</button></div>
+        <p id="history-copy-help">浏览器未允许自动复制。文字已选中，请按 Ctrl/Cmd+C 或长按复制。</p>
+        <textarea id="history-copy-text" readonly inputmode="none" aria-label="手动复制历史文字" rows="12" spellcheck="false"></textarea>
+        <div class="history-copy-actions"><button id="history-copy-select" type="button">全选文字</button><p>关闭窗口会清空这里的文字。</p></div>
+      </dialog>
       </div>
     </section>
   </div>

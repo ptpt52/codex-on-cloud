@@ -6,7 +6,8 @@ async function setup(page, viewport) {
   await page.addInitScript(() => {
     if (window === parent) {
       localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
-      const viewport = new EventTarget(); viewport.height = innerHeight; viewport.offsetTop = 0;
+      const viewport = new EventTarget(); let visibleHeight; viewport.offsetTop = 0;
+      Object.defineProperty(viewport, 'height', { get: () => visibleHeight ?? innerHeight, set: value => { visibleHeight = value; } });
       Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
     }
     if (location.pathname !== '/terminal/index.html') return;
@@ -104,6 +105,33 @@ test('a tablet retains the header tools and all actions through rotation without
     await frame.locator('#history-tools-toggle').click(); await page.locator('#history-copy-all').click(); await expect(page.locator('#history-find-state')).toContainText('已复制当前快照'); await exposed(page, frame);
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await context.close(); await app?.close(); }
+});
+
+test('manual copying uses a large window in full screen, fits the visible viewport and closes on takeover without resizing the terminal', async ({ page }, info) => {
+  const { app, frame } = await setup(page);
+  try {
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }));
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-query').click();
+    await page.evaluate(() => document.getElementById('desktop-card').requestFullscreen());
+    await expect(page.locator('#history-tools')).toHaveClass(/history-tools-short/);
+    const archive = frame.locator('#history-archive'), before = await archive.boundingBox(), size = await dimensions(frame);
+    await page.locator('#history-copy-all').click(); const field = page.locator('#history-copy-text');
+    await expect(page.locator('#history-copy-manual')).toHaveJSProperty('open', true);
+    expect((await field.boundingBox()).height).toBeGreaterThanOrEqual(240); expect(await archive.boundingBox()).toEqual(before); expect(await dimensions(frame)).toEqual(size);
+    const dialogBounds = await page.locator('#history-copy-manual').boundingBox(); expect(dialogBounds.y).toBeGreaterThanOrEqual(0); expect(dialogBounds.y + dialogBounds.height).toBeLessThanOrEqual(page.viewportSize().height);
+    await page.screenshot({ path: `test-results/${info.project.name}-history-copy-window.png` });
+    await page.evaluate(() => { visualViewport.height = 320; visualViewport.offsetTop = 20; visualViewport.dispatchEvent(new Event('resize')); });
+    await expect.poll(async () => { const rect = await page.locator('#history-copy-manual').boundingBox(); return rect.y >= 20 && rect.y + rect.height <= 340; }).toBe(true);
+    expect((await field.boundingBox()).height).toBeGreaterThanOrEqual(64);
+    expect(await page.locator('#history-copy-dismiss').evaluate(el => { const r = el.getBoundingClientRect(); return el.ownerDocument.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el; })).toBe(true);
+    expect(await page.evaluate(async () => {
+      const { csrf } = await (await fetch('/api/me')).json();
+      return (await fetch('/api/desktop/claim', { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ viewer: 'e'.repeat(32) }) })).status;
+    })).toBe(200);
+    await expect(page.locator('#takeover-button')).toBeVisible({ timeout: 10000 }); await expect(page.locator('#history-copy-manual')).toHaveCount(0);
+    expect(await page.evaluate(() => document.querySelector('dialog:modal') === null)).toBe(true);
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalConnections).toBe(1); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
 });
 
 test('takeover removes a portaled panel and a late clipboard result or stale frame request cannot restore it', async ({ page }) => {

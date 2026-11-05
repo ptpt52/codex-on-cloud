@@ -15,3 +15,13 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#222222;col
 .history-tools-close{position:absolute;top:10px;right:10px;z-index:2;min-width:44px}
 .history-copy-row{margin-top:6px}
 #history-find-state{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+#history-copy-manual[open] { position: fixed; inset: var(--history-copy-top, 8px) 0 auto; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box; width: min(760px, calc(100vw - 16px)); max-width: none; height: var(--history-copy-height, min(520px, calc(100dvh - 16px))); max-height: calc(100dvh - 16px); margin: 0 auto; padding: 16px; overflow: hidden; border: 1px solid #666; border-radius: 10px; background: #2b2b2b; color: #e7eee9; color-scheme: dark; font: 14px/1.5 system-ui, sans-serif; }
+#history-copy-manual::backdrop { background: #0008; }
+#history-copy-manual .history-copy-heading, #history-copy-manual .history-copy-actions { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+#history-copy-manual h2 { margin: 0; font: 600 16px/1.5 system-ui, sans-serif; }
+#history-copy-manual p { margin: 0; color: #c7c7c7; font-size: 12px; }
+#history-copy-manual .history-copy-actions p { flex: 1; min-width: 0; }
+#history-copy-manual #history-copy-text { display: block; box-sizing: border-box; flex: 1 1 0; width: 100%; min-height: 0; max-height: none; margin: 0; padding: 10px; resize: none; overflow: auto; white-space: pre; border: 1px solid #666; border-radius: 6px; background: #222; color: #e7eee9; font: 14px/1.5 ui-monospace, monospace; }
+#history-copy-manual button { flex: none; min-width: 64px; min-height: 44px; padding: 8px 12px; border: 1px solid #666; border-radius: 6px; background: #333; color: #e7eee9; font: 14px/1.5 system-ui, sans-serif; }
+#history-copy-manual button:focus-visible, #history-copy-manual textarea:focus-visible { outline: 2px solid #f7971d; outline-offset: -2px; }

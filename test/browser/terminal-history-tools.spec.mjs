@@ -78,6 +78,7 @@ test('clipboard stub receives only the selected plain text or current snapshot, 
   try {
     const frame = await snapshot(page, app), archive = frame.locator('#history-archive'), original = await archive.textContent();
     await frame.locator('#history-tools-toggle').click(); await expect(page.locator('#history-copy-selection')).toBeDisabled();
+    expect((await page.locator('#history-copy-all').boundingBox()).width).toBeGreaterThanOrEqual(128);
     expect(await select(frame, 'ERROR 中文')).toBe('ERROR 中文'); await expect(page.locator('#history-copy-selection')).toBeEnabled();
     await page.locator('#history-copy-selection').click(); await expect(page.locator('#history-copy-state')).toContainText('已复制选区');
     expect(await frame.evaluate(() => window.copiedHistory)).toEqual(['ERROR 中文']);
@@ -86,9 +87,17 @@ test('clipboard stub receives only the selected plain text or current snapshot, 
     await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }));
     await page.locator('#history-copy-all').click(); const field = page.locator('#history-copy-text');
     await expect(field).toBeVisible(); await expect(field).toHaveValue(original);
+    await expect(page.locator('#history-copy-manual')).toHaveJSProperty('open', true);
+    const area = await field.boundingBox(); expect(area.height).toBeGreaterThanOrEqual(240); expect(area.width).toBeGreaterThanOrEqual(260);
+    expect(await field.evaluate(el => { const rect = el.getBoundingClientRect(); return el.ownerDocument.elementFromPoint(rect.x + rect.width / 2, rect.bottom - 10) === el; })).toBe(true);
     expect(await field.evaluate(element => ({ readonly: element.readOnly, start: element.selectionStart, end: element.selectionEnd }))).toEqual({ readonly: true, start: 0, end: original.length });
     await field.press('x'); await expect(field).toHaveValue(original);
+    await field.evaluate(el => el.setSelectionRange(0, 1)); await page.locator('#history-copy-select').click();
+    expect(await field.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([0, original.length]);
     await page.locator('#history-copy-dismiss').click(); await expect(field).toBeHidden(); await expect(field).toHaveValue('');
+    await expect(page.locator('#history-copy-all')).toBeFocused(); await expect(page.locator('#history-tools')).toBeVisible();
+    await page.locator('#history-copy-all').click(); await field.press('Escape');
+    await expect(field).toBeHidden(); await expect(field).toHaveValue(''); await expect(page.locator('#history-tools')).toBeVisible();
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.terminalHistoryReads.length).toBe(1);
   } finally { await app.close(); }
 });

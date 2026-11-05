@@ -56,7 +56,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     if (!entry?.floating) return;
     const focused = entry.panel.contains(document.activeElement) ? document.activeElement : null;
     entry.panel.classList.remove('history-tools-floating', 'history-tools-short');
-    for (const name of ['top', 'max-height', '--history-panel-height']) entry.panel.style.removeProperty(name);
+    for (const name of ['top', 'max-height', '--history-panel-height', '--history-copy-top', '--history-copy-height']) entry.panel.style.removeProperty(name);
     moving = true;
     try { if (entry.marker.parentNode) entry.marker.parentNode.insertBefore(entry.panel, entry.marker.nextSibling); else entry.panel.remove(); }
     finally { moving = false; }
@@ -64,6 +64,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
   }
   function reset() {
     cancelAnimationFrame(layoutFrame);
+    entry?.panel.dispatchEvent(new Event('codex-history-reset'));
     restore(); entry?.marker.remove(); entry = undefined; composing(false);
   }
   function layout() {
@@ -79,6 +80,9 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
       entry.mounted = true;
     }
     const visible = window.visualViewport;
+    const copyHeight = Math.max(1, Math.min(520, (visible?.height || innerHeight) - 16));
+    entry.panel.style.setProperty('--history-copy-height', `${copyHeight}px`);
+    entry.panel.style.setProperty('--history-copy-top', `${Math.max(0, visible?.offsetTop || 0) + Math.max(8, ((visible?.height || innerHeight) - copyHeight) / 2)}px`);
     const boundary = frame.getBoundingClientRect().top + (frame.contentDocument.getElementById('history-up')?.getBoundingClientRect().top || 0);
     entry.panel.style.top = `calc(${Math.max(0, visible?.offsetTop || 0)}px + max(4px, env(safe-area-inset-top)))`;
     let top = entry.panel.getBoundingClientRect().top;
