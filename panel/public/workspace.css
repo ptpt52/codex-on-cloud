@@ -121,7 +121,7 @@
   .input-dock.workspace-panel { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
 }
 
-/* The phone's history tools cover the page header, leaving both the history
+/* History tools cover the page header on every screen, leaving both the history
    buttons and every terminal row in place. The content scrolls, not the close. */
 .history-tools-floating { position: fixed; left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); z-index: 30; box-sizing: border-box; margin: 0; padding: 0; overflow: hidden; border: 1px solid #666; border-radius: 8px; background: #2b2b2b; color: #e7eee9; color-scheme: dark; font: 12px/1.5 system-ui, sans-serif; box-shadow: 0 6px 18px #0005; }
 .history-tools-floating[hidden], .history-tools-floating [hidden] { display: none !important; }
@@ -142,3 +142,9 @@
 .history-tools-short .history-tools-content { padding-right: 49px; }
 .history-tools-short .history-find-row { padding-right: 0; }
 .history-tools-short .history-tools-close { top: 0; right: 1px; }
+@media (min-width: 701px) {
+  .history-tools-floating .history-tools-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, 1fr); gap: 6px; padding-right: 50px; }
+  .history-tools-floating .history-find-row { padding-right: 0; }
+  .history-tools-floating .history-copy-row { margin-top: 0; }
+  .history-tools-floating #history-copy-manual { grid-column: 1 / -1; }
+}

@@ -51,7 +51,6 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
 // search/selection handlers local; no terminal text is copied into messages.
 export function createHistoryToolsPortal({ frame, container, valid, opened, composing }) {
   let entry, layoutFrame = 0, moving = false;
-  const compact = () => innerWidth <= 700 || (navigator.maxTouchPoints > 0 && innerWidth <= 1000);
   function notify() { entry?.panel.dispatchEvent(new Event('codex-history-layout')); }
   function restore() {
     if (!entry?.floating) return;
@@ -70,7 +69,6 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
   function layout() {
     if (!entry) return;
     if (!valid(entry.frame) || entry.marker.ownerDocument !== frame.contentDocument) return reset();
-    if (!compact()) return restore();
     if (!entry.floating) {
       const focused = entry.panel.contains(entry.panel.ownerDocument.activeElement) ? entry.panel.ownerDocument.activeElement : null;
       moving = true;
