@@ -1,7 +1,7 @@
 import { createShortcutMenu } from './shortcut-menu.js';
 import { SHORTCUT_BY_KEY } from './shortcuts.js';
 import { createForwardUI } from './forward-ui.js';
-import { createWorkspacePanels } from './workspace-panels.js';
+import { createWorkspacePanels, createHistoryToolsPortal } from './workspace-panels.js';
 import { createTerminalState, validTerminalIdentity } from './terminal-state.js';
 import { createTerminalTabs } from './terminal-tabs.js';
 
@@ -79,6 +79,11 @@ try {
 } catch {}
 const workspacePanels = createWorkspacePanels({ tools: $('workspace-tools'), input: $('input-dock'),
   toolsButton: $('toggle-controls-button'), inputButton: $('toggle-input-button'), close: closeWorkspacePanel });
+const historyToolsPortal = createHistoryToolsPortal({ frame: $('desktop-frame'), container: $('desktop-card'),
+  valid: frame => loggedIn && owned && !accessExpired && frameLoaded && terminalMode() && frame === String(frameEpoch),
+  opened: () => { shortcutMenu.close(); hideWorkspacePanels(); },
+  composing: value => { if (frameComposing !== value) { frameComposing = value; renderInputControls(); } },
+});
 const terminalTabs = createTerminalTabs({ bar: $('terminal-session-bar'), tabs: $('terminal-tabs'), mobileButton: $('terminal-session-button'),
   dialog: $('terminal-switch-dialog'), list: $('terminal-switch-list'), choose: selectTerminal, manage: openTerminalManager, changed: sendDisplayPreferences });
 function rememberDraft() {
@@ -153,6 +158,7 @@ function hideWorkspacePanels() {
   if (workspacePanels.active) updateDisplayPreferences({ controlsCollapsed: true, collapsed: true, terminalInputCollapsed: true });
 }
 function toggleWorkspacePanel(name) {
+  historyToolsPortal.dismiss();
   const opening = workspacePanels.active !== name;
   shortcutMenu.close();
   updateDisplayPreferences({ controlsCollapsed: name !== 'tools' || !opening,
@@ -482,6 +488,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame() {
+  historyToolsPortal.reset();
   terminalController?.abort();
   shortcutMenu.close();
   closeConfirmation();
@@ -1172,7 +1179,7 @@ window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {
-    frameComposing = event.data.composing; renderInputControls(); return;
+    frameComposing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
   }
   if (event.data?.type === 'codex-pointer-options') {
     if (!terminalMode() && canInput() && ['viewport', 'remote'].includes(event.data.scrollTarget)) updateDisplayPreferences({ scrollTarget: event.data.scrollTarget });
@@ -1250,7 +1257,7 @@ window.addEventListener('message', event => {
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
 document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { shortcutMenu.close(); closeConfirmation(); } });
-window.addEventListener('pagehide', () => { if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
+window.addEventListener('pagehide', () => { historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
 
 forwardingUI = createForwardUI({ api, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online' });

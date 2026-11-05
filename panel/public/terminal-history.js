@@ -19,6 +19,14 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   let copying = false, copyGeneration = 0;
   const listeners = [], subscriptions = [];
   const listen = (target, name, handler, options) => { target.addEventListener(name, handler, options); listeners.push(() => target.removeEventListener(name, handler, options)); };
+  const floating = () => tools.ownerDocument !== document;
+  function placeTools() {
+    tools.dataset.composing = String(queryComposing);
+    if (!window.frameElement) return;
+    window.frameElement.dispatchEvent(new CustomEvent('codex-history-tools', { detail: {
+      frame: new URLSearchParams(location.search).get('frame'), open: toolsOpen, composing: queryComposing,
+    } }));
+  }
   // Respect alternate screens. Treating tmux's cursor-addressed redraws as
   // ordinary scrollback mixes screen fragments into the history. Its alternate
   // buffer has no scrollback, so an upward gesture reads one bounded snapshot.
@@ -51,14 +59,23 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   function updateTools() {
     if (disposed) return;
     toggle.setAttribute('aria-expanded', String(toolsOpen)); tools.hidden = !toolsOpen;
+    if (floating()) { toggle.removeAttribute('aria-controls'); toggle.setAttribute('aria-label', '收起顶部查找与复制'); }
+    else { toggle.setAttribute('aria-controls', 'history-tools'); toggle.removeAttribute('aria-label'); }
     if (!toolsOpen) { archive.style.top = ''; return; }
-    tools.style.maxHeight = `${Math.max(44, Math.min(280, host.clientHeight - 44, Math.floor(host.clientHeight * .6)))}px`;
+    if (!floating()) {
+      const height = `${Math.max(44, Math.min(280, host.clientHeight - 44, Math.floor(host.clientHeight * .6)))}px`;
+      tools.style.maxHeight = height; tools.style.setProperty('--history-panel-height', height);
+    }
     query.disabled = !view; previousMatch.disabled = nextMatch.disabled = !matches.length;
     copyAll.disabled = copying || !view?.text.length; copySelection.disabled = copying || !selectedText();
-    findState.textContent = !view ? '等待历史读取完成' : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`}`;
+    const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
+    const description = !view ? '等待历史读取完成' : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
+    const feedback = !manual.hidden ? '手动复制文字 ↓' : copying ? '复制中…' : copyState.textContent;
+    findState.textContent = floating() && view ? feedback || result : description;
+    findState.title = feedback || description; findState.setAttribute('aria-label', feedback || description);
     // Only the read-only view yields space to these tools. The live terminal's
     // size stays fixed, avoiding a remote redraw when searching or copying.
-    archive.style.top = `${Math.max(0, Math.min(host.clientHeight - 44, tools.getBoundingClientRect().bottom - host.getBoundingClientRect().top + 6))}px`;
+    archive.style.top = floating() ? '' : `${Math.max(0, Math.min(host.clientHeight - 44, tools.getBoundingClientRect().bottom - host.getBoundingClientRect().top + 6))}px`;
   }
   function setCurrent(index, navigate = false) {
     for (const mark of groups[current] || []) delete mark.dataset.current;
@@ -67,7 +84,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     updateTools();
     if (navigate && groups[current]?.length) {
       const rect = groups[current][0].getBoundingClientRect(), box = archive.getBoundingClientRect();
-      const covered = toolsOpen ? Math.min(archive.clientHeight - 20, Math.max(0, tools.getBoundingClientRect().bottom - box.top + 6)) : 0;
+      const covered = toolsOpen && !floating() ? Math.min(archive.clientHeight - 20, Math.max(0, tools.getBoundingClientRect().bottom - box.top + 6)) : 0;
       if (rect.top < box.top + covered || rect.bottom > box.bottom) archive.scrollTop += rect.top - box.top - covered - 8;
       if (rect.left < box.left || rect.right > box.right) archive.scrollLeft += rect.left - box.left - 8;
     }
@@ -86,6 +103,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   }
   function closeTools() {
     toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); search(); updateTools();
+    placeTools();
   }
   function freezeLocal() {
     const parsed = captureHistoryBuffer(term);
@@ -95,7 +113,8 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   }
   function openTools(focus = false) {
     if (!archiveOpen && !loading) freezeLocal();
-    toolsOpen = true; updateTools(); tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    toolsOpen = true; tools.hidden = false; placeTools(); updateTools();
+    if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus && !query.disabled) query.focus({ preventScroll: true });
   }
   function live() {
@@ -113,7 +132,8 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     } catch {
       if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) {
         manual.hidden = false; copyText.value = text; copyState.textContent = '请手动复制下方已选中的文字';
-        copyText.focus({ preventScroll: true }); copyText.select(); tools.scrollTop = tools.scrollHeight;
+        copyText.focus({ preventScroll: true }); copyText.select();
+        const content = tools.querySelector('.history-tools-content'); content.scrollTop = content.scrollHeight;
       }
     } finally { copying = false; updateTools(); }
   }
@@ -170,23 +190,26 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   listen(up, 'click', () => turn(-1)); listen(down, 'click', () => turn(1)); listen(latest, 'click', live);
   listen(newer, 'click', live);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
-  listen(document.getElementById('history-tools-close'), 'click', closeTools);
-  const scheduleSearch = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 150); updateTools(); };
+  listen(document.getElementById('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });
+  const scheduleSearch = () => { clearCopy(); clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 150); updateTools(); };
   listen(query, 'input', event => { if (!queryComposing && !event.isComposing) scheduleSearch(); });
-  listen(query, 'compositionstart', () => { queryComposing = true; clearTimeout(searchTimer); searchTimer = undefined; updateTools(); });
-  listen(query, 'compositionend', () => { queryComposing = false; scheduleSearch(); });
-  listen(query, 'blur', () => { if (queryComposing) { queryComposing = false; scheduleSearch(); } });
-  const moveMatch = direction => { if (searchTimer !== undefined) search(); if (matches.length) setCurrent((current + direction + matches.length) % matches.length, true); };
+  listen(query, 'compositionstart', () => { queryComposing = true; clearTimeout(searchTimer); searchTimer = undefined; updateTools(); placeTools(); });
+  listen(query, 'compositionend', () => { queryComposing = false; scheduleSearch(); placeTools(); });
+  listen(query, 'blur', () => { if (queryComposing) { queryComposing = false; scheduleSearch(); placeTools(); } });
+  const moveMatch = direction => { clearCopy(); if (searchTimer !== undefined) search(); if (matches.length) setCurrent((current + direction + matches.length) % matches.length, true); };
   listen(previousMatch, 'click', () => moveMatch(-1)); listen(nextMatch, 'click', () => moveMatch(1));
   listen(query, 'keydown', event => { if (event.key === 'Enter' && !event.isComposing && !queryComposing && event.keyCode !== 229) { event.preventDefault(); event.stopImmediatePropagation(); moveMatch(event.shiftKey ? -1 : 1); } });
-  listen(window, 'keydown', event => {
+  const toolKeys = event => {
     if (event.isComposing || queryComposing || event.keyCode === 229) return;
     if (event.key === 'Escape' && toolsOpen && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault(); event.stopImmediatePropagation(); closeTools(); toggle.focus({ preventScroll: true });
     } else if (reviewing && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
       event.preventDefault(); event.stopImmediatePropagation(); openTools(true);
     }
-  }, true);
+  };
+  listen(window, 'keydown', toolKeys, true); listen(tools, 'keydown', toolKeys, true);
+  listen(tools, 'codex-history-layout', updateTools);
+  listen(window, 'pageshow', () => { if (toolsOpen) placeTools(); });
   listen(copySelection, 'mousedown', event => event.preventDefault());
   listen(copySelection, 'click', () => { void copy(selectedText(), '选区'); });
   listen(copyAll, 'click', () => { void copy(view?.text || '', '当前快照'); });
@@ -229,6 +252,6 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, get reviewing() { return reviewing; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); if (searchTimer !== undefined || query.value !== appliedQuery) search(); cancelRead(); update(); },
-    dispose() { disposed = true; clearTimeout(searchTimer); clearCopy(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
+  return { update, get reviewing() { return reviewing; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); if (searchTimer !== undefined || query.value !== appliedQuery) search(); cancelRead(); update(); placeTools(); },
+    dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }
