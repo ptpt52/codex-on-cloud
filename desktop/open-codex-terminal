@@ -19,13 +19,15 @@ if [ "$terminal_id" != main ]; then
   # An auxiliary window only attaches an existing session; opening and reconnect
   # never create a shell or resubmit a command.
   tmux -S "${TMUX_SOCKET:?}" has-session -t "=codex-$terminal_id"
-  exec xterm -u8 -class "$terminal_class" \
+  exec xterm -u8 -tn xterm-256color -class "$terminal_class" \
     -fa 'DejaVu Sans Mono,Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' \
     -fd 'Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' -fs "$font_size" -T "$terminal_title" \
     -xrm '*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \
     -e tmux -S "$TMUX_SOCKET" attach-session -t "=codex-$terminal_id"
 fi
-exec xterm -u8 -class "$terminal_class" \
+# The outer terminal must advertise its palette to tmux. With TERM=xterm,
+# tmux reduces Codex's grey prompt background (colour8) to black.
+exec xterm -u8 -tn xterm-256color -class "$terminal_class" \
   -fa 'DejaVu Sans Mono,Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' \
   -fd 'Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' -fs "$font_size" -T Codex \
   -xrm '*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \

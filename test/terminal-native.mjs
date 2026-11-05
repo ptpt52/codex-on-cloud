@@ -66,8 +66,44 @@ try {
     const terminalPid = await run('xdotool', ['getwindowpid', id]);
     const args = (await readFile(`/proc/${terminalPid}/cmdline`, 'utf8')).split('\0');
     assert.equal(args[args.indexOf('-fs') + 1], '20');
+    assert.equal(args[args.indexOf('-tn') + 1], 'xterm-256color');
   }
   await controls.input({ action: 'terminal' });
+  // Reproduce the submitted Codex prompt's black-on-colour8 row in real pixels.
+  // The same pane stays alive while an 8-colour viewer loses its contrast.
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'show-options', '-sv', 'default-terminal']), 'screen-256color');
+  const colorScript = join(root, 'color-proof.py'), colorReady = join(root, 'color-ready'), colorRelease = join(root, 'color-release');
+  await writeFile(colorScript, `import os, sys, time\nos.write(1, b'\\x1b[2J\\x1b[H\\x1b[0;30;48;5;8mMMMM Submitted prompt text MMMM' + b' ' * 30 + b'\\x1b[0m')\nwith open(sys.argv[1], 'w') as f: f.write(os.environ['TERM'])\ndeadline = time.monotonic() + 20\nwhile not os.path.exists(sys.argv[2]) and time.monotonic() < deadline: time.sleep(0.05)\n`);
+  await controls.input({ action: 'paste', target: 'terminal', text: `python3 '${colorScript}' '${colorReady}' '${colorRelease}'` });
+  await controls.input({ action: 'key', key: 'Enter' });
+  await eventually(async () => (await readFile(colorReady, 'utf8')) === 'screen-256color');
+  start('xterm', ['-tn', 'xterm', '-class', 'codex-color-legacy', '-fa', 'DejaVu Sans Mono', '-fs', '20', '-e', 'tmux', '-S', env.TMUX_SOCKET, 'attach-session', '-t', '=codex']);
+  let legacyWindow;
+  await eventually(async () => !!(legacyWindow = await run('xdotool', ['search', '--class', '^codex-color-legacy$'])));
+  await eventually(async () => (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_termname}'])).split('\n').length === 2);
+  async function promptPixels(id, name) {
+    const file = join(root, `${name}.png`);
+    await run('import', ['-display', config.display, '-window', id, file]);
+    const { stdout } = await exec('convert', [file, '-crop', '240x30+4+4', '+repage', '-depth', '8', 'rgb:-'], { env, timeout: 3000, maxBuffer: 65536, encoding: 'buffer' });
+    let grey = 0, black = 0;
+    for (let i = 0; i < stdout.length; i += 3) {
+      const [r, g, b] = stdout.subarray(i, i + 3);
+      if (r >= 60 && r <= 200 && Math.abs(r - g) < 3 && Math.abs(r - b) < 3) grey++;
+      if (Math.max(r, g, b) < 10) black++;
+    }
+    return { grey, black };
+  }
+  const colorWindow = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']);
+  let fixedPixels;
+  await eventually(async () => { fixedPixels = await promptPixels(colorWindow, 'prompt-256color'); return fixedPixels.grey > 500 && fixedPixels.black > 30; });
+  const legacyPixels = await promptPixels(legacyWindow, 'prompt-8color');
+  assert.equal(legacyPixels.grey, 0, 'the old 8-colour viewer reproduces the invisible black row');
+  assert.ok(legacyPixels.black > 500);
+  await run('xdotool', ['windowclose', legacyWindow]);
+  await writeFile(colorRelease, 'continue');
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_current_command}']) === 'bash');
+  assert.equal((await controls.get()).session.pid, pid);
+  console.log(`✓ real X11 prompt contrast: 256-colour viewer ${fixedPixels.grey} grey / ${fixedPixels.black} black pixels; legacy viewer ${legacyPixels.grey} grey`);
   // Capture real xterm/tmux bytes in this temporary display, never in the user's Codex.
   const keyCases = [
     ['Ctrl+J', '0a'], ['Enter', '0d'], ['Ctrl+R', '12'], ['Ctrl+G', '07'], ['Ctrl+O', '0f'], ['Ctrl+L', '0c'],
@@ -109,6 +145,7 @@ try {
   const created = await controls.manageTerminals({ action: 'create', name: '辅助测试' });
   const auxiliary = created.terminals.find(item => item.id === created.created);
   assert.ok(auxiliary?.supported); assert.equal(created.terminals.length, 2);
+  assert.ok((await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-aux1', '-F', '#{client_termname}'])).split('\n').every(name => name === 'xterm-256color'));
   const destination = { terminalId: auxiliary.id, terminalToken: auxiliary.token };
   await controls.input({ action: 'paste', target: 'terminal', text: 'printf "辅助终端中文\\n" > "$WORKSPACE_DIR/aux-proof"', ...destination });
   await assert.rejects(readFile(join(config.workspace, 'aux-proof')), { code: 'ENOENT' });
