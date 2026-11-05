@@ -330,6 +330,8 @@ npm run check
 npm test
 npm run test:desktop
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser
+# Chromium / Firefox / WebKit 的电脑、手机和平板兼容性流程
+npm run test:compat
 # 单独的真实 X11 控件验证：使用临时显示、HOME、tmux，不启动 Codex
 npm run test:display
 # 独立 Xvfb/x11vnc/完整 XFCE/xterm 的无重启尺寸适配验收
@@ -337,6 +339,8 @@ npm run test:viewport
 ```
 
 前端自动化测试连接模拟 RFB 上游，但实际运行 noVNC 客户端与 Unix socket 网关；重启与恢复命令也使用模拟执行器。`test:display` 使用真实 Xvfb、xfwm4、xterm 和 tmux 验证窗口动作与字号替换，不重启正在使用的桌面。`npm run demo` 在 `127.0.0.1:36081` 提供明确标注的模拟桌面，不连接 Codex。
+
+多引擎环境准备、覆盖范围和真机状态见[兼容性验收](docs/compatibility.md)，本轮问题、修复及待跟进项见[代码审核记录](docs/code-review.md)。
 
 真实桌面已经启动且 tmux 中为**空闲 bash**时，可运行：
 

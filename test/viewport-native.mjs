@@ -20,7 +20,7 @@ delete env.DBUS_SESSION_BUS_ADDRESS;
 delete env.SESSION_MANAGER;
 const exec = promisify(execFile), children = [];
 const run = async (command, args, options = {}) => (await exec(command, args, { env, timeout: 3000, maxBuffer: 16384, ...options })).stdout.trim();
-let server, socket, viewer;
+let server, socket, viewer, vncDiagnostics = '';
 const start = (command, args, stdio = 'ignore') => { const child = spawn(command, args, { env, stdio, detached: true }); children.push(child); return child; };
 try {
   for (let number = 94; number < 200; number++) {
@@ -75,7 +75,8 @@ try {
   const path = join(directory, 'vnc.sock');
   server = net.createServer(client => {
     client.pause();
-    viewer = start('x11vnc', ['-inetd', '-display', env.DISPLAY, '-auth', env.XAUTHORITY, '-no6', '-noipv6', '-rfbport', '0', '-nopw', '-noremote', '-nolookup', '-noxrecord', '-quiet'], [client, client, 'ignore']);
+    viewer = start('x11vnc', ['-inetd', '-display', env.DISPLAY, '-auth', env.XAUTHORITY, '-no6', '-noipv6', '-rfbport', '0', '-nopw', '-noremote', '-nolookup', '-noxrecord', '-quiet'], [client, client, 'pipe']);
+    viewer.stderr.on('data', chunk => { vncDiagnostics = (vncDiagnostics + chunk.toString()).slice(-8192); });
     client.on('error', () => {}); client.destroy();
   });
   server.listen(path); await once(server, 'listening'); await chmod(path, 0o600);
@@ -132,7 +133,7 @@ try {
     request();
     let changed = false;
     for (let i = 0; i < 40 && !changed; i++) { changed = await update(); if (!changed) { await new Promise(resolve => setTimeout(resolve, 100)); request(); } }
-    assert.equal(changed, true); assert.deepEqual({ width, height }, result.actual);
+    assert.equal(changed, true, `VNC did not announce ${JSON.stringify(result.actual)}; client still sees ${width}x${height}\n${vncDiagnostics}`); assert.deepEqual({ width, height }, result.actual);
     assert.equal(await run('tmux', [...tmux, 'list-panes', '-F', '#{pane_pid}']), pid);
     assert.equal(display.exitCode, null); assert.equal(viewer.exitCode, null);
     assert.equal(terminal.exitCode, null);

@@ -5,6 +5,7 @@ import { attachRTCHealth } from './rtc-health.mjs';
 import { peerAddress } from './rtc-network.mjs';
 import { createMDNSLookup } from './rtc-mdns.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
+import { guardSCTP } from './rtc-sctp.mjs';
 import { disconnectGrace } from './public/transport-policy.js';
 export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network.mjs';
 
@@ -50,6 +51,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     async answer(offer) {
       try {
         await pc.setRemoteDescription(offer);
+        guardSCTP(pc.sctpTransport?.sctp, authorized, () => { void handle.destroy(); });
         for (const transport of pc.iceTransports) guardIceAgent(transport.connection, { valid: authorized, allowed });
         if (ended || !valid()) throw new Error('连接控制权已变化');
         await pc.setLocalDescription(await pc.createAnswer());

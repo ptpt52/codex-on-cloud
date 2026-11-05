@@ -1,9 +1,11 @@
 import { createHash, randomBytes, scrypt as rawScrypt, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, chmod } from 'node:fs/promises';
+import { mkdir, open, rename, chmod, lstat, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const scrypt = promisify(rawScrypt);
+export const SESSION_FILE_LIMIT = 16 * 1024;
 export const tokenHash = token => createHash('sha256').update(token).digest('hex');
 export function equal(a, b) {
   const left = Buffer.from(String(a)), right = Buffer.from(String(b));
@@ -17,24 +19,52 @@ export async function createAuth(config) {
   const sessions = new Map();
   const file = join(config.dataDir, 'sessions.json');
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
+  const directory = await lstat(config.dataDir);
+  if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid()) throw new Error('登录状态目录必须由当前用户拥有');
+  await chmod(config.dataDir, 0o700);
+  let source;
   try {
-    const stored = JSON.parse(await readFile(file, 'utf8'));
+    source = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = await source.stat();
+    if (!info.isFile() || info.size > SESSION_FILE_LIMIT || info.uid !== process.getuid()) throw new Error('Invalid session file');
+    const bytes = Buffer.alloc(SESSION_FILE_LIMIT + 1), { bytesRead } = await source.read(bytes, 0, bytes.length, 0);
+    if (bytesRead > SESSION_FILE_LIMIT) throw new Error('Oversized session file');
+    const stored = JSON.parse(bytes.subarray(0, bytesRead).toString('utf8'));
     if (stored.revision === revision && Array.isArray(stored.sessions)) {
       for (const item of stored.sessions.slice(-8)) {
-        if (/^[a-f0-9]{64}$/.test(item.hash) && typeof item.csrf === 'string' && item.expires > Date.now()) sessions.set(item.hash, item);
+        if (item && typeof item.hash === 'string' && /^[a-f0-9]{64}$/.test(item.hash) && typeof item.csrf === 'string' && /^[a-f0-9]{48}$/.test(item.csrf) && Number.isSafeInteger(item.expires) && item.expires > Date.now()) {
+          sessions.set(item.hash, { hash: item.hash, csrf: item.csrf, expires: item.expires });
+        }
       }
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw new Error('登录状态文件无法读取，请检查 data/panel/sessions.json', { cause: error });
+  } finally { await source?.close(); }
+  let saving = Promise.resolve(), writing = false, dirty = false;
+  async function persist() {
+    const temp = `${file}.tmp`;
+    let target, created = false;
+    try {
+      try {
+        const old = await lstat(temp);
+        if (!old.isFile() || old.isSymbolicLink() || old.uid !== process.getuid()) throw new Error('Invalid session temporary file');
+        await unlink(temp);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      target = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); created = true;
+      await target.writeFile(JSON.stringify({ revision, sessions: [...sessions.values()] }));
+      await target.sync(); await target.close(); target = undefined;
+      await rename(temp, file); created = false;
+    } finally { await target?.close(); if (created) await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
-  let saving = Promise.resolve();
   function save() {
-    saving = saving.catch(() => {}).then(async () => {
-      const temp = `${file}.tmp`;
-      await writeFile(temp, JSON.stringify({ revision, sessions: [...sessions.values()] }), { mode: 0o600 });
-      await chmod(temp, 0o600);
-      await rename(temp, file);
-    });
+    // One writer and one dirty bit, rather than one queued write per request.
+    dirty = true;
+    if (writing) return saving;
+    writing = true;
+    saving = (async () => {
+      try { while (dirty) { dirty = false; await persist(); } }
+      finally { writing = false; }
+    })();
     return saving;
   }
   await save();

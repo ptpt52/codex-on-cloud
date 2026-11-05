@@ -2,19 +2,8 @@ import { RTCPeerConnection } from 'werift';
 import { peerAddress } from './rtc-network.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
 import { forwardChannel } from './forward-channel.mjs';
-
-// The pinned SCTP stack advertises a receive window but does not enforce it
-// before fragmented-message reassembly. Bound bytes and metadata there too.
-export function guardForwardSCTP(sctp, valid, failed) {
-  if (!sctp || typeof sctp.receiveDataChunk !== 'function') throw new Error('Unsupported SCTP transport');
-  const receive = sctp.receiveDataChunk.bind(sctp);
-  sctp.receiveDataChunk = chunk => {
-    const streams = Object.values(sctp.inboundStreams), fragments = streams.reduce((total, stream) => total + stream.reassembly.length, 0);
-    if (!valid() || streams.length >= 32 && !sctp.inboundStreams[chunk.streamId] || fragments >= 1024 ||
-        chunk.userData.length > Math.min(sctp.advertisedRwnd, 1024 * 1024) || sctp.sackMisOrdered.size >= 2048 || sctp.sackDuplicates.length >= 1024) return failed();
-    receive(chunk);
-  };
-}
+import { guardSCTP } from './rtc-sctp.mjs';
+export { guardSCTP as guardForwardSCTP } from './rtc-sctp.mjs';
 
 // A mapping owns one peer, separate from the desktop/viewer and its UDP ports.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
@@ -48,7 +37,7 @@ export function createForwardPeer({ address, ipv6Address, id, valid, authenticat
     async answer(offer) {
       try {
         await pc.setRemoteDescription(offer);
-        guardForwardSCTP(pc.sctpTransport?.sctp, authorized, () => { void handle.destroy('buffer_limit'); });
+        guardSCTP(pc.sctpTransport?.sctp, authorized, () => { void handle.destroy('buffer_limit'); });
         for (const transport of pc.iceTransports) guardIceAgent(transport.connection, { valid: authorized, allowed });
         if (!authorized()) throw new Error('Revoked');
         await pc.setLocalDescription(await pc.createAnswer());
