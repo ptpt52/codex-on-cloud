@@ -10,7 +10,8 @@
     <button id="history-program" type="button" aria-pressed="false" title="开启后将翻页操作发送给当前程序">程序翻页</button>
     <button id="history-up" type="button" title="本地回看每次最多 3 行；程序翻页时发送 PageUp">上翻</button><button id="history-down" type="button" title="本地回看每次最多 3 行；程序翻页时发送 PageDown">下翻</button>
     <button id="history-latest" type="button">回到实时</button>
-    <div id="history-status-row"><span id="history-state" role="status">本地回看：滚动不发送按键</span><button id="history-tools-toggle" type="button" aria-expanded="false" aria-controls="history-tools">查找/复制</button></div>
+    <button id="history-tools-toggle" type="button" aria-expanded="false" aria-controls="history-tools">查找/复制</button>
+    <div id="history-status-row"><span id="history-state" role="status">本地回看：滚动不发送按键</span></div>
     <section id="history-tools" aria-label="历史查找与复制" hidden>
       <div class="history-find-row"><input id="history-query" type="search" maxlength="128" placeholder="查找已加载内容" aria-label="查找已加载历史" autocomplete="off" spellcheck="false"><button id="history-find-prev" type="button" aria-label="上一个匹配">上一个</button><button id="history-find-next" type="button" aria-label="下一个匹配">下一个</button></div>
       <p id="history-find-state" role="status">输入关键词</p>
