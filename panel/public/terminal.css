@@ -21,7 +21,10 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#222222;col
 #history-copy-manual .history-copy-heading, #history-copy-manual .history-copy-actions { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 #history-copy-manual h2 { margin: 0; font: 600 16px/1.5 system-ui, sans-serif; }
 #history-copy-manual p { margin: 0; color: #c7c7c7; font-size: 12px; }
-#history-copy-manual .history-copy-actions p { flex: 1; min-width: 0; }
+#history-copy-manual .history-copy-actions { flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+#history-copy-manual .history-copy-actions p { flex: 1 0 100%; min-width: 0; }
 #history-copy-manual #history-copy-text { display: block; box-sizing: border-box; flex: 1 1 0; width: 100%; min-height: 0; max-height: none; margin: 0; padding: 10px; resize: none; overflow: auto; white-space: pre; border: 1px solid #666; border-radius: 6px; background: #222; color: #e7eee9; font: 14px/1.5 ui-monospace, monospace; }
 #history-copy-manual button { flex: none; min-width: 64px; min-height: 44px; padding: 8px 12px; border: 1px solid #666; border-radius: 6px; background: #333; color: #e7eee9; font: 14px/1.5 system-ui, sans-serif; }
 #history-copy-manual button:focus-visible, #history-copy-manual textarea:focus-visible { outline: 2px solid #f7971d; outline-offset: -2px; }
+#history-copy-manual #history-copy-retry { min-width: 112px; background: #f7971d; border-color: #f7971d; color: #231815; font-weight: 600; }
+#history-copy-manual button:disabled { opacity: .5; cursor: default; }

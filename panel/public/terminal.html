@@ -20,9 +20,9 @@
       <p id="history-copy-state" role="status"></p>
       <dialog id="history-copy-manual" aria-labelledby="history-copy-title" aria-describedby="history-copy-help" hidden>
         <div class="history-copy-heading"><h2 id="history-copy-title">手动复制文字</h2><button id="history-copy-dismiss" type="button" aria-label="关闭手动复制">关闭</button></div>
-        <p id="history-copy-help">浏览器未允许自动复制。文字已选中，请按 Ctrl/Cmd+C 或长按复制。</p>
+        <p id="history-copy-help">文字已选中，可点击“复制到本机”，或按 Ctrl/Cmd+C、长按复制。</p>
         <textarea id="history-copy-text" readonly inputmode="none" aria-label="手动复制历史文字" rows="12" spellcheck="false"></textarea>
-        <div class="history-copy-actions"><button id="history-copy-select" type="button">全选文字</button><p>关闭窗口会清空这里的文字。</p></div>
+        <div class="history-copy-actions"><button id="history-copy-retry" type="button">复制到本机</button><button id="history-copy-select" type="button">全选文字</button><p id="history-copy-result" role="status">关闭窗口会清空这里的文字。</p></div>
       </dialog>
       </div>
     </section>

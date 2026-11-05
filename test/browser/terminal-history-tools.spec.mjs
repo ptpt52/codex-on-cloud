@@ -102,6 +102,55 @@ test('clipboard stub receives only the selected plain text or current snapshot, 
   } finally { await app.close(); }
 });
 
+test('the copy window button writes the browser clipboard even when the Clipboard API is unavailable', async ({ page, context }) => {
+  const app = await fixture({ terminalHistory: 'COPY-BUTTON 中文\n    preserved spaces\n' });
+  try {
+    const frame = await snapshot(page, app), original = await frame.locator('#history-archive').textContent();
+    await context.grantPermissions(['clipboard-read'], { origin: app.config.origin });
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }));
+    await page.evaluate(() => {
+      window.browserClipboard = navigator.clipboard;
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      const copy = document.execCommand.bind(document); window.copyCommands = [];
+      document.execCommand = command => { window.copyCommands.push(command); return copy(command); };
+    });
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-copy-all').click();
+    await page.getByRole('button', { name: '复制到本机', exact: true }).click();
+    await expect(page.locator('#history-copy-result')).toContainText('已复制到本机剪贴板');
+    expect(await page.evaluate(() => window.browserClipboard.readText())).toBe(original);
+    expect(await page.evaluate(() => window.copyCommands)).toEqual(['copy']);
+    await expect(page.locator('#history-copy-manual')).toHaveJSProperty('open', true);
+    await expect(page.locator('#history-copy-text')).toHaveValue(original);
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalHistoryReads.length).toBe(1);
+  } finally { await app.close(); }
+});
+
+test('the copy button retries the local Clipboard API, reports denial and ignores results after closing', async ({ page }) => {
+  const app = await fixture({ terminalHistory: 'COPY-RETRY-ONLY\n' });
+  try {
+    const frame = await snapshot(page, app), original = await frame.locator('#history-archive').textContent();
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }));
+    await page.evaluate(() => {
+      document.execCommand = () => false;
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { (window.retryCopies ||= []).push(text); } } });
+    });
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-copy-all').click();
+    const retry = page.locator('#history-copy-retry'), field = page.locator('#history-copy-text'), result = page.locator('#history-copy-result');
+    await retry.click(); await expect(result).toContainText('已复制'); expect(await page.evaluate(() => window.retryCopies)).toEqual([original]);
+    await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; });
+    await retry.click(); await expect(result).toContainText('复制未成功'); await expect(field).toHaveValue(original);
+    expect(await field.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([0, original.length]);
+    await page.evaluate(() => { window.pendingCopyCalls = 0; navigator.clipboard.writeText = () => new Promise(resolve => { window.pendingCopyCalls++; window.finishCopy = resolve; }); });
+    await retry.click(); await expect(retry).toBeDisabled(); await retry.dispatchEvent('click');
+    expect(await page.evaluate(() => window.pendingCopyCalls)).toBe(1);
+    await page.locator('#history-copy-dismiss').click(); await expect(field).toBeHidden(); await expect(field).toHaveValue('');
+    await page.evaluate(async () => { window.finishCopy(); await new Promise(requestAnimationFrame); });
+    await expect(page.locator('#history-copy-manual')).toBeHidden(); await expect(result).toHaveText('关闭窗口会清空这里的文字。');
+    expect(await page.evaluate(() => document.activeElement.id)).not.toBe('history-copy-text');
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.terminalHistoryReads.length).toBe(1);
+  } finally { await app.close(); }
+});
+
 test('opening local find freezes already received rows and styles without sending a history request; new output cannot alter the results', async ({ page }) => {
   const app = await fixture();
   try {

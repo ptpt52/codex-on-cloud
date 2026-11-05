@@ -9,6 +9,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   const previousMatch = document.getElementById('history-find-prev'), nextMatch = document.getElementById('history-find-next'), findState = document.getElementById('history-find-state');
   const copySelection = document.getElementById('history-copy-selection'), copyAll = document.getElementById('history-copy-all'), copyState = document.getElementById('history-copy-state');
   const manual = document.getElementById('history-copy-manual'), copyText = document.getElementById('history-copy-text');
+  const retryCopy = document.getElementById('history-copy-retry'), copyResult = document.getElementById('history-copy-result');
   const archive = document.createElement('pre'); archive.id = 'history-archive'; archive.hidden = true; archive.tabIndex = 0; archive.setAttribute('aria-label', '远端历史快照'); host.appendChild(archive);
   const newer = document.createElement('button'); newer.id = 'history-new-output'; newer.type = 'button'; newer.hidden = true;
   newer.textContent = '有新输出 · 回到实时'; host.appendChild(newer);
@@ -50,9 +51,30 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (different) changed(reviewing);
   }
   function cancelRead() { const current = loading; loading = undefined; current?.abort(); }
-  function clearCopy() { copyGeneration++; if (manual.open) manual.close(); manual.hidden = true; copyText.value = ''; copyState.textContent = ''; }
+  function clearCopy() { copyGeneration++; if (manual.open) manual.close(); manual.hidden = true; copyText.value = ''; copyState.textContent = ''; copyResult.textContent = '关闭窗口会清空这里的文字。'; }
   function selectCopy() { copyText.focus({ preventScroll: true }); copyText.select(); }
   function dismissCopy() { clearCopy(); updateTools(); }
+  async function copyFromWindow() {
+    if (copying || disposed || !toolsOpen || !manual.open || !copyText.value) return;
+    const generation = copyGeneration, text = copyText.value;
+    const current = () => !disposed && toolsOpen && manual.open && generation === copyGeneration && !document.hidden;
+    copying = true; copyResult.textContent = '正在复制…'; updateTools();
+    try {
+      selectCopy();
+      // The dialog may belong to the outer page. Copy its selected text in that
+      // document, synchronously within this explicit click, including on HTTP.
+      let copied = false;
+      try { copied = copyText.ownerDocument.execCommand('copy'); } catch {}
+      if (!copied) {
+        const clipboard = copyText.ownerDocument.defaultView?.navigator.clipboard;
+        if (!clipboard?.writeText) throw new Error('clipboard unavailable');
+        await clipboard.writeText(text);
+      }
+      if (current()) { copyResult.textContent = '已复制到本机剪贴板。'; copyState.textContent = '已复制到本机剪贴板'; }
+    } catch {
+      if (current()) { selectCopy(); copyResult.textContent = '复制未成功，文字已全选，请按 Ctrl/Cmd+C 或长按复制。'; }
+    } finally { copying = false; updateTools(); }
+  }
   function selectedText() {
     const selection = window.getSelection();
     if (archiveOpen && selection?.rangeCount && selection.rangeCount <= 8 && archive.contains(selection.anchorNode) && archive.contains(selection.focusNode)) return selection.toString();
@@ -70,6 +92,8 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     }
     query.disabled = !view; previousMatch.disabled = nextMatch.disabled = !matches.length;
     copyAll.disabled = copying || !view?.text.length; copySelection.disabled = copying || !selectedText();
+    retryCopy.disabled = copying || !manual.open || !copyText.value;
+    retryCopy.textContent = copying && manual.open ? '复制中…' : '复制到本机';
     const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
     const description = !view ? '等待历史读取完成' : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
     const feedback = !manual.hidden ? '手动复制窗口已打开' : copying ? '复制中…' : copyState.textContent;
@@ -220,6 +244,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   listen(copyAll, 'click', () => { void copy(view?.text || '', '当前快照', copyAll); });
   listen(document.getElementById('history-copy-dismiss'), 'click', dismissCopy);
   listen(document.getElementById('history-copy-select'), 'click', selectCopy);
+  listen(retryCopy, 'click', () => { void copyFromWindow(); });
   listen(manual, 'cancel', event => { event.preventDefault(); dismissCopy(); });
   listen(document, 'selectionchange', updateTools);
   listen(host, 'wheel', event => {
