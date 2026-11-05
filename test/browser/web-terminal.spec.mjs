@@ -57,7 +57,7 @@ test('terminal mode creates independent shells without opening X windows, switch
     await expect(page.locator('#terminal-view-select')).toBeEnabled(); await openTools(page); await page.locator('#terminal-view-select').selectOption('aux1');
     await expect(page.locator('#connection-status')).toContainText('终端在线');
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('终端在线');
-    await expect(page.locator('#terminal-mode')).toHaveAttribute('aria-pressed', 'true'); await expect(page.locator('#input-terminal')).toHaveValue('main');
+    await expect(page.locator('#terminal-mode')).toHaveAttribute('aria-pressed', 'true'); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     expect((await app.controls.listTerminals()).terminals.length).toBe(2); expect(commands.filter(item => item.args.includes('new-session')).length).toBe(1);
   } finally { await app.close(); }
 });

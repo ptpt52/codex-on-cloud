@@ -49,6 +49,10 @@
           <button id="fullscreen-button" class="quiet fullscreen-entry" aria-label="全屏桌面" title="全屏桌面">⛶</button>
         </div>
       </div>
+      <div id="terminal-session-bar" class="terminal-session-bar" hidden>
+        <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端会话"></div>
+        <button id="terminal-session-button" class="view-button terminal-session-button" type="button" aria-haspopup="dialog" aria-controls="terminal-switch-dialog">选择终端 ▾</button>
+      </div>
       <aside id="workspace-tools" class="workspace-panel tools-panel" role="dialog" aria-labelledby="tools-title" tabindex="-1" hidden>
         <div class="panel-heading"><h2 id="tools-title">桌面工具</h2><button id="close-controls-button" class="quiet" type="button" aria-label="关闭工具面板">✕</button></div>
         <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
@@ -78,7 +82,7 @@
       </aside>
       <div id="desktop-stage" class="desktop-stage">
         <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
-        <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button><button id="access-refresh-button" class="primary" hidden>刷新页面验证</button></div>
+        <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button><button id="access-refresh-button" class="primary" hidden>刷新页面验证</button><button id="choose-terminal-button" class="primary" hidden>选择终端</button></div>
       </div>
     <section id="input-dock" class="input-dock workspace-panel" role="dialog" aria-label="输入助手" tabindex="-1" hidden>
       <div class="panel-heading"><h2>输入与剪贴板</h2><div><button id="input-keyboard-button" class="quiet" type="button" aria-label="打开输入键盘">键盘</button><button id="close-input-button" class="quiet" type="button" aria-label="关闭输入助手">✕</button></div></div>
@@ -89,6 +93,7 @@
       </div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button><button id="shortcuts-button" class="shortcuts-entry" type="button" aria-haspopup="menu" aria-controls="shortcuts-menu" aria-expanded="false" disabled>更多按键 ▾</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       <p id="input-status" class="input-status" role="status" hidden></p>
+      <p id="draft-status" class="input-status" role="status" hidden></p>
     </section>
     </section>
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，桌面继续运行</span><span id="version-label"></span></footer>
@@ -100,6 +105,13 @@
     <p class="shortcuts-help">文本粘贴与 Enter 提交保持分开。关闭本列表的 Esc 不会发给远程桌面。</p>
   </div>
 
+  <dialog id="terminal-switch-dialog" class="files-dialog terminal-switch-dialog" aria-labelledby="terminal-switch-title">
+    <div class="dialog-heading"><h2 id="terminal-switch-title">选择终端</h2><button id="close-terminal-switch" class="quiet" type="button" aria-label="关闭会话列表">✕</button></div>
+    <p class="muted">切换查看和输入目标，原有任务继续运行。草稿分别保留。</p>
+    <div id="terminal-switch-list" class="terminal-switch-list"></div>
+    <p id="terminal-switch-status" class="muted" role="status"></p>
+    <div class="clipboard-actions"><button id="terminal-switch-refresh" class="secondary" type="button">刷新列表</button><button id="terminal-switch-manage" class="secondary" type="button">管理终端</button></div>
+  </dialog>
   <dialog id="terminals-dialog" class="files-dialog terminals-dialog" aria-labelledby="terminals-title">
     <div class="dialog-heading"><h2 id="terminals-title">终端管理</h2><button id="close-terminals" class="quiet" aria-label="关闭终端管理">✕</button></div>
     <p class="muted">主终端加最多 3 个辅助终端，任务分别运行。关闭窗口后可重新打开；浏览器离开不会结束任务。</p>
@@ -108,6 +120,7 @@
     <p id="terminals-status" class="muted" role="status"></p>
     <p class="muted">打开或切换后，输入助手会选中该终端。存在辅助终端时，网页不会提供桌面重启恢复，避免结束其他任务。</p>
     <button id="refresh-terminals" class="secondary" type="button">刷新列表</button>
+    <button id="clear-stale-drafts" class="secondary" type="button" disabled>清理旧终端草稿</button>
   </dialog>
 
   <dialog id="action-confirmation" class="files-dialog action-confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-description">

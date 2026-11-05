@@ -55,8 +55,9 @@ async function login(page, app, target = 'main') {
   await instrument(page);
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线'); await expect(page.locator('#terminal-mode')).toBeEnabled();
-  await openInput(page); await page.locator('#mobile-input').fill('网络恢复后仍保留这段草稿');
+  await openInput(page);
   if (target !== 'main') { await openInput(page); await page.locator('#input-terminal').selectOption(target); }
+  await page.locator('#mobile-input').fill('网络恢复后仍保留这段草稿');
   await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click(); await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }

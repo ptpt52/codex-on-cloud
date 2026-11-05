@@ -349,7 +349,8 @@ for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercanc
   if (name === 'pointerdown' && pressedPointers.size < 8) pressedPointers.add(event.pointerId);
   if (name === 'pointerup' || name === 'pointercancel') pressedPointers.delete(event.pointerId);
 }, true);
-window.addEventListener('compositionstart', () => { composing = true; lastInteraction = performance.now(); }, true);
-window.addEventListener('compositionend', () => { composing = false; lastInteraction = performance.now(); }, true);
-window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); composing = false; lastInteraction = performance.now(); });
+function reportComposition() { parent.postMessage({ type: 'codex-terminal-composition', frame, composing }, location.origin); }
+window.addEventListener('compositionstart', () => { composing = true; lastInteraction = performance.now(); reportComposition(); }, true);
+window.addEventListener('compositionend', () => { composing = false; lastInteraction = performance.now(); reportComposition(); }, true);
+window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); composing = false; lastInteraction = performance.now(); reportComposition(); });
 report('ready');

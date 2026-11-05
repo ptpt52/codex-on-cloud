@@ -29,6 +29,8 @@ test('create, rename and switch independent terminals, route paste and Enter sep
     await row(page, 'main').getByRole('button', { name: '打开 / 切换' }).click(); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#input-terminal')).toHaveValue('main');
     await page.locator('#close-terminals').click(); await openInput(page); await page.locator('#input-terminal').selectOption('aux1');
+    await expect(page.locator('#mobile-input')).toHaveValue('');
+    await page.locator('#mobile-input').fill('中文草稿保留');
     await expect(page.locator('#paste-target')).toBeDisabled(); await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
     expect(app.inputCalls).toEqual([{ action: 'paste', text: '中文草稿保留', target: 'terminal', terminalId: 'aux1', terminalToken: '%1:4100' }]);

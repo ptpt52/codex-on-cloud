@@ -69,7 +69,7 @@ test('real terminal UDP/DTLS shares the original task, routes Chinese paste and 
     await page.keyboard.insertText('直输中文'); await expect.poll(() => app.terminalInputs.at(-1).text).toBe('直输中文');
     await page.locator('#toggle-input-button').click(); await openTools(page); await page.locator('#terminal-font-up').click();
     await openTools(page); await page.locator('#terminal-view-select').selectOption('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线', { timeout: 15000 });
-    await expect(page.locator('#terminal-font-label')).toHaveText('16'); await expect(page.locator('#mobile-input')).toHaveValue('中文\n第二行');
+    await expect(page.locator('#terminal-font-label')).toHaveText('16'); await expect(page.locator('#mobile-input')).toHaveValue('');
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 0, rtc: 2 }); expect(app.terminalConnections).toBe(2); expect(app.vncConnections).toBe(0);
     expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
     expect((await app.controls.listTerminals()).terminals.find(value => value.id === 'main').token).toBe('%0:4000');

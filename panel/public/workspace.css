@@ -12,6 +12,18 @@
 .desktop-header-actions > button { min-height: 44px; min-width: 44px; }
 .desktop-stage { min-height: 0; flex: 1 1 0; }
 .connection-status { white-space: nowrap; }
+.terminal-session-bar { flex: none; min-width: 0; padding: 4px 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-soft); }
+.terminal-tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: auto; }
+.terminal-tabs .terminal-tab { flex: 0 1 200px; min-width: 80px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.terminal-tab[aria-selected=true] { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); }
+.terminal-session-button { display: none; }
+.terminal-switch-dialog { max-height: 85dvh; overflow: auto; }
+.terminal-switch-list { display: grid; gap: 8px; margin: 14px 0; }
+.terminal-choice { min-height: 64px; width: 100%; padding: 10px 12px; text-align: left; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
+.terminal-choice small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+.terminal-choice[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); }
+#terminal-switch-status { min-height: 1.7em; font-size: 12px; }
+#draft-status { color: var(--warning); }
 .workspace-panel {
   position: fixed;
   z-index: 25;
@@ -68,6 +80,10 @@
 .workspace-keyboard-open .input-dock .assistant-directions { display: none; }
 .workspace-keyboard-open .input-dock #terminal-target-note, .workspace-keyboard-open .input-dock .dock-note { display: none; }
 @media (max-width: 700px) {
+  .terminal-session-bar { padding: 4px; }
+  .terminal-tabs { display: none; }
+  .terminal-session-button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .terminal-switch-dialog { position: fixed; inset: auto 8px max(8px, env(safe-area-inset-bottom)); width: auto; max-width: none; margin: 0; padding: 16px; border-radius: 16px; max-height: 75dvh; }
   .desktop-toolbar,
   .desktop-card.controls-collapsed .desktop-toolbar { min-height: 52px; padding: 4px; gap: 4px; }
   .desktop-title { gap: 0; }
