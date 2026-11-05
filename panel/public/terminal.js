@@ -3,10 +3,13 @@ import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
 import { TERMINAL_THEME } from './terminal-history-style.js';
 import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
+import { createStreamClient } from '/desktop/stream-client.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
 let probed = false;
+const streamEnabled = query.get('stream') === '1';
+let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
 const terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken');
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
@@ -38,7 +41,7 @@ function finish(value, error) {
 }
 function send(value) {
   if (!ready || switching || !navigator.onLine || socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > 64 * 1024 || sequence >= 2147483647) return false;
-  socket.send(JSON.stringify({ ...value, id: ++sequence })); return sequence;
+  try { socket.send(JSON.stringify({ ...value, id: ++sequence })); return sequence; } catch { return false; }
 }
 function finishHistory(error, value) {
   if (!historyPending) return;
@@ -98,6 +101,7 @@ function size() {
 }
 function raw(data) {
   if (!ready || switching || !data) return;
+  if (streamPaused && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
   // Keep terminal query replies alive while reviewing, without accepting edits.
   if (history?.reviewing && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
   lastInteraction = performance.now();
@@ -133,7 +137,7 @@ function createTerminal() {
   size();
 }
 function inputState() {
-  if (term) { term.options.disableStdin = blocked || busy || switching || !ready || document.hidden || !navigator.onLine; if (term.textarea) term.textarea.readOnly = history?.reviewing === true; }
+  if (term) { term.options.disableStdin = blocked || busy || switching || streamPaused || !ready || document.hidden || !navigator.onLine; if (term.textarea) term.textarea.readOnly = history?.reviewing === true; }
   history?.update();
 }
 function reconnectLater(delay) {
@@ -145,6 +149,8 @@ function retire(current, delay = retryDelay) {
   // Clear the logical connection before close(): a blackholed TCP connection
   // may never deliver a close event, and late events must not touch its successor.
   socket = null; ready = false; health?.close(); health = undefined;
+  if (current.session) { streamClient?.close(); streamClient = undefined; streamPaused = false; }
+  pendingOutputAck = 0;
   if (current.direct) { directFailed = true; routes.changed(); if (!directIssue) directFailure('connection'); }
   stopProbe(); finishSwitch(); networkDetails = null; reportNetwork();
   clearTimeout(connectingTimer); connectingTimer = undefined;
@@ -158,6 +164,19 @@ async function connect() {
   clearTimeout(retry); retry = undefined;
   if (stopped || socket || candidateController || !csrf || !navigator.onLine || document.hidden) return;
   message('正在连接原有终端…'); report('connecting');
+  if (streamEnabled) {
+    streamClient = createStreamClient({ viewer, csrf, terminal: { terminalId, terminalToken }, idle: idleForSwitch,
+      settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
+      prepare: prepareSwitch,
+      paused: value => {
+        streamPaused = value;
+        if (value) health?.suspend();
+        else { if (pendingOutputAck && socket) acknowledgeOutput(socket, 0); health?.wake(); size(); }
+        inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
+      },
+      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); void refreshNetwork(); } }, issue: directFailure });
+    attachSocket(streamClient.socket); streamClient.start(); return;
+  }
   if (!fastConnect && !directFailed && canTryDirect()) {
     const controller = candidateController = new AbortController(); let candidate;
     try {
@@ -185,7 +204,7 @@ function attachSocket(current) {
   ready = false; sequence = 0; historySequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
   previous?.close(); networkDetails = null; reportNetwork();
   connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
-  current.addEventListener('open', () => { if (socket === current && !current.direct) current.send(JSON.stringify({ type: 'auth', csrf })); });
+  current.addEventListener('open', () => { if (socket === current && !current.direct && !current.session) current.send(JSON.stringify({ type: 'auth', csrf })); });
   current.addEventListener('message', event => {
     if (socket !== current || currentEpoch !== epoch) return current.close();
     if (typeof event.data !== 'string' || event.data.length > 24576) return retire(current);
@@ -200,7 +219,7 @@ function attachSocket(current) {
       health = createTerminalHealth(nonce => {
         if (socket !== current || current.readyState !== WebSocket.OPEN || current.bufferedAmount > 64 * 1024) return false;
         current.send(JSON.stringify({ type: 'health', nonce })); return true;
-      }, () => { if (socket === current) { if (current.direct) directFailure('heartbeat'); retire(current, 0); } });
+      }, () => { if (socket === current) { if (current.direct) directFailure('heartbeat'); if (current.session) current.reconnect(); else retire(current, 0); } });
       if (!document.hidden && navigator.onLine) health.start();
       return;
     }
@@ -220,7 +239,8 @@ function attachSocket(current) {
     }
     if (value.type === 'output' && ready && typeof value.data === 'string' && value.data.length <= 11000) {
       let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
-      term.write(bytes, () => { if (socket === current && current.readyState === WebSocket.OPEN && bytes.length) current.send(JSON.stringify({ type: 'ack', bytes: bytes.length })); }); return;
+      pendingWrites++;
+      term.write(bytes, () => { pendingWrites--; if (socket === current && current.readyState === WebSocket.OPEN && bytes.length) acknowledgeOutput(current, bytes.length); }); return;
     }
     if (value.type === 'result' && pending?.id === value.id) {
       finish(value.ok ? { outcome: 'success' } : null, value.ok ? null : { message: value.message || '终端目标已变化，本次输入未发送', outcome: value.outcome || 'unknown' }); return;
@@ -230,7 +250,13 @@ function attachSocket(current) {
   current.addEventListener('close', () => { if (!switching || current !== switchingFrom) retire(current, current.direct ? 0 : retryDelay); });
   current.addEventListener('error', () => { if (!switching || current !== switchingFrom) retire(current, current.direct ? 0 : retryDelay); });
 }
-function needsProbe() { return ready && socket && !socket.direct && !stopped && canTryDirect(); }
+function acknowledgeOutput(current, bytes) {
+  pendingOutputAck += bytes;
+  if (pendingOutputAck > 192 * 1024) return retire(current, 0);
+  if (!pendingOutputAck) return;
+  try { current.send(JSON.stringify({ type: 'ack', bytes: pendingOutputAck })); pendingOutputAck = 0; } catch {}
+}
+function needsProbe() { return ready && socket && !socket.session && !socket.direct && !stopped && canTryDirect(); }
 function nativeIdle() { return !composing && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800; }
 function idleForSwitch() { return !blocked && !busy && !pending && !switching && !history?.reviewing && nativeIdle(); }
 function stopProbe() {
@@ -314,7 +340,7 @@ window.addEventListener('message', event => {
   if (value.type !== 'codex-control-request') return;
   const body = value.body;
   let error;
-  if (!ready || blocked || switching || pending || history?.reviewing || document.hidden || !navigator.onLine) error = { message: '终端暂不可输入，请先回到实时画面；本次操作未发送', outcome: 'rejected' };
+  if (!ready || blocked || switching || streamPaused || pending || history?.reviewing || document.hidden || !navigator.onLine) error = { message: '终端暂不可输入，请先回到实时画面；本次操作未发送', outcome: 'rejected' };
   else if (!body || typeof body !== 'object' || Array.isArray(body)) error = { message: '终端输入参数无效', outcome: 'rejected' };
   else if (body?.terminalId && (body.terminalId !== terminalId || body.terminalToken !== terminalToken)) error = { message: '输入目标与当前终端不一致，请重新选择', outcome: 'rejected' };
   else if (!['paste', 'key'].includes(value.action)) error = { message: '该操作不通过终端通道执行', outcome: 'rejected' };
@@ -329,6 +355,7 @@ document.fonts?.addEventListener('loadingdone', () => { layoutKey = ''; size(); 
 window.visualViewport?.addEventListener('resize', size);
 function resume(replaceConnecting = false) {
   inputState();
+  streamClient?.wake();
   if (stopped || document.hidden || !navigator.onLine) return;
   if (socket && ready) health?.wake();
   else if (socket && replaceConnecting) retire(socket, 0);
@@ -341,7 +368,7 @@ document.addEventListener('visibilitychange', () => {
   health?.suspend(); history?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; clearTimeout(connectingTimer); connectingTimer = undefined; inputState();
 });
 window.addEventListener('online', () => resume());
-window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; retire(socket, null); inputState(); });
+window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session) retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
 window.addEventListener('pagehide', event => { stopped = true; history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });

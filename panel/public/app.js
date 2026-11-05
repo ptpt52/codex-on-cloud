@@ -9,6 +9,7 @@ const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
 let fastConnectEnabled = false;
+let streamProtocolEnabled = false;
 let draftStorage;
 try { draftStorage = sessionStorage; } catch {}
 const terminalState = createTerminalState(draftStorage);
@@ -163,7 +164,7 @@ function sendDisplayPreferences() {
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    ...(terminalMode() ? { csrf, terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
+    csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
     busy: inputBusy || inputComposing || terminalBusy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
@@ -366,7 +367,7 @@ function renderConnection() {
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
   else if (!owned) label = '等待接管';
   else if (desktopReady === false) label = '桌面未就绪';
-  else if (transportSwitching) label = '正在切换直连';
+  else if (transportSwitching) label = '正在优化连接';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) label = '终端目标待确认';
@@ -404,7 +405,7 @@ function renderConnection() {
     $('choose-terminal-button').hidden = false;
   }
   else if (desktopReady === false && frameState !== 'connected') overlay('桌面未就绪', '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
-  else if ((viewportResizing || controlsState.viewportBusy) && frameState === 'connected') $('desktop-overlay').hidden = true;
+  else if ((viewportResizing || controlsState.viewportBusy || transportSwitching) && frameState === 'connected') $('desktop-overlay').hidden = true;
   else if (inputPaused()) overlay(label, '输入暂时暂停。当前操作完成后恢复，不会自动重发输入。');
   else if (frameState === 'connected') $('desktop-overlay').hidden = true;
   else overlay(label, '正在连接画面，桌面任务继续运行。');
@@ -562,6 +563,7 @@ function showLogin(message = '') {
 function frameUrl() {
   const query = new URLSearchParams({ viewer, frame: String(frameEpoch) });
   if (fastConnectEnabled) query.set('fast', '1');
+  if (streamProtocolEnabled) query.set('stream', '1');
   if (terminalMode()) {
     const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
     query.set('terminalId', terminal.id); query.set('terminalToken', terminal.token);
@@ -638,7 +640,7 @@ async function claim() {
 }
 async function showWorkspace(user) {
   uiGeneration++; closeConfirmation();
-  loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true;
+  loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1;
   accessExpired = false; panelState = 'online'; desktopReady = null;
   initializeTerminalSelection();
   $('user-label').textContent = user.username;
@@ -1198,6 +1200,13 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-direct-finished') {
     clearTimeout(switchTimer); transportSwitching = false; renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-stream-state' && typeof event.data.paused === 'boolean') {
+    transportSwitching = event.data.paused; renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(event.data.reason)) {
+    inputMessage('unknown', '部分输入结果未知，请先查看远程画面；不会自动重发提示词、Enter 或审批。');
+    toast('部分输入结果未知，请先核对远程画面，避免重复执行。', true); return;
   }
   if (event.data?.type === 'codex-control-state') {
     controlReady = event.data.ready === true && frameState === 'connected' && ['direct', 'terminal'].includes(frameTransport);

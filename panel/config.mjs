@@ -48,7 +48,7 @@ export function readConfig(env = environment()) {
     managerSocket: native.managerSocket,
     terminalSocket: join(native.runtime, 'tmux.sock'), terminalEnv: desktopEnvironment(native),
     sessionMs: 7 * 24 * 60 * 60 * 1000,
-    webrtc: env.WEBRTC_ENABLED !== '0', fastConnect: true,
+    webrtc: env.WEBRTC_ENABLED !== '0', fastConnect: true, streamProtocol: 1,
     webrtcAddress,
     webrtcAddressAuto: !env.WEBRTC_LAN_ADDRESS,
     webrtcIPv6,

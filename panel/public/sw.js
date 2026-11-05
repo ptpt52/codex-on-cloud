@@ -1,4 +1,4 @@
-const CACHE = 'codex-cloud-shell-0.2.0-inline-terminal-tabs';
+const CACHE = 'codex-cloud-shell-0.2.0-continuous-session';
 const SHELL = ['/', '/app.js', '/workspace-panels.js', '/workspace.css', '/terminal-state.js', '/terminal-tabs.js', '/forward-ui.js', '/forward-platform.js', '/shortcut-menu.js', '/shortcuts.js', '/styles.css', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL))));
 // Updates activate after old pages close. Never interrupt an active input with an automatic reload.

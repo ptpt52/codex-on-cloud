@@ -17,6 +17,9 @@ import { attachTerminal } from './terminal-bridge.mjs';
 import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
+import { createStreamSession, STREAM_ID } from './stream-session.mjs';
+import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
+import { streamRTC } from './stream-rtc.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
@@ -43,6 +46,7 @@ const ASSETS = new Map([
   ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
   ['/desktop/transport-policy.js', ['transport-policy.js', 'text/javascript; charset=utf-8']],
   ['/desktop/frame-hold.js', ['frame-hold.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/stream-client.js', ['stream-client.js', 'text/javascript; charset=utf-8']],
   ['/desktop/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
   ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
@@ -89,6 +93,7 @@ export async function createPanel(config) {
   const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
   const failures = new Map();
   const sockets = new Map();
+  let streamState;
   let owner = null;
   let loginBusy = 0;
   let healthCache = null;
@@ -146,7 +151,28 @@ export async function createPanel(config) {
     readClipboard: async () => { const result = await managerRequest(config, '/clipboard', { source: 'clipboard' }); if (!valid()) throw new Error('控制权已变化'); return result.text; },
     launch: config.terminalLaunch ? () => config.terminalLaunch(target) : undefined });
   function closeSockets(predicate) {
+    if (streamState && predicate(streamState)) streamState.stream.close();
     for (const [socket, state] of sockets) if (predicate(state)) socket.destroy();
+  }
+  function streamFor(id, mode, target, expected, token) {
+    if (config.streamProtocol !== 1 || !STREAM_ID.test(id || '')) throw new HttpError(400, '会话协议无效');
+    if (streamState?.id === id) {
+      if (streamState.expected !== expected || streamState.mode !== mode || JSON.stringify(streamState.target) !== JSON.stringify(target)) throw new HttpError(409, '会话目标已变化');
+      return streamState.stream;
+    }
+    closeSockets(state => state.streamId !== id);
+    const state = { id, streamId: id, mode, target, expected, token, session: expected.session, socket: null };
+    const valid = () => streamState === state && owner === expected && !!auth.get(token) && !closing && !maintenancePending;
+    state.stream = createStreamSession({ id, valid,
+      canActivate: async planned => {
+        const controls = await controlStatus();
+        return valid() && controls.available && !controls.maintenance && (!planned || (!controls.inputBusy && !controls.clipboardBusy && !controls.viewportBusy && state.stream.idle));
+      },
+      connect: callbacks => mode === 'terminal' ? terminalUpstream(terminalOptions(target, valid), callbacks) : vncUpstream(config.vncSocket, callbacks),
+      closed: () => { if (streamState === state) streamState = undefined; },
+    });
+    streamState = state;
+    return state.stream;
   }
   async function agent(path, { method = 'GET', body, signal } = {}) {
     const response = await fetch(`${config.agentUrl}${path}`, {
@@ -202,11 +228,11 @@ export async function createPanel(config) {
       }
       failures.delete(key);
       const { token, session } = await auth.create();
-      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true }, { 'set-cookie': sessionCookie(token, config) });
+      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0 }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, webrtc: config.webrtc === true,
+      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/logout' && req.method === 'POST') {
@@ -287,6 +313,8 @@ export async function createPanel(config) {
       const terminalMode = path === '/api/terminal/rtc';
       const expected = owner;
       const body = await ownedBody(req, 48 * 1024);
+      const resumable = body.streamId !== undefined;
+      if (resumable && (config.streamProtocol !== 1 || !STREAM_ID.test(body.streamId))) throw new HttpError(400, '会话协议无效');
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
       let offer;
       try { offer = rtcOffer(body, { ipv6: config.webrtcIPv6 === true }); } catch (error) { throw new HttpError(400, error.message); }
@@ -313,14 +341,18 @@ export async function createPanel(config) {
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         const token = cookieToken(req.headers.cookie);
-        const state = { session: expected.session, token, socket: null, rtcPending: true };
+        const stream = resumable ? streamFor(body.streamId, terminalMode ? 'terminal' : 'desktop', target, expected, token) : null;
+        const state = { session: expected.session, token, socket: null, rtcPending: true, ...(resumable ? { streamId: body.streamId } : {}) };
+        let streamEntry;
         let terminalSession;
         if (terminalMode) state.inputIdle = () => terminalSession?.idle === true;
         const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state;
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
         bridge = createRTCBridge({ address, ipv6Address, vncSocket: config.vncSocket, valid,
-          ...(terminalMode ? { connectTerminal: (channel, authorized, fail) => {
+          ...(resumable ? { connectStream: (channel, authorized, fail) => {
+            streamEntry = streamRTC(channel, stream, authorized, fail); return streamEntry;
+          } } : terminalMode ? { connectTerminal: (channel, authorized, fail) => {
             terminalSession = attachRTCTerminal(channel, terminalOptions(target, authorized), fail); return terminalSession;
           } } : {}),
           performControl: async (action, body, live) => {
@@ -332,13 +364,15 @@ export async function createPanel(config) {
               const current = await controlStatus();
               if (terminalMode && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
               if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化');
-              if (!current.available || current.maintenance || current.inputBusy || current.clipboardBusy || current.viewportBusy) throw new HttpError(409, '当前操作未结束，暂不切换连接');
+              if (!current.available || current.maintenance || (!resumable && (current.inputBusy || current.clipboardBusy || current.viewportBusy))) throw new HttpError(409, '当前操作未结束，暂不切换连接');
+              if (resumable) { state.rtcPending = false; bridge.activate(); return { active: true }; }
               for (const value of sockets.values()) if (value !== state && value.inputIdle && !value.inputIdle()) throw new HttpError(409, '终端输入尚未完成，暂不切换连接');
               closeSockets(value => value.socket !== bridge);
               state.rtcPending = false;
               bridge.activate();
               return { active: true };
             }
+            if (resumable && !streamEntry?.active) throw new HttpError(409, '备用通道不可输入');
             if (terminalMode) throw new HttpError(400, '文字输入需通过终端通道执行');
             if (state.rtcPending) throw new HttpError(409, '直连尚未启用，本次操作未发送');
             if (action === 'clipboard') {
@@ -462,7 +496,8 @@ export async function createPanel(config) {
     if (!session) return deny(401);
     const url = new URL(req.url, 'http://internal');
     const terminalMode = url.pathname === '/terminal/connect';
-    if (url.pathname !== '/desktop/websockify' && !terminalMode) return deny(404);
+    const streamMode = url.pathname === '/session/connect';
+    if (url.pathname !== '/desktop/websockify' && !terminalMode && !streamMode) return deny(404);
     if (!owner || owner.session !== session.hash || owner.viewer !== url.searchParams.get('viewer')) return deny(409);
     const expected = owner;
     const controls = await controlStatus();
@@ -470,6 +505,39 @@ export async function createPanel(config) {
     if (!sessionOf(req)) return deny(401);
     if (owner !== expected) return deny(409);
     if (!controls.available || controls.maintenance) return deny(503);
+    if (streamMode) {
+      const id = url.searchParams.get('streamId'), mode = url.searchParams.get('mode');
+      if (config.streamProtocol !== 1 || !STREAM_ID.test(id || '') || !['desktop', 'terminal'].includes(mode)) return deny(400);
+      let target;
+      if (mode === 'terminal') {
+        try { target = terminalTarget({ terminalId: url.searchParams.get('terminalId'), terminalToken: url.searchParams.get('terminalToken') }); }
+        catch { return deny(400); }
+        if (!await terminalAvailable(target)) return deny(409);
+      }
+      if (owner !== expected || !sessionOf(req) || closing || maintenancePending || socket.destroyed) return deny(409);
+      const token = cookieToken(req.headers.cookie), stream = streamFor(id, mode, target, expected, token);
+      if ([...sockets.values()].some(state => state.streamId === id && state.relayPending && !state.socket.destroyed)) return deny(429);
+      const state = { session: session.hash, token, socket, streamId: id, relayPending: true };
+      sockets.set(socket, state); socket.once('close', () => sockets.delete(socket));
+      const valid = () => owner === expected && sockets.get(socket) === state && !!auth.get(token) && !closing && !maintenancePending;
+      terminalWss.handleUpgrade(req, socket, head, ws => {
+        let entry;
+        const timer = setTimeout(() => ws.terminate(), 2500).unref();
+        ws.once('close', () => { clearTimeout(timer); entry?.close(); }); ws.once('error', () => entry?.close());
+        ws.once('message', (bytes, binary) => {
+          clearTimeout(timer); let first;
+          try { if (binary || bytes.length > 1024) throw new Error(); first = JSON.parse(bytes.toString()); } catch { return ws.terminate(); }
+          if (!valid() || first?.type !== 'auth' || !equal(first.csrf, session.csrf)) return ws.terminate();
+          state.relayPending = false;
+          entry = stream.attach('relay', { send: value => ws.send(JSON.stringify(value)), buffered: () => ws.bufferedAmount, close: () => ws.terminate() });
+          ws.on('message', (data, bin) => {
+            if (!valid() || bin || data.length > 24576) return ws.terminate();
+            try { entry?.receive(JSON.parse(data.toString())); } catch { ws.terminate(); }
+          });
+        });
+      });
+      return;
+    }
     if (terminalMode) {
       let target;
       try { target = terminalTarget({ terminalId: url.searchParams.get('terminalId'), terminalToken: url.searchParams.get('terminalToken') }); }

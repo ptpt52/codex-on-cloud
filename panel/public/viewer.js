@@ -3,12 +3,17 @@ import { desktopTransport, canTryDirect } from './rtc.js';
 import { createDesktopPointer } from './desktop-pointer.js';
 import { createFrameHold } from './frame-hold.js';
 import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
+import { createStreamClient } from './stream-client.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
 const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
 const frameHold = createFrameHold(viewport), fastConnect = new URLSearchParams(location.search).get('fast') === '1', routes = routePolicy();
+const streamEnabled = new URLSearchParams(location.search).get('stream') === '1';
+let streamClient, streamPaused = false, streamCsrf = '';
+const remoteKeys = new Map();
+let lastMouse = { x: 0, y: 0, buttons: 0 }, releaseMouse = false;
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
 const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
@@ -99,11 +104,11 @@ function applyView() {
   screen.style.width = widthFit ? `${viewport.clientWidth}px` : manual ? `${Math.round(canvas.width * preferences.zoom)}px` : '100%';
   screen.style.height = widthFit ? `${Math.ceil(canvas.height * viewport.clientWidth / canvas.width)}px` : manual ? `${Math.round(canvas.height * preferences.zoom)}px` : '100%';
   // Release a synthetic drag on its original stream before viewOnly changes.
-  pointerControls.update(canvas, viewing, preferences);
+  pointerControls.update(canvas, viewing && !streamPaused, preferences);
   if (rfb) {
     // Resize the local container through public APIs; remote pixels and input coordinates stay intact.
     rfb.scaleViewport = true;
-    if (rfb.viewOnly !== (preferences.pan || preferences.blocked)) rfb.viewOnly = preferences.pan || preferences.blocked;
+    if (rfb.viewOnly !== (preferences.pan || preferences.blocked || streamPaused)) rfb.viewOnly = preferences.pan || preferences.blocked || streamPaused;
   }
   if (!preferences.pan && !preferences.blocked) stopDrag();
   panLayer.hidden = !preferences.pan && !preferences.blocked;
@@ -146,6 +151,7 @@ window.addEventListener('message', event => {
   preferences.blocked = value.handoff === true && (pressedKeys.size || pressedPointers.size || pointerControls.busy) ? false : value.blocked;
   preferences.busy = value.busy === true;
   preferences.revision = value.revision ?? 0;
+  if (streamEnabled && typeof value.csrf === 'string' && value.csrf.length <= 256 && value.csrf && !streamCsrf) { streamCsrf = value.csrf; void connect(); }
   applyView();
 });
 
@@ -211,7 +217,7 @@ panLayer.addEventListener('keydown', event => {
   viewport.scrollTop += steps[event.key][1];
 });
 function needsProbe() {
-  return !stopping && viewing && !switching && canTryDirect() && (!transport || !transport.control.ready);
+  return !streamClient && !stopping && viewing && !switching && canTryDirect() && (!transport || !transport.control.ready);
 }
 function stopHealth() {
   healthGeneration++;
@@ -221,6 +227,7 @@ function stopHealth() {
 }
 function monitorDirect(delay = 3000) {
   stopHealth();
+  if (streamClient) return;
   if (stopping || !viewing || !transport || document.hidden || !navigator.onLine) return;
   const current = transport, generation = healthGeneration;
   const tick = async () => {
@@ -322,7 +329,7 @@ async function probeDirect() {
     scheduleProbe();
   }
 }
-function attachViewer(direct) {
+function attachViewer(direct, channel) {
   pointerControls.update(canvas, false, preferences);
   rememberView(); stopHealth();
   restoringView = !!viewAnchor;
@@ -335,7 +342,16 @@ function attachViewer(direct) {
   const url = new URL('/desktop/websockify', location.origin);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('viewer', viewer);
-  const instance = rfb = new RFB(screen, direct ? direct.video() : url.href, { shared: false });
+  const instance = rfb = new RFB(screen, channel || (direct ? direct.video() : url.href), { shared: false });
+  if (channel) {
+    const sendKey = instance.sendKey.bind(instance);
+    instance.sendKey = (keysym, code, down) => {
+      if (viewing && !instance.viewOnly && down !== undefined) {
+        if (down && remoteKeys.size < 64) remoteKeys.set(code, keysym); else if (!down) remoteKeys.delete(code);
+      }
+      sendKey(keysym, code, down);
+    };
+  }
   if (previousTransport !== direct) previousTransport?.close();
   previous?.disconnect();
   instance.scaleViewport = true;
@@ -363,6 +379,7 @@ function attachViewer(direct) {
     if (direct) { directFailed = true; routes.changed(); }
     if (direct && !directIssue) directIssue = 'connection';
     networkDetails = null; reportNetwork();
+    if (channel && streamClient?.socket === channel) { streamClient.close(); streamClient = undefined; streamPaused = false; }
     direct?.close();
     probeController?.abort(); clearTimeout(probeTimer); probeTimer = null;
     status.hidden = false;
@@ -375,12 +392,41 @@ function attachViewer(direct) {
 }
 async function connect() {
   if (stopping || connecting || document.hidden || !navigator.onLine || !/^[a-f0-9-]{16,64}$/.test(viewer || '')) return;
+  if (streamEnabled && !streamCsrf) return;
   clearTimeout(retry); retry = undefined;
   rememberView(); stopHealth(); connecting = true;
   const epoch = ++connectionEpoch;
   transportName = ''; viewing = false;
   announce('connecting');
   status.hidden = false; status.textContent = '正在连接独立桌面…';
+  if (streamEnabled) {
+    streamClient?.close();
+    streamClient = createStreamClient({ viewer, csrf: streamCsrf, idle: idleForSwitch,
+      settled: () => !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800,
+      prepare: prepareSwitch,
+      paused: value => {
+        streamPaused = value;
+        if (value) { releaseMouse ||= !!lastMouse.buttons; if (rfb) rfb.viewOnly = true; }
+        pointerControls.update(canvas, viewing && !value, preferences);
+        // A failed path may swallow key-up. Release only held state after the
+        // new writer is acknowledged; never replay a key press or clipboard.
+        if (!value && rfb && streamClient?.socket.readyState === 1) {
+          rfb.viewOnly = false;
+          for (const [code, keysym] of [...remoteKeys]) rfb.sendKey(keysym, code, false);
+          remoteKeys.clear();
+          if (releaseMouse && canvas) canvas.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, view: window, button: 0, buttons: 0, clientX: lastMouse.x, clientY: lastMouse.y }));
+          releaseMouse = false;
+        }
+        if (rfb) rfb.viewOnly = value || preferences.pan || preferences.blocked;
+        parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
+      },
+      changed: () => {
+        transport = streamClient?.transport; transportName = streamClient?.socket.direct ? 'direct' : 'relay'; networkDetails = null;
+        if (streamClient?.socket.direct) directIssue = '';
+        if (viewing) { announce('connected'); reportControl(); reportNetwork(); void refreshNetwork(); }
+      }, issue: directFailure });
+    attachViewer(null, streamClient.socket); streamClient.start(); return;
+  }
   frameHold.capture(canvas);
   const direct = fastConnect || directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure });
   if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
@@ -396,8 +442,12 @@ for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercanc
   if (name === 'pointerup' || name === 'pointercancel') pressedPointers.delete(event.pointerId);
   reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
 }, true);
+for (const name of ['mousedown', 'mouseup', 'mousemove']) window.addEventListener(name, event => {
+  if (event.target === canvas) lastMouse = { x: event.clientX, y: event.clientY, buttons: event.buttons };
+}, true);
 window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); });
 function networkChanged() {
+  if (streamClient) { streamClient.wake(); return; }
   if (document.hidden || !navigator.onLine) { stopHealth(); if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
   // NetworkInformation also emits RTT/downlink estimate changes. Once a fresh
   // network check is running, further events must not keep canceling its deadline.
@@ -412,6 +462,7 @@ navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
   frameHold.clear();
+  streamClient?.close();
   pointerControls.update(canvas, false, preferences);
   stopHealth();
   scrollGesture = null;

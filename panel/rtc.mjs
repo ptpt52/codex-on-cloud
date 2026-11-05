@@ -11,7 +11,7 @@ export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network
 export const RTC_TIMEOUT = 12000;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
 
-export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl, connectTerminal }) {
+export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl, connectTerminal, connectStream }) {
   const allowed = host => peerAddress(host, !!ipv6Address);
   const pc = new RTCPeerConnection({
     iceServers: [], iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
@@ -72,7 +72,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
       control = attachRTCControl(value, { valid: authorized, perform: performControl });
       return;
     }
-    const streamValid = connectTerminal ? value.label === 'codex-terminal' && value.protocol === 'terminal-v1'
+    const streamValid = connectStream ? value.label === 'codex-stream' && value.protocol === 'stream-v1' : connectTerminal ? value.label === 'codex-terminal' && value.protocol === 'terminal-v1'
       : value.label === 'codex-vnc' && ['rfb', 'rfb-ready-v1'].includes(value.protocol);
     if (channel || !authorized() || !streamValid || !value.ordered ||
         value.maxRetransmits != null || value.maxPacketLifeTime != null) { void handle.destroy(); return; }
@@ -91,7 +91,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
         openVideo();
         return; // The fixed readiness byte never reaches VNC.
       }
-      if (connectTerminal) {
+      if (connectTerminal || connectStream) {
         if (!activated || !authorized() || !terminal || !Buffer.isBuffer(bytes) || bytes.length > 16384) { void handle.destroy(); return; }
         terminal.receive(bytes); return;
       }
@@ -102,9 +102,9 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
     });
     openVideo = () => {
       if (!activated || !videoReady || channel.readyState !== 'open') return;
-      if (connectTerminal) {
+      if (connectTerminal || connectStream) {
         if (!authorized() || terminal) { void handle.destroy(); return; }
-        terminal = connectTerminal(channel, authorized, () => { void handle.destroy(); });
+        terminal = (connectStream || connectTerminal)(channel, authorized, () => { void handle.destroy(); });
         clearTimeout(timer); return;
       }
       if (!authorized() || upstream) { void handle.destroy(); return; }

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 for (const mode of ['desktop', 'terminal']) test(`${mode}: relay presents the task while direct negotiation waits in the background`, async ({ page }) => {
-  const app = await fixture({ rfb: true, webrtc: true, fastConnect: true });
+  const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
   let release; const hold = new Promise(resolve => { release = resolve; });
   try {
     await page.addInitScript(mode => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode, zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true })), mode);
