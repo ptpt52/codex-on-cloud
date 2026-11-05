@@ -12,8 +12,12 @@
 .desktop-header-actions > button { min-height: 44px; min-width: 44px; }
 .desktop-stage { min-height: 0; flex: 1 1 0; }
 .connection-status { white-space: nowrap; }
-.terminal-session-bar { flex: none; min-width: 0; padding: 4px 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-soft); }
-.terminal-tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: auto; }
+.terminal-session-bar { flex: 1; min-width: 0; max-width: 720px; }
+.terminal-session-bar:not([hidden]) ~ .monitor-icon,
+.terminal-session-bar:not([hidden]) ~ strong { display: none; }
+.terminal-session-bar:not([hidden]) ~ .connection-status { flex: none; }
+.terminal-tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.terminal-tabs::-webkit-scrollbar { display: none; }
 .terminal-tabs .terminal-tab { flex: 0 1 200px; min-width: 80px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 .terminal-tab[aria-selected=true] { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); }
 .terminal-session-button { display: none; }
@@ -79,10 +83,12 @@
 .desktop-card:fullscreen .input-dock { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
 .workspace-keyboard-open .input-dock .assistant-directions { display: none; }
 .workspace-keyboard-open .input-dock #terminal-target-note, .workspace-keyboard-open .input-dock .dock-note { display: none; }
-@media (max-width: 700px) {
-  .terminal-session-bar { padding: 4px; }
+@media (max-width: 1000px) {
   .terminal-tabs { display: none; }
   .terminal-session-button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+}
+@media (max-width: 700px) {
+  .terminal-session-bar:not([hidden]) ~ .connection-status { width: 14px; height: 14px; padding: 0; margin-left: 4px; gap: 0; font-size: 0; justify-content: center; }
   .terminal-switch-dialog { position: fixed; inset: auto 8px max(8px, env(safe-area-inset-bottom)); width: auto; max-width: none; margin: 0; padding: 16px; border-radius: 16px; max-height: 75dvh; }
   .desktop-toolbar,
   .desktop-card.controls-collapsed .desktop-toolbar { min-height: 52px; padding: 4px; gap: 4px; }

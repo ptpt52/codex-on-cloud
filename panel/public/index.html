@@ -41,17 +41,19 @@
     </header>
     <section id="desktop-card" class="desktop-card" aria-label="远程桌面">
       <div class="desktop-toolbar">
-        <div class="desktop-title"><span class="monitor-icon" aria-hidden="true">▣</span><strong id="view-title">开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span></div>
+        <div class="desktop-title">
+          <div id="terminal-session-bar" class="terminal-session-bar" hidden>
+            <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端会话"></div>
+            <button id="terminal-session-button" class="view-button terminal-session-button" type="button" aria-haspopup="dialog" aria-controls="terminal-switch-dialog">选择终端 ▾</button>
+          </div>
+          <span class="monitor-icon" aria-hidden="true">▣</span><strong id="view-title">开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span>
+        </div>
         <div class="mode-switch" role="group" aria-label="操作模式"><button id="desktop-mode" class="view-button" type="button" aria-pressed="true">桌面</button><button id="terminal-mode" class="view-button" type="button" aria-pressed="false">网页终端</button></div>
         <div class="desktop-header-actions">
           <button id="toggle-controls-button" class="view-button controls-toggle" type="button" aria-expanded="false" aria-controls="workspace-tools">工具</button>
           <button id="toggle-input-button" class="view-button controls-toggle" type="button" aria-expanded="false" aria-controls="input-dock">输入</button>
           <button id="fullscreen-button" class="quiet fullscreen-entry" aria-label="全屏桌面" title="全屏桌面">⛶</button>
         </div>
-      </div>
-      <div id="terminal-session-bar" class="terminal-session-bar" hidden>
-        <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端会话"></div>
-        <button id="terminal-session-button" class="view-button terminal-session-button" type="button" aria-haspopup="dialog" aria-controls="terminal-switch-dialog">选择终端 ▾</button>
       </div>
       <aside id="workspace-tools" class="workspace-panel tools-panel" role="dialog" aria-labelledby="tools-title" tabindex="-1" hidden>
         <div class="panel-heading"><h2 id="tools-title">桌面工具</h2><button id="close-controls-button" class="quiet" type="button" aria-label="关闭工具面板">✕</button></div>
