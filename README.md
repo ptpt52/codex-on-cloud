@@ -26,6 +26,14 @@ cd codex-on-cloud
 npm run deploy -- --install-deps --enable-linger
 ```
 
+只需要网页终端时，新部署可选择轻量模式：
+
+```bash
+npm run deploy -- --mode terminal --install-deps --enable-linger
+```
+
+此模式不安装 Xvfb、XFCE、x11vnc、Xterm、X11 工具、桌面字体或 noVNC，只需现有 Node.js/Codex 环境及 tmux、Python。保留网页终端、多终端、历史、文件传输、直连/中转和端口映射；由独立终端后台持有任务。桌面模式仍是默认选项，已有部署不会自动转换，详见[纯网页终端部署](docs/terminal-only.md)。
+
 已有系统依赖时运行 `npm run deploy` 即可。系统包和 linger 两步会按所选参数使用 sudo，其余步骤以当前用户运行。apt 安装使用 `--no-upgrade --no-remove`，保留列出的已安装包并拒绝移除包。安装器按锁文件安装项目依赖，保留已有密码与 `.env`，不安装或修改 Codex；服务运行时保留现有依赖，若其不完整或版本不符则停止并提示另行维护。重复运行只启动缺失的服务，不重启桌面；最后检查服务状态、面板健康与桌面就绪，失败后停止后续步骤。
 
 只检查环境、不执行安装：

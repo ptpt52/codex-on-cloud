@@ -3,6 +3,7 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { readPreferences } from './preferences.mjs';
+import { deploymentMode } from './deployment-mode.mjs';
 
 export const root = fileURLToPath(new URL('../', import.meta.url));
 export function environment(overrides = process.env) {
@@ -29,6 +30,7 @@ export function settings(env = environment()) {
   const preferences = readPreferences(preferencesFile, defaultPreferences);
   const size = `${preferences.width}x${preferences.height}`;
   return {
+    mode: deploymentMode(env.DEPLOY_MODE),
     root, runtime, socket, workspace, transfer: join(workspace, 'transfer'),
     display: `:${number('DISPLAY_NUMBER', 93, 10, 199)}`,
     panelPort: number('PANEL_PORT', 36080, 1024, 65535),

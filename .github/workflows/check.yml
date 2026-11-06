@@ -19,6 +19,20 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
+  terminal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux python3
+      - run: npm ci --omit=dev --omit=optional
+      - run: npm run test:terminal-only
   backend:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

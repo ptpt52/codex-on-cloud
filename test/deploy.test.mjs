@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import http from 'node:http';
 import { once } from 'node:events';
 import { deploy, options, checkHealth } from '../scripts/deploy.mjs';
+import { serviceUnits } from '../native/service-units.mjs';
 
 async function harness(t, { active = [], installed = true, failure = '', bus = 'degraded\n', healthError } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'codex deploy 中文 '));
@@ -24,7 +25,8 @@ async function harness(t, { active = [], installed = true, failure = '', bus = '
       if(args.includes(failure))return{status:1};
       if(args[0]==='scripts/setup.mjs'){
         await mkdir(join(root,'secrets'),{recursive:true});
-        try{await writeFile(join(root,'.env'),config,{flag:'wx'});}catch(error){if(error.code!=='EEXIST')throw error;}
+        const mode = args.includes('--mode') ? args[args.indexOf('--mode') + 1] : 'desktop';
+        try{await writeFile(join(root,'.env'),'DEPLOY_MODE='+mode+'\n'+config,{flag:'wx'});}catch(error){if(error.code!=='EEXIST')throw error;}
       }
       if(args[0]==='scripts/provision-cloudflare.mjs'){
         await writeFile(join(root,'.env'),'PUBLIC_ORIGIN=https://desktop.example.com\n');
@@ -39,6 +41,33 @@ test('deploy options validate public configuration before work and do not accept
   assert.equal(options([]).check,undefined);assert.equal(options(['--check','--install-deps']).check,true);
   for(const args of [['--domain','desktop.example.com'],['--zone','example.com'],['--origin','https://user:password@example.com'],['--origin','https://example.com/path'],['--restart-desktop'],['--domain','elsewhere.test','--zone','example.com','--api-token-file','file']])assert.throws(()=>options(args));
   assert.equal(options(['--help']).help,true);
+  assert.throws(()=>options(['--mode','invalid']));
+});
+
+test('terminal-only deployment installs minimal packages and production JS without graphical services', async t => {
+  const h=await harness(t);await deploy(options(['--mode','terminal','--install-deps']),h.context);
+  const install=h.calls.find(c=>c.command==='sudo'&&c.args[1]==='install');
+  assert.deepEqual(install.args.slice(6),['tmux','python3']);
+  assert.ok(h.calls.some(c=>c.command==='npm'&&c.args.join(',')==='ci,--omit=dev,--omit=optional'));
+  assert.match(await readFile(join(h.root,'.env'),'utf8'),/DEPLOY_MODE=terminal/);
+  const units=serviceUnits('/app','/bin',process.execPath,'terminal');
+  assert.deepEqual([...units.keys()],['codex-cloud-terminal.service','codex-cloud-manager.service','codex-cloud-panel.service','codex-cloud-tunnel.service']);
+  assert.ok([...units.values()].every(text=>!text.includes('desktop.mjs')&&!text.includes('desktop-worker.mjs')&&!text.includes('PartOf=')));
+  assert.match(units.get('codex-cloud-terminal.service'),/Restart=no/);
+  assert.ok(h.calls.every(c=>c.capture||!c.args.some(arg=>/codex-cloud-(desktop|actions)/.test(arg))));
+});
+
+test('deployment mode is retained on rerun and a requested conversion stops before installing or touching services', async t => {
+  const h=await harness(t);await writeFile(join(h.root,'.env'),'DEPLOY_MODE=terminal\nPUBLIC_ORIGIN=http://localhost:36080\n');
+  await assert.rejects(deploy(options(['--mode','desktop','--install-deps']),h.context),/不会自动切换/);assert.equal(h.calls.length,0);
+  await deploy({},h.context);assert.ok(h.calls.some(c=>c.args.includes('codex-cloud-terminal.service')));
+  assert.ok(h.calls.every(c=>c.capture||!c.args.some(arg=>/codex-cloud-(desktop|actions)/.test(arg))));
+});
+
+test('a live desktop in another deployment prevents terminal installation before any mutation',async t=>{
+  const h=await harness(t,{active:['codex-cloud-desktop.service']});
+  await assert.rejects(deploy(options(['--mode','terminal','--install-deps']),h.context),/另一部署模式仍在运行/);
+  assert.ok(h.calls.every(c=>c.capture));await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
 });
 
 test('unsupported host, root and old Node are rejected before any subprocess or changes',async t=>{
@@ -115,7 +144,7 @@ test('oversized token files and failed health do not produce a success message o
 test('real isolated setup uses the documented desktop size and preserves existing credentials and configuration on rerun',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'codex-real-setup-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   for(const folder of ['scripts','native'])await mkdir(join(directory,folder));
-  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs'])await copyFile(resolve(file),join(directory,file));
+  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs','native/deployment-mode.mjs'])await copyFile(resolve(file),join(directory,file));
   const exec=promisify(execFile);await exec(process.execPath,[join(directory,'scripts/setup.mjs')],{maxBuffer:8192});
   const files=['.env','secrets/panel_password','secrets/agent_secret','secrets/credentials.txt'];
   const before=await Promise.all(files.map(file=>readFile(join(directory,file),'utf8')));

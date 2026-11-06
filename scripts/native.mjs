@@ -4,14 +4,20 @@ import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { settings } from '../native/config.mjs';
 import { serviceUnits } from '../native/service-units.mjs';
+import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
+import { parseArgs } from 'node:util';
 
 const config = settings();
 const command = process.argv[2] || 'doctor';
+const { values } = parseArgs({ args: process.argv.slice(3), options: { mode: { type: 'string' } } });
+if (values.mode) {
+  const mode = deploymentMode(values.mode);
+  if (command !== 'doctor' && mode !== config.mode) throw Error('已有部署模式不同，不会切换或停止现有任务');
+  config.mode = mode;
+}
 const path = `${join(config.root, 'data', 'host-tools', 'usr', 'bin')}:${process.env.PATH}`;
 const serviceDir = join(process.env.HOME, '.config', 'systemd', 'user');
-const units = ['codex-cloud-desktop.service', 'codex-cloud-panel.service'];
-const managerUnit = 'codex-cloud-manager.service';
-const actionsUnit = 'codex-cloud-actions.service';
+const selectedUnits = modeServices(config.mode);
 const dependencies = new Map([
   ['Xvfb', 'xvfb'], ['x11vnc', 'x11vnc'], ['xfwm4', 'xfwm4'],
   ['xfdesktop', 'xfdesktop4'], ['xfce4-panel', 'xfce4-panel'], ['xfsettingsd', 'xfce4-settings'],
@@ -19,6 +25,9 @@ const dependencies = new Map([
   ['xauth', 'xauth'], ['xdpyinfo', 'x11-utils'], ['dbus-run-session', 'dbus'],
   ['python3', 'python3'], ['codex', null],
 ]);
+if (config.mode === 'terminal') {
+  for (const name of [...dependencies.keys()]) if (!['tmux', 'python3', 'codex'].includes(name)) dependencies.delete(name);
+}
 if (config.env.TUNNEL_DNS_SERVERS?.trim()) {
   dependencies.set('unshare', 'util-linux');
   dependencies.set('mount', 'mount');
@@ -42,7 +51,7 @@ async function doctor() {
     console.log(`${binary ? '✓' : '✗'} ${name}${binary ? `  ${binary}` : ''}`);
     if (!binary) missing.push(pkg || name);
   }
-  console.log(`显示：${config.display}；桌面尺寸：${config.size}；工作目录：${config.workspace}`);
+  console.log(config.mode === 'terminal' ? `部署模式：纯网页终端；工作目录：${config.workspace}` : `显示：${config.display}；桌面尺寸：${config.size}；工作目录：${config.workspace}`);
   if (missing.length) {
     const packages = missing.filter(name => name !== 'codex');
     if (packages.length) console.log(`缺少系统组件，请在本机执行：\nsudo apt-get update\nsudo apt-get install -y --no-install-recommends ${[...new Set(packages)].join(' ')}`);
@@ -55,19 +64,25 @@ async function doctor() {
     const probe = spawnSync('unshare', ['--user', '--map-root-user', '--mount', '--propagation', 'private', '--', 'true'], { encoding: 'utf8', timeout: 3000 });
     if (probe.status !== 0) throw new Error('独立 DNS 需要允许非特权 user/mount namespace；也可修复系统 DNS 后移除 TUNNEL_DNS_SERVERS');
   }
-  const check = spawnSync('x11vnc', ['-help'], { env: { ...process.env, PATH: path }, encoding: 'utf8' });
-  if (!`${check.stdout}${check.stderr}`.includes('-inetd')) throw new Error('x11vnc 必须支持 -inetd');
+  if (config.mode !== 'terminal') {
+    try { await access(join(config.root, 'node_modules', '@novnc', 'novnc', 'core', 'rfb.js')); }
+    catch { throw Error('桌面模式需要 noVNC，请运行 npm ci（不要省略 optional 依赖）'); }
+    const check = spawnSync('x11vnc', ['-help'], { env: { ...process.env, PATH: path }, encoding: 'utf8' });
+    if (!`${check.stdout}${check.stderr}`.includes('-inetd')) throw new Error('x11vnc 必须支持 -inetd');
+  }
   return true;
 }
 try {
   if (process.getuid() === 0) throw new Error('请用普通用户执行 npm 命令，不要使用 sudo');
   if (command === 'doctor') process.exitCode = await doctor() ? 0 : 1;
   else if (command === 'install') {
+    const other = config.mode === 'terminal' ? 'codex-cloud-desktop.service' : 'codex-cloud-terminal.service';
+    if (spawnSync('systemctl', ['--user', 'is-active', '--quiet', other], { stdio: 'ignore' }).status === 0) throw Error('另一部署模式仍在运行，不会覆盖服务或停止任务');
     if (!await doctor()) process.exitCode = 1;
     else {
       await access(join(config.root, 'secrets', 'panel_password'));
       await mkdir(serviceDir, { recursive: true });
-      const files = serviceUnits(config.root, path);
+      const files = serviceUnits(config.root, path, process.execPath, config.mode);
       for (const [name, content] of files) {
         const file = join(serviceDir, name);
         let previous = '';
@@ -77,15 +92,15 @@ try {
         await chmod(file, 0o600);
       }
       systemctl(['daemon-reload']);
-      systemctl(['enable', ...units, actionsUnit, managerUnit]);
+      systemctl(['enable', ...selectedUnits]);
       console.log('用户服务已安装，尚未启动。运行 npm run native:start。\n如需退出本机登录后及开机继续运行，请执行一次：sudo loginctl enable-linger ' + process.env.USER);
     }
-  } else if (command === 'start') systemctl(['start', units[0], actionsUnit, managerUnit, units[1]]);
+  } else if (command === 'start') systemctl(['start', ...selectedUnits]);
   else if (command === 'status') {
-    process.exitCode = systemctl(['status', ...units, actionsUnit, managerUnit, '--no-pager'], false).status || 0;
+    process.exitCode = systemctl(['status', ...selectedUnits, '--no-pager'], false).status || 0;
     console.log('面板异常退出后间隔 5 秒重启，60 秒内最多启动 3 次；手动停止不恢复。达到上限后请先检查日志，再执行 systemctl --user reset-failed codex-cloud-panel.service 和 npm run native:start。桌面不会自动重建。');
   }
-  else if (command === 'stop') systemctl(['stop', 'codex-cloud-tunnel.service', units[1], managerUnit, actionsUnit, units[0]]);
+  else if (command === 'stop') systemctl(['stop', 'codex-cloud-tunnel.service', ...[...selectedUnits].reverse()]);
   else if (command === 'tunnel') {
     if (!config.env.PUBLIC_ORIGIN?.startsWith('https://')) throw new Error('请先将 .env 的 PUBLIC_ORIGIN 配为实际 HTTPS 域名，并重启 panel 服务');
     const token = (await readFile(join(config.root, 'secrets', 'tunnel_token'), 'utf8')).trim();

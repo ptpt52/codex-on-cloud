@@ -5,6 +5,7 @@ import { settings } from './config.mjs';
 import { createDesktopControls } from './desktop-controls.mjs';
 import { createManagerServer } from './manager-server.mjs';
 import { desktopActionClient } from './desktop-actions.mjs';
+import { createTerminalControls } from './terminal-controls.mjs';
 
 const config = settings();
 if (process.getuid() === 0) throw new Error('请以普通用户运行桌面管理服务');
@@ -27,12 +28,12 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const secret = (await readFile(join(config.root, 'secrets', 'agent_secret'), 'utf8')).trim();
 if (secret.length < 16 || secret.length > 512) throw new Error('管理接口密钥无效');
-const controls = createDesktopControls(config, { actions: desktopActionClient(config.desktopActionsSocket, secret) });
+const controls = config.mode === 'terminal' ? createTerminalControls(config) : createDesktopControls(config, { actions: desktopActionClient(config.desktopActionsSocket, secret) });
 await controls.ready;
 const server = createManagerServer(secret, controls);
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.managerSocket, resolve); });
 await chmod(config.managerSocket, 0o600);
-console.log('本机桌面管理服务已启动');
+console.log(config.mode === 'terminal' ? '本机终端管理服务已启动' : '本机桌面管理服务已启动');
 let stopping = false;
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
   if (stopping) return;

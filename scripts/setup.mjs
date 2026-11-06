@@ -1,10 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile, readFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parseArgs } from 'node:util';
+import { parseArgs, parseEnv } from 'node:util';
 import { root } from '../native/config.mjs';
+import { deploymentMode } from '../native/deployment-mode.mjs';
 
-const { values } = parseArgs({ options: { origin: { type: 'string' }, username: { type: 'string', default: 'admin' }, 'allow-host': { type: 'string', multiple: true, default: [] } } });
+const { values } = parseArgs({ options: { mode: { type: 'string' }, origin: { type: 'string' }, username: { type: 'string', default: 'admin' }, 'allow-host': { type: 'string', multiple: true, default: [] } } });
+const mode = deploymentMode(values.mode);
+try {
+  const previous = deploymentMode(parseEnv(await readFile(join(root, '.env'), 'utf8')).DEPLOY_MODE);
+  if (values.mode && previous !== mode) throw Error('已有部署模式不同，不会自动修改 .env 或停止任务；请在新部署中选择模式');
+} catch (error) { if (error.code !== 'ENOENT') throw error; }
 const origin = new URL(values.origin || 'http://localhost:36080');
 if (!['http:', 'https:'].includes(origin.protocol) || origin.pathname !== '/' || origin.search || origin.hash || origin.username || origin.password) throw new Error('--origin 必须是 HTTP(S) 根地址');
 if (!/^[a-zA-Z0-9_-]{1,64}$/.test(values.username)) throw new Error('用户名只支持字母、数字、下划线和短横线');
@@ -24,7 +30,7 @@ await keepOrCreate('agent_secret', randomBytes(32).toString('base64url') + '\n')
 await keepOrCreate('tunnel_token', '');
 await keepOrCreate('credentials.txt', `工作台：${origin.origin}\n用户名：${values.username}\n密码：${password}\n\n实际入口以 .env 为准。请妥善保管，不要提交到 Git。\n`);
 const extraHosts = [...new Set([...(origin.protocol === 'http:' ? ['127.0.0.1:36080'] : []), ...values['allow-host']])];
-const env = `# 本机原生部署。修改后只重启需要更新配置的服务。\nPUBLIC_ORIGIN=${origin.origin}\nALLOWED_HOSTS=${extraHosts.join(',')}\nADMIN_USER=${values.username}\nPANEL_PORT=36080\nAGENT_PORT=36902\nDISPLAY_NUMBER=93\nDESKTOP_SIZE=1600x3200\nWORKSPACE_DIR=./workspaces\nTZ=Asia/Shanghai\n`;
+const env = `# 本机原生部署。修改后只重启需要更新配置的服务。\nDEPLOY_MODE=${mode}\nPUBLIC_ORIGIN=${origin.origin}\nALLOWED_HOSTS=${extraHosts.join(',')}\nADMIN_USER=${values.username}\nPANEL_PORT=36080\nAGENT_PORT=36902\n${mode === 'desktop' ? 'DISPLAY_NUMBER=93\nDESKTOP_SIZE=1600x3200\n' : ''}WORKSPACE_DIR=./workspaces\nTZ=Asia/Shanghai\n`;
 try { await writeFile(join(root, '.env'), env, { flag: 'wx', mode: 0o600 }); }
 catch (error) { if (error.code !== 'EEXIST') throw error; console.log('保留已有 .env 和密钥；旧 Docker 的 CODEX_VERSION 配置在原生模式不再使用。'); }
 await mkdir(join(root, 'workspaces', 'transfer'), { recursive: true });

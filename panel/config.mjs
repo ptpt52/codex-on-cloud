@@ -4,6 +4,7 @@ import { environment, settings } from '../native/config.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { stunURL } from './rtc-network.mjs';
 import { desktopEnvironment } from '../native/desktop-controls.mjs';
+import { terminalEnvironment } from '../native/deployment-mode.mjs';
 import { forwardPorts } from './forward.mjs';
 
 function secret(env, name) {
@@ -35,6 +36,7 @@ export function readConfig(env = environment()) {
   const webrtcAddress = env.WEBRTC_ENABLED === '0' ? undefined : rtcAddress(env.WEBRTC_LAN_ADDRESS);
   const webrtcIPv6 = env.WEBRTC_IPV6 !== '0';
   return {
+    mode: native.mode,
     host: '127.0.0.1', port, origin: origin.origin,
     agentPort: native.agentPort, tunnelMetricsPort: native.tunnelMetricsPort,
     forwardPorts: forwardPorts(env.TCP_FORWARD_PORTS), forwardDownloadDir: join(native.root, 'data', 'forward-client'),
@@ -46,7 +48,7 @@ export function readConfig(env = environment()) {
     vncSocket: native.socket, agentUrl, transferDir: native.transfer,
     tunnelDiagnosticsUrl: `http://127.0.0.1:${native.tunnelMetricsPort}/diag/tunnel`,
     managerSocket: native.managerSocket,
-    terminalSocket: join(native.runtime, 'tmux.sock'), terminalEnv: desktopEnvironment(native),
+    terminalSocket: join(native.runtime, 'tmux.sock'), terminalEnv: native.mode === 'terminal' ? terminalEnvironment(native) : desktopEnvironment(native),
     sessionMs: 7 * 24 * 60 * 60 * 1000,
     webrtc: env.WEBRTC_ENABLED !== '0', fastConnect: true, streamProtocol: 1,
     webrtcAddress,

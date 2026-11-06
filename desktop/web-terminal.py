@@ -143,11 +143,15 @@ def restore_view_unlocked(socket, slot):
 
 
 def restore_view(socket, slot):
+    if os.environ.get('DEPLOY_MODE') == 'terminal':
+        return
     with viewer_lock(socket, slot):
         restore_view_unlocked(socket, slot)
 
 
 def yield_desktop(socket, slot, own_tty):
+    if os.environ.get('DEPLOY_MODE') == 'terminal':
+        return
     # Move only this virtual desktop's Xterm viewer to a fixed waiting session.
     # Its process stays alive; the original task and pane never move or restart.
     class_name = 'codex-on-cloud-terminal' + ('' if slot == 'main' else '-' + slot)

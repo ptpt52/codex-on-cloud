@@ -101,8 +101,9 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     if (body?.action === 'create') {
       const label = name(body.name);
       const before = await list();
-      if (!before.terminals.some(item => item.id === 'main' && item.supported)) throw fail(409, '主终端布局无法识别，暂不创建辅助终端');
-      const slot = TERMINALS.slice(1).find(item => !before.terminals.some(terminal => terminal.id === item.id));
+      const mainMissing = config.mode === 'terminal' && !before.terminals.some(item => item.id === 'main');
+      if (!mainMissing && !before.terminals.some(item => item.id === 'main' && item.supported)) throw fail(409, '主终端布局无法识别，暂不创建辅助终端');
+      const slot = mainMissing ? TERMINALS[0] : TERMINALS.slice(1).find(item => !before.terminals.some(terminal => terminal.id === item.id));
       if (!slot) throw fail(409, '最多保留主终端和 3 个辅助终端');
       // Share the primary shell's initialization, including the user bashrc and
       // selected tool PATH. Multiple argv entries avoid a shell-command string;

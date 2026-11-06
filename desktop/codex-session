@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 cd "${WORKSPACE_DIR:?}" || exit 1
-printf '\n  Codex on Cloud · 本机独立桌面\n  项目：%s\n  文件中转：%s\n\n' "$WORKSPACE_DIR" "$TRANSFER_DIR"
-printf '运行 codex 开始工作；需要登录时运行 codex login。\n重新连接只恢复桌面，不会自动启动或重放任务。\n\n'
+printf '\n  Codex on Cloud\n  项目：%s\n  文件中转：%s\n\n' "$WORKSPACE_DIR" "$TRANSFER_DIR"
+printf '运行 codex 开始工作；需要登录时运行 codex login。\n重新连接只恢复终端，不会自动启动或重放任务。\n\n'
 exec bash --noprofile --rcfile "$(dirname -- "$0")/terminal.bashrc" -i

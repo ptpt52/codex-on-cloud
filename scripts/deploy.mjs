@@ -6,15 +6,16 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { userInfo } from 'node:os';
 import http from 'node:http';
+import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
-const services = ['codex-cloud-desktop.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service', 'codex-cloud-actions.service'];
 const packages = ['xvfb', 'x11vnc', 'xfwm4', 'xfdesktop4', 'xfce4-panel', 'xfce4-settings', 'xterm', 'tmux', 'xclip', 'xdotool', 'xauth', 'x11-utils', 'dbus', 'fontconfig', 'fonts-noto-cjk', 'python3'];
 export const help = `用法：npm run deploy -- [选项]
 需要普通 Linux 用户、systemd 用户服务、Node.js 22+ 和已安装的 Codex CLI。
 默认自动执行 npm ci、初始化、依赖检查、安装并启动用户服务。
   --check                  只检查，不安装、不修改配置或服务
-  --install-deps           使用 sudo apt-get 安装桌面系统依赖（Ubuntu/Debian）
+  --mode desktop|terminal  新部署选择桌面或纯网页终端；默认 desktop，已有模式保持
+  --install-deps           使用 sudo apt-get 按模式安装系统依赖（Ubuntu/Debian）
   --enable-linger          使用 sudo loginctl 启用无人登录时的开机自启
   --origin URL             新部署的访问根地址；已有 .env 保持不变
   --domain HOST --zone ZONE --api-token-file FILE
@@ -27,9 +28,10 @@ export function options(args) {
   const { values } = parseArgs({ args, options: {
     check: { type:'boolean' }, 'install-deps': { type:'boolean' }, 'enable-linger': { type:'boolean' },
     'build-forward': { type:'boolean' }, origin: { type:'string' }, domain: { type:'string' },
-    zone: { type:'string' }, 'api-token-file': { type:'string' }, help: { type:'boolean' },
+    zone: { type:'string' }, 'api-token-file': { type:'string' }, help: { type:'boolean' }, mode: { type:'string' },
   } });
   if (values.help) return values;
+  if (values.mode) deploymentMode(values.mode);
   const publication = [values.domain, values.zone, values['api-token-file']];
   if (publication.some(Boolean) && !publication.every(Boolean)) throw new Error('公网部署需同时填写 --domain、--zone 和 --api-token-file');
   if (values.domain && (!/^[a-z0-9.-]+$/i.test(values.domain) || !/^[a-z0-9.-]+$/i.test(values.zone) || !values.domain.toLowerCase().endsWith('.' + values.zone.toLowerCase()))) throw new Error('--domain 需为 --zone 下的子域名');
@@ -93,9 +95,15 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   if (platform !== 'linux') throw new Error('服务端需要 Linux 和 systemd；Mac/Windows 可运行端口映射助手');
   if (uid === 0) throw new Error('请以普通用户运行安装命令；只有显式选择的系统依赖和开机自启步骤使用 sudo');
   if (Number(nodeVersion.split('.')[0]) < 22) throw new Error('需要 Node.js 22+；安装器不会替换现有 Node 或 Codex');
+  let existingMode;
+  try { existingMode = deploymentMode(parseEnv(await boundedFile(join(root, '.env'), 65536)).DEPLOY_MODE); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const mode = deploymentMode(values.mode || existingMode);
+  if (!values.check && existingMode && values.mode && existingMode !== mode) throw Error('已有部署模式不同，不会自动切换或停止任务；请在新部署中选择模式');
+  const selectedServices = modeServices(mode);
   const call = (command, args, capture = false) => run(command, args, {cwd:root, capture});
   const step = async (label, command, args) => { log(label); if ((await call(command, args)).status !== 0) throw new Error(label + '失败，请处理上述错误后重新运行'); };
-  const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command]);
+  const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command, ...(values.check && values.mode ? ['--mode', mode] : [])]);
   const bus = await call('systemctl', ['--user', 'is-system-running'], true);
   if (!/^(running|degraded|starting|initializing)\s*$/.test(bus.stdout || '')) throw new Error('无法连接 systemd 用户服务，请通过普通用户登录主机后重试');
   if (values['api-token-file']) {
@@ -106,18 +114,20 @@ export async function deploy(values, { root = projectRoot, run = execute, health
     await native('doctor');
     log('环境检查通过。未安装依赖、修改配置、启动或重启服务。'); return;
   }
-  const active = await Promise.all(services.map(service => call('systemctl', ['--user', 'is-active', '--quiet', service], true)));
+  const oppositeHost = mode === 'terminal' ? 'codex-cloud-desktop.service' : 'codex-cloud-terminal.service';
+  if ((await call('systemctl', ['--user', 'is-active', '--quiet', oppositeHost], true)).status === 0) throw Error('另一部署模式仍在运行，不会覆盖服务或停止任务；请保留当前部署');
+  const active = await Promise.all(selectedServices.map(service => call('systemctl', ['--user', 'is-active', '--quiet', service], true)));
   const running = active.some(item => item.status === 0);
-  if (running && (await call('npm', ['ls', '--depth=0'], true)).status !== 0) throw new Error('已有服务运行，但项目依赖不完整或版本不符；本次停止安装，保留当前任务。请另行安排依赖维护');
+  if (running && (await call('npm', ['ls', '--depth=0', ...(mode === 'terminal' ? ['--omit=dev', '--omit=optional'] : [])], true)).status !== 0) throw new Error('已有服务运行，但项目依赖不完整或版本不符；本次停止安装，保留当前任务。请另行安排依赖维护');
   if (values['install-deps']) {
     if ((await call('apt-get', ['--version'], true)).status !== 0) throw new Error('--install-deps 仅支持有 apt-get 的 Ubuntu/Debian');
     await step('更新系统软件包索引', 'sudo', ['apt-get', 'update']);
-    await step('安装桌面系统依赖', 'sudo', ['apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', '--no-remove', ...packages]);
+    await step('安装系统依赖', 'sudo', ['apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', '--no-remove', ...(mode === 'terminal' ? ['tmux', 'python3'] : packages)]);
   }
-  if (!running) await step('安装锁定的项目依赖', 'npm', ['ci']);
+  if (!running) await step('安装锁定的项目依赖', 'npm', ['ci', ...(mode === 'terminal' ? ['--omit=dev', '--omit=optional'] : [])]);
   else log('保留运行中的服务和现有项目依赖。');
   const origin = values.origin || (values.domain ? 'https://' + values.domain.toLowerCase() : undefined);
-  await step('初始化（保留已有密码与配置）', process.execPath, ['scripts/setup.mjs', ...(origin ? ['--origin', origin] : [])]);
+  await step('初始化（保留已有密码与配置）', process.execPath, ['scripts/setup.mjs', ...(values.mode ? ['--mode', mode] : []), ...(origin ? ['--origin', origin] : [])]);
   await native('install');
   if (values['enable-linger']) await step('启用开机自启（无需用户登录）', 'sudo', ['loginctl', 'enable-linger', username]);
   if (values.domain) {
@@ -126,7 +136,7 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   }
   if (values['build-forward']) await step('构建端口映射助手', process.execPath, ['scripts/build-forward.mjs']);
   await native('start');
-  if (values.domain && active[2].status === 0) await step('公网配置生效：重启面板（端口映射需重新配对，桌面任务保留）', 'systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
+  if (values.domain && active[selectedServices.indexOf('codex-cloud-panel.service')].status === 0) await step('公网配置生效：重启面板（端口映射需重新配对，原任务保留）', 'systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
   const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
   let tunnel = false;
   try { tunnel = env.PUBLIC_ORIGIN?.startsWith('https://') && (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096)).trim().length > 0; }
@@ -135,11 +145,11 @@ export async function deploy(values, { root = projectRoot, run = execute, health
     if (!values.domain) await step('检查固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);
     await native('tunnel');
   }
-  for (const service of [...services, ...(tunnel ? ['codex-cloud-tunnel.service'] : [])]) {
+  for (const service of [...selectedServices, ...(tunnel ? ['codex-cloud-tunnel.service'] : [])]) {
     if ((await call('systemctl', ['--user', 'is-active', '--quiet', service], true)).status !== 0) throw new Error(service + ' 未运行，请执行 npm run native:status 检查');
   }
   await health();
-  log('部署完成，面板和桌面已就绪。入口：' + (env.PUBLIC_ORIGIN || 'http://localhost:36080'));
+  log(`部署完成，面板和${mode === 'terminal' ? '终端后台' : '桌面'}已就绪。入口：` + (env.PUBLIC_ORIGIN || 'http://localhost:36080'));
   log('登录信息：' + join(root, 'secrets', 'credentials.txt') + '（密码不打印到日志）');
   if (!tunnel) log('本机访问使用 localhost；远程服务器可通过 SSH 本地端口转发访问，或按 README 配置 Cloudflare 公网入口。');
   if (!values['enable-linger']) log('如需开机且无需登录时运行，可加 --enable-linger，或执行 sudo loginctl enable-linger ' + username);

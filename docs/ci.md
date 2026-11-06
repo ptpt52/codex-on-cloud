@@ -7,6 +7,7 @@
 | 作业 | 内容 | 期限 |
 | --- | --- | --- |
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
+| terminal | 只安装 tmux/Python 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
 | browsers | Chromium、Firefox、WebKit 三个独立环境的 63 项兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
 | native | 真实隔离 Xvfb、XFCE、xterm、tmux、剪贴板、noVNC 与端口映射协议检查 | 25 分钟 |
 
@@ -32,6 +33,7 @@ npm run test:display
 npm run test:viewport
 CHROME_PATH=/usr/bin/google-chrome npm run test:pointer
 npm run test:forward
+npm run test:terminal-only
 ```
 
 CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对应的 Chromium。真实 systemd 恢复检查 `npm run test:recovery` 由具有 systemd 用户管理器的主机单独执行，不将普通 CI 的进程组检查记为 systemd 验收。

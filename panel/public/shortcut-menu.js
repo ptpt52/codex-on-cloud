@@ -1,6 +1,6 @@
 import { SHORTCUTS, SHORTCUT_BY_KEY } from './shortcuts.js';
 
-export function createShortcutMenu({ button, menu, list, canSend, send, changed }) {
+export function createShortcutMenu({ button, menu, list, canSend, send, changed, available = () => true }) {
   let open = false, layout = 0;
   const native = typeof menu.showPopover === 'function';
   if (!native) menu.removeAttribute('popover');
@@ -44,6 +44,8 @@ export function createShortcutMenu({ button, menu, list, canSend, send, changed 
   button.addEventListener('click', () => {
     if (open) { close(true); return; }
     if (button.disabled || !canSend()) return;
+    for (const item of list.querySelectorAll('[data-shortcut]')) item.hidden = !available(item.dataset.shortcut);
+    for (const group of list.querySelectorAll('[role="group"]')) group.hidden = ![...group.querySelectorAll('[data-shortcut]')].some(item => !item.hidden);
     open = true; menu.hidden = false; button.setAttribute('aria-expanded', 'true');
     if (native) menu.showPopover();
     menu.focus({ preventScroll: true }); position(); changed();
@@ -51,7 +53,7 @@ export function createShortcutMenu({ button, menu, list, canSend, send, changed 
   menu.addEventListener('toggle', event => { if (event.newState === 'closed' && open) close(); });
   menu.addEventListener('click', event => {
     const item = event.target.closest('[data-shortcut]');
-    if (!open || !item || !list.contains(item) || item.disabled || !canSend() || !SHORTCUT_BY_KEY.has(item.dataset.shortcut)) return;
+    if (!open || !item || !list.contains(item) || item.disabled || !canSend() || !SHORTCUT_BY_KEY.has(item.dataset.shortcut) || !available(item.dataset.shortcut)) return;
     const key = item.dataset.shortcut;
     close(); send(key);
   });
@@ -60,7 +62,7 @@ export function createShortcutMenu({ button, menu, list, canSend, send, changed 
     if (event.target === menu && ['Enter', ' '].includes(event.key)) { event.preventDefault(); return; }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const items = [...list.querySelectorAll('[data-shortcut]:not(:disabled)')], index = items.indexOf(document.activeElement);
+    const items = [...list.querySelectorAll('[data-shortcut]:not(:disabled)')].filter(item => available(item.dataset.shortcut)), index = items.indexOf(document.activeElement);
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : event.key === 'ArrowDown' ? (index + 1) % items.length : (index < 0 ? items.length - 1 : (index + items.length - 1) % items.length);
     items[next]?.focus();
   });

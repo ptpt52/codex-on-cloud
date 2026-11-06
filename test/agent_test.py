@@ -18,6 +18,7 @@ class AgentTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.desktop = agent.Desktop.__new__(agent.Desktop)
         self.desktop.secret = 'a_private_test_secret'
+        self.desktop.terminal_only = False
         self.desktop.transfer_dir = Path(self.temp.name) / 'transfer'
         self.desktop.transfer_dir.mkdir()
         self.desktop.input_lock = threading.Lock()
@@ -49,6 +50,25 @@ class AgentTests(unittest.TestCase):
 
     def test_requires_internal_secret(self):
         self.assertEqual(self.request('GET', '/files', auth=False)[0], 401)
+
+    def test_terminal_mode_rejects_desktop_actions_without_executing_graphical_commands(self):
+        self.desktop.terminal_only = True
+        with patch.object(agent.subprocess, 'run') as run:
+            for path in ('/key', '/paste', '/terminal'):
+                self.assertEqual(self.request('POST', path, {'key': 'Enter', 'text': 'test'})[0], 501)
+            run.assert_not_called()
+
+    def test_terminal_health_uses_only_the_private_keeper_session_and_still_authenticates(self):
+        self.desktop.terminal_only = True
+        with patch.dict(os.environ, {'TMUX_SOCKET': '/tmp/isolated-terminal-test.sock'}):
+            with patch.object(agent.subprocess, 'run') as run:
+                run.return_value.returncode = 0
+                self.assertEqual(self.request('GET', '/health', auth=False)[0], 401)
+                run.assert_not_called()
+                status, body = self.request('GET', '/health')
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(body)['ready'])
+                self.assertEqual(run.call_args.args[0], ['tmux', '-S', '/tmp/isolated-terminal-test.sock', 'has-session', '-t', '=codex-host'])
 
     def test_unicode_upload_and_download(self):
         contents = '中文\n原样 `$(not-a-command)`'.encode()

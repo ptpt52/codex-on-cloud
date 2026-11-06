@@ -28,18 +28,19 @@
     "test:pointer": "node test/pointer-native.mjs",
     "test:lifecycle": "node test/lifecycle-native.mjs",
     "test:recovery": "node test/recovery-native.mjs",
+    "test:terminal-only": "node test/terminal-only-native.mjs",
     "build:forward": "node scripts/build-forward.mjs",
     "test:forward": "node test/forward-native.mjs",
     "test:forward:package": "node test/forward-package-native.mjs",
     "demo": "node scripts/demo.mjs"
   },
   "dependencies": {
-    "@novnc/novnc": "1.7.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "multicast-dns": "7.2.5",
     "werift": "0.26.0",
     "ws": "8.22.1"
   },
+  "optionalDependencies": { "@novnc/novnc": "1.7.0" },
   "devDependencies": { "@playwright/test": "1.64.1" }
 }

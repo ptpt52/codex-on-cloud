@@ -31,6 +31,7 @@ class AgentError(Exception):
 class Desktop:
     def __init__(self, secret, transfer_dir):
         self.secret = secret
+        self.terminal_only = os.environ.get('DEPLOY_MODE', 'desktop') == 'terminal'
         self.transfer_dir = Path(transfer_dir)
         self.transfer_dir.mkdir(parents=True, exist_ok=True)
         if self.transfer_dir.is_symlink():
@@ -49,6 +50,8 @@ class Desktop:
             raise AgentError(503, '桌面尚未就绪，或没有可接收输入的窗口')
 
     def action(self, path, body):
+        if self.terminal_only:
+            raise AgentError(501, '纯终端部署未启用桌面操作')
         with self.input_lock:
             if path == '/paste':
                 text = body.get('text')
@@ -122,7 +125,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         desktop = self.server.desktop
         if self.command == 'GET' and path == '/health':
-            probe = subprocess.run(['xdotool', 'getdisplaygeometry'], timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            command = ['tmux', '-S', os.environ['TMUX_SOCKET'], 'has-session', '-t', '=codex-host'] if desktop.terminal_only else ['xdotool', 'getdisplaygeometry']
+            probe = subprocess.run(command, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return self.json(200, {'ready': probe.returncode == 0, 'version': desktop.version})
         if self.command == 'GET' and path == '/files':
             directory = desktop.directory()
@@ -258,5 +262,5 @@ if __name__ == '__main__':
         if item.is_file() and not item.is_symlink():
             item.unlink()
     server = AgentServer(('127.0.0.1', int(os.environ.get('AGENT_PORT', '36902'))), desktop)
-    print('桌面内部接口已启动', flush=True)
+    print('终端与文件内部接口已启动' if desktop.terminal_only else '桌面内部接口已启动', flush=True)
     server.serve_forever()

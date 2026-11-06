@@ -94,7 +94,7 @@ export async function createPanel(config) {
   const auth = await createAuth(config);
   const devices = createDeviceDirectory(config.dataDir);
   const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
-  const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics();
+  const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics(undefined, config.mode);
   const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
   const failures = new Map();
   const sockets = new Map();
@@ -233,11 +233,11 @@ export async function createPanel(config) {
       }
       failures.delete(key);
       const { token, session } = await auth.create();
-      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0 }, { 'set-cookie': sessionCookie(token, config) });
+      return reply(res, 200, { mode: config.mode || 'desktop', username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0 }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
+      return reply(res, 200, { mode: config.mode || 'desktop', username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/logout' && req.method === 'POST') {
@@ -261,6 +261,10 @@ export async function createPanel(config) {
       requireSession(req);
       return reply(res, 200, { tunnel, services });
     }
+    if (config.mode === 'terminal' && (path.startsWith('/api/desktop/') && path !== '/api/desktop/claim' || ['/api/paste', '/api/key', '/api/terminal', '/api/clipboard/read'].includes(path))) {
+      if (req.method === 'GET') requireSession(req); else requireOwner(req);
+      throw new HttpError(501, '纯终端部署未启用桌面操作');
+    }
     if (path === '/api/desktop/settings' && req.method === 'GET') {
       requireSession(req);
       return reply(res, 200, await managerRequest(config, '/settings'));
@@ -273,7 +277,8 @@ export async function createPanel(config) {
       requireSession(req);
       const downloads = await forwardDownloads.list();
       requireSession(req);
-      return reply(res, 200, { ...forwarding.list(), ...devices.list(), downloads });
+      const directory = devices.list();
+      return reply(res, 200, { ...directory, ...forwarding.list(), deviceLimit: directory.limit, downloads });
     }
     if (path === '/api/forward/devices' && req.method === 'GET') { requireSession(req); return reply(res, 200, devices.list()); }
     if (['/api/forward/devices', '/api/forward/devices/remove'].includes(path) && req.method === 'POST') {
@@ -473,6 +478,7 @@ export async function createPanel(config) {
     }
     if (path.startsWith('/desktop/') || path.startsWith('/terminal/')) {
       requireSession(req);
+      if (config.mode === 'terminal' && (['/desktop/index.html', '/desktop/viewer.js', '/desktop/viewer.css'].includes(path) || path.startsWith('/desktop/novnc/'))) throw new HttpError(501, '纯终端部署未启用桌面资源');
       if (!['GET', 'HEAD'].includes(req.method)) throw new HttpError(405, '只允许读取桌面资源');
       if (path.startsWith('/desktop/novnc/')) {
         let relative;
@@ -517,6 +523,7 @@ export async function createPanel(config) {
     const url = new URL(req.url, 'http://internal');
     const terminalMode = url.pathname === '/terminal/connect';
     const streamMode = url.pathname === '/session/connect';
+    if (config.mode === 'terminal' && (url.pathname === '/desktop/websockify' || streamMode && url.searchParams.get('mode') === 'desktop')) return deny(501);
     if (url.pathname !== '/desktop/websockify' && !terminalMode && !streamMode) return deny(404);
     if (!owner || owner.session !== session.hash || owner.viewer !== url.searchParams.get('viewer')) return deny(409);
     const expected = owner;
