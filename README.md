@@ -336,11 +336,17 @@ npm run test:compat
 npm run test:display
 # 独立 Xvfb/x11vnc/完整 XFCE/xterm 的无重启尺寸适配验收
 npm run test:viewport
+# 管理器重启后保留真实隔离窗口、tmux 和剪贴板
+npm run test:lifecycle
+# 可用的 systemd 用户管理器中验证临时面板的有限恢复
+CHROME_PATH=/usr/bin/google-chrome npm run test:recovery
 ```
 
 前端自动化测试连接模拟 RFB 上游，但实际运行 noVNC 客户端与 Unix socket 网关；重启与恢复命令也使用模拟执行器。`test:display` 使用真实 Xvfb、xfwm4、xterm 和 tmux 验证窗口动作与字号替换，不重启正在使用的桌面。`npm run demo` 在 `127.0.0.1:36081` 提供明确标注的模拟桌面，不连接 Codex。
 
 多引擎环境准备、覆盖范围和真机状态见[兼容性验收](docs/compatibility.md)，本轮问题、修复及待跟进项见[代码审核记录](docs/code-review.md)。
+
+桌面执行服务持有终端窗口和剪贴板，管理器更新保留原任务。面板异常退出后有限重启，并在无人占用时恢复原页面；输入结果未知时仍不重发。服务归属、恢复上限和更新步骤见[生命周期与恢复](docs/reliability.md)。
 
 真实桌面已经启动且 tmux 中为**空闲 bash**时，可运行：
 

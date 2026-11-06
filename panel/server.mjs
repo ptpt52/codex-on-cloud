@@ -8,6 +8,7 @@ import { resolve, sep } from 'node:path';
 import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
+import { createServiceDiagnostics } from './service-diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
 import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { validateInput } from '../native/input.mjs';
@@ -90,6 +91,7 @@ function reply(res, status, data, headers = {}) {
 export async function createPanel(config) {
   const auth = await createAuth(config);
   const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
+  const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics();
   const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
   const failures = new Map();
   const sockets = new Map();
@@ -248,11 +250,13 @@ export async function createPanel(config) {
     if (path === '/api/state' && req.method === 'GET') {
       const session = requireSession(req);
       const [desktop, controls] = await Promise.all([desktopHealth(), controlStatus()]);
-      return reply(res, 200, { desktop, controls, mine: !!owner && owner.session === session.hash && owner.viewer === req.headers['x-viewer-id'] });
+      return reply(res, 200, { desktop, controls, claimable: !owner, mine: !!owner && owner.session === session.hash && owner.viewer === req.headers['x-viewer-id'] });
     }
     if (path === '/api/diagnostics' && req.method === 'GET') {
       requireSession(req);
-      return reply(res, 200, { tunnel: await tunnelDiagnostics() });
+      const [tunnel, services] = await Promise.all([tunnelDiagnostics(), serviceDiagnostics()]);
+      requireSession(req);
+      return reply(res, 200, { tunnel, services });
     }
     if (path === '/api/desktop/settings' && req.method === 'GET') {
       requireSession(req);
@@ -302,9 +306,12 @@ export async function createPanel(config) {
     }
     if (path === '/api/desktop/claim' && req.method === 'POST') {
       const session = requireWrite(req);
-      const { viewer } = await jsonBody(req, 1024);
+      const { viewer, ifFree } = await jsonBody(req, 1024);
       requireWrite(req); // Revoked/expired sessions cannot claim through a delayed body.
       if (typeof viewer !== 'string' || !VIEWER.test(viewer)) throw new HttpError(400, '页面标识无效');
+      if (ifFree !== undefined && ifFree !== true) throw new HttpError(400, '恢复认领参数无效');
+      if (ifFree && owner && (owner.viewer !== viewer || owner.session !== session.hash)) throw new HttpError(409, '已有其他页面控制桌面，请明确接管');
+      if (ifFree && owner) return reply(res, 200, { ok: true });
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
       owner = { viewer, session: session.hash };
       return reply(res, 200, { ok: true });

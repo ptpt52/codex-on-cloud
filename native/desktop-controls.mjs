@@ -49,7 +49,7 @@ export function createDesktopControls(config, dependencies = {}) {
   const env = desktopEnvironment(config);
   const run = dependencies.run || (async (command, args, options = {}) => (await exec(command, args, { env, encoding: 'utf8', timeout: 2000, maxBuffer: 16 * 1024, ...options })).stdout.trim());
   const inspectSession = dependencies.sessionId || sessionId;
-  const launch = dependencies.launch || ((id = 'main') => {
+  const launch = dependencies.launch || (dependencies.actions ? (id = 'main') => dependencies.actions('/terminal', { id }).then(() => undefined) : (id = 'main') => {
     const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), id === 'main' ? [] : [id], { env, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
   });
@@ -115,7 +115,7 @@ export function createDesktopControls(config, dependencies = {}) {
     // An existing private tmux server belongs to the desktop, never create it here.
     await bounded('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_pid}']);
     if (terminalChild && terminalChild.exitCode === null && terminalChild.signalCode === null) throw new Error('terminal opening');
-    terminalChild = launch();
+    terminalChild = await launch();
     while (Date.now() < deadline) {
       if ((await windows(bounded)).length) return;
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -125,7 +125,7 @@ export function createDesktopControls(config, dependencies = {}) {
   const performInput = dependencies.performInput || (body => body.action === 'terminal' ? openTerminal() : executeInput(body, env, async (command, args, options) => {
     if (body.terminalId && command === 'xdotool') await terminals.assertFocused(body);
     return runInputCommand(command, args, options);
-  }));
+  }, dependencies.actions ? text => dependencies.actions('/clipboard', { text }) : undefined));
   async function input(body) {
     let value;
     try { value = validateInput(body); } catch (error) { throw new ControlError(400, error.message); }
@@ -282,7 +282,7 @@ export function createDesktopControls(config, dependencies = {}) {
         if ((await windows()).length) throw new Error('terminal did not close');
         while (terminalChild && terminalChild.exitCode === null && terminalChild.signalCode === null && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
         if (terminalChild && terminalChild.exitCode === null && terminalChild.signalCode === null) throw new Error('terminal still running');
-        terminalChild = launch();
+        terminalChild = await launch();
         while (!(await windows()).length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
         if (!(await windows()).length) throw new Error('terminal did not open');
         const after = await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_pid}']);

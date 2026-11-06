@@ -428,15 +428,18 @@ async function loadDiagnostics() {
   const timeout = setTimeout(() => controller.abort(new Error('诊断响应超时，请稍后重试')), 6000);
   clearTimeout(diagnosticsTimer);
   try {
-    const { tunnel } = await api('/api/diagnostics', { signal: controller.signal });
+    const { tunnel, services } = await api('/api/diagnostics', { signal: controller.signal });
     if (diagnosticsController !== controller || !$('connection-dialog').open) return;
     $('diag-tunnel').textContent = tunnel?.available ? tunnel.connections > 0 ? `已连接 · ${tunnel.connections} 条连接` : '未建立连接' : '诊断不可用';
     $('diag-families').textContent = tunnel?.available ? `${tunnel.ipv6} / ${tunnel.ipv4}` : '—';
+    $('diag-recovery').textContent = !services?.available ? '状态未知' : services.panel.limited ? '自动恢复已停止，需要检查服务' : services.panel.state !== 'active' ? '服务未就绪' : services.panel.restarts ? `已自动恢复 · ${services.panel.restarts} 次` : '正常运行';
+    $('diag-services').textContent = !services?.available ? '状态未知' : `输入：${services.manager.state === 'active' ? '正常' : '未就绪'} / 桌面执行：${services.actions.state === 'active' ? '正常' : '未就绪'}`;
     $('diag-note').textContent = tunnel?.available ? `更新于 ${new Date(tunnel.checkedAt).toLocaleTimeString()}；仅统计当前活动边缘连接。` : 'Tunnel 未启动、未配置或诊断接口暂不可用；这不表示桌面任务已停止。';
   } catch (error) {
     if (diagnosticsController === controller && loggedIn) {
       $('diag-tunnel').textContent = '状态未知';
       $('diag-families').textContent = '—';
+      $('diag-recovery').textContent = $('diag-services').textContent = '状态未知';
       $('diag-note').textContent = error.message;
     }
   } finally {
@@ -602,7 +605,15 @@ async function poll() {
   try {
     const state = await api('/api/state', { signal: controller.signal });
     if (!loggedIn || pollController !== controller) return;
-    const mine = state.mine;
+    let mine = state.mine;
+    if (!mine && owned && state.claimable === true) {
+      // A restarted gateway has no owner. Recover only if it is still free at
+      // admission; never take over another page or replay uncertain input.
+      owned = false; inputController?.abort(); stopFrame(); renderConnection();
+      await api('/api/desktop/claim', { method: 'POST', body: { viewer, ifFree: true }, signal: controller.signal });
+      if (!loggedIn || pollController !== controller) return;
+      mine = true;
+    }
     owned = mine;
     panelState = 'online';
     desktopReady = state.desktop.ready === true;

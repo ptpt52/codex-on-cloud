@@ -8,6 +8,17 @@ import { fixture } from './fixture.mjs';
 import { SHORTCUTS } from '../panel/public/shortcuts.js';
 
 function gate() { let release; const promise = new Promise(resolve => { release = resolve; }); return { promise, release }; }
+
+test('conditional recovery claims only an unowned desktop and cannot replace a newer owner', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  assert.equal((await (await app.request('/api/state')).json()).claimable, true);
+  assert.equal((await app.request('/api/desktop/claim', { method: 'POST', body: { viewer: app.viewer, ifFree: true } })).status, 200);
+  const other = '22222222-2222-4222-8222-222222222222'; await app.claim(other);
+  assert.equal((await app.request('/api/desktop/claim', { method: 'POST', body: { viewer: app.viewer, ifFree: true } })).status, 409);
+  assert.equal((await (await app.request('/api/state', { headers: { 'x-viewer-id': other } })).json()).mine, true);
+  assert.equal((await (await app.request('/api/state')).json()).claimable, false);
+  assert.equal(app.inputCalls.length, 0);
+});
 async function delayed(app, path, value) {
   const body = JSON.stringify(value), started = once(app.panel.server, 'request');
   let request;

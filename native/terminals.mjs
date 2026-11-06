@@ -83,7 +83,7 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     if (!ids.length && reopen) {
       const previous = children.get(terminal.id);
       if (previous && previous.exitCode === null && previous.signalCode === null) throw fail(409, '终端窗口正在打开，请稍后刷新');
-      const child = launch(terminal.id); if (child) children.set(terminal.id, child);
+      const child = await launch(terminal.id); if (child) children.set(terminal.id, child);
       const deadline = Date.now() + 3500;
       while (!ids.length && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 100)); ids = await windows(terminal.id); }
     }

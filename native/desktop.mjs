@@ -42,7 +42,9 @@ function start(command, args, env, critical = true, socket) {
   children.add(child);
   child.once('error', error => { console.error(`无法启动 ${command}: ${error.message}`); void stop(1); });
   child.once('exit', (code, signal) => {
-    if (socket) children.delete(child);
+    // Closed viewers and replaced terminal windows must not leave old PIDs in
+    // the supervisor's child set; a later stop must never signal a reused PID.
+    if (!critical) children.delete(child);
     if (!stopping && critical) { console.error(`${command} 已退出 (${code ?? signal})，停止本次桌面。`); void stop(1); }
   });
   return child;

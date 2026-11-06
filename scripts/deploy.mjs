@@ -8,7 +8,7 @@ import { userInfo } from 'node:os';
 import http from 'node:http';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
-const services = ['codex-cloud-desktop.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service'];
+const services = ['codex-cloud-desktop.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service', 'codex-cloud-actions.service'];
 const packages = ['xvfb', 'x11vnc', 'xfwm4', 'xfdesktop4', 'xfce4-panel', 'xfce4-settings', 'xterm', 'tmux', 'xclip', 'xdotool', 'xauth', 'x11-utils', 'dbus', 'fontconfig', 'fonts-noto-cjk', 'python3'];
 export const help = `用法：npm run deploy -- [选项]
 需要普通 Linux 用户、systemd 用户服务、Node.js 22+ 和已安装的 Codex CLI。

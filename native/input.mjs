@@ -40,9 +40,10 @@ export function runInputCommand(command, args, { env, input, timeout = 2000 }) {
     child.stdin.end(input);
   });
 }
-export async function executeInput(body, env, run = runInputCommand) {
+export async function executeInput(body, env, run = runInputCommand, writeClipboard) {
   if (body.action === 'paste') {
-    await run('xclip', ['-selection', 'clipboard', '-i'], { env, input: body.text });
+    if (writeClipboard) await writeClipboard(body.text);
+    else await run('xclip', ['-selection', 'clipboard', '-i'], { env, input: body.text });
     await run('xdotool', ['key', '--clearmodifiers', body.target === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v'], { env });
   } else if (body.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) {
     const keys = KEYS[body.key];

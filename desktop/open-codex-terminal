@@ -15,15 +15,17 @@ if [ -n "$window" ]; then
 fi
 # Make the helper's terminal shortcut deterministic across xterm distributions.
 font_size="$(python3 "$script_dir/terminal-display.py" font)"
-if [ "$terminal_id" != main ]; then
+if [ "$terminal_id" != main ] || [ "${CODEX_CLOUD_ATTACH_ONLY:-0}" = 1 ]; then
   # An auxiliary window only attaches an existing session; opening and reconnect
   # never create a shell or resubmit a command.
-  tmux -S "${TMUX_SOCKET:?}" has-session -t "=codex-$terminal_id"
+  terminal_session="codex-$terminal_id"
+  if [ "$terminal_id" = main ]; then terminal_session=codex; fi
+  tmux -S "${TMUX_SOCKET:?}" has-session -t "=$terminal_session"
   exec xterm -u8 -tn xterm-256color -class "$terminal_class" \
     -fa 'DejaVu Sans Mono,Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' \
     -fd 'Noto Sans Mono CJK SC,WenQuanYi Micro Hei Mono' -fs "$font_size" -T "$terminal_title" \
     -xrm '*VT100.translations: #override \n Ctrl Shift <Key>V: insert-selection(CLIPBOARD)' \
-    -e tmux -S "$TMUX_SOCKET" attach-session -t "=codex-$terminal_id"
+    -e tmux -S "$TMUX_SOCKET" attach-session -t "=$terminal_session"
 fi
 # The outer terminal must advertise its palette to tmux. With TERM=xterm,
 # tmux reduces Codex's grey prompt background (colour8) to black.

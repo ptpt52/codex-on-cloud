@@ -13,7 +13,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -167,6 +167,7 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
     tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
+    serviceDiagnostics: serviceDiagnostics || (async () => ({ available: true, panel: { state: 'active', restarts: 0, limited: false }, manager: { state: 'active', restarts: 0, limited: false }, actions: { state: 'active', restarts: 0, limited: false } })),
     managerSocket,
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
     webrtc, webrtcAddress: '127.0.0.1', fastConnect, streamProtocol: seamless ? 1 : 0,

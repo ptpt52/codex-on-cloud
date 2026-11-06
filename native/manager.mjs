@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { settings } from './config.mjs';
 import { createDesktopControls } from './desktop-controls.mjs';
 import { createManagerServer } from './manager-server.mjs';
+import { desktopActionClient } from './desktop-actions.mjs';
 
 const config = settings();
 if (process.getuid() === 0) throw new Error('请以普通用户运行桌面管理服务');
@@ -26,7 +27,7 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const secret = (await readFile(join(config.root, 'secrets', 'agent_secret'), 'utf8')).trim();
 if (secret.length < 16 || secret.length > 512) throw new Error('管理接口密钥无效');
-const controls = createDesktopControls(config);
+const controls = createDesktopControls(config, { actions: desktopActionClient(config.desktopActionsSocket, secret) });
 await controls.ready;
 const server = createManagerServer(secret, controls);
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.managerSocket, resolve); });
