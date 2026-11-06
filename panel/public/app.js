@@ -420,7 +420,7 @@ function renderConnection() {
     if (frameState !== 'connected') overlay('等待网络恢复', '连接恢复后会继续原来的会话。未确认成功的输入不会自动重发。');
     else $('desktop-overlay').hidden = true;
   } else if (!owned && permissions.role === 'temporary') overlay('临时访问', '此账号仅可查看连接状态、配置服务器访问本地设备的映射，以及上传和下载共享中转文件。');
-  else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '输入屏幕锁密码后才能在这里使用。连接状态、本地设备映射和文件中转继续可用，原任务不会停止。', true);
+  else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '既有双向端口映射仍可连接；新增或管理本机 → 服务器映射需先解锁。连接状态、本地设备映射和文件中转仍可用。', true);
   else if (!owned) overlay('在这里继续工作', terminalOnly ? '终端已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启任务。' : '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) {
     overlay('请选择终端', '原终端未通过身份校验，草稿仍保留。请刷新列表或手动选择目标。');

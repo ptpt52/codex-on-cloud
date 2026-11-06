@@ -141,6 +141,37 @@ test('native pairing is single-use and role-scoped, and forwards literal binary 
   assert.equal(target.count,1); assert.deepEqual(app.inputCalls,[]); assert.deepEqual(app.terminalInputs,[]);
 });
 
+test('screen locking and takeover preserve forward grants, pending pairing, existing TCP and new TCP while blocking new web grants', async t => {
+  const target = await echo(t), app = await fixture({ forwardPorts: [target.port] }); t.after(() => app.close()); await app.login(); await app.claim();
+  const mapping = await created(app), pending = await created(app, target.port, 2223), control = await helper(app, mapping.code); t.after(() => control.ws.terminate());
+  async function stream(token) { const result = await socket(app, '/forward/data', token); t.after(() => result.ws.terminate()); await until(() => result.records.some(record => !record.binary && record.data.type === 'ready')); return result; }
+  async function roundtrip(channel, text) {
+    const before = Buffer.concat(channel.records.filter(record => record.binary).map(record => record.data)).length, bytes = Buffer.from(text);
+    channel.ws.send(bytes);
+    await until(() => Buffer.concat(channel.records.filter(record => record.binary).map(record => record.data)).length === before + bytes.length);
+    assert.deepEqual(Buffer.concat(channel.records.filter(record => record.binary).map(record => record.data)).subarray(before), bytes);
+  }
+  const existing = await stream(control.ready.streamToken); await roundtrip(existing, 'before lock');
+  const pin = 'test-only-screen-password';
+  assert.equal((await app.request('/api/security/screen-lock', { method: 'POST', body: { enabled: true, password: pin } })).status, 200);
+  assert.equal((await app.request('/api/forward', { method: 'POST', body: { localPort: 2224, targetPort: target.port } })).status, 423);
+  assert.equal((await app.request('/api/forward/stop', { method: 'POST', body: { id: mapping.id } })).status, 403);
+  await roundtrip(existing, 'after enabling screen lock');
+  const delayed = await helper(app, pending.code); t.after(() => delayed.ws.terminate());
+  const pairedWhileLocked = await stream(delayed.ready.streamToken); await roundtrip(pairedWhileLocked, 'paired after lock');
+  assert.equal((await app.request('/api/desktop/claim', { method: 'POST', body: { viewer: app.viewer, lockPassword: pin } })).status, 200);
+  assert.equal((await app.request('/api/security/lock', { method: 'POST', body: {} })).status, 200);
+  const newWhileLocked = await stream(control.ready.streamToken); await roundtrip(newWhileLocked, 'new TCP while locked'); await roundtrip(existing, 'old TCP while locked');
+  const second = '22222222-2222-4222-8222-222222222222';
+  assert.equal((await app.request('/api/desktop/claim', { method: 'POST', body: { viewer: second, lockPassword: pin }, headers: { 'x-viewer-id': second } })).status, 200);
+  await roundtrip(existing, 'after another page takes over');
+  const afterTakeover = await stream(control.ready.streamToken); await roundtrip(afterTakeover, 'new TCP after takeover');
+  assert.equal(target.count, 4); assert.equal(control.ws.readyState, WebSocket.OPEN); assert.equal(delayed.ws.readyState, WebSocket.OPEN);
+  assert.deepEqual(app.inputCalls, []); assert.deepEqual(app.terminalInputs, []); assert.equal(app.managementStats.restarts, 0);
+  const closed = once(control.ws, 'close'); await app.request('/api/logout', { method: 'POST', body: {} }); await closed;
+  assert.equal(await rejected(app, '/forward/data', control.ready.streamToken), 401);
+});
+
 test('TCP half-close preserves a response produced after the client finishes writing', async t => {
   const target = await echo(t,{onSocket(socket) {
     const chunks=[]; socket.on('data',bytes=>chunks.push(bytes)); socket.on('end',()=>socket.end(Buffer.concat([Buffer.from('after-fin:'),...chunks])));

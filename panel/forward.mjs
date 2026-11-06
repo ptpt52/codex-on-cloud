@@ -41,8 +41,9 @@ export function forwardTargetHost(value = '127.0.0.1') {
   return host;
 }
 
-// Forwarding has its own lifetime: a desktop reconnect/mode change never
-// touches these sockets. Recovery replaces only this mapping's transports.
+// Forwarding has its own lifetime: screen locking, takeover, and desktop
+// reconnect/mode changes preserve its grants and both existing/new TCP streams.
+// Recovery replaces only this mapping's transports within its original budget.
 export function createForwarding(config, { now = Date.now, createPeer = config.forwardPeerFactory || createForwardPeer } = {}) {
   const mappings = new Map(), recent = [], retiring = new Map(), peers = new Set();
   let negotiating = false;

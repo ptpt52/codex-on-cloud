@@ -42,6 +42,28 @@ async function suspend(app, control) {
   await until(async () => (await status(app)).mappings[0]?.state === 'recovering');
 }
 
+test('an existing forward authorization resumes and accepts new TCP while the workspace stays locked', async t => {
+  const peers = new Set(); let accepted = 0, received = '';
+  const target = net.createServer(socket => { accepted++; peers.add(socket); socket.on('error', () => {}); socket.on('close', () => peers.delete(socket)); socket.on('data', bytes => { received += bytes.toString(); socket.write(bytes); }); });
+  target.listen(0, '127.0.0.1'); await once(target, 'listening');
+  const app = await fixture({ forwardPorts: [target.address().port] });
+  t.after(async () => { await app.close(); for (const socket of peers) socket.destroy(); await new Promise(resolve => target.close(resolve)); });
+  await app.login(); await app.claim(); const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code);
+  const oldData = await open(app, '/forward/data', first.ready.streamToken); await until(() => oldData.records.length === 1);
+  oldData.ws.send(Buffer.from('sent exactly once')); await until(() => oldData.records.some(Buffer.isBuffer));
+  assert.equal((await app.request('/api/security/screen-lock', { method: 'POST', body: { enabled: true, password: 'test-only-screen-password' } })).status, 200);
+  const oldClosed = once(oldData.ws, 'close'), controlClosed = once(first.ws, 'close'); first.ws.terminate(); await controlClosed; await oldClosed;
+  const resumed = await connected(app, '/forward/resume', first.ready.resumeToken);
+  assert.equal(resumed.ready.id, mapping.id); assert.notEqual(resumed.ready.streamToken, first.ready.streamToken); assert.equal(accepted, 1);
+  const fresh = await open(app, '/forward/data', resumed.ready.streamToken); await until(() => fresh.records.length === 1);
+  fresh.ws.send(Buffer.from('new connection while locked')); await until(() => fresh.records.some(Buffer.isBuffer));
+  assert.equal(received, 'sent exactly oncenew connection while locked'); assert.equal(accepted, 2);
+  const state = await (await app.request('/api/state')).json(); assert.equal(state.access.requiresUnlock, true); assert.equal(state.mine, false);
+  assert.equal((await app.request('/api/forward', { method: 'POST', body: { localPort: 2223, targetPort: target.address().port } })).status, 423);
+  const ended = once(resumed.ws, 'close'); await app.request('/api/logout', { method: 'POST', body: {} }); await ended;
+  assert.equal((await rejected(app, first.ready.resumeToken)).status, 401); assert.deepEqual(app.inputCalls, []); assert.deepEqual(app.terminalInputs, []);
+});
+
 test('recovery uses a separate capability, drops old TCP, rotates data authorization and opens targets only for new clients', async t => {
   const peers = new Set(); let accepted = 0, received = '';
   const target = net.createServer(socket => { accepted++; peers.add(socket); socket.on('error', () => {}); socket.on('close', () => peers.delete(socket)); socket.on('data', bytes => { received += bytes.toString(); socket.write(bytes); }); });
