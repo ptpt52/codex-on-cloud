@@ -1,5 +1,5 @@
 import { openInput } from './ui.mjs';
-import { test, expect } from '@playwright/test';
+import { test, expect } from './mock-workspace.mjs';
 
 test('login, Chinese input without automatic submit, files and logout work on a real page', async ({ page }, info) => {
   const errors = [];

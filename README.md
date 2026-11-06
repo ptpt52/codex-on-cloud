@@ -346,6 +346,8 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:recovery
 
 多引擎环境准备、覆盖范围和真机状态见[兼容性验收](docs/compatibility.md)，本轮问题、修复及待跟进项见[代码审核记录](docs/code-review.md)。
 
+GitHub Actions 自动检查后端、三种浏览器引擎及真实隔离桌面；完整浏览器回归支持两个独立 worker。版本、触发方式、产物保留和本地命令见[自动检查](docs/ci.md)。
+
 桌面执行服务持有终端窗口和剪贴板，管理器更新保留原任务。面板异常退出后有限重启，并在无人占用时恢复原页面；输入结果未知时仍不重发。服务归属、恢复上限和更新步骤见[生命周期与恢复](docs/reliability.md)。
 
 真实桌面已经启动且 tmux 中为**空闲 bash**时，可运行：

@@ -1,5 +1,5 @@
 import { openTools, openInput, closePanels } from './ui.mjs';
-import { test, expect } from '@playwright/test';
+import { test, expect } from './mock-workspace.mjs';
 import { fixture } from '../fixture.mjs';
 
 function observeInput(page) {
