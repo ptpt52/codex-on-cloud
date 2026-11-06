@@ -62,6 +62,9 @@ func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id s
 	if kind != websocket.TextMessage || string(bytes) != "{\"type\":\"ready\"}" {
 		return recordFailure(bytes)
 	}
+	if ready.Serial != nil {
+		return reverseSerial(ctx, ready, active, ws)
+	}
 	targetCtx, cancelTarget := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelTarget()
 	tcp, err := (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(targetCtx, "tcp", net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)))

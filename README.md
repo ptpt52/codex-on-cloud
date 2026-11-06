@@ -383,3 +383,5 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native
 实现边界见 [架构说明](docs/architecture.md)。参考 WechatOnCloud 的浏览器常驻桌面与手机输入设计，以及 agent-relay 的跨设备、断线不重发需求。浏览器客户端使用 [noVNC](https://github.com/novnc/noVNC)，本项目新增代码采用 MIT 许可，依赖分别遵循自身许可。
 
 网页资源更新可使用 `npm run reload-ui` 保持映射连接，首次升级和版本保留限制见 [前端热更新](docs/ui-updates.md)。
+
+0.7.0 助手新增[反向串口接入](docs/serial.md)：网页配置固定串口和通信参数，本地确认后，Codex 通过服务器回环 TCP 入口收发原始字节；单客户端、连接时打开、断线不重发。

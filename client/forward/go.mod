@@ -8,9 +8,11 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/logging v0.2.4
 	github.com/pion/webrtc/v4 v4.2.26
+	go.bug.st/serial v1.6.4
 )
 
 require (
+	github.com/creack/goselect v0.1.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.15 // indirect

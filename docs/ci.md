@@ -33,6 +33,7 @@ npm run test:display
 npm run test:viewport
 CHROME_PATH=/usr/bin/google-chrome npm run test:pointer
 npm run test:forward
+npm run test:serial
 npm run test:terminal-only
 ```
 
@@ -41,3 +42,5 @@ CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对�
 工作流已用固定 actionlint 1.7.11 在本地校验。宿主的旧 ShellCheck 不支持 actionlint 使用的参数，本地禁用了这个子检查；CI 的 Ubuntu 24.04 执行完整 actionlint。GitHub Actions 的首次远端运行需要将工作流推送到仓库，结果应以实际运行记录为准。
 
 自动化使用临时目录、测试凭据和隔离显示；浏览器中的 RFB/管理上游与真实 X11、TCP/DTLS、systemd 验证分别记录。真实手机和其他设备的系统输入法、选区菜单及剪贴板仍通过人工验收。
+
+串口的 `test:serial` 和 Go Linux PTY 测试使用隔离进程及伪终端，不打开宿主机物理串口。Windows/Mac 交叉构建和 Linux 测试不代表对应系统的 USB 串口真机验收。

@@ -232,11 +232,21 @@
       <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction"><option value="forward">本机访问服务器网络</option><option value="reverse">服务器 / Codex 访问本地设备</option></select></label>
       <div id="forward-device-fields" class="forward-device-fields forward-wide" hidden>
         <label for="forward-device-name">设备名称<input id="forward-device-name" maxlength="48" placeholder="例如：家中路由器" autocomplete="off"></label>
-        <label for="forward-protocol">设备协议<select id="forward-protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="tcp">其他 TCP</option></select></label>
+        <label for="forward-protocol">设备协议<select id="forward-protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="tcp">其他 TCP</option><option value="serial">串口</option></select></label>
       </div>
       <label for="forward-local"><span id="forward-local-label">本机端口</span><input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
       <label for="forward-host">目标 IP<input id="forward-host" type="text" value="127.0.0.1" maxlength="64" placeholder="192.168.1.10 或 IPv6" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="forward-target-note" required></label>
       <label for="forward-target">目标端口<input id="forward-target" type="number" min="1" max="65535" value="22" required></label>
+    <fieldset class="forward-wide" id="forward-serial-fields" hidden disabled>
+      <legend>本地助手上的串口</legend>
+      <label for="forward-serial-path">设备名称<input id="forward-serial-path" type="text" maxlength="192" placeholder="COM3 或 /dev/cu.usbserial-xxx" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      <label for="forward-serial-baud">波特率<select id="forward-serial-baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>460800</option><option>921600</option></select></label>
+      <label for="forward-serial-bits">数据位<select id="forward-serial-bits"><option>5</option><option>6</option><option>7</option><option selected>8</option></select></label>
+      <label for="forward-serial-parity">校验<select id="forward-serial-parity"><option value="none">无</option><option value="odd">奇校验</option><option value="even">偶校验</option></select></label>
+      <label for="forward-serial-stop">停止位<select id="forward-serial-stop"><option>1</option><option>2</option></select></label>
+      <label><input id="forward-serial-dtr" type="checkbox">DTR 高电平</label><label><input id="forward-serial-rts" type="checkbox">RTS 高电平</label>
+      <p class="muted">需要 0.7.0 助手，仅允许一个客户端，使用原始 TCP 接入，无硬件流控。打开串口时 DTR/RTS 可能短暂跳变并使设备复位。配置需由助手明确确认；运行助手 --list-serial 可列出名称。本版串口资料不加入设备目录。</p>
+    </fieldset>
       <button id="forward-create" class="primary" type="submit" disabled>生成一次性配对码</button>
       <div id="forward-device-actions" class="forward-device-actions forward-wide" hidden><button id="forward-device-save" class="secondary" type="button">保存到设备目录</button><button id="forward-device-new" class="quiet" type="button">作为新设备</button><span id="forward-device-editing" class="muted"></span></div>
     </form>

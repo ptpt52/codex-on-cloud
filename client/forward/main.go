@@ -16,12 +16,14 @@ import (
 	"os/signal"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.bug.st/serial"
 )
 
 var defaultServer = ""
@@ -79,6 +81,7 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 	if path == "/forward/helper" || path == "/forward/resume" {
 		headers.Set("X-Codex-Forward-Resume", "1")
 		headers.Set("X-Codex-Forward-Reverse", "1")
+		headers.Set("X-Codex-Forward-Serial", "1")
 	}
 	for key, values := range extra {
 		for _, value := range values {
@@ -113,21 +116,24 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 }
 
 type readyMessage struct {
-	Type            string `json:"type"`
-	Version         int    `json:"version"`
-	ID              string `json:"id"`
-	StreamToken     string `json:"streamToken"`
-	LocalPort       int    `json:"localPort"`
-	TargetHost      string `json:"targetHost"`
-	TargetPort      int    `json:"targetPort"`
-	MaxConnections  int    `json:"maxConnections"`
-	DirectProtocol  int    `json:"directProtocol"`
-	ResumeProtocol  int    `json:"resumeProtocol"`
-	ResumeToken     string `json:"resumeToken"`
-	ResumeMs        int    `json:"resumeMs"`
-	Direction       string `json:"direction"`
-	ReverseProtocol int    `json:"reverseProtocol"`
-	DeviceName      string `json:"deviceName"`
+	Serial          *serialConfig `json:"serial"`
+	SerialProtocol  int           `json:"serialProtocol"`
+	Protocol        string        `json:"protocol"`
+	Type            string        `json:"type"`
+	Version         int           `json:"version"`
+	ID              string        `json:"id"`
+	StreamToken     string        `json:"streamToken"`
+	LocalPort       int           `json:"localPort"`
+	TargetHost      string        `json:"targetHost"`
+	TargetPort      int           `json:"targetPort"`
+	MaxConnections  int           `json:"maxConnections"`
+	DirectProtocol  int           `json:"directProtocol"`
+	ResumeProtocol  int           `json:"resumeProtocol"`
+	ResumeToken     string        `json:"resumeToken"`
+	ResumeMs        int           `json:"resumeMs"`
+	Direction       string        `json:"direction"`
+	ReverseProtocol int           `json:"reverseProtocol"`
+	DeviceName      string        `json:"deviceName"`
 }
 
 func (r readyMessage) targetIP() string {
@@ -145,6 +151,7 @@ func (r readyMessage) targetIP() string {
 }
 
 type connections struct {
+	serialMu sync.Mutex
 	sync.Mutex
 	closed bool
 	items  map[*net.TCPConn]messageSocket
@@ -367,10 +374,12 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		return connectionFailure(err)
 	}
 	if kind != websocket.TextMessage || len(data) > 2048 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
-		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || ready.targetIP() == "" || ready.TargetPort < 1 || ready.TargetPort > 65535 || ready.MaxConnections != connectionLimit {
+		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || !ready.validTarget() {
 		return errors.New("服务器未返回有效映射授权")
 	}
-	ready.TargetHost = ready.targetIP()
+	if ready.Serial == nil {
+		ready.TargetHost = ready.targetIP()
+	}
 	if ready.Direction != "" && ready.Direction != "reverse" || ready.Direction == "reverse" && (ready.ReverseProtocol != 1 || !validDeviceName(ready.DeviceName)) {
 		return failure("protocol_error")
 	}
@@ -500,7 +509,9 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	} else {
 		output.print(2, "保持助手运行，Ctrl+C 停止。短暂断网自动恢复映射；停止、退出原登录或授权过期后需重新配对。")
 	}
-	if reversed {
+	if ready.Serial != nil {
+		output.print(2, "%s：服务器 127.0.0.1:%d -> 本地串口 %s（%s；单客户端）", label, ready.LocalPort, ready.Serial.label(), transport)
+	} else if reversed {
 		output.print(2, "%s：服务器 127.0.0.1:%d -> 本地设备 %s（%s；最多 %d 条连接）", label, ready.LocalPort, net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)), transport, connectionLimit)
 	} else {
 		output.print(2, "%s：127.0.0.1:%d -> 目标 %s（%s；最多 %d 条连接）", label, ready.LocalPort, net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)), transport, connectionLimit)
@@ -524,7 +535,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 				var fields map[string]json.RawMessage
 				json.Unmarshal(bytes, &fields)
 				reverseMu.Lock()
-				valid := len(fields) == 2 && mappingPattern.MatchString(request.ID) && !reversePending[request.ID] && len(reversePending) < connectionLimit
+				valid := len(fields) == 2 && mappingPattern.MatchString(request.ID) && !reversePending[request.ID] && len(reversePending) < ready.MaxConnections
 				if valid {
 					reversePending[request.ID] = true
 				}
@@ -552,11 +563,43 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--serial-worker" {
+		parent, err := strconv.Atoi(os.Args[2])
+		if err != nil || watchSerialParent(parent) != nil {
+			os.Exit(1)
+		}
+		if runSerialWorker(os.Stdin, os.Stdout, openSerial) != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	server := flag.String("server", defaultServer, "服务器 HTTPS 根地址")
 	allowReverse := flag.String("allow-reverse", "", "明确授权一个反向目标 IP:端口；省略时在首次配对后交互确认")
+	listSerial := flag.Bool("list-serial", false, "列出本机串口名称，不打开设备")
 	showVersion := flag.Bool("version", false, "显示版本后退出")
 	showLicenses := flag.Bool("licenses", false, "显示依赖许可证后退出")
 	flag.Parse()
+	if *listSerial {
+		ports, err := serial.GetPortsList()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "无法列出串口，请检查设备驱动")
+			os.Exit(1)
+		}
+		count := 0
+		for _, name := range ports {
+			if len(name) <= 192 && serialPath.MatchString(name) {
+				fmt.Println(name)
+				count++
+				if count >= 128 {
+					break
+				}
+			}
+		}
+		if count == 0 {
+			fmt.Println("未发现串口")
+		}
+		return
+	}
 	if *showLicenses {
 		fmt.Print(licenses)
 		return
@@ -589,8 +632,17 @@ func main() {
 			defer cancel()
 			approve := func(ctx context.Context, ready readyMessage) error {
 				target := net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort))
+				if ready.Serial != nil {
+					target = ready.Serial.label()
+				}
 				fmt.Printf("反向设备授权：%s\n服务器 127.0.0.1:%d 将访问你电脑可达的 %s。\n", ready.DeviceName, ready.LocalPort, target)
+				if ready.Serial != nil {
+					fmt.Println("串口仅实际客户端接入时打开；打开时 DTR/RTS 可能短暂跳变并使设备复位。单客户端，无硬件流控；不会重放断线前数据。TCP 目标授权不能代替串口确认。")
+				}
 				if *allowReverse != "" {
+					if ready.Serial != nil {
+						return failure("reverse_denied")
+					}
 					if *allowReverse == target {
 						return nil
 					}

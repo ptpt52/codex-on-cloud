@@ -84,4 +84,4 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 .access-checkbox input { width: auto; }
 #unlock-form { display: grid; gap: 10px; }
 
-#forward-diagnostics-text{box-sizing:border-box;width:100%;min-height:180px;resize:vertical;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font:12px ui-monospace,Consolas,monospace}
+#forward-serial-fields{box-sizing:border-box;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;border:1px solid var(--line);border-radius:8px;padding:12px}#forward-serial-fields[hidden]{display:none}#forward-serial-fields label{min-width:0}#forward-serial-fields p{grid-column:1/-1}#forward-serial-fields input[type=checkbox]{width:auto;min-height:0}#forward-diagnostics-text{box-sizing:border-box;width:100%;min-height:180px;resize:vertical;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font:12px ui-monospace,Consolas,monospace}

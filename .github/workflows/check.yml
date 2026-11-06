@@ -128,3 +128,4 @@ jobs:
         run: npm run test:browser -- test/browser/viewport-frame.spec.mjs
       - run: npm run test:pointer
       - run: npm run test:forward
+      - run: npm run test:serial

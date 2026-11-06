@@ -32,6 +32,7 @@
     "test:recovery": "node test/recovery-native.mjs",
     "test:terminal-only": "node test/terminal-only-native.mjs",
     "build:forward": "node scripts/build-forward.mjs",
+    "test:serial": "node test/serial-native.mjs",
     "test:forward": "node test/forward-native.mjs",
     "test:forward:package": "node test/forward-package-native.mjs",
     "demo": "node scripts/demo.mjs"

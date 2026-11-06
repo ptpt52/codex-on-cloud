@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { serialConfig } from './serial-config.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { equal } from './auth.mjs';
@@ -101,31 +102,32 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function revoke(session) { for (const item of mappings.values()) if (item.session === session) remove(item, 'signed_out'); }
   const timer = setInterval(refresh, 5000).unref();
-  function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, deviceId: item.deviceId, protocol: item.protocol, targetStatus: item.targetStatus || { state: 'unverified' } } : { targetStatus: item.targetStatus || { state: 'unverified' } }; }
+  function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, deviceId: item.deviceId, protocol: item.protocol, ...(item.serial ? { serial: item.serial } : {}), targetStatus: item.targetStatus || { state: 'unverified' } } : { targetStatus: item.targetStatus || { state: 'unverified' } }; }
   function list(visible = () => true, viewer) {
     if (typeof visible !== 'function') visible = () => true;
     refresh();
     return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
       mappings: [...mappings.values()].filter(visible).map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
         createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer },
+        maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections,
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
       recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
   function create(body, session, authorizationError, authorization = {}) {
     refresh();
-    const reversed = body?.direction === 'reverse';
-    const fieldsValid = body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'deviceId', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
+    const reversed = body?.direction === 'reverse', serial = reversed && body.protocol === 'serial' ? serialConfig(body.serial) : null;
+    const fieldsValid = serial ? Object.keys(body).sort().join(',') === 'deviceName,direction,localPort,protocol,serial' : body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'deviceId', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
     if (!fieldsValid || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || reversed && blockedPort(body.localPort)) throw fail(400, '监听端口需在 1024–65535 之间，不能占用工作台管理端口');
-    if (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || !reversed && blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort)) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
-    const targetHost = forwardTargetHost(body.targetHost);
+    if (!serial && (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || !reversed && blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort))) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
+    const targetHost = serial ? undefined : forwardTargetHost(body.targetHost);
     const deviceName = reversed ? forwardDeviceName(body.deviceName ?? '本地设备') : undefined;
-    if (reversed && (body.deviceId !== undefined && (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) || body.protocol !== undefined && !['ssh', 'telnet', 'tcp'].includes(body.protocol))) throw fail(400, '设备标识或协议无效');
+    if (reversed && (body.deviceId !== undefined && (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) || body.protocol !== undefined && !['ssh', 'telnet', 'tcp', 'serial'].includes(body.protocol))) throw fail(400, '设备标识或协议无效');
     if (authorizationError()) throw fail(401, '登录授权已失效，请重新登录');
     if (mappings.size >= FORWARD_LIMITS.mappings) throw fail(409, '最多保留 4 个映射，请先停止不用的映射');
     if ([...mappings.values()].some(item => item.direction === (reversed ? 'reverse' : undefined) && item.localPort === body.localPort && (reversed || item.session === session))) throw fail(409, '该监听端口已有待配对或活动映射');
     const code = secret(), item = { id: randomBytes(16).toString('hex'), session, authorizationError, authorization, createdAt: now(), pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
-      localPort: body.localPort, targetHost, targetPort: body.targetPort, ...(reversed ? { direction: 'reverse', deviceName, deviceId: body.deviceId, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
+      localPort: body.localPort, targetHost, targetPort: serial ? undefined : body.targetPort, ...(serial ? { serial } : {}), ...(reversed ? { direction: 'reverse', deviceName, deviceId: body.deviceId, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
     mappings.set(item.id, item);
     return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item) };
   }
@@ -177,7 +179,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       if (item.direction === 'reverse') void reverse.start(item, current).then(activate).catch(() => {});
       else activate();
     });
-    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, maxConnections: FORWARD_LIMITS.connections, directProtocol: 1,
+    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections, ...(item.serial ? { serial: item.serial, serialProtocol: 1, protocol: 'serial' } : {}), directProtocol: 1,
       ...(item.direction === 'reverse' ? { direction: 'reverse', reverseProtocol: 1, deviceName: item.deviceName } : {}),
       ...(item.resumeHash ? { resumeProtocol: 1, resumeMs: item.recoverUntil ? Math.max(1, item.recoverUntil - now()) : FORWARD_LIMITS.resumeMs, ...(resumeToken ? { resumeToken } : {}) } : {}) }));
   }
@@ -223,7 +225,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function reserve(item) {
     if (now() - item.openedAt >= 10000) { item.openedAt = now(); item.opens = 0; }
-    if (item.streams.size >= FORWARD_LIMITS.connections) return 'connection_limit';
+    if (item.streams.size >= (item.serial ? 1 : FORWARD_LIMITS.connections)) return item.serial ? 'serial_busy' : 'connection_limit';
     if (++item.opens > 32) return 'rate_limit';
     return '';
   }
@@ -291,6 +293,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         const ended = recent.find(item => item.resumeHash && equal(item.resumeHash, hash));
         return deny(401, ended?.code || 'resume_authorization_invalid');
       }
+      if (item.serial && req.headers['x-codex-forward-serial'] !== '1') { item.errorCode = 'serial_upgrade_required'; return deny(426, 'serial_upgrade_required'); }
       if (item.direction === 'reverse' && req.headers['x-codex-forward-reverse'] !== '1') return deny(426, 'reverse_upgrade_required');
       if (item.state === 'connecting' && item.control?.readyState === 1) return deny(409, 'resume_busy');
       if (item.state !== 'recovering') suspend(item, item.control);
@@ -315,6 +318,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         if (ended) return deny(401, ['signed_out', 'authorization_expired', 'authorization_revoked'].includes(ended.code) ? ended.code : 'pair_used');
         return deny(401, 'pair_invalid');
       }
+      if (item.serial && req.headers['x-codex-forward-serial'] !== '1') { item.errorCode = 'serial_upgrade_required'; return deny(426, 'serial_upgrade_required'); }
       if (item.direction === 'reverse' && req.headers['x-codex-forward-reverse'] !== '1') return deny(426, 'reverse_upgrade_required');
       // Reserve synchronously before upgrading: the pairing code is single-use.
       item.state = 'connecting';

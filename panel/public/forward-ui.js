@@ -12,15 +12,21 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
   let policySignature = '', reportText = '';
   const clearReport = () => { reportText = ''; if ($('forward-diagnostics')) { $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; } };
   const reversed = () => $('forward-direction').value === 'reverse';
-  const targetAddress = item => { const host = item.targetHost || '127.0.0.1'; return (host.includes(':') ? '[' + host + ']' : host) + ':' + item.targetPort; };
+  const serialMode = () => reversed() && $('forward-protocol').value === 'serial';
+  const serialBody = () => ({ path: $('forward-serial-path').value.trim(), baud: Number($('forward-serial-baud').value), dataBits: Number($('forward-serial-bits').value), parity: $('forward-serial-parity').value, stopBits: Number($('forward-serial-stop').value), dtr: $('forward-serial-dtr').checked, rts: $('forward-serial-rts').checked });
+  const targetAddress = item => { if (item.protocol === 'serial') return item.serial?.path + ' @ ' + item.serial?.baud; const host = item.targetHost || '127.0.0.1'; return (host.includes(':') ? '[' + host + ']' : host) + ':' + item.targetPort; };
   const deviceBody = () => ({ name: $('forward-device-name').value.trim(), protocol: $('forward-protocol').value, localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) });
   function renderDirection(refresh = true) {
-    const reverse = reversed();
+    const reverse = reversed(), serial = serialMode();
+    if ($('forward-serial-fields')) {
+      $('forward-serial-fields').hidden = !serial; $('forward-serial-fields').disabled = !serial || busy;
+      for (const id of ['forward-host', 'forward-target']) { $(id).closest('label').hidden = serial; $(id).disabled = serial || busy; }
+    }
     $('forward-device-fields').hidden = !reverse;
-    $('forward-device-actions').hidden = !reverse || !capabilities().manageDevices;
+    $('forward-device-actions').hidden = serial || !reverse || !capabilities().manageDevices;
     $('forward-device-name').required = reverse;
     $('forward-local-label').textContent = reverse ? '服务器回环端口' : '本机端口';
-    $('forward-target-note').textContent = reverse ? '目标从运行助手的电脑访问。填写本机或局域网设备 IP；服务器仅在本地助手确认后监听回环端口。SSH / Telnet 账号仍由原客户端登录。' : '目标从服务器所在网络访问。127.0.0.1 表示服务器自身，也可填写服务器可达的局域网或公网 IPv4 / IPv6。';
+    $('forward-target-note').textContent = serial ? '串口位于助手电脑上，仅实际客户端接入时打开。服务器提供原始 TCP 回环入口；不要使用会改写数据的 Telnet 客户端。' : reverse ? '目标从运行助手的电脑访问。填写本机或局域网设备 IP；服务器仅在本地助手确认后监听回环端口。SSH / Telnet 账号仍由原客户端登录。' : '目标从服务器所在网络访问。127.0.0.1 表示服务器自身，也可填写服务器可达的局域网或公网 IPv4 / IPv6。';
     $('forward-device-editing').textContent = selectedDevice ? '正在编辑已保存设备；保存修改不会改变既有授权。' : '新设备';
     if (refresh) update();
   }
@@ -57,8 +63,8 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
   }
   function showConnection(item) {
     connectionId = item.id;
-    const command = item.protocol === 'ssh' ? 'ssh -o HostKeyAlias=codex-cloud-' + (item.deviceId || item.id) + ' -p ' + item.localPort + ' USER@127.0.0.1' : item.protocol === 'telnet' ? 'telnet 127.0.0.1 ' + item.localPort : 'TCP 入口：127.0.0.1:' + item.localPort;
-    $('forward-connection-text').value = '设备：' + item.deviceName + '\n协议：' + item.protocol.toUpperCase() + '\n设备目标（由本地助手访问）：' + targetAddress(item) + '\n服务器入口：127.0.0.1:' + item.localPort + '\n' + command + '\nSSH 请将 USER 换成设备用户名，并核对首次主机指纹。连接使用设备原有认证；此信息不含密码。';
+    const command = item.protocol === 'serial' ? 'nc 127.0.0.1 ' + item.localPort : item.protocol === 'ssh' ? 'ssh -o HostKeyAlias=codex-cloud-' + (item.deviceId || item.id) + ' -p ' + item.localPort + ' USER@127.0.0.1' : item.protocol === 'telnet' ? 'telnet 127.0.0.1 ' + item.localPort : 'TCP 入口：127.0.0.1:' + item.localPort;
+    $('forward-connection-text').value = '设备：' + item.deviceName + '\n协议：' + item.protocol.toUpperCase() + '\n设备目标（由本地助手访问）：' + targetAddress(item) + '\n服务器入口：127.0.0.1:' + item.localPort + '\n' + command + '\n' + (item.protocol === 'serial' ? '原始字节串口入口，单客户端。只在明确需要时发送文字；换行由原客户端控制，不自动重发。' : 'SSH 请将 USER 换成设备用户名，并核对首次主机指纹。连接使用设备原有认证；此信息不含密码。');
     $('forward-connection').hidden = false; void copyConnection();
   }
   function renderDownloads() {
@@ -106,10 +112,10 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     if (!allowed()) reset();
     $('forward-create').disabled = !allowed() || busy || !room || !policyReady || !portsEnabled;
     $('forward-refresh').disabled = !allowed() || busy;
-    $('forward-local').disabled = $('forward-host').disabled = $('forward-target').disabled = busy;
+    $('forward-local').disabled = busy; $('forward-host').disabled = $('forward-target').disabled = busy || serialMode();
     $('forward-direction').disabled = busy;
     $('forward-device-name').disabled = $('forward-protocol').disabled = busy || !reversed();
-    $('forward-device-save').disabled = $('forward-device-new').disabled = busy || !allowed() || !permission.manageDevices;
+    $('forward-device-save').disabled = $('forward-device-new').disabled = busy || !allowed() || !permission.manageDevices || serialMode();
   }
   async function request(path, options = {}) {
     const current = generation, abort = new AbortController(); controller = abort;
@@ -134,7 +140,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     devices = (data.devices || []).slice(0, 16); mappings = data.mappings;
     if (selectedDevice && !devices.some(item => item.id === selectedDevice)) { selectedDevice = ''; renderDirection(); }
     room = data.mappings.length < data.limit;
-    portsEnabled = !!data.allPorts || data.ports.length > 0;
+    portsEnabled = serialMode() || !!data.allPorts || data.ports.length > 0;
     if (!policyReady && !data.allPorts && data.ports.length && !data.ports.includes(Number($('forward-target').value))) $('forward-target').value = data.ports[0];
     policyReady = true;
     $('forward-port-policy').textContent = data.allPorts ? reversed() ? '可自定义设备目标端口（1–65535）；服务器监听不能占用工作台管理端口。' : '可自定义目标端口（1–65535），工作台管理端口除外。' : portsEnabled ? '服务器允许的目标端口：' + data.ports.join('、') : '端口映射已在服务器禁用。';
@@ -147,7 +153,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
       const route = direct?.available ? direct.family + ' / UDP 加密直连' : relay;
       const remaining = Number.isFinite(item.recoverUntil) ? Math.max(0, Math.ceil((item.recoverUntil - Date.now()) / 1000)) : 0;
       const state = document.createElement('p'); state.className = 'muted'; state.textContent = (item.state === 'active' ? '已连接 · 新连接：' + route : item.state === 'recovering' ? '正在自动恢复 · 剩余 ' + remaining + ' 秒' : item.state === 'connecting' ? item.recoverUntil ? '助手恢复握手中 · 剩余 ' + remaining + ' 秒' : reverse ? '等待本地助手确认' : '助手连接中' : '等待配对') +
-        ' · ' + item.connections + '/' + data.maxConnections + ' 条连接 · 已发送 ' + item.sent + ' B / 接收 ' + item.received + ' B' + (item.error ? ' · ' + item.error : '') + (reverse && item.state === 'active' ? item.targetStatus?.state === 'reachable' ? ' · 最近一次目标连接成功' : item.targetStatus?.state === 'failed' ? ' · 最近一次目标连接失败' : ' · 目标尚未验证' : '');
+        ' · ' + item.connections + '/' + (item.maxConnections || data.maxConnections) + ' 条连接 · 已发送 ' + item.sent + ' B / 接收 ' + item.received + ' B' + (item.error ? ' · ' + item.error : '') + (reverse && item.state === 'active' ? item.targetStatus?.state === 'reachable' ? ' · 最近一次目标连接成功' : item.targetStatus?.state === 'failed' ? ' · 最近一次目标连接失败' : ' · 目标尚未验证' : '');
       const network = document.createElement('p'); network.className = 'muted forward-network';
       network.textContent = '现有连接：直连 ' + (item.directConnections || 0) + ' / 中转 ' + (item.connections - (item.directConnections || 0)) +
         (direct?.available && Number.isInteger(direct.rttMs) ? ' · 直连往返 ' + direct.rttMs + ' ms' : '') +
@@ -200,7 +206,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
   $('forward-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { clearReport(); cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); });
   $('forward-direction').addEventListener('change', () => { clearCode(); clearConnection(); if (reversed() && $('forward-local').value === '2222') $('forward-local').value = '22001'; else if (!reversed() && $('forward-local').value === '22001') $('forward-local').value = '2222'; renderDirection(); });
-  $('forward-protocol').addEventListener('change', () => { if (['22', '23'].includes($('forward-target').value)) { if ($('forward-protocol').value === 'ssh') $('forward-target').value = '22'; if ($('forward-protocol').value === 'telnet') $('forward-target').value = '23'; } });
+  $('forward-protocol').addEventListener('change', () => { if (serialMode()) selectedDevice = ''; renderDirection(); void load(); if (['22', '23'].includes($('forward-target').value)) { if ($('forward-protocol').value === 'ssh') $('forward-target').value = '22'; if ($('forward-protocol').value === 'telnet') $('forward-target').value = '23'; } });
   $('forward-device-new').addEventListener('click', () => { selectedDevice = ''; renderDirection(); });
   $('forward-connection-copy').addEventListener('click', copyConnection);
   $('forward-connection-close').addEventListener('click', clearConnection);
@@ -218,7 +224,9 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     if (!capabilities().directions.includes($('forward-direction').value)) return;
     cancel();
     const current = generation, body = { localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) };
-    if (reversed()) {
+    if (serialMode()) {
+      delete body.targetHost; delete body.targetPort; Object.assign(body, { direction: 'reverse', protocol: 'serial', deviceName: $('forward-device-name').value.trim(), serial: serialBody() });
+    } else if (reversed()) {
       const value = deviceBody(); Object.assign(body, { direction: 'reverse', deviceName: value.name, protocol: value.protocol });
       if (selectedDevice) {
         const saved = devices.find(item => item.id === selectedDevice);

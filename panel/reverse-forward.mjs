@@ -61,13 +61,17 @@ export function createReverseForwarding({ limits, active, authorized, invalidRea
     ws.on('message', (data, binary) => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
       if (!live() || clientFin) return abort();
+      if (item.serial && !binary) {
+        let record; try { record = JSON.parse(data.toString()); } catch {}
+        if (record?.type === 'error' && Object.keys(record).sort().join(',') === 'code,type' && ['serial_busy', 'serial_open_failed', 'serial_disconnected', 'serial_stalled'].includes(record.code)) { item.targetStatus = { state: 'failed', at: now() }; return abort(record.code); }
+      }
       if (!ready) {
         if (!binary && data.toString() === '{"type":"target_ready"}') {
           ready = true; clearTimeout(stream.timer); item.errorCode = ''; item.targetStatus = { state: 'reachable', at: now() };
           tcp.setNoDelay(true); tcp.setKeepAlive(true, 30000); tcp.resume(); return;
         }
         let record; try { record = binary ? null : JSON.parse(data.toString()); } catch {}
-        if (record && Object.keys(record).sort().join(',') === 'code,type' && record.type === 'error' && ['target_timeout', 'target_unavailable'].includes(record.code)) {
+        if (record && Object.keys(record).sort().join(',') === 'code,type' && record.type === 'error' && ['target_timeout', 'target_unavailable', 'serial_busy', 'serial_open_failed', 'serial_disconnected', 'serial_stalled'].includes(record.code)) {
           item.targetStatus = { state: 'failed', at: now() }; return abort(record.code);
         }
         return abort();

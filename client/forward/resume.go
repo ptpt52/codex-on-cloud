@@ -15,6 +15,8 @@ const resumeWindow = 30 * time.Second
 const resumeAttempts = 8
 
 type resumeState struct {
+	serial                *serialConfig
+	protocol              string
 	token, id             string
 	targetHost            string
 	localPort, targetPort int
@@ -33,7 +35,7 @@ func (s *resumeState) accept(ready readyMessage) error {
 		return failure("protocol_error")
 	}
 	if s.token != "" {
-		if ready.ResumeProtocol != 1 || ready.ResumeToken != "" || ready.ID != s.id || ready.LocalPort != s.localPort || host != s.targetHost || ready.TargetPort != s.targetPort || ready.Direction != s.direction || ready.DeviceName != s.deviceName || ready.ResumeMs < 1 || ready.ResumeMs > int(resumeWindow/time.Millisecond) {
+		if ready.ResumeProtocol != 1 || ready.ResumeToken != "" || ready.ID != s.id || ready.LocalPort != s.localPort || host != s.targetHost || ready.TargetPort != s.targetPort || ready.Direction != s.direction || ready.DeviceName != s.deviceName || !sameSerial(ready.Serial, s.serial) || ready.Protocol != s.protocol || ready.ResumeMs < 1 || ready.ResumeMs > int(resumeWindow/time.Millisecond) {
 			return failure("protocol_error")
 		}
 		deadline := time.Now().Add(time.Duration(ready.ResumeMs) * time.Millisecond)
@@ -51,6 +53,11 @@ func (s *resumeState) accept(ready readyMessage) error {
 	s.token, s.id, s.localPort, s.targetPort = ready.ResumeToken, ready.ID, ready.LocalPort, ready.TargetPort
 	s.targetHost = host
 	s.direction, s.deviceName = ready.Direction, ready.DeviceName
+	s.protocol = ready.Protocol
+	if ready.Serial != nil {
+		copy := *ready.Serial
+		s.serial = &copy
+	}
 	return nil
 }
 
