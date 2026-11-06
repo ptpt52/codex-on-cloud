@@ -92,3 +92,46 @@ test('terminal-only deployment unlocks explicitly and locks again without sendin
     expect(app.vncConnections).toBe(0); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
+
+test('stalled access settings reads time out without enabling writes and can be reopened safely', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } }); let release, reads = 0;
+  const responseGate = new Promise(resolve => { release = resolve; });
+  try {
+    await login(page, app); await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await page.route('**/api/security', async route => { if (++reads === 1) await responseGate; try { await route.continue(); } catch {} });
+    await page.locator('#toggle-controls-button').click(); await page.locator('#access-settings-button').click();
+    await expect(page.locator('#access-status')).toContainText('超时', { timeout: 10000 });
+    await expect(page.locator('#screen-lock-save')).toBeDisabled(); await expect(page.locator('#temporary-save')).toBeDisabled();
+    await page.locator('#access-close').click(); release(); await page.locator('#access-settings-button').click();
+    await expect(page.locator('#access-status')).toHaveText(''); await expect(page.locator('#screen-lock-save')).toBeEnabled();
+    expect(reads).toBe(2); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { release(); await app.close(); }
+});
+
+test('malformed access settings never enable writes with unverified defaults', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } });
+  try {
+    await login(page, app); await expect(page.locator('#connection-status')).toContainText('桌面在线'); await page.locator('#toggle-controls-button').click();
+    for (const body of ['{}', '{"screen":']) {
+      await page.route('**/api/security', route => route.fulfill({ status: 200, contentType: 'application/json', body }));
+      await page.locator('#access-settings-button').click(); await expect(page.locator('#access-status')).not.toHaveText('正在读取…');
+      await expect(page.locator('#screen-lock-save')).toBeDisabled(); await expect(page.locator('#temporary-save')).toBeDisabled();
+      await page.locator('#access-close').click(); await page.unroute('**/api/security');
+    }
+    await page.locator('#access-settings-button').click(); await expect(page.locator('#access-status')).toHaveText(''); await expect(page.locator('#screen-lock-save')).toBeEnabled();
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('an incomplete successful settings response requires a fresh read and never repeats the committed write', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } }); let writes = 0;
+  try {
+    await login(page, app); await expect(page.locator('#connection-status')).toContainText('桌面在线'); await security(page);
+    await page.route('**/api/security/temporary-account', async route => { writes++; await route.fetch(); await route.fulfill({ status: 200, contentType: 'application/json', body: '{"temporary":' }); });
+    await page.locator('#temporary-enabled').check(); await page.locator('#temporary-username').fill('visitor'); await page.locator('#temporary-password').fill(guestPassword); await page.locator('#temporary-save').click();
+    await expect(page.locator('#access-status')).toContainText('结果未知');
+    await expect(page.locator('#temporary-save')).toBeDisabled(); await expect(page.locator('#screen-lock-save')).toBeDisabled(); await expect(page.locator('#temporary-copy')).toBeDisabled();
+    await page.locator('#access-close').click(); await page.locator('#access-settings-button').click(); await expect(page.locator('#temporary-current')).toContainText('当前有效');
+    await expect(page.locator('#temporary-save')).toBeEnabled(); expect(writes).toBe(1); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});

@@ -14,6 +14,8 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
     $('unlock-submit').disabled = unlocking || !canUnlock();
   }
   function render(value) {
+    const screen = value?.screen, temporary = value?.temporary;
+    if (typeof screen?.enabled !== 'boolean' || typeof screen.configured !== 'boolean' || typeof temporary?.enabled !== 'boolean' || typeof temporary.active !== 'boolean' || typeof temporary.username !== 'string' || temporary.expires !== null && !Number.isSafeInteger(temporary.expires)) throw new Error('访问设置响应无效，请关闭后重新打开。');
     current = value; $('screen-lock-enabled').checked = value.screen.enabled;
     $('screen-lock-password').placeholder = value.screen.configured ? '留空保留已配置密码；新密码 4–128 个字符' : '请设置 4–128 个字符的屏幕锁密码';
     $('temporary-enabled').checked = value.temporary.enabled; $('temporary-username').value = value.temporary.username || 'visitor';
@@ -23,8 +25,8 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
     if (!allowed() || busy || loading) return;
     current = null; loading = true; clearPasswords(); $('access-status').textContent = '正在读取…'; dialog.showModal(); update();
     controller?.abort(); const request = new AbortController(); controller = request;
-    try { const value = await api('/api/security', { signal: request.signal }); if (allowed() && dialog.open && controller === request) { render(value); $('access-status').textContent = ''; } }
-    catch (error) { if (!request.signal.aborted && dialog.open) $('access-status').textContent = error.message; }
+    try { const value = await api('/api/security', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(8000)]) }); if (allowed() && dialog.open && controller === request) { render(value); $('access-status').textContent = ''; } }
+    catch (error) { if (!request.signal.aborted && dialog.open) $('access-status').textContent = error.name === 'TimeoutError' ? '读取访问设置超时，请关闭后重新打开；尚未修改设置。' : error.message; }
     finally { if (controller === request) controller = null; loading = false; update(); }
   }
   function unlock() {
@@ -67,7 +69,12 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
       $('screen-lock-password').value = ''; render(value); changed(value.access);
       if (dialog.open) { $('access-status').textContent = '已保存。密码只保留在当前窗口，关闭后清空。'; sharedCredential = temporary && body.enabled && body.password ? { username: value.temporary.username, password: body.password, expires: value.temporary.expires } : null; }
       if (needsUnlock()) { toast('屏幕锁已更新，请输入锁密码继续操作'); unlock(); }
-    } catch (error) { if (!request.signal.aborted && dialog.open) $('access-status').textContent = error.message || '保存结果未知，请重新打开设置确认'; }
+    } catch (error) {
+      if (!request.signal.aborted && dialog.open) {
+        if (error.outcome !== 'rejected') { current = null; clearPasswords(); $('access-status').textContent = '保存结果未知，请关闭并重新打开设置确认；不要重复提交。'; }
+        else $('access-status').textContent = error.message;
+      }
+    }
     finally { busy = false; if (controller === request) controller = null; update(); }
   }
   $('screen-lock-form').addEventListener('submit', event => { event.preventDefault(); void save('/api/security/screen-lock', { enabled: $('screen-lock-enabled').checked, password: $('screen-lock-password').value }); });

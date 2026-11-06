@@ -29,13 +29,13 @@ test('input stays busy until the result and shows success without submitting Ent
   } finally { hold.release(); await app.close(); }
 });
 
-test('a lost response is unknown and neither reconnect nor refresh replays the accepted input', async ({ page }) => {
+for (const failure of ['lost', 'truncated']) test(`a ${failure} response is unknown and neither reconnect nor refresh replays the accepted input`, async ({ page }) => {
   const app = await fixture({ rfb: true });
   let writes = 0;
   page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/api/key')) writes++; });
   try {
     await login(page, app);
-    await page.route('**/api/key', async route => { await route.fetch(); await route.abort('failed'); });
+    await page.route('**/api/key', async route => { await route.fetch(); if (failure === 'lost') await route.abort('failed'); else await route.fulfill({ status: 200, contentType: 'application/json', body: '{"outcome":' }); });
     await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown');
     await expect(page.locator('#input-status')).toContainText('先查看桌面确认');

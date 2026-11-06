@@ -494,8 +494,14 @@ async function api(path, { method = 'GET', body, raw, signal } = {}) {
     if (!signal?.aborted) expireAccess();
     throw new Error('外层访问验证已过期，请刷新页面完成验证');
   }
-  const data = await response.json().catch(() => ({}));
+  const invalidResponse = () => Object.assign(new Error('服务响应不完整，请刷新状态确认结果'), { status: response.status, outcome: 'unknown', code: 'invalid_response' });
+  const data = await response.json().catch(error => {
+    if (signal?.aborted) throw signal.reason || error;
+    if (response.ok) throw invalidResponse();
+    return {};
+  });
   if (!signal?.aborted && response.status === 401 && path !== '/api/login') showLogin(loggedIn ? '登录已过期，请重新登录' : '');
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw invalidResponse();
   if (!response.ok) {
     if (!signal?.aborted && data.access) updateAccess(data.access);
     const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; error.status = response.status; error.code = data.code; throw error;

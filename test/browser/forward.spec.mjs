@@ -110,12 +110,12 @@ test('helper startup and target failures stay visible after refresh and lost pai
   }finally{helper?.terminate();data?.terminate();await app.close();}
 });
 
-test('a lost create response is not retried and can be reconciled through the mapping list',async({page})=>{
+for (const failure of ['lost', 'truncated']) test(`a ${failure} create response is not retried and can be reconciled through the mapping list`,async({page})=>{
   const app=await fixture({rfb:true,rfbSize:{width:640,height:480}});let creates=0;
   try{
     await login(page,app);
     await page.route('**/api/forward',async route=>{
-      if(route.request().method()==='POST'){creates++;await route.fetch();await route.abort('failed');}
+      if(route.request().method()==='POST'){creates++;await route.fetch();if(failure==='lost')await route.abort('failed');else await route.fulfill({status:200,contentType:'application/json',body:'{"id":'});}
       else await route.continue();
     });
     await page.locator('#forward-button').click();await page.locator('#forward-create').click();
@@ -124,6 +124,21 @@ test('a lost create response is not retried and can be reconciled through the ma
     await page.locator('#forward-refresh').click();await expect(page.locator('#forward-list .forward-row')).toHaveCount(1);expect(creates).toBe(1);
     expect(app.inputCalls).toEqual([]);expect(app.managementStats.restarts).toBe(0);
   }finally{await app.close();}
+});
+
+test('a cached page from before the Mac notice still loads and updates port mappings with newer scripts', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } }), errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.route(app.config.origin + '/', async route => {
+      const response = await route.fetch(), html = await response.text();
+      await route.fulfill({ response, body: html.replace(/<p id="forward-mac-notice"[^]*?<\/p>/, '') });
+    });
+    await login(page, app); await page.locator('#forward-button').click(); await expect(page.locator('#forward-create')).toBeEnabled();
+    await page.locator('#forward-create').click(); await expect(page.locator('#forward-code')).not.toHaveValue('');
+    await page.locator('#forward-refresh').click(); await expect(page.locator('#forward-list .forward-row')).toHaveCount(1);
+    expect(errors).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
 });
 
 test('a late clipboard denial cannot focus a cleared code or overwrite the connected status',async({page})=>{

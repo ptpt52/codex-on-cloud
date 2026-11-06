@@ -77,7 +77,8 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     }
     if (!downloads.length) target.textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
     const hasMac = downloads.some(file => FORWARD_CLIENTS[file.arch].os === 'darwin');
-    $('forward-mac-help').hidden = $('forward-mac-notice').hidden = !hasMac;
+    $('forward-mac-help').hidden = !hasMac;
+    const notice = $('forward-mac-notice'); if (notice) notice.hidden = !hasMac;
   }
   function detectPlatform() {
     detection ||= detectForwardClient(navigator).then(value => { platform = value; if (dialog.open && allowed()) renderDownloads(); });

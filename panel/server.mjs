@@ -304,13 +304,18 @@ export async function createPanel(config) {
       const body = await ownedBody(req, 2048), expected = owner;
       const valid = () => { requireOwner(req); if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '控制权已变化，本次设置未保存'); };
       const oldRevision = access.screenRevision;
-      const result = path.endsWith('/screen-lock') ? await access.saveScreen(body, valid) : await access.saveTemporary(body, valid);
-      if (oldRevision !== access.screenRevision) {
-        if (access.screenEnabled) lockDesktop();
-        else if (owner) owner.lockRevision = access.screenRevision;
+      let result;
+      try { result = path.endsWith('/screen-lock') ? await access.saveScreen(body, valid) : await access.saveTemporary(body, valid); }
+      finally {
+        // A rename can commit a new policy before directory fsync fails. Even
+        // when saving reports an error, all live grants must match that policy.
+        if (oldRevision !== access.screenRevision) {
+          if (access.screenEnabled) lockDesktop();
+          else if (owner) owner.lockRevision = access.screenRevision;
+        }
+        forwarding.refresh();
+        fileTransfers.revalidate();
       }
-      forwarding.refresh();
-      fileTransfers.revalidate();
       return reply(res, 200, { ...result, access: accessState(req, requireSession(req)) });
     }
     if (path === '/api/security/lock' && req.method === 'POST') {

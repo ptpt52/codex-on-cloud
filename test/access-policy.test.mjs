@@ -9,6 +9,8 @@ import http from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 
 async function client(app,username='admin',password=app.config.password){
   const viewer=randomUUID();let cookie='',csrf='';
@@ -100,4 +102,23 @@ test('screen password failures are bounded and cannot be reset by spoofing forwa
   for(let i=0;i<20;i++)assert.equal((await admin.claim('wrong')).status,403);
   const response=await fetch(app.config.origin+'/api/desktop/claim',{method:'POST',headers:{origin:app.config.origin,cookie:admin.cookie,'x-csrf-token':admin.csrf,'x-viewer-id':admin.viewer,'x-forwarded-for':'192.0.2.45','content-type':'application/json'},body:JSON.stringify({viewer:admin.viewer,lockPassword:'test-screen-password'})});assert.equal(response.status,429);
   const now=Date.now();t.mock.method(Date,'now',()=>now+60001);assert.equal((await admin.claim('test-screen-password')).status,200);
+});
+
+test('a screen lock committed before a durability error still revokes an already-open desktop stream', async t => {
+  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); const admin = await client(app); await admin.claim();
+  const mapping = await (await reverse(admin)).json();
+  const ws = new WebSocket(app.config.origin.replace('http', 'ws') + '/desktop/websockify?viewer=' + admin.viewer, { headers: { origin: app.config.origin, cookie: admin.cookie } });
+  ws.on('error', () => {}); t.after(() => ws.terminate()); await once(ws, 'open');
+  const echoed = once(ws, 'message'); ws.send('isolated VNC echo fixture'); assert.equal((await echoed)[0].toString(), 'isolated VNC echo fixture');
+  let closed = false; ws.on('close', () => { closed = true; });
+  const fsync = fs.fsyncSync;
+  t.mock.method(fs, 'fsyncSync', descriptor => { if (fs.fstatSync(descriptor).isDirectory()) throw Error('simulated directory fsync error after rename'); return fsync(descriptor); });
+  syncBuiltinESMExports();
+  try { assert.equal((await admin.request('/api/security/screen-lock', { enabled: true, password: 'test-screen-password' })).status, 502); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal((await (await admin.request('/api/state')).json()).access.requiresUnlock, true);
+  for (let n = 0; n < 30 && !closed; n++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(closed, true, 'A committed lock must close the old stream even if the response reports a durability error');
+  assert.ok((await (await admin.request('/api/forward')).json()).mappings.some(item => item.id === mapping.id));
+  assert.equal((await admin.claim('test-screen-password')).status, 200); assert.deepEqual(app.inputCalls, []);
 });
