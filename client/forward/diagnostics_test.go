@@ -2,16 +2,42 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/gorilla/websocket"
 )
+
+func TestStreamDiagnosticsDistinguishPhaseAndTCPSideWithoutLeakingDetails(t *testing.T) {
+	for _, code := range []string{"relay_connect_timeout", "relay_ready_timeout", "relay_stream_timeout"} {
+		for _, err := range []error{os.ErrDeadlineExceeded, failure("network_timeout")} {
+			if streamFailure(err, code).Error() != failure(code).Error() {
+				t.Fatal("Lost timeout phase")
+			}
+		}
+	}
+	if tcpFailure(os.ErrDeadlineExceeded).Error() != failure("tcp_peer_stalled").Error() {
+		t.Fatal("TCP stall was blamed on the relay")
+	}
+	if tcpFailure(errors.New("private TCP metadata")).Error() != failure("tcp_peer_disconnected").Error() {
+		t.Fatal("TCP reset was blamed on the relay")
+	}
+	for _, code := range []string{"target_timeout", "tls_certificate", "heartbeat_timeout", "reverse_stream_timeout", "stream_authorization_invalid"} {
+		if streamFailure(failure(code), "relay_ready_timeout").Error() != failure(code).Error() {
+			t.Fatal("Known diagnostic was lost")
+		}
+	}
+	if streamFailure(errors.New("private credential"), "relay_stream_timeout").Error() != failure("relay_stream_disconnected").Error() {
+		t.Fatal("Untrusted error was exposed")
+	}
+}
 
 func TestRejectedPairingExplainsCauseWithoutLeakingPeerText(t *testing.T) {
 	for _, sample := range []struct {

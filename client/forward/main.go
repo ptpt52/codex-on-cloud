@@ -27,6 +27,9 @@ import (
 var defaultServer = ""
 var version = "dev"
 
+const dataConnectTimeout = 15 * time.Second
+const dataReadyTimeout = 10 * time.Second
+
 //go:embed THIRD_PARTY_NOTICES.txt
 var licenses string
 var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
@@ -67,7 +70,11 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 	} else {
 		u.Scheme = "ws"
 	}
-	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: 5 * time.Second, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{"codex-forward-v1"}}
+	handshakeTimeout := 5 * time.Second
+	if path == "/forward/data" {
+		handshakeTimeout = dataConnectTimeout
+	}
+	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{"codex-forward-v1"}}
 	headers := http.Header{"Authorization": {"Bearer " + token}, "Origin": {server.String()}}
 	if path == "/forward/helper" || path == "/forward/resume" {
 		headers.Set("X-Codex-Forward-Resume", "1")
@@ -93,7 +100,11 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 	if path == "/forward/helper" || path == "/forward/resume" {
 		c.SetReadLimit(48 * 1024)
 	}
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readTimeout := 5 * time.Second
+	if path == "/forward/data" {
+		readTimeout = dataReadyTimeout
+	}
+	c.SetReadDeadline(time.Now().Add(readTimeout))
 	c.SetPingHandler(func(data string) error {
 		c.SetReadDeadline(time.Now().Add(45 * time.Second))
 		return c.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
@@ -177,7 +188,7 @@ func (s *connections) close() {
 func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn, active *connections, direct *directManager) error {
 	defer tcp.Close()
 	defer active.remove(tcp)
-	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	dialCtx, cancel := context.WithTimeout(ctx, dataConnectTimeout)
 	var ws messageSocket
 	var err error
 	if direct != nil {
@@ -191,23 +202,24 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 	}
 	cancel()
 	if err != nil {
-		return err
+		return streamFailure(err, "relay_connect_timeout")
 	}
 	defer ws.Close()
 	if !active.attach(tcp, ws) {
 		return nil
 	}
 	if usingDirect {
+		ws.SetReadDeadline(time.Now().Add(dataReadyTimeout))
 		ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		// The target-open record ends preflight. Failure after this point never
 		// reconnects the same TCP stream through another transport.
 		if err := ws.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"open\"}")); err != nil {
-			return err
+			return streamFailure(err, "relay_ready_timeout")
 		}
 	}
 	kind, first, err := ws.ReadMessage()
 	if err != nil {
-		return connectionFailure(err)
+		return streamFailure(err, "relay_ready_timeout")
 	}
 	if kind != websocket.TextMessage || string(first) != "{\"type\":\"ready\"}" {
 		return recordFailure(first)
@@ -225,16 +237,20 @@ func copyStream(tcp *net.TCPConn, ws messageSocket) error {
 			if n > 0 {
 				ws.SetWriteDeadline(time.Now().Add(15 * time.Second))
 				if err := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
-					results <- err
+					results <- streamFailure(err, "relay_stream_timeout")
 					return
 				}
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
 					ws.SetWriteDeadline(time.Now().Add(15 * time.Second))
-					results <- ws.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"fin\"}"))
+					err := ws.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"fin\"}"))
+					if err != nil {
+						err = streamFailure(err, "relay_stream_timeout")
+					}
+					results <- err
 				} else {
-					results <- readErr
+					results <- failure("tcp_peer_disconnected")
 				}
 				return
 			}
@@ -248,7 +264,7 @@ func copyStream(tcp *net.TCPConn, ws messageSocket) error {
 				if remoteFin && websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
 					results <- io.EOF
 				} else {
-					results <- err
+					results <- streamFailure(err, "relay_stream_timeout")
 				}
 				return
 			}
@@ -272,7 +288,7 @@ func copyStream(tcp *net.TCPConn, ws messageSocket) error {
 			}
 			tcp.SetWriteDeadline(time.Now().Add(15 * time.Second))
 			if _, err := tcp.Write(data); err != nil {
-				results <- err
+				results <- tcpFailure(err)
 				return
 			}
 		}

@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { forwardChannel } from '../panel/forward-channel.mjs';
-import { guardForwardSCTP } from '../panel/forward-rtc.mjs';
+import { guardForwardSCTP, forwardNegotiationFailure } from '../panel/forward-rtc.mjs';
+
+test('direct diagnostics distinguish UDP reachability, encrypted handshake and channel authorization', () => {
+  assert.equal(forwardNegotiationFailure({ iceConnectionState: 'checking', dtlsTransports: [] }), 'rtc_ice_timeout');
+  assert.equal(forwardNegotiationFailure({ iceConnectionState: 'completed', dtlsTransports: [{ state: 'connecting' }] }), 'rtc_dtls_timeout');
+  assert.equal(forwardNegotiationFailure({ iceConnectionState: 'connected', dtlsTransports: [{ state: 'connected' }] }), 'rtc_auth_timeout');
+});
 
 function signal() { const handlers=new Set();return {subscribe(fn){handlers.add(fn);return{unSubscribe(){handlers.delete(fn);}};},emit(...args){for(const handler of [...handlers])handler(...args);},get size(){return handlers.size;}}; }
 function channel(){return {readyState:'open',bufferedAmount:0,onMessage:signal(),stateChange:signal(),error:signal(),packets:[],send(value){this.packets.push(value);},close(){this.readyState='closed';this.stateChange.emit('closed');}};}

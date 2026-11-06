@@ -28,7 +28,7 @@ func validDeviceName(value string) bool {
 // First authenticate the server's one-time accepted socket. Only after its
 // ready record may we dial the locally approved, immutable IP and port.
 func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id string, active *connections, direct *directManager) error {
-	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	dialCtx, cancel := context.WithTimeout(ctx, dataConnectTimeout)
 	defer cancel()
 	var ws messageSocket
 	if direct != nil {
@@ -40,7 +40,7 @@ func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id s
 	if ws == nil {
 		remote, err := dialHeaders(dialCtx, server, "/forward/data", ready.StreamToken, http.Header{"X-Codex-Reverse-Stream": {id}})
 		if err != nil {
-			return err
+			return streamFailure(err, "relay_connect_timeout")
 		}
 		ws = remote
 	}
@@ -48,16 +48,16 @@ func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id s
 	stop := context.AfterFunc(ctx, func() { ws.Close() })
 	defer stop()
 	ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	ws.SetReadDeadline(time.Now().Add(dataReadyTimeout))
 	if usingDirect {
 		record, _ := json.Marshal(map[string]string{"type": "open", "id": id})
 		if err := ws.WriteMessage(websocket.TextMessage, record); err != nil {
-			return err
+			return streamFailure(err, "relay_ready_timeout")
 		}
 	}
 	kind, bytes, err := ws.ReadMessage()
 	if err != nil {
-		return connectionFailure(err)
+		return streamFailure(err, "relay_ready_timeout")
 	}
 	if kind != websocket.TextMessage || string(bytes) != "{\"type\":\"ready\"}" {
 		return recordFailure(bytes)
@@ -91,7 +91,7 @@ func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id s
 	local.SetNoDelay(true)
 	ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err := ws.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"target_ready\"}")); err != nil {
-		return err
+		return streamFailure(err, "relay_ready_timeout")
 	}
 	return copyStream(local, ws)
 }

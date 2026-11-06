@@ -1,5 +1,10 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
+import { forwardHeartbeat } from './forward-heartbeat.mjs';
+
+// Includes direct preflight, WSS upgrade, server readiness, the five-second
+// target dial and its acknowledgement. Still at most eight pending sockets.
+export const REVERSE_READY_MS = 40000;
 
 // At most eight paused TCP sockets per mapping, each with a fixed deadline.
 // A stream identifier is single-use and never authorizes another destination.
@@ -20,7 +25,7 @@ export function createReverseForwarding({ limits, active, authorized, invalidRea
       if (reason) { item.errorCode = reason; return tcp.destroy(); }
       const stream = { id: randomBytes(16).toString('hex'), tcp, ws: null, generation: item.generation };
       item.streams.add(stream);
-      stream.timer = setTimeout(() => { item.errorCode = 'reverse_stream_timeout'; tcp.destroy(); stream.ws?.terminate(); }, 10000).unref();
+      stream.timer = setTimeout(() => { item.errorCode = 'reverse_stream_timeout'; tcp.destroy(); if (stream.ws) retire(stream.ws, 'reverse_stream_timeout'); }, REVERSE_READY_MS).unref();
       tcp.once('close', () => { clearTimeout(stream.timer); item.streams.delete(stream); stream.ws?.close(1000); });
       send(item, { type: 'reverse_open', id: stream.id });
     });
@@ -50,10 +55,9 @@ export function createReverseForwarding({ limits, active, authorized, invalidRea
       if (live()) item.errorCode = code;
       tcp.destroy(); retire(ws, code);
     };
-    let alive = true;
-    const heartbeat = ws.transport === 'direct' ? null : setInterval(() => { if (!alive || ws.readyState !== 1) return abort('heartbeat_timeout'); alive = false; ws.ping(); }, 15000).unref();
-    ws.on('pong', () => { alive = true; }); ws.on('error', () => {});
-    ws.once('close', () => { clearTimeout(stream.timer); clearInterval(heartbeat); tcp.destroy(); item.streams.delete(stream); });
+    if (ws.transport !== 'direct') forwardHeartbeat(ws, code => abort(code));
+    ws.on('error', () => {});
+    ws.once('close', () => { clearTimeout(stream.timer); tcp.destroy(); item.streams.delete(stream); });
     ws.on('message', (data, binary) => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
       if (!live() || clientFin) return abort();

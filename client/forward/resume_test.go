@@ -117,4 +117,7 @@ func TestDiagnosticsStayBoundedAcrossConcurrentSessionGenerations(t *testing.T) 
 	if strings.Count(writer.String(), "20 条上限") != 3 {
 		t.Fatal("Missing bounded output notices")
 	}
+	if strings.Count(writer.String(), "这不是连接数量限制，不影响转发") != 3 {
+		t.Fatal("Output caps must not be described as connection caps")
+	}
 }

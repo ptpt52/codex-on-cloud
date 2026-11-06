@@ -5,6 +5,12 @@ import { forwardChannel } from './forward-channel.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
 export { guardSCTP as guardForwardSCTP } from './rtc-sctp.mjs';
 
+export function forwardNegotiationFailure(pc) {
+  if (!['connected', 'completed'].includes(pc.iceConnectionState)) return 'rtc_ice_timeout';
+  if (!pc.dtlsTransports.some(transport => transport.state === 'connected')) return 'rtc_dtls_timeout';
+  return 'rtc_auth_timeout';
+}
+
 // A mapping owns one peer, separate from the desktop/viewer and its UDP ports.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
 export function createForwardPeer({ address, ipv6Address, id, valid, authenticate, connect, status, closed, reverse = false }) {
@@ -57,10 +63,10 @@ export function createForwardPeer({ address, ipv6Address, id, valid, authenticat
       pingTimer = setTimeout(probe, 3000).unref();
     }, 2000).unref();
   }
-  timer = setTimeout(() => { void handle.destroy('rtc_negotiation_failed'); }, 14000).unref();
+  timer = setTimeout(() => { void handle.destroy(forwardNegotiationFailure(pc)); }, 14000).unref();
   pc.connectionStateChange.subscribe(state => {
     if (state === 'disconnected') handle.unhealthy('rtc_unavailable');
-    if (['closed', 'failed'].includes(state)) void handle.destroy('rtc_unavailable');
+    if (['closed', 'failed'].includes(state)) void handle.destroy(authenticated ? 'rtc_unavailable' : forwardNegotiationFailure(pc));
   });
   pc.onDataChannel.subscribe(channel => {
     if (!authorized() || !channel.ordered || channel.maxRetransmits != null || channel.maxPacketLifeTime != null) return void handle.destroy('protocol_error');

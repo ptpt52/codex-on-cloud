@@ -7,6 +7,7 @@ import { createForwardPeer } from './forward-rtc.mjs';
 import { rtcOffer } from './rtc-network.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
+import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
 
 export const FORWARD_LIMITS = Object.freeze({ mappings: 4, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -131,15 +132,6 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (item) remove(item, 'stopped');
     return { ok: true };
   }
-  function heartbeat(ws, expired) {
-    let alive = true;
-    const interval = setInterval(() => {
-      if (!alive || ws.readyState !== 1) return expired();
-      alive = false; ws.ping();
-    }, 15000).unref();
-    ws.on('pong', () => { alive = true; });
-    ws.once('close', () => clearInterval(interval)); ws.on('error', () => {});
-  }
   function control(item, ws, resume = false, capable = false) {
     clearTimeout(item.timer);
     item.activating = false;
@@ -234,7 +226,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   function transfer(item, ws) {
     const generation = item.generation;
     const tcp = net.createConnection({ host: item.targetHost, port: item.targetPort, allowHalfOpen: true, highWaterMark: 32768 });
-    const stream = { ws, tcp }; item.streams.add(stream); if (ws.transport !== 'direct') heartbeat(ws, () => abort('heartbeat_timeout'));
+    const stream = { ws, tcp }; item.streams.add(stream); if (ws.transport !== 'direct') heartbeat(ws, code => abort(code));
     const live = () => active(item) && item.generation === generation && item.streams.has(stream);
     let connected = false, clientFin = false, pending = 0;
     const deadline = setTimeout(() => tcp.destroy(Object.assign(new Error('connect timeout'), { code: 'ETIMEDOUT' })), 5000).unref();

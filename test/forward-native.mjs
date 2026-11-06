@@ -29,7 +29,7 @@ try {
   await exec('go',['test','-race','./...'],{cwd:clientDirectory,env:{...process.env,GOTOOLCHAIN:'local'},timeout:180000,maxBuffer:16384});
   await exec('go',['build','-race','-mod=readonly','-buildvcs=false','-trimpath','-o',binary,'.'],{cwd:clientDirectory,env:{...process.env,GOTOOLCHAIN:'local',CGO_ENABLED:'1'},timeout:180000,maxBuffer:16384});
   await exec('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1'],{timeout:10000,maxBuffer:8192});
-  let accepted=0,receivedAfterServerFin,receivedBytes=0,dropDirectReady=false,blockResume=false;
+  let accepted=0,receivedAfterServerFin,receivedBytes=0,dropDirectReady=false,blockResume=false,dataDelayMs=0;
   const managementRequests={pair:0,resume:0};
   const echoConnection=socket=>{
     accepted++;connections.add(socket);socket.on('error',()=>{});socket.once('close',()=>connections.delete(socket));
@@ -66,13 +66,17 @@ try {
     if(req.url==='/forward/resume')managementRequests.resume++;
     if(req.url==='/forward/resume'&&blockResume){socket.end('HTTP/1.1 503 Offline Test\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');return;}
     if(['/forward/helper','/forward/resume'].includes(req.url)){controlLinks.add(socket);socket.once('close',()=>controlLinks.delete(socket));}
-    const upstream=net.createConnection({host:'127.0.0.1',port:backendPort});
-    for(const item of [socket,upstream]){connections.add(item);item.on('error',()=>{socket.destroy();upstream.destroy();});item.once('close',()=>{connections.delete(item);socket.destroy();upstream.destroy();});}
-    upstream.once('connect',()=>{
-      const headers=[];for(let i=0;i<req.rawHeaders.length;i+=2)headers.push(req.rawHeaders[i]+': '+req.rawHeaders[i+1]);
-      upstream.write(req.method+' '+req.url+' HTTP/1.1\r\n'+headers.join('\r\n')+'\r\n\r\n');if(head.length)upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
-    });
+    const connect=()=>{
+      if(socket.destroyed)return;
+      const upstream=net.createConnection({host:'127.0.0.1',port:backendPort});
+      for(const item of [socket,upstream]){connections.add(item);item.on('error',()=>{socket.destroy();upstream.destroy();});item.once('close',()=>{connections.delete(item);socket.destroy();upstream.destroy();});}
+      upstream.once('connect',()=>{
+        const headers=[];for(let i=0;i<req.rawHeaders.length;i+=2)headers.push(req.rawHeaders[i]+': '+req.rawHeaders[i+1]);
+        upstream.write(req.method+' '+req.url+' HTTP/1.1\r\n'+headers.join('\r\n')+'\r\n\r\n');if(head.length)upstream.write(head);
+        socket.pipe(upstream).pipe(socket);
+      });
+    };
+    if(req.url==='/forward/data'&&dataDelayMs)setTimeout(connect,dataDelayMs).unref();else connect();
   });
   tls.listen(0,'127.0.0.1');await once(tls,'listening');
   app.config.origin='https://127.0.0.1:'+tls.address().port;app.config.hosts.add(new URL(app.config.origin).host);
@@ -262,6 +266,10 @@ try {
   assert.match(denied.output,/未确认此设备授权/);assert.equal(accepted,beforeDenied);assert.equal((await request('/api/forward')).recent[0].code,'reverse_denied');
   const reversePort=await freePort(),reverse=launch(await reverseMapping(reversePort));
   await waitFor(()=>reverse.output.includes('映射已开启'),'Reverse WSS helper did not start');assert.match(reverse.output,/服务器 127\.0\.0\.1/);assert.equal(accepted,beforeDenied);
+  console.log('Reverse WSS: eleven-second relay handshake keeps the accepted socket valid');
+  dataDelayMs=11000;
+  assert.deepEqual(await roundtrip(reversePort,Buffer.from('slow relay handshake')),Buffer.from('slow relay handshake'));
+  dataDelayMs=0;
   console.log('Reverse WSS: verify 8 MiB and client half-close');
   assert.deepEqual(await roundtrip(reversePort,payload),payload);assert.deepEqual(await roundtrip(reversePort,halfClose),Buffer.concat([Buffer.from('after-fin:'),halfClose]));
   assert.equal((await request('/api/forward')).mappings[0].targetStatus.state,'reachable');

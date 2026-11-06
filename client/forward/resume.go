@@ -84,7 +84,7 @@ func (o *runOutput) print(category int, format string, args ...any) {
 	o.counts[category]++
 	if o.counts[category] == 20 {
 		labels := []string{"连接错误", "通道状态", "恢复状态"}
-		fmt.Fprintf(o.writer, "%s提示已达到本次运行的 20 条上限，最新状态请查看网页。\n", labels[category])
+		fmt.Fprintf(o.writer, "%s日志已达到本次运行的 20 条上限，后续同类日志不再打印；这不是连接数量限制，不影响转发。最新状态请查看网页。\n", labels[category])
 	}
 }
 
