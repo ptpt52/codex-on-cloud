@@ -185,7 +185,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     if (data) render(data);
     if (generation === current && allowed() && dialog.open && !document.hidden && !busy) timer = setTimeout(load, 3000);
   }
-  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); policyReady = false; portsEnabled = false; update(); $('forward-status').textContent = ''; dialog.showModal(); detectPlatform(); void load(); });
+  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); policyReady = false; portsEnabled = false; update(); $('forward-status').textContent = ''; $('forward-mac-help').open = platform.os === 'darwin'; dialog.showModal(); detectPlatform(); void load(); });
   $('forward-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); });
   $('forward-direction').addEventListener('change', () => { clearCode(); clearConnection(); if (reversed() && $('forward-local').value === '2222') $('forward-local').value = '22001'; else if (!reversed() && $('forward-local').value === '22001') $('forward-local').value = '2222'; renderDirection(); });

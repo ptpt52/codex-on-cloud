@@ -221,7 +221,12 @@
     <p class="muted">运行 Mac 或 Windows 助手，在本机与服务器之间访问已授权的 TCP 服务。反向模式可让服务器上的 Codex 访问你本地的 SSH、Telnet 等设备；新连接优先直连，不可用时走 WSS 中转。</p>
     <p id="forward-platform-note" class="muted">请选择运行助手的电脑版本。</p>
     <div id="forward-downloads" class="forward-downloads"></div>
-    <details id="forward-mac-help" class="forward-mac-help" hidden><summary>Mac 首次运行说明</summary><p>需要 macOS 12 或更新版本。解压 ZIP，双击文件夹内的 Start.command，在终端窗口粘贴配对码；也可在终端进入该文件夹运行 ./codex-cloud-forward。</p><p>如系统阻止打开，请先核对下载包的 SHA256，再按<a href="https://support.apple.com/zh-cn/102445" target="_blank" rel="noopener noreferrer">Apple 的首次打开说明</a>，在“系统设置 → 隐私与安全性”中确认。本版尚未进行 Developer ID 签名及 Apple 公证。</p></details>
+    <details id="forward-mac-help" class="forward-mac-help" hidden>
+      <summary>Mac 首次运行 / Apple 无法验证时怎么办</summary>
+      <p>需要 macOS 12 或更新版本。解压 ZIP，双击 Start.command，在终端窗口粘贴配对码。本版尚未进行 Developer ID 签名及 Apple 公证，首次运行可能出现“Apple 无法验证 codex-cloud-forward”的提示。</p>
+      <ol><li>确认下载来源并核对网页显示的 ZIP SHA256，然后尝试打开程序。出现验证提示时，点击“完成”或“取消”。</li><li>进入“系统设置 → 隐私与安全性”，向下滚动到“安全性”，找到刚被阻止的 codex-cloud-forward，点击“仍要打开”，并按系统提示确认。</li><li>重新双击 Start.command。如果提示阻止的是 Start.command，也需对该文件按上述步骤确认。</li></ol>
+      <p>没有看到“仍要打开”时，先在解压文件夹中双击 codex-cloud-forward，再返回设置查看。按<a href="https://support.apple.com/zh-cn/102445" target="_blank" rel="noopener noreferrer">Apple 官方说明</a>确认此程序即可，无需关闭系统整体安全检查。也可在终端进入该文件夹运行 ./codex-cloud-forward。</p>
+    </details>
     <form id="forward-form" class="forward-form">
       <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction"><option value="forward">本机访问服务器网络</option><option value="reverse">服务器 / Codex 访问本地设备</option></select></label>
       <div id="forward-device-fields" class="forward-device-fields forward-wide" hidden>

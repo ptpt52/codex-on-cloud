@@ -231,10 +231,12 @@ for (const architecture of ['arm', 'x86', 'unavailable']) {
       const manual = architecture === 'arm' ? 'darwin-amd64' : 'darwin-arm64';
       const downloading = page.waitForEvent('download'); await page.locator(`.forward-download[data-arch="${manual}"] a`).click();
       expect((await downloading).suggestedFilename()).toBe(FORWARD_CLIENTS[manual].name);
-      await page.locator('#forward-mac-help summary').click(); await expect(page.locator('#forward-mac-help')).toContainText('Start.command');
-      await expect(page.locator('#forward-mac-help')).toContainText('macOS 12');
+      await expect(page.locator('#forward-mac-help')).toHaveAttribute('open', ''); await expect(page.locator('#forward-mac-help')).toContainText('Start.command');
+      await expect(page.locator('#forward-mac-help')).toContainText('macOS 12'); await expect(page.locator('#forward-mac-help')).toContainText('仍要打开');
       expect(await page.locator('#forward-dialog').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
       await page.locator('#forward-refresh').click(); await expect(page.locator('.forward-download')).toHaveCount(4);
+      await page.locator('#forward-mac-help summary').click(); await expect(page.locator('#forward-mac-help')).not.toHaveAttribute('open', '');
+      await page.locator('#forward-refresh').click(); await expect(page.locator('#forward-mac-help')).not.toHaveAttribute('open', '');
       expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
   });

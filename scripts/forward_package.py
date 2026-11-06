@@ -60,8 +60,13 @@ def package_bytes(data, arch):
 服务器地址已嵌入程序，可用 --server https://example.com 显式覆盖。
 使用 --version 查看版本，--licenses 查看依赖许可证。
 
-如果系统阻止打开：核对网页显示的 ZIP SHA256，尝试打开后按 Apple 官方说明，
-在“系统设置 → 隐私与安全性”中对该程序确认“仍要打开”。
+如果出现“Apple 无法验证 codex-cloud-forward”：
+1. 确认下载来源并核对网页显示的 ZIP SHA256，尝试打开后点击“完成”或“取消”。
+2. 打开“系统设置 → 隐私与安全性”，向下滚动到“安全性”，
+   找到刚被阻止的 codex-cloud-forward，点击“仍要打开”，按系统提示确认。
+3. 重新双击 Start.command。如果被阻止的是 Start.command，也需对该文件确认。
+没有“仍要打开”时，先在解压文件夹中双击 codex-cloud-forward，再返回设置查看。
+Apple 官方说明：
 https://support.apple.com/zh-cn/102445
 本包未进行 Developer ID 分发签名或 Apple 公证；ARM64 程序含 Go 链接器生成的 ad-hoc 签名。
 不要关闭系统的整体安全检查。允许本地网络访问后可探测局域网直连。

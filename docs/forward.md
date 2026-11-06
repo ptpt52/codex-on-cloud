@@ -60,7 +60,17 @@ ZIP 中固定包含 `codex-cloud-forward`、`Start.command` 和 `README.txt`，�
     ./codex-cloud-forward --version
     ./codex-cloud-forward --licenses
 
-首次打开若被 macOS 阻止，先确认网页版本与下载包 SHA256，再尝试打开对应程序，然后按 [Apple 官方说明](https://support.apple.com/zh-cn/102445) 在“系统设置 → 隐私与安全性”中确认“仍要打开”。本版没有 Developer ID 分发签名和 Apple 公证；Apple Silicon 文件带 Go 链接器生成的 ad-hoc 签名，这不等于开发者身份认证或 Apple 公证。不提供关闭 Gatekeeper 或自动删除隔离属性的脚本。Mac 提示本地网络权限时，允许助手/终端访问可用于局域网探测。
+本版没有 Developer ID 分发签名和 Apple 公证，因此首次运行可能出现“Apple 无法验证 codex-cloud-forward 是否包含可能危害 Mac 安全或泄漏隐私的恶意软件”。Apple Silicon 文件带 Go 链接器生成的 ad-hoc 签名，这不等于开发者身份认证或 Apple 公证。Mac 浏览器打开下载窗口时会展开首次运行说明。
+
+确认下载来自自己的工作台、网页版本及 ZIP SHA256 后，可按 [Apple 官方说明](https://support.apple.com/zh-cn/102445) 操作：
+
+1. 先尝试打开解压后的程序；弹出验证提示时，点击“完成”或“取消”。
+2. 打开“系统设置 → 隐私与安全性”，向下滚动到“安全性”，找到刚被阻止的 `codex-cloud-forward`，点击“仍要打开”，按系统提示确认。
+3. 重新双击 `Start.command`。如果被阻止的名称是 `Start.command`，也需要对该文件完成上述确认。
+
+没有“仍要打开”时，先在 Finder 的解压文件夹中双击 `codex-cloud-forward`，再返回设置查看。受组织管理的 Mac 可能无法由使用者更改此设置，需联系管理员。按文件确认后，macOS 会记住该程序的例外；将来更换下载文件可能需要再次确认。无需重新配对已有映射来做此设置，准备启动助手后再生成两分钟配对码。
+
+要让正式下载免去上述未验证软件的放行步骤，后续需使用 Developer ID 分发签名并完成 Apple 公证；当前 Linux 交叉编译和 Go ad-hoc 签名不能完成这一步。不提供关闭 Gatekeeper 或自动删除隔离属性的脚本。Mac 提示本地网络权限时，允许助手/终端访问可用于局域网探测。
 
 保持启动的终端窗口打开，Ctrl+C 停止；出错时交互窗口显示原因并等待 Enter。启动脚本只执行同目录程序和明确传入的参数，不安装服务、自启动项或写入用户 Codex 配置。
 
