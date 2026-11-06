@@ -7,6 +7,7 @@ import net from 'node:net';
 import { settings } from './config.mjs';
 import { createViewportResizer } from './viewport.mjs';
 import { createFixedSizeStore } from './fixed-size.mjs';
+import { vncArguments } from './vnc.mjs';
 
 const config = settings();
 const children = new Set();
@@ -122,8 +123,7 @@ try {
   vncServer = net.createServer(socket => {
     if (viewerProcess && viewerProcess.exitCode === null && viewerProcess.signalCode === null) { try { process.kill(-viewerProcess.pid, 'SIGTERM'); } catch {} }
     socket.pause();
-    viewerProcess = start('x11vnc', ['-inetd', '-display', config.display, '-auth', xauthority,
-      '-no6', '-noipv6', '-rfbport', '0', '-nopw', '-noremote', '-nolookup', '-noxrecord', '-quiet'], env, false, socket);
+    viewerProcess = start('x11vnc', vncArguments(config.display, xauthority), env, false, socket);
     socket.on('error', () => {});
     socket.destroy(); // Child holds its own references to the accepted descriptor.
   });

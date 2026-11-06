@@ -11,6 +11,8 @@ import net from 'node:net';
 import { createViewportResizer } from '../native/viewport.mjs';
 import { createDesktopControls } from '../native/desktop-controls.mjs';
 import { createFixedSizeStore } from '../native/fixed-size.mjs';
+import { vncArguments } from '../native/vnc.mjs';
+import { VNC_RESIZE_SETTLE } from '../panel/public/first-frame.js';
 
 const directory = await mkdtemp(join(tmpdir(), 'codex-viewport-'));
 const env = { ...process.env, HOME: directory, XAUTHORITY: join(directory, 'Xauthority'),
@@ -75,7 +77,7 @@ try {
   const path = join(directory, 'vnc.sock');
   server = net.createServer(client => {
     client.pause();
-    viewer = start('x11vnc', ['-inetd', '-display', env.DISPLAY, '-auth', env.XAUTHORITY, '-no6', '-noipv6', '-rfbport', '0', '-nopw', '-noremote', '-nolookup', '-noxrecord', '-quiet'], [client, client, 'pipe']);
+    viewer = start('x11vnc', vncArguments(env.DISPLAY, env.XAUTHORITY).filter(arg => !process.env.VNC_TEST_DEBUG || arg !== '-quiet'), [client, client, 'pipe']);
     viewer.stderr.on('data', chunk => { vncDiagnostics = (vncDiagnostics + chunk.toString()).slice(-8192); });
     client.on('error', () => {}); client.destroy();
   });
@@ -87,7 +89,7 @@ try {
   async function read(size) {
     assert.ok(size <= 32 * 1024 * 1024);
     while (bytes.length < size) {
-      if (closed) throw new Error('RFB closed during live resize');
+      if (closed) throw new Error(`RFB closed during live resize\n${vncDiagnostics}`);
       await new Promise((resolve, reject) => { const timer = setTimeout(() => { wake = null; reject(new Error('RFB response timed out')); }, 5000); wake = () => { clearTimeout(timer); wake = null; resolve(); }; });
     }
     const result = bytes.subarray(0, size); bytes = bytes.subarray(size); return result;
@@ -98,7 +100,7 @@ try {
   const init = await read(24); await read(init.readUInt32BE(20));
   assert.equal(init[4], 32);
   const encodings = Buffer.alloc(12); encodings[0] = 2; encodings.writeUInt16BE(2, 2); encodings.writeInt32BE(-223, 4); socket.write(encodings);
-  let width = init.readUInt16BE(0), height = init.readUInt16BE(2);
+  let width = init.readUInt16BE(0), height = init.readUInt16BE(2), pixelsReceived = false;
   function request() { const value = Buffer.alloc(10); value[0] = 3; value.writeUInt16BE(width, 6); value.writeUInt16BE(height, 8); socket.write(value); }
   async function update() {
     assert.equal((await read(1))[0], 0);
@@ -107,11 +109,14 @@ try {
     for (let i = 0; i < count; i++) {
       const rect = await read(12), w = rect.readUInt16BE(4), h = rect.readUInt16BE(6), encoding = rect.readInt32BE(8);
       if (encoding === -223) { width = w; height = h; resized = true; }
-      else { assert.equal(encoding, 0); await read(w * h * 4); }
+      else { assert.equal(encoding, 0); await read(w * h * 4); if (w && h) pixelsReceived = true; }
     }
     return resized;
   }
   request(); await update();
+  for (let n = 0; !pixelsReceived && n < 40; n++) { await new Promise(resolve => setTimeout(resolve, 100)); request(); await update(); }
+  assert.ok(pixelsReceived, 'the first complete pixel frame must precede resolution changes');
+  await new Promise(resolve => setTimeout(resolve, VNC_RESIZE_SETTLE));
   assert.equal((await resizer.refresh()).supported, true);
   const config = { root: directory, runtime: directory, display: env.DISPLAY, env,
     workspace: directory, transfer: directory, preferencesFile: join(directory, 'settings.json'), defaultPreferences: { width: 1600, height: 3200, fontSize: 15 } };
@@ -133,7 +138,8 @@ try {
     request();
     let changed = false;
     for (let i = 0; i < 40 && !changed; i++) { changed = await update(); if (!changed) { await new Promise(resolve => setTimeout(resolve, 100)); request(); } }
-    assert.equal(changed, true, `VNC did not announce ${JSON.stringify(result.actual)}; client still sees ${width}x${height}\n${vncDiagnostics}`); assert.deepEqual({ width, height }, result.actual);
+    if (!changed) throw Error(`VNC did not announce ${JSON.stringify(result.actual)}; client still sees ${width}x${height}; actual display ${await run('xdotool', ['getdisplaygeometry'])}\n${await run('xrandr', ['--query'])}\n${vncDiagnostics}`);
+    assert.deepEqual({ width, height }, result.actual);
     assert.equal(await run('tmux', [...tmux, 'list-panes', '-F', '#{pane_pid}']), pid);
     assert.equal(display.exitCode, null); assert.equal(viewer.exitCode, null);
     assert.equal(terminal.exitCode, null);

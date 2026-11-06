@@ -47,6 +47,7 @@ const ASSETS = new Map([
   ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
   ['/desktop/transport-policy.js', ['transport-policy.js', 'text/javascript; charset=utf-8']],
   ['/desktop/frame-hold.js', ['frame-hold.js', 'text/javascript; charset=utf-8']],
+  ['/desktop/first-frame.js', ['first-frame.js', 'text/javascript; charset=utf-8']],
   ['/desktop/stream-client.js', ['stream-client.js', 'text/javascript; charset=utf-8']],
   ['/desktop/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
   ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],

@@ -13,7 +13,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory } = {}) {
+export async function fixture({ port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -76,7 +76,8 @@ export async function fixture({ port = 0, dataDir, password = 'test_password_ver
         const frame = Buffer.alloc(16 + screenGeometry.width * screenGeometry.height * 4);
         frame.writeUInt16BE(1, 2); frame.writeUInt16BE(screenGeometry.width, 8); frame.writeUInt16BE(screenGeometry.height, 10);
         for (let i = 16; i < frame.length; i += 4) frame.set([34, 48, 29, 0], i);
-        socket.write(frame);
+        if (rfbFrameHook) void Promise.resolve(rfbFrameHook()).then(() => { if (!socket.destroyed) socket.write(frame); }).catch(() => socket.destroy());
+        else socket.write(frame);
       }
       if (phase === 3) pending = Buffer.alloc(0);
     });

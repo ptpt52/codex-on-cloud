@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { chromium } from '@playwright/test';
 import { fixture } from './fixture.mjs';
+import { vncArguments } from '../native/vnc.mjs';
 
 // Real X input on a private, disposable display. The manager is fixture-backed;
 // no physical display, live tmux pane, Codex task or production login is used.
@@ -44,12 +45,12 @@ try {
   server = net.createServer(socket => {
     vncConnections++;
     socket.pause(); socket.on('error', () => {});
-    start('x11vnc', ['-norc', '-inetd', '-display', env.DISPLAY, '-auth', env.XAUTHORITY, '-no6', '-noipv6', '-rfbport', '0', '-nopw', '-noremote', '-nolookup', '-noxrecord', '-quiet'], [socket, socket, 'ignore']);
+    start('x11vnc', vncArguments(env.DISPLAY, env.XAUTHORITY), [socket, socket, 'ignore']);
     socket.destroy();
   });
   server.listen(socketPath); await once(server, 'listening'); await chmod(socketPath, 0o600);
   app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true }); app.config.vncSocket = socketPath;
-  browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
+  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 390, height: 600 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
   await page.addInitScript(() => { window.nativePeers = []; const Native = RTCPeerConnection; window.RTCPeerConnection = class extends Native { constructor(...args) { super(...args); window.nativePeers.push(this); } }; });

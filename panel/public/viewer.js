@@ -4,6 +4,7 @@ import { createDesktopPointer } from './desktop-pointer.js';
 import { createFrameHold } from './frame-hold.js';
 import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
 import { createStreamClient } from './stream-client.js';
+import { afterFirstFrame } from './first-frame.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -17,7 +18,7 @@ let lastMouse = { x: 0, y: 0, buttons: 0 }, releaseMouse = false;
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
 const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
-let rfb, retry, stopping = false;
+let rfb, retry, stopping = false, resizeReady = false, frameReadiness;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
 let healthTimer, healthGeneration = 0, healthNetworkCheck = false, viewAnchor, restoringView = false;
@@ -71,7 +72,7 @@ function reportView() {
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
     const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height,
-      idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800 };
+      resizeReady, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800 };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -330,6 +331,7 @@ async function probeDirect() {
   }
 }
 function attachViewer(direct, channel) {
+  frameReadiness?.(); frameReadiness = undefined;
   pointerControls.update(canvas, false, preferences);
   rememberView(); stopHealth();
   restoringView = !!viewAnchor;
@@ -343,6 +345,11 @@ function attachViewer(direct, channel) {
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('viewer', viewer);
   const instance = rfb = new RFB(screen, channel || (direct ? direct.video() : url.href), { shared: false });
+  resizeReady = false;
+  frameReadiness = afterFirstFrame(instance, () => {
+    if (rfb !== instance || stopping) return;
+    resizeReady = true; reportView();
+  });
   if (channel) {
     const sendKey = instance.sendKey.bind(instance);
     instance.sendKey = (keysym, code, down) => {
@@ -372,6 +379,7 @@ function attachViewer(direct, channel) {
   });
   instance.addEventListener('disconnect', () => {
     if (rfb !== instance || stopping) return;
+    frameReadiness?.(); frameReadiness = undefined;
     stopHealth(); viewing = false; connecting = false;
     pointerControls.update(canvas, false, preferences);
     if (switching && switchingFrom === instance) return;
@@ -461,6 +469,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  frameReadiness?.(); frameReadiness = undefined;
   frameHold.clear();
   streamClient?.close();
   pointerControls.update(canvas, false, preferences);

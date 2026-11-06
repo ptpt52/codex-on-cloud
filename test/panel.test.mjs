@@ -11,6 +11,7 @@ test('authentication, host/origin checks and CSRF protect both API and desktop',
   const app = await fixture(); t.after(() => app.close());
   assert.equal((await app.request('/api/state')).status, 401);
   assert.equal((await app.request('/desktop/index.html')).status, 401);
+  assert.equal((await app.request('/desktop/first-frame.js')).status, 401);
   const badHost = await new Promise(resolve => http.get(app.config.origin + '/healthz', { headers: { host: 'attacker.example' } }, response => { response.resume(); resolve(response.statusCode); }));
   assert.equal(badHost, 400);
   assert.equal((await app.request('/api/login', { method: 'POST', body: {}, headers: { origin: 'https://attacker.example' } })).status, 403);
@@ -32,6 +33,7 @@ test('desktop resources require login, serve noVNC locally and reject traversal'
   assert.equal(response.headers.get('www-authenticate'), null);
   assert.match(await response.text(), /viewer.js/);
   assert.equal((await app.request('/desktop/novnc/core/rfb.js')).status, 200);
+  assert.equal((await app.request('/desktop/first-frame.js')).status, 200);
   assert.equal((await app.request('/desktop/novnc/core/%2e%2e%2f%2e%2e%2fpackage.json')).status, 404);
   assert.equal(app.received.length, 0);
 });

@@ -32,7 +32,7 @@ const directIssues = { unsupported: '当前浏览器环境不支持直连', disa
 let controlReady = false, controlPending = null, controlSequence = 0;
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
-let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false;
+let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalController = null, terminalLoadAttempted = false;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false;
@@ -291,7 +291,7 @@ renderDisplayControls();
 function inputPaused() { return viewportResizing || controlsState.viewportBusy || transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
 function scheduleViewport(delay = 500) {
   clearTimeout(viewportTimer);
-  if (!loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  if (!loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
   viewportTimer = setTimeout(resizeViewport, delay);
 }
 function waitForViewport(actual, signal) {
@@ -311,7 +311,7 @@ function waitForViewport(actual, signal) {
 }
 async function resizeViewport() {
   viewportTimer = null;
-  if (terminalMode() || !loggedIn || !owned || !frameLoaded || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  if (terminalMode() || !loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
   if (!nativeIdle || inputPaused() || inputBusy || terminalBusy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
@@ -495,7 +495,7 @@ function stopFrame() {
   terminalController?.abort();
   shortcutMenu.close();
   closeConfirmation();
-  clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false;
+  clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false; frameResizeReady = false;
   clearTimeout(switchTimer); transportSwitching = false;
   resetDirectControl();
   frameLoaded = false;
@@ -1071,7 +1071,7 @@ function renderDesktopSettings() {
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
-  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !nativeIdle || frameState !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
+  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !frameResizeReady || !nativeIdle || frameState !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
   $('desktop-restart-notice').hidden = !desktopSettings?.restartRequired;
   if (!desktopSettings) return;
   const { actual, saved, session, job } = desktopSettings;
@@ -1112,7 +1112,7 @@ async function loadDesktopSettings(resetForm = false) {
 async function settingsAction(path, body) {
   if (settingsBusy || !desktopSettings || !loggedIn || !owned) return;
   const live = path.endsWith('/resolution');
-  if (live && (viewportController || !nativeIdle || inputPaused())) return;
+  if (live && (viewportController || !frameResizeReady || !nativeIdle || inputPaused())) return;
   stopSettingsPolling();
   const controller = live ? new AbortController() : null;
   const timeout = live ? setTimeout(() => controller.abort(), 10000) : null;
@@ -1247,6 +1247,7 @@ window.addEventListener('message', event => {
   if (event.data?.type === 'codex-desktop-view') {
     if (event.data.revision !== displayRevision) return;
     nativeIdle = event.data.idle === true;
+    if (typeof event.data.resizeReady === 'boolean') frameResizeReady = event.data.resizeReady;
     if (nativeIdle) scheduleViewport();
     if (Number.isFinite(event.data.scale) && event.data.scale > 0 && event.data.scale <= 16) {
       displayScale = event.data.scale;
