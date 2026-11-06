@@ -69,18 +69,15 @@ try {
     assert.equal(args[args.indexOf('-tn') + 1], 'xterm-256color');
   }
   await controls.input({ action: 'terminal' });
-  // Reproduce the submitted Codex prompt's black-on-colour8 row in real pixels.
-  // The same pane stays alive while an 8-colour viewer loses its contrast.
+  // Verify the actual viewer's black-on-colour8 prompt in real pixels.
+  // Modern tmux detects Xterm's palette even with TERM=xterm, so that name
+  // alone cannot provide a portable 8-colour negative control.
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'show-options', '-sv', 'default-terminal']), 'screen-256color');
   const colorScript = join(root, 'color-proof.py'), colorReady = join(root, 'color-ready'), colorRelease = join(root, 'color-release');
   await writeFile(colorScript, `import os, sys, time\nos.write(1, b'\\x1b[2J\\x1b[H\\x1b[0;30;48;5;8mMMMM Submitted prompt text MMMM' + b' ' * 30 + b'\\x1b[0m')\nwith open(sys.argv[1], 'w') as f: f.write(os.environ['TERM'])\ndeadline = time.monotonic() + 20\nwhile not os.path.exists(sys.argv[2]) and time.monotonic() < deadline: time.sleep(0.05)\n`);
   await controls.input({ action: 'paste', target: 'terminal', text: `python3 '${colorScript}' '${colorReady}' '${colorRelease}'` });
   await controls.input({ action: 'key', key: 'Enter' });
   await eventually(async () => (await readFile(colorReady, 'utf8')) === 'screen-256color');
-  start('xterm', ['-tn', 'xterm', '-class', 'codex-color-legacy', '-fa', 'DejaVu Sans Mono', '-fs', '20', '-e', 'tmux', '-S', env.TMUX_SOCKET, 'attach-session', '-t', '=codex']);
-  let legacyWindow;
-  await eventually(async () => !!(legacyWindow = await run('xdotool', ['search', '--class', '^codex-color-legacy$'])));
-  await eventually(async () => (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_termname}'])).split('\n').length === 2);
   async function promptPixels(id, name) {
     const file = join(root, `${name}.png`);
     await run('import', ['-display', config.display, '-window', id, file]);
@@ -96,14 +93,10 @@ try {
   const colorWindow = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']);
   let fixedPixels;
   await eventually(async () => { fixedPixels = await promptPixels(colorWindow, 'prompt-256color'); return fixedPixels.grey > 500 && fixedPixels.black > 30; });
-  const legacyPixels = await promptPixels(legacyWindow, 'prompt-8color');
-  assert.equal(legacyPixels.grey, 0, 'the old 8-colour viewer reproduces the invisible black row');
-  assert.ok(legacyPixels.black > 500);
-  await run('xdotool', ['windowclose', legacyWindow]);
   await writeFile(colorRelease, 'continue');
   await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_current_command}']) === 'bash');
   assert.equal((await controls.get()).session.pid, pid);
-  console.log(`✓ real X11 prompt contrast: 256-colour viewer ${fixedPixels.grey} grey / ${fixedPixels.black} black pixels; legacy viewer ${legacyPixels.grey} grey`);
+  console.log(`✓ real X11 prompt contrast: 256-colour viewer ${fixedPixels.grey} grey / ${fixedPixels.black} black pixels`);
   // Capture real xterm/tmux bytes in this temporary display, never in the user's Codex.
   const keyCases = [
     ['Ctrl+J', '0a'], ['Enter', '0d'], ['Ctrl+R', '12'], ['Ctrl+G', '07'], ['Ctrl+O', '0f'], ['Ctrl+L', '0c'],
@@ -159,7 +152,8 @@ try {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'switch-client', '-c', auxClient, '-t', 'codex']);
   await assert.rejects(controls.input({ action: 'key', key: 'Enter', ...destination }), { status: 409, outcome: 'rejected' });
   await controls.manageTerminals({ action: 'open', ...destination });
-  assert.equal((await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-c', auxClient, '#{session_name}'])), 'codex-aux1');
+  const auxSession = (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_tty}\t#{session_name}'])).split('\n').find(line => line.startsWith(`${auxClient}\t`))?.split('\t')[1];
+  assert.equal(auxSession, 'codex-aux1');
   const auxWindow = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']);
   await run('xdotool', ['windowclose', auxWindow]);
   await eventually(async () => !(await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']).catch(() => '')));

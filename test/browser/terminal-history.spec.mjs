@@ -275,7 +275,7 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
   test.setTimeout(60000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-browser-history-')), socket = join(directory, 'tmux.sock'), clients = [];
   const proof = join(directory, 'once'), tui = join(directory, 'tui.py'), tuiReady = join(directory, 'ready'), keys = join(directory, 'keys');
-  const env = { ...process.env, HOME: directory, HISTFILE: '/dev/null', TERM: 'xterm-256color',
+  const env = { ...process.env, HOME: directory, HISTFILE: '/dev/null', TERM: 'xterm-256color', DEPLOY_MODE: 'terminal',
     PATH: `${resolve('data/host-tools/usr/bin')}:${process.env.PATH}`, HISTORY_TEST_PROOF: proof, HISTORY_TEST_TUI: tui };
   delete env.TMUX; delete env.DISPLAY; delete env.XAUTHORITY;
   const exec = promisify(execFile), run = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 8192 });
@@ -284,9 +284,9 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     await exec('tmux', ['-f', resolve('desktop/tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex', '-x', '80', '-y', '24', 'bash --noprofile --norc'], { env, timeout: 3000 });
     const token = (await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim();
     app = await fixture();
-    // The directory/manager remains mocked; the transport, tmux and helper are real.
+    // The manager remains mocked; the real terminal-only helper must not need X11.
     app.config.terminalLaunch = () => {
-      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token, '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
       clients.push(child); return child;
     };
     await prepare(page); const frame = await login(page, app); await page.locator('#toggle-input-button').click();

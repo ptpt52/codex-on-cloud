@@ -1119,10 +1119,11 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
   const live = desktopSettings?.canResize === true;
-  for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !!adaptive || viewportResizing;
+  for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !writable || !!adaptive;
+  $('terminal-font-size').disabled = !writable;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
@@ -1144,6 +1145,7 @@ function stopSettingsPolling() {
 async function loadDesktopSettings(resetForm = false) {
   if (!$('desktop-settings-dialog').open || settingsController || !loggedIn) return;
   const controller = new AbortController(); settingsController = controller;
+  renderDesktopSettings();
   const timeout = setTimeout(() => controller.abort(new Error('读取设置超时，请手动刷新')), 8000);
   clearTimeout(settingsTimer);
   try {
@@ -1162,7 +1164,10 @@ async function loadDesktopSettings(resetForm = false) {
     if (next.busy) settingsTimer = setTimeout(() => void loadDesktopSettings(), 800);
   } catch (error) {
     if (settingsController === controller && loggedIn) $('desktop-settings-status').textContent = error.message;
-  } finally { clearTimeout(timeout); if (settingsController === controller) settingsController = null; }
+  } finally {
+    clearTimeout(timeout);
+    if (settingsController === controller) { settingsController = null; renderDesktopSettings(); }
+  }
 }
 async function settingsAction(path, body) {
   if (settingsBusy || !desktopSettings || !loggedIn || !owned) return;

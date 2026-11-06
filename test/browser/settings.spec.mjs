@@ -106,19 +106,52 @@ test('saved in-range resolution applies exact pixels without restart, reconnect 
 
 test('oversized saved resolution requires explicit restart confirmation and never resizes automatically', async ({ page }) => {
   const app = await fixture({ rfb: true, viewport: true, rfbSize: { width: 1600, height: 3200 } });
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/desktop/settings', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch(); entered(); await hold; await route.fulfill({ response });
+  });
   try {
     await page.goto(app.config.origin); await page.getByLabel('密码', { exact: true }).fill(app.config.password);
     await page.getByRole('button', { name: '连接工作空间' }).click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await openTools(page); await page.locator('#desktop-settings-button').click();
+    await started;
+    for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'terminal-font-size', 'save-desktop-settings', 'apply-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
+    expect(app.managementStats.saves).toBe(0);
+    release();
     await page.locator('#desktop-width').fill('1920'); await page.locator('#save-desktop-settings').click();
     await expect(page.locator('#settings-pending')).toContainText('需确认重启');
+    await expect(page.locator('#desktop-width')).toHaveValue('1920');
+    expect(app.managementStats.saves).toBe(1);
     await expect(page.locator('#desktop-restart-notice')).toBeVisible();
     await expect(page.locator('#apply-desktop-settings')).toBeDisabled();
     await page.waitForTimeout(1500);
     expect(app.managementStats.restarts).toBe(0); expect(app.managementStats.viewportResizes).toBe(0);
     await page.locator('#confirm-desktop-restart').check(); await expect(page.locator('#apply-desktop-settings')).toBeEnabled();
     expect(app.inputCalls).toEqual([]);
-  } finally { await app.close(); }
+  } finally { release(); await app.close(); }
+});
+
+test('refresh locks settings fields until the saved values arrive, then accepts edits without overwriting them', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  try {
+    await open(page, app);
+    await page.route('**/api/desktop/settings', async route => {
+      if (route.request().method() !== 'GET') return route.continue();
+      const response = await route.fetch(); entered(); await hold; await route.fulfill({ response });
+    });
+    await page.locator('#refresh-desktop-settings').click(); await started;
+    for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'terminal-font-size', 'save-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
+    release();
+    await page.locator('#desktop-width').fill('1920'); await page.locator('#terminal-font-size').fill('18');
+    await page.locator('#save-desktop-settings').click();
+    await expect(page.locator('#settings-pending')).toContainText('待应用：1920 × 1600');
+    await expect(page.locator('#desktop-width')).toHaveValue('1920'); await expect(page.locator('#terminal-font-size')).toHaveValue('18');
+    expect(app.managementStats.saves).toBe(1); expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { release(); await app.close(); }
 });
 
 test('lost live-apply response never repeats the action or falls back to restarting', async ({ page }) => {
