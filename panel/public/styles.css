@@ -83,3 +83,5 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 .access-checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .access-checkbox input { width: auto; }
 #unlock-form { display: grid; gap: 10px; }
+
+#forward-diagnostics-text{box-sizing:border-box;width:100%;min-height:180px;resize:vertical;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font:12px ui-monospace,Consolas,monospace}

@@ -306,7 +306,7 @@ export async function createPanel(config) {
       const downloads = await forwardDownloads.list();
       const session = requireSession(req), permission = accessState(req, session);
       const directory = permission.canManageDevices ? devices.list() : { devices: [], limit: 0 };
-      return reply(res, 200, { ...directory, ...forwarding.list(item => mappingAllowed(req, session, item)), deviceLimit: directory.limit, downloads,
+      return reply(res, 200, { ...directory, ...forwarding.list(item => mappingAllowed(req, session, item), session.hash), deviceLimit: directory.limit, downloads,
         permissions: { directions: permission.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permission.canManageDevices } });
     }
     if (path === '/api/forward/devices' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, devices.list()); }
@@ -329,7 +329,7 @@ export async function createPanel(config) {
         const device = devices.find(body.deviceId);
         if (!device || device.name !== body.deviceName || device.targetHost !== body.targetHost || device.targetPort !== body.targetPort || device.protocol !== body.protocol || device.localPort !== body.localPort) throw new HttpError(409, '设备资料已改变，请重新选择设备后配对');
       }
-      return reply(res, 200, forwarding.create(body, session.hash, () => closing ? 'server_stopping' : auth.get(token) ? '' : session.expires <= Date.now() ? 'authorization_expired' : 'authorization_revoked'));
+      return reply(res, 200, forwarding.create(body, session.hash, () => closing ? 'server_stopping' : auth.get(token) ? '' : session.expires <= Date.now() ? 'authorization_expired' : 'authorization_revoked', { expiresAt: session.expires, role: session.role || 'admin' }));
     }
     if (path === '/api/terminals' && req.method === 'POST') {
       const body = await ownedBody(req, 1024);

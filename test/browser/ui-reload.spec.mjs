@@ -25,3 +25,18 @@ test('live UI publication keeps old modules coherent, preserves draft and frame,
     expect(errors).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); await rm(snapshot.directory, { recursive: true, force: true }); }
 });
+
+test('mapping lifecycle and diagnostic copy fallback remain usable on a narrow screen without copying pairing credentials', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } });
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#forward-button')).toBeEnabled(); await page.locator('#forward-button').click(); await page.locator('#forward-create').click();
+    await expect(page.locator('#forward-code')).not.toHaveValue(''); const code = await page.locator('#forward-code').inputValue();
+    await expect(page.locator('.forward-authorization')).toContainText('本次登录创建'); await expect(page.locator('.forward-authorization')).toContainText('登录授权到期');
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw Error('denied'); } } }));
+    await page.locator('#forward-diagnostics-copy').click(); await expect(page.locator('#forward-diagnostics-text')).toBeVisible();
+    const report = await page.locator('#forward-diagnostics-text').inputValue(); expect(report).not.toContain(code); expect(report).not.toContain('127.0.0.1'); expect(report).toContain('等待配对');
+    await page.locator('#forward-diagnostics-select').click(); await expect(page.locator('#forward-diagnostics-text')).toBeFocused();
+    await page.locator('#forward-close').click(); await expect(page.locator('#forward-diagnostics-text')).toHaveValue(''); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});

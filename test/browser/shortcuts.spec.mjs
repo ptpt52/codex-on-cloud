@@ -137,16 +137,18 @@ test('the public offline shell includes shortcut modules and never caches authen
     await context.setOffline(true); await page.reload();
     await expect(page.locator('#login-view')).toBeVisible();
     await expect(page.locator('[data-shortcut]')).toHaveCount(39); await expect(page.locator('#shortcuts-button')).toBeDisabled();
-    const { paths, names } = await page.evaluate(async () => {
+    const { paths, names, revisions } = await page.evaluate(async () => {
       const names = (await caches.keys()).filter(name => name.startsWith('codex-cloud-shell-'));
       const cache = await caches.open(names[0]);
-      return { names, paths: (await cache.keys()).map(request => new URL(request.url).pathname) };
+      const urls = (await cache.keys()).map(request => new URL(request.url));
+      return { names, paths: urls.map(url => url.pathname), revisions: urls.map(url => url.searchParams.get('ui')) };
     });
     expect(names).toHaveLength(1);
     expect(paths).toContain('/shortcuts.js'); expect(paths).toContain('/shortcut-menu.js');
     expect(paths).toContain('/workspace-panels.js'); expect(paths).toContain('/workspace.css');
     expect(paths).toContain('/terminal-state.js'); expect(paths).toContain('/terminal-tabs.js');
-    expect(paths).toContain('/access-ui.js'); expect(paths.length).toBeLessThanOrEqual(14);
+    expect(paths).toContain('/access-ui.js'); expect(paths).toContain('/forward-report.js');
+    expect(paths).toHaveLength(15); expect(new Set(revisions)).toEqual(new Set([app.panel.uiRevision]));
     expect(paths.some(path => path.startsWith('/api/') || path.startsWith('/desktop/'))).toBe(false);
     expect(app.inputCalls).toEqual([]);
   } finally { await context.setOffline(false); await app.close(); }

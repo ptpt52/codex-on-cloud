@@ -101,17 +101,18 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function revoke(session) { for (const item of mappings.values()) if (item.session === session) remove(item, 'signed_out'); }
   const timer = setInterval(refresh, 5000).unref();
-  function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, deviceId: item.deviceId, protocol: item.protocol, targetStatus: item.targetStatus || { state: 'unverified' } } : {}; }
-  function list(visible = () => true) {
+  function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, deviceId: item.deviceId, protocol: item.protocol, targetStatus: item.targetStatus || { state: 'unverified' } } : { targetStatus: item.targetStatus || { state: 'unverified' } }; }
+  function list(visible = () => true, viewer) {
     if (typeof visible !== 'function') visible = () => true;
     refresh();
     return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
       mappings: [...mappings.values()].filter(visible).map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
+        createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer },
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
       recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
-  function create(body, session, authorizationError) {
+  function create(body, session, authorizationError, authorization = {}) {
     refresh();
     const reversed = body?.direction === 'reverse';
     const fieldsValid = body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'deviceId', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
@@ -123,7 +124,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (authorizationError()) throw fail(401, '登录授权已失效，请重新登录');
     if (mappings.size >= FORWARD_LIMITS.mappings) throw fail(409, '最多保留 4 个映射，请先停止不用的映射');
     if ([...mappings.values()].some(item => item.direction === (reversed ? 'reverse' : undefined) && item.localPort === body.localPort && (reversed || item.session === session))) throw fail(409, '该监听端口已有待配对或活动映射');
-    const code = secret(), item = { id: randomBytes(16).toString('hex'), session, authorizationError, pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
+    const code = secret(), item = { id: randomBytes(16).toString('hex'), session, authorizationError, authorization, createdAt: now(), pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
       localPort: body.localPort, targetHost, targetPort: body.targetPort, ...(reversed ? { direction: 'reverse', deviceName, deviceId: body.deviceId, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
     mappings.set(item.id, item);
     return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item) };
@@ -239,7 +240,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       clearTimeout(deadline);
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
       if (!live()) return tcp.destroy();
-      connected = true; item.errorCode = ''; tcp.setNoDelay(true); tcp.setKeepAlive(true, 30000); ws.send('{"type":"ready"}');
+      connected = true; item.targetStatus = { state: 'reachable', at: now() }; item.errorCode = ''; tcp.setNoDelay(true); tcp.setKeepAlive(true, 30000); ws.send('{"type":"ready"}');
     });
     ws.on('message', (data, binary) => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
@@ -271,6 +272,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     tcp.once('end', () => { if (ws.readyState === 1) ws.send('{"type":"fin"}'); });
     tcp.once('error', error => {
       if (!live()) return;
+      item.targetStatus = { state: 'failed', at: now() };
       item.errorCode = connected ? 'target_disconnected' : error.code === 'ETIMEDOUT' ? 'target_timeout' : 'target_unavailable';
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', code: item.errorCode }), () => ws.close(1011, item.errorCode));
     });
