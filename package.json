@@ -6,6 +6,7 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "reload-ui": "node scripts/reload-ui.mjs",
     "reset-password": "node scripts/reset-password.mjs",
     "deploy": "node scripts/deploy.mjs",
     "start": "node panel/main.mjs",

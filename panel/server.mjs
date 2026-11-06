@@ -24,48 +24,9 @@ import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
 import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
+import { createUIAssets } from './ui-assets.mjs';
 
-const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
-const ASSETS = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/access-ui.js', ['access-ui.js', 'text/javascript; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/workspace-panels.js', ['workspace-panels.js', 'text/javascript; charset=utf-8']],
-  ['/terminal-state.js', ['terminal-state.js', 'text/javascript; charset=utf-8']],
-  ['/terminal-tabs.js', ['terminal-tabs.js', 'text/javascript; charset=utf-8']],
-  ['/workspace.css', ['workspace.css', 'text/css; charset=utf-8']],
-  ['/forward-ui.js', ['forward-ui.js', 'text/javascript; charset=utf-8']],
-  ['/forward-platform.js', ['forward-platform.js', 'text/javascript; charset=utf-8']],
-  ['/control.js', ['control.js', 'text/javascript; charset=utf-8']],
-  ['/shortcuts.js', ['shortcuts.js', 'text/javascript; charset=utf-8']],
-  ['/shortcut-menu.js', ['shortcut-menu.js', 'text/javascript; charset=utf-8']],
-  ['/health.js', ['health.js', 'text/javascript; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
-  ['/icon.svg', ['icon.svg', 'image/svg+xml']],
-  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
-  ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/index.html', ['viewer.html', 'text/html; charset=utf-8']],
-  ['/desktop/viewer.js', ['viewer.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/desktop-pointer.js', ['desktop-pointer.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/rtc.js', ['rtc.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/transport-policy.js', ['transport-policy.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/frame-hold.js', ['frame-hold.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/first-frame.js', ['first-frame.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/stream-client.js', ['stream-client.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
-  ['/desktop/viewer.css', ['viewer.css', 'text/css; charset=utf-8']],
-  ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
-  ['/terminal/terminal.js', ['terminal.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/terminal-health.js', ['terminal-health.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/terminal-rtc.js', ['terminal-rtc.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/terminal-history.js', ['terminal-history.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/terminal-history-style.js', ['terminal-history-style.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/terminal.css', ['terminal.css', 'text/css; charset=utf-8']],
-  ['/terminal/xterm.js', ['../../node_modules/@xterm/xterm/lib/xterm.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/fit.js', ['../../node_modules/@xterm/addon-fit/lib/addon-fit.js', 'text/javascript; charset=utf-8']],
-  ['/terminal/xterm.css', ['../../node_modules/@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8']],
-]);
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const VIEWER = /^[a-f0-9-]{16,64}$/;
 
@@ -94,12 +55,12 @@ function reply(res, status, data, headers = {}) {
 }
 
 export async function createPanel(config) {
+  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false });
   const access = await createAccessControl(config);
   const auth = await createAuth(config, { validSession: session => session.role !== 'temporary' || access.temporaryValid(session) });
   const devices = createDeviceDirectory(config.dataDir);
   const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
   const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics(undefined, config.mode);
-  const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
   const failures = new Map();
   const unlockFailures = new Map();
   const sockets = new Map();
@@ -237,6 +198,7 @@ export async function createPanel(config) {
     if (!hostAllowed(req)) throw new HttpError(400, '访问域名未配置，请检查 PUBLIC_ORIGIN / ALLOWED_HOSTS');
     const url = new URL(req.url, 'http://internal');
     const path = url.pathname;
+    if (path === '/ui-version' && req.method === 'GET') return reply(res, 200, { revision: assets.revision });
     if (path === '/healthz' && req.method === 'GET') return reply(res, 200, { ok: true });
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw new HttpError(403, '请求来源无效');
@@ -595,10 +557,10 @@ export async function createPanel(config) {
         return res.end(req.method === 'HEAD' ? undefined : bytes);
       }
     }
-    const asset = assets.get(path);
+    const asset = assets.get(path, url.searchParams.get('ui'));
     if (asset && ['GET', 'HEAD'].includes(req.method)) {
-      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self'; style-src 'self'${path.startsWith('/terminal/') ? " 'unsafe-inline'" : ''}; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'`);
-      res.writeHead(200, { 'content-type': asset.type, 'content-length': asset.bytes.length, 'cache-control': 'no-store' });
+      res.setHeader('content-security-policy', `default-src 'self'; script-src 'self' 'sha256-${asset.scriptHash}'; style-src 'self'${path.startsWith('/terminal/') ? " 'unsafe-inline'" : ''}; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'`);
+      res.writeHead(200, { 'content-type': asset.type, 'content-length': asset.bytes.length, 'cache-control': 'no-store', 'x-ui-revision': asset.revision });
       return res.end(req.method === 'HEAD' ? undefined : asset.bytes);
     }
     throw new HttpError(404, '资源不存在');
@@ -731,5 +693,5 @@ export async function createPanel(config) {
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     await auth.close();
   }
-  return { server, close };
+  return { server, close, reloadUI: assets.reload, get uiRevision() { return assets.revision; } };
 }

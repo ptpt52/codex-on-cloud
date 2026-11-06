@@ -381,3 +381,5 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native
 这会在终端发送无害的 printf/sleep 命令、验证中文粘贴与断线保活，并重启一次面板，测试完成删除中转测试文件。不要在桌面正在执行任务时运行。结果与待验收项目见 [验证记录](docs/verification.md)。
 
 实现边界见 [架构说明](docs/architecture.md)。参考 WechatOnCloud 的浏览器常驻桌面与手机输入设计，以及 agent-relay 的跨设备、断线不重发需求。浏览器客户端使用 [noVNC](https://github.com/novnc/noVNC)，本项目新增代码采用 MIT 许可，依赖分别遵循自身许可。
+
+网页资源更新可使用 `npm run reload-ui` 保持映射连接，首次升级和版本保留限制见 [前端热更新](docs/ui-updates.md)。

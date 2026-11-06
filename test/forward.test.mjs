@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import WebSocket from 'ws';
 import { fixture } from './fixture.mjs';
+import { uiSnapshot } from './support/ui-snapshot.mjs';
+import { readFile } from 'node:fs/promises';
 import { createForwarding, forwardPorts, forwardTargetHost } from '../panel/forward.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 
@@ -326,4 +328,38 @@ test('direct signaling rejects invalid SDP before allocation and authenticates t
   await app.claim();assert.equal(captured.valid(),true);await app.claim('22222222-2222-4222-8222-222222222222');assert.equal(captured.valid(),true);
   await app.request('/api/logout',{method:'POST',body:{}});assert.equal(captured.valid(),false);assert.equal(destroyed,true);
   assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
+});
+
+
+test('publishing front-end assets preserves existing forward and reverse TCP streams, pairing grants and source login', async t => {
+  const snapshot = await uiSnapshot(); t.after(() => rm(snapshot.directory, { recursive: true, force: true }));
+  const target = await echo(t), app = await fixture({ uiRoot: snapshot.root, forwardPorts: [target.port, 22] }); t.after(() => app.close());
+  await app.login(); await app.claim();
+  const mapping = await created(app, target.port), control = await helper(app, mapping.code);
+  const data = await socket(app, '/forward/data', control.ready.streamToken); await until(() => data.records.length === 1);
+  const reserved = net.createServer(); reserved.listen(0, '127.0.0.1'); await once(reserved, 'listening'); const port = reserved.address().port; await new Promise(resolve => reserved.close(resolve));
+  const reversed = await (await app.request('/api/forward', { method: 'POST', body: { direction: 'reverse', deviceName: 'test device', protocol: 'tcp', localPort: port, targetHost: '127.0.0.1', targetPort: 22 } })).json();
+  const reverseControl = await socket(app, '/forward/helper', reversed.code, { 'x-codex-forward-reverse': '1' });
+  await until(() => reverseControl.records.length === 1); const ready = reverseControl.records[0].data;
+  reverseControl.ws.send('{"type":"listening"}'); await until(() => reverseControl.records.length === 2);
+  const tcp = net.createConnection({ host: '127.0.0.1', port }); tcp.on('error', () => {}); t.after(() => tcp.destroy());
+  await until(() => reverseControl.records.some(record => record.data.type === 'reverse_open'));
+  const id = reverseControl.records.find(record => record.data.type === 'reverse_open').data.id;
+  const reverseData = await socket(app, '/forward/data', ready.streamToken, { 'x-codex-reverse-stream': id });
+  await until(() => reverseData.records.length === 1); reverseData.ws.send('{"type":"target_ready"}');
+  const exchange = async value => {
+    const bytes = Buffer.from(value); const start = data.records.length; data.ws.send(bytes);
+    await until(() => data.records.slice(start).some(record => record.binary && record.data.equals(bytes)));
+    const received = once(tcp, 'data'); reverseData.ws.send(bytes); assert.deepEqual((await received)[0], bytes);
+    const previous = reverseData.records.length; tcp.write(bytes);
+    await until(() => reverseData.records.slice(previous).some(record => record.binary && record.data.equals(bytes)));
+  };
+  await exchange('before\0');
+  const css = new URL('styles.css', snapshot.root); await writeFile(css, (await readFile(css, 'utf8')) + '\n/* live publication */');
+  const previous = app.panel.uiRevision; await app.panel.reloadUI(); assert.notEqual(previous, app.panel.uiRevision);
+  await exchange('after\0');
+  assert.equal((await app.request('/api/me')).status, 200);
+  const state = await (await app.request('/api/forward')).json(); assert.equal(state.mappings.length, 2); assert.ok(state.mappings.every(item => item.state === 'active'));
+  assert.equal(app.inputCalls.length, 0); assert.equal(app.managementStats.restarts, 0);
+  data.ws.terminate(); reverseData.ws.terminate(); control.ws.terminate(); reverseControl.ws.terminate();
 });

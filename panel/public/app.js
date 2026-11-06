@@ -612,6 +612,7 @@ function showLogin(message = '') {
 }
 function frameUrl() {
   const query = new URLSearchParams({ viewer, frame: String(frameEpoch) });
+  const ui = document.querySelector('meta[name="ui-revision"]')?.content; if (ui) query.set('ui', ui);
   if (fastConnectEnabled) query.set('fast', '1');
   if (streamProtocolEnabled) query.set('stream', '1');
   if (terminalMode()) {
@@ -1333,3 +1334,21 @@ forwardingUI = createForwardUI({ api, allowed: () => loggedIn && !accessExpired 
   capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+// Only announce updates; active input and streams stay on their loaded version.
+let uiCheckTimer;
+async function checkUIVersion() {
+  clearTimeout(uiCheckTimer);
+  if (document.hidden) return;
+  try {
+    const response = await fetch('/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    if (response.ok) {
+      const { revision } = await response.json(), loaded = document.querySelector('meta[name="ui-revision"]')?.content;
+      const note = $('ui-update-note'); if (note) note.hidden = !loaded || revision === loaded;
+    }
+  } catch {}
+  if (!document.hidden) uiCheckTimer = setTimeout(checkUIVersion, 60000);
+}
+document.addEventListener('visibilitychange', () => { clearTimeout(uiCheckTimer); if (!document.hidden) void checkUIVersion(); });
+window.addEventListener('pagehide', () => clearTimeout(uiCheckTimer));
+void checkUIVersion();
