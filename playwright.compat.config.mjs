@@ -4,7 +4,7 @@ import base from './playwright.config.mjs';
 const launch = name => process.env[name] ? { executablePath: process.env[name] } : {};
 export default defineConfig({
   ...base,
-  testMatch: 'compatibility.spec.mjs',
+  testMatch: ['compatibility.spec.mjs', 'reverse-forward.spec.mjs'],
   outputDir: 'test-results/compatibility',
   use: { ...base.use, launchOptions: {}, trace: 'retain-on-failure' },
   projects: [

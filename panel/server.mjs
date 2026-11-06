@@ -9,6 +9,7 @@ import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { createServiceDiagnostics } from './service-diagnostics.mjs';
+import { createDeviceDirectory } from './devices.mjs';
 import { managerRequest } from './manager-client.mjs';
 import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { validateInput } from '../native/input.mjs';
@@ -91,6 +92,7 @@ function reply(res, status, data, headers = {}) {
 
 export async function createPanel(config) {
   const auth = await createAuth(config);
+  const devices = createDeviceDirectory(config.dataDir);
   const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
   const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics();
   const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
@@ -271,7 +273,12 @@ export async function createPanel(config) {
       requireSession(req);
       const downloads = await forwardDownloads.list();
       requireSession(req);
-      return reply(res, 200, { ...forwarding.list(), downloads });
+      return reply(res, 200, { ...forwarding.list(), ...devices.list(), downloads });
+    }
+    if (path === '/api/forward/devices' && req.method === 'GET') { requireSession(req); return reply(res, 200, devices.list()); }
+    if (['/api/forward/devices', '/api/forward/devices/remove'].includes(path) && req.method === 'POST') {
+      requireWrite(req); const body = await jsonBody(req, 1024); requireWrite(req);
+      return reply(res, 200, path.endsWith('/remove') ? devices.remove(body) : devices.save(body));
     }
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
       requireSession(req); return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res);
@@ -280,6 +287,11 @@ export async function createPanel(config) {
       requireWrite(req);
       const body = await jsonBody(req, 1024), session = requireWrite(req), token = cookieToken(req.headers.cookie);
       if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body));
+      if (body?.direction === 'reverse' && body.deviceId !== undefined) {
+        if (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) throw new HttpError(400, '设备标识无效');
+        const device = devices.find(body.deviceId);
+        if (!device || device.name !== body.deviceName || device.targetHost !== body.targetHost || device.targetPort !== body.targetPort || device.protocol !== body.protocol || device.localPort !== body.localPort) throw new HttpError(409, '设备资料已改变，请重新选择设备后配对');
+      }
       return reply(res, 200, forwarding.create(body, session.hash, () => closing ? 'server_stopping' : auth.get(token) ? '' : session.expires <= Date.now() ? 'authorization_expired' : 'authorization_revoked'));
     }
     if (path === '/api/terminals' && req.method === 'POST') {

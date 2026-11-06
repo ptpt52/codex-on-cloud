@@ -51,9 +51,9 @@ try {
   const directPeers=[];let onlySix=false;
   const ipv6Only=sdp=>sdp.split(/\r?\n/).filter(line=>!line.startsWith('a=candidate:')||line.split(' ')[4]?.includes(':')).join('\r\n');
   app=await fixture({forwardPorts:'*',forwardPeerFactory:options=>{
-    const peer=createForwardPeer({...options,connect:socket=>{
+    const peer=createForwardPeer({...options,connect:(socket,id)=>{
       if(dropDirectReady){dropDirectReady=false;const send=socket.send;socket.send=(value,...args)=>{if(value==='{"type":"ready"}'){socket.terminate();return;}send(value,...args);};}
-      options.connect(socket);
+      options.connect(socket,id);
     }});directPeers.push(peer);
     if(onlySix){const answer=peer.answer;peer.answer=async offer=>ipv6Only(await answer({...offer,sdp:ipv6Only(offer.sdp)}));}
     return peer;
@@ -83,10 +83,11 @@ try {
       res.once('error',reject);res.once('end',()=>{assert.equal(res.statusCode,200);resolve(JSON.parse(Buffer.concat(chunks)));});
     });req.once('error',reject);req.end(payload);
   });
-  function launch(mapping,certFile=cert){
-    const child=spawn(binary,['--server',app.config.origin],{env:{...process.env,SSL_CERT_FILE:certFile},stdio:['pipe','pipe','pipe']});children.push(child);const finished=once(child,'exit');
+  function launch(mapping,certFile=cert,approve=true){
+    const reverseArgs=mapping.direction==='reverse'&&approve?['--allow-reverse',(net.isIP(mapping.targetHost)===6?'['+mapping.targetHost+']':mapping.targetHost)+':'+mapping.targetPort]:[];
+    const child=spawn(binary,['--server',app.config.origin,...reverseArgs],{env:{...process.env,SSL_CERT_FILE:certFile},stdio:['pipe','pipe','pipe']});children.push(child);const finished=once(child,'exit');
     let output='';const collect=bytes=>{output+=bytes.toString();if(Buffer.byteLength(output)>32768)throw new Error('Helper log bound');};
-    child.stdout.on('data',collect);child.stderr.on('data',collect);child.stdin.end(mapping.code+'\n');
+    child.stdout.on('data',collect);child.stderr.on('data',collect);child.stdin.end(mapping.code+'\n'+(approve?'':'NO\n'));
     return{child,mapping,finished,get output(){return output;}};
   }
   async function helper(port,targetPort=target.address().port,targetHost='127.0.0.2'){
@@ -97,12 +98,15 @@ try {
   async function roundtrip(port,payload){
     const socket=net.createConnection({host:'127.0.0.1',port,allowHalfOpen:true}),chunks=[];connections.add(socket);
     socket.on('error',()=>{});socket.on('data',bytes=>chunks.push(bytes));socket.once('close',()=>connections.delete(socket));
-    await once(socket,'connect');const ended=once(socket,'end');socket.end(payload);await ended;socket.destroy();return Buffer.concat(chunks);
+    const deadline=setTimeout(()=>socket.destroy(new Error('Isolated TCP roundtrip timed out after 30 seconds; sent '+payload.length+' bytes, received '+chunks.reduce((n,b)=>n+b.length,0))),30000);
+    try { await once(socket,'connect');const ended=once(socket,'end');socket.end(payload);await ended;return Buffer.concat(chunks); }
+    finally { clearTimeout(deadline);socket.destroy(); }
   }
-  const port=await freePort(),active=await helper(port),payload=Buffer.concat([Buffer.from('literal\0\r\n中文'),randomBytes(8*1024*1024)]);
+  const payload=Buffer.concat([Buffer.from('literal\0\r\n中文'),randomBytes(8*1024*1024)]),halfClose=Buffer.from('\x7f请求\0after EOF'),ipv6=rtcIPv6Address(undefined,rtcAddress());
+  if(!process.env.FORWARD_REVERSE_ONLY){
+  const port=await freePort(),active=await helper(port);
   assert.deepEqual(await roundtrip(port,payload),payload);assert.equal(accepted,1);
   const reused=launch(active.mapping);await reused.finished;assert.match(reused.output,/配对码已使用/);assert.equal(reused.output.includes(active.mapping.code),false);
-  const halfClose=Buffer.from('\x7f请求\0after EOF');
   assert.deepEqual(await roundtrip(port,halfClose),Buffer.concat([Buffer.from('after-fin:'),halfClose]));
   // A target's FIN must leave uploads and protocol heartbeats working. No browser
   // is attached; wait through two ping intervals before sending the final bytes.
@@ -235,7 +239,6 @@ try {
   await once(finalRestored,'connect');finalRestored.write('stop restored direct mapping');await once(finalRestored,'data');
   const restoredClosed=once(finalRestored,'close');await request('/api/forward/stop',{id:direct.mapping.id});await restoredClosed;await direct.finished;
   assert.equal(direct.output.includes('DATA RACE'),false);
-  const ipv6=rtcIPv6Address(undefined,rtcAddress());
   if(ipv6){
     app.config.webrtcIPv6=true;app.config.webrtcIPv6Address=ipv6;onlySix=true;
     const ipv6Port=await freePort(),six=await helper(ipv6Port,target6.address().port,'::1');
@@ -250,8 +253,59 @@ try {
   const target6Port=await freePort(),sixRelay=await helper(target6Port,target6.address().port,'::1');
   assert.deepEqual(await roundtrip(target6Port,Buffer.from('IPv6 target through WSS')),Buffer.from('IPv6 target through WSS'));
   await request('/api/forward/stop',{id:sixRelay.mapping.id});await sixRelay.finished;
-  console.log('✓ real TLS/WSS/TCP and UDP/DTLS/SCTP: custom IPv4/IPv6 targets, 8 MiB, half-closes, heartbeat, pinned streams, relay fallback, management resume, 30-second expiry, no pairing/TCP replay, direct rebuild, IPv6 when assigned, revocation and bounded diagnostics; no desktop or Codex input');
-  })(),new Promise((_,reject)=>{testDeadline=setTimeout(()=>reject(new Error('Native forwarding verification exceeded five minutes')),300000);})]);
+  }
+  // Reverse mode uses the same real helper and transports, but the helper
+  // owns the target dial. Pairing/probes alone must never touch that target.
+  app.config.webrtc=false;app.config.webrtcIPv6=false;onlySix=false;
+  const reverseMapping=async(port,host='127.0.0.2',targetPort=target.address().port)=>request('/api/forward',{direction:'reverse',deviceName:'隔离测试设备',protocol:'ssh',localPort:port,targetHost:host,targetPort});
+  const deniedMapping=await reverseMapping(await freePort()),beforeDenied=accepted,denied=launch(deniedMapping,cert,false);await denied.finished;
+  assert.match(denied.output,/未确认此设备授权/);assert.equal(accepted,beforeDenied);assert.equal((await request('/api/forward')).recent[0].code,'reverse_denied');
+  const reversePort=await freePort(),reverse=launch(await reverseMapping(reversePort));
+  await waitFor(()=>reverse.output.includes('映射已开启'),'Reverse WSS helper did not start');assert.match(reverse.output,/服务器 127\.0\.0\.1/);assert.equal(accepted,beforeDenied);
+  console.log('Reverse WSS: verify 8 MiB and client half-close');
+  assert.deepEqual(await roundtrip(reversePort,payload),payload);assert.deepEqual(await roundtrip(reversePort,halfClose),Buffer.concat([Buffer.from('after-fin:'),halfClose]));
+  assert.equal((await request('/api/forward')).mappings[0].targetStatus.state,'reachable');
+  receivedAfterServerFin=undefined;const reverseUploadReply=[],reverseUpload=net.createConnection({host:'127.0.0.1',port:reversePort,allowHalfOpen:true});connections.add(reverseUpload);reverseUpload.on('error',()=>{});reverseUpload.on('data',bytes=>reverseUploadReply.push(bytes));reverseUpload.once('close',()=>connections.delete(reverseUpload));
+  console.log('Reverse WSS: verify target half-close and heartbeats');
+  await once(reverseUpload,'connect');const reverseEnded=once(reverseUpload,'end');reverseUpload.write('~reverse upload');await reverseEnded;assert.equal(Buffer.concat(reverseUploadReply).toString(),'server-fin');
+  await new Promise(resolve=>setTimeout(resolve,31000));assert.equal(reverseUpload.destroyed,false,'Reverse target FIN must retain upload and heartbeats');reverseUpload.end('after reverse heartbeat');
+  await waitFor(()=>receivedAfterServerFin,'Reverse upload did not survive target FIN');assert.equal(receivedAfterServerFin.toString(),'~reverse uploadafter reverse heartbeat');reverseUpload.destroy();
+  const reverseLive=net.createConnection({host:'127.0.0.1',port:reversePort});connections.add(reverseLive);reverseLive.on('error',()=>{});reverseLive.once('close',()=>connections.delete(reverseLive));await once(reverseLive,'connect');reverseLive.write('reverse once');await once(reverseLive,'data');
+  const reverseAccepted=accepted,reverseBytes=receivedBytes,reverseClosed=new Promise(resolve=>reverseLive.once('close',resolve));blockResume=true;for(const socket of controlLinks)socket.destroy();await reverseClosed;
+  await waitFor(async()=>(await request('/api/forward')).mappings[0].state==='recovering','Reverse recovery state missing');
+  const reverseRefused=net.createConnection({host:'127.0.0.1',port:reversePort});reverseRefused.on('error',()=>{});await new Promise(resolve=>reverseRefused.once('close',resolve));assert.equal(accepted,reverseAccepted);
+  blockResume=false;await waitFor(()=>reverse.output.includes('映射已恢复'),'Reverse listener did not recover',500);assert.equal(accepted,reverseAccepted);assert.equal(receivedBytes,reverseBytes);
+  assert.equal((reverse.output.match(/反向设备授权：/g)||[]).length,1,'Recovery must retain the original consent scope');
+  assert.deepEqual(await roundtrip(reversePort,Buffer.from('new reverse client')),Buffer.from('new reverse client'));
+  await request('/api/forward/stop',{id:reverse.mapping.id});await reverse.finished;assert.equal(reverse.output.includes('DATA RACE'),false);
+  app.config.webrtc=true;
+  console.log('Reverse DTLS: verify direct transfer, fallback and readiness loss');
+  const reverseDirectPort=await freePort(),reverseBeforeProbe=accepted,reverseDirect=launch(await reverseMapping(reverseDirectPort));
+  await waitFor(()=>reverseDirect.output.includes('映射已开启'),'Reverse direct helper did not start');
+  await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Reverse direct path not ready',1000);assert.equal(accepted,reverseBeforeProbe);
+  console.log('Reverse DTLS: 8 MiB and half-close');
+  assert.deepEqual(await roundtrip(reverseDirectPort,payload),payload);assert.deepEqual(await roundtrip(reverseDirectPort,halfClose),Buffer.concat([Buffer.from('after-fin:'),halfClose]));
+  const reversePinned=net.createConnection({host:'127.0.0.1',port:reverseDirectPort});connections.add(reversePinned);reversePinned.on('error',()=>{});reversePinned.once('close',()=>connections.delete(reversePinned));await once(reversePinned,'connect');reversePinned.write('pinned reverse direct');await once(reversePinned,'data');
+  assert.equal((await request('/api/forward')).mappings[0].directConnections,1);
+  console.log('Reverse DTLS: keep direct TCP while a new stream falls back to WSS');
+  directPeers.at(-1).unhealthy('rtc_health_timeout');await waitFor(()=>reverseDirect.output.includes('直连心跳超时'),'Reverse fallback status missing');
+  const reverseFallback=net.createConnection({host:'127.0.0.1',port:reverseDirectPort});connections.add(reverseFallback);reverseFallback.on('error',()=>{});reverseFallback.once('close',()=>connections.delete(reverseFallback));await once(reverseFallback,'connect');reverseFallback.write('reverse WSS fallback');await once(reverseFallback,'data');
+  const mixed=(await request('/api/forward')).mappings[0];assert.equal(mixed.directConnections,1);assert.equal(mixed.connections,2);
+  await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Reverse direct health did not recover',500);
+  console.log('Reverse DTLS: intentional readiness loss must not dial or retry target');
+  const beforeReverseLost=accepted;dropDirectReady=true;const reverseUncertain=net.createConnection({host:'127.0.0.1',port:reverseDirectPort});connections.add(reverseUncertain);reverseUncertain.on('error',()=>{});reverseUncertain.once('close',()=>connections.delete(reverseUncertain));const reverseUncertainClosed=new Promise(resolve=>reverseUncertain.once('close',resolve));reverseUncertain.write('do not retry target');await reverseUncertainClosed;assert.equal(accepted,beforeReverseLost,'Unconfirmed reverse stream must not dial or retry a device');
+  for(const [peer,text] of [[reversePinned,'reverse direct stays pinned'],[reverseFallback,'reverse relay stays pinned']]){const reply=once(peer,'data');peer.write(text);assert.equal((await reply)[0].toString(),text);}
+  const reverseEnds=[reversePinned,reverseFallback].map(peer=>new Promise(resolve=>peer.once('close',resolve)));await request('/api/forward/stop',{id:reverseDirect.mapping.id});await Promise.all(reverseEnds);await reverseDirect.finished;assert.equal(reverseDirect.output.includes('DATA RACE'),false);
+  if(ipv6){
+    app.config.webrtcIPv6=true;app.config.webrtcIPv6Address=ipv6;onlySix=true;
+    const port=await freePort(),six=launch(await reverseMapping(port,'::1',target6.address().port));await waitFor(()=>six.output.includes('映射已开启'),'Reverse IPv6 helper did not start');
+    await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Reverse IPv6 path not ready',1000);assert.equal((await request('/api/forward')).mappings[0].direct.family,'IPv6');
+    assert.deepEqual(await roundtrip(port,Buffer.from('reverse IPv6 device')),Buffer.from('reverse IPv6 device'));await request('/api/forward/stop',{id:six.mapping.id});await six.finished;
+  }
+  assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);assert.equal(app.managementStats.restarts,0);
+  console.log('✓ reverse real helper: explicit local consent, TLS/WSS and IPv4/assigned IPv6 UDP/DTLS, 8 MiB, both half-closes, heartbeat, fixed target, single-use accepted sockets, scoped recovery, no target dial during pairing/probes or readiness loss, pinned streams and stop; no real device credentials or Codex input');
+  if(!process.env.FORWARD_REVERSE_ONLY)console.log('✓ real TLS/WSS/TCP and UDP/DTLS/SCTP: custom IPv4/IPv6 targets, 8 MiB, half-closes, heartbeat, pinned streams, relay fallback, management resume, 30-second expiry, no pairing/TCP replay, direct rebuild, IPv6 when assigned, revocation and bounded diagnostics; no desktop or Codex input');
+  })(),new Promise((_,reject)=>{testDeadline=setTimeout(()=>reject(new Error('Native forwarding verification exceeded seven minutes')),420000);})]);
 } finally {
   clearTimeout(testDeadline);
   for(const child of children)if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');

@@ -194,24 +194,32 @@
   </dialog>
   <dialog id="forward-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-title">
     <div class="dialog-heading"><h2 id="forward-title">TCP 端口映射</h2><button id="forward-close" class="quiet" type="button" aria-label="关闭端口映射">✕</button></div>
-    <p class="muted">下载并运行 Mac 或 Windows 免安装助手，将本机端口经服务器连接到指定 IP 的 TCP 服务。新连接优先局域网或 IPv6 加密直连，不可用时走 WSS 中转；已有连接保持原通道。</p>
+    <p class="muted">运行 Mac 或 Windows 助手，在本机与服务器之间访问已授权的 TCP 服务。反向模式可让服务器上的 Codex 访问你本地的 SSH、Telnet 等设备；新连接优先直连，不可用时走 WSS 中转。</p>
     <p id="forward-platform-note" class="muted">请选择运行助手的电脑版本。</p>
     <div id="forward-downloads" class="forward-downloads"></div>
     <details id="forward-mac-help" class="forward-mac-help" hidden><summary>Mac 首次运行说明</summary><p>需要 macOS 12 或更新版本。解压 ZIP，双击文件夹内的 Start.command，在终端窗口粘贴配对码；也可在终端进入该文件夹运行 ./codex-cloud-forward。</p><p>如系统阻止打开，请先核对下载包的 SHA256，再按<a href="https://support.apple.com/zh-cn/102445" target="_blank" rel="noopener noreferrer">Apple 的首次打开说明</a>，在“系统设置 → 隐私与安全性”中确认。本版尚未进行 Developer ID 签名及 Apple 公证。</p></details>
     <form id="forward-form" class="forward-form">
-      <label for="forward-local">本机端口<input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
+      <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction"><option value="forward">本机访问服务器网络</option><option value="reverse">服务器 / Codex 访问本地设备</option></select></label>
+      <div id="forward-device-fields" class="forward-device-fields forward-wide" hidden>
+        <label for="forward-device-name">设备名称<input id="forward-device-name" maxlength="48" placeholder="例如：家中路由器" autocomplete="off"></label>
+        <label for="forward-protocol">设备协议<select id="forward-protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="tcp">其他 TCP</option></select></label>
+      </div>
+      <label for="forward-local"><span id="forward-local-label">本机端口</span><input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
       <label for="forward-host">目标 IP<input id="forward-host" type="text" value="127.0.0.1" maxlength="64" placeholder="192.168.1.10 或 IPv6" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="forward-target-note" required></label>
       <label for="forward-target">目标端口<input id="forward-target" type="number" min="1" max="65535" value="22" required></label>
       <button id="forward-create" class="primary" type="submit" disabled>生成一次性配对码</button>
+      <div id="forward-device-actions" class="forward-device-actions forward-wide" hidden><button id="forward-device-save" class="secondary" type="button">保存到设备目录</button><button id="forward-device-new" class="quiet" type="button">作为新设备</button><span id="forward-device-editing" class="muted"></span></div>
     </form>
     <p id="forward-target-note" class="muted">目标从服务器所在网络访问。127.0.0.1 表示服务器自身，也可填写服务器可达的局域网或公网 IPv4 / IPv6。</p>
     <p id="forward-port-policy" class="muted" role="status"></p>
     <div id="forward-pair" class="forward-pair" hidden><label for="forward-code">粘贴到助手窗口的配对码（两分钟内有效）</label><input id="forward-code" readonly autocomplete="off" spellcheck="false" aria-label="一次性配对码"><button id="forward-copy" class="secondary" type="button">复制配对码</button></div>
     <p id="forward-status" class="muted" role="status"></p>
+    <details id="forward-devices"><summary>本地设备目录</summary><p class="muted">最多 16 个设备，只保存名称、地址和端口，不保存密码或授权。选择设备后生成配对码，本地助手确认目标后才启用。</p><div id="forward-device-list" class="forward-list"></div></details>
     <div id="forward-list" class="forward-list"></div>
+    <div id="forward-connection" class="forward-pair" hidden><label for="forward-connection-text">给 Codex 的连接信息（不含密码）</label><textarea id="forward-connection-text" rows="6" readonly spellcheck="false"></textarea><button id="forward-connection-copy" class="secondary" type="button">复制连接信息</button><button id="forward-connection-close" class="quiet" type="button">收起</button></div>
     <div id="forward-recent" class="forward-recent" aria-label="最近结束的映射"></div>
     <button id="forward-refresh" class="secondary" type="button">刷新列表</button>
-    <p class="muted">助手只监听本机的 127.0.0.1。刷新、关闭网页或切换模式均保留映射。新版助手在检测到短暂断网后可于 30 秒内自动恢复，已有 TCP 连接需由原客户端重连。停止、退出原登录或授权过期后结束恢复；网页服务重启后需重新配对。</p>
+    <p class="muted">监听端口仅绑定所在电脑或服务器的 127.0.0.1。刷新、关闭网页或切换模式保留映射。短暂断网后可于 30 秒内恢复授权，原 TCP 连接需由客户端重连，不重发设备命令。停止、退出原登录或授权过期后撤销；网页服务重启后需重新配对。</p>
   </dialog>
   <dialog id="forward-confirm" class="files-dialog action-confirmation" aria-labelledby="forward-confirm-title">
     <h2 id="forward-confirm-title">停止端口映射</h2><p id="forward-confirm-description" class="muted"></p>

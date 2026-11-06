@@ -7,7 +7,7 @@ export { guardSCTP as guardForwardSCTP } from './rtc-sctp.mjs';
 
 // A mapping owns one peer, separate from the desktop/viewer and its UDP ports.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, id, valid, authenticate, connect, status, closed }) {
+export function createForwardPeer({ address, ipv6Address, id, valid, authenticate, connect, status, closed, reverse = false }) {
   const allowed = host => peerAddress(host, !!ipv6Address);
   const pc = new RTCPeerConnection({ iceServers: [], iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
     iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: [40016, 40047],
@@ -96,8 +96,14 @@ export function createForwardPeer({ address, ipv6Address, id, valid, authenticat
     socket.once('close', () => { clearTimeout(timeout); sockets.delete(socket); });
     socket.once('message', (bytes, binary) => {
       clearTimeout(timeout);
-      if (!authorized() || !current.available || binary || bytes.toString() !== '{"type":"open"}') { socket.close(4000, 'rtc_unavailable'); return; }
-      connect(socket);
+      let streamId;
+      if (reverse) {
+        let record; try { record = JSON.parse(bytes.toString()); } catch {}
+        if (!record || Object.keys(record).sort().join(',') !== 'id,type' || record.type !== 'open' || typeof record.id !== 'string' || !/^[a-f0-9]{32}$/.test(record.id)) { socket.close(4000, 'protocol_error'); return; }
+        streamId = record.id;
+      }
+      if (!authorized() || !current.available || binary || !reverse && bytes.toString() !== '{"type":"open"}') { socket.close(4000, 'rtc_unavailable'); return; }
+      connect(socket, streamId);
     });
   });
   return handle;

@@ -4,13 +4,13 @@
 
 ## 自动化矩阵
 
-`npm run test:compat` 使用独立 Playwright 配置，每个环境运行同样七项流程，共 49 项。
+`npm run test:compat` 使用独立 Playwright 配置，每个环境运行七项基础流程和两项反向设备流程，共 63 项。
 
 | 引擎 | 布局 | 本轮结果 |
 | --- | --- | --- |
-| Chromium / 本机 Chrome 137 | 电脑、Pixel 7 手机模拟、触屏平板模拟 | 21 项通过 |
-| Playwright Firefox 157 | 电脑 | 7 项通过 |
-| Playwright WebKit 27.2 | 电脑、iPhone 13 模拟、iPad Pro 11 模拟 | 21 项通过 |
+| Chromium / 本机 Chrome 137 | 电脑、Pixel 7 手机模拟、触屏平板模拟 | 27 项通过 |
+| Playwright Firefox 157 | 电脑 | 9 项通过 |
+| Playwright WebKit 27.2 | 电脑、iPhone 13 模拟、iPad Pro 11 模拟 | 27 项通过 |
 
 七项流程包括：
 
@@ -23,6 +23,8 @@
 7. 支持全屏时检查进入、退出及顶部查找工具的可用性；不支持时显示现有提示，保留普通模式操作。
 
 本轮发现并修复 Firefox 的跨 iframe 焦点问题：历史工具被移动到外层页面后，需要先激活所属浏览上下文，再设置焦点。普通点击打开时聚焦工具区域，只有明确 Ctrl+F 才聚焦搜索输入，避免触屏无意弹出键盘。
+
+反向设备流程另覆盖：设备资料保存/选择和草稿、本地确认前不开启端口、显式停止默认取消、复制给 Codex、剪贴板拒绝后的手动复制，以及重命名/删除目录不会改变已有授权。RFB 与助手确认由 fixture 提供，真实助手及 TCP/DTLS 结果单独记录。
 
 ## 运行方式
 

@@ -20,6 +20,9 @@ type resumeState struct {
 	localPort, targetPort int
 	deadline              time.Time
 	active                bool
+	direction, deviceName string
+	reverseApproved       bool
+	approve               func(context.Context, readyMessage) error
 }
 
 var mappingPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -30,7 +33,7 @@ func (s *resumeState) accept(ready readyMessage) error {
 		return failure("protocol_error")
 	}
 	if s.token != "" {
-		if ready.ResumeProtocol != 1 || ready.ResumeToken != "" || ready.ID != s.id || ready.LocalPort != s.localPort || host != s.targetHost || ready.TargetPort != s.targetPort || ready.ResumeMs < 1 || ready.ResumeMs > int(resumeWindow/time.Millisecond) {
+		if ready.ResumeProtocol != 1 || ready.ResumeToken != "" || ready.ID != s.id || ready.LocalPort != s.localPort || host != s.targetHost || ready.TargetPort != s.targetPort || ready.Direction != s.direction || ready.DeviceName != s.deviceName || ready.ResumeMs < 1 || ready.ResumeMs > int(resumeWindow/time.Millisecond) {
 			return failure("protocol_error")
 		}
 		deadline := time.Now().Add(time.Duration(ready.ResumeMs) * time.Millisecond)
@@ -47,6 +50,7 @@ func (s *resumeState) accept(ready readyMessage) error {
 	}
 	s.token, s.id, s.localPort, s.targetPort = ready.ResumeToken, ready.ID, ready.LocalPort, ready.TargetPort
 	s.targetHost = host
+	s.direction, s.deviceName = ready.Direction, ready.DeviceName
 	return nil
 }
 
@@ -85,11 +89,14 @@ func (o *runOutput) print(category int, format string, args ...any) {
 }
 
 func run(ctx context.Context, server *url.URL, code string, writer io.Writer) error {
+	return runWithReverse(ctx, server, code, writer, nil)
+}
+func runWithReverse(ctx context.Context, server *url.URL, code string, writer io.Writer, approve func(context.Context, readyMessage) error) error {
 	if !tokenPattern.MatchString(code) {
 		return errors.New("配对码格式不正确，请重新从网页复制")
 	}
 	output := &runOutput{writer: writer}
-	state := &resumeState{}
+	state := &resumeState{approve: approve}
 	attempts := 0
 	for {
 		state.active = false
@@ -98,7 +105,7 @@ func run(ctx context.Context, server *url.URL, code string, writer io.Writer) er
 		if ctx.Err() != nil || err == nil {
 			return nil
 		}
-		if state.token == "" || !canResume(err) {
+		if state.token == "" || !canResume(err) || state.direction == "reverse" && !state.reverseApproved {
 			return err
 		}
 		if state.active || state.deadline.IsZero() {

@@ -57,6 +57,9 @@ func serverURL(value string) (*url.URL, error) {
 }
 
 func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.Conn, error) {
+	return dialHeaders(ctx, server, path, token, nil)
+}
+func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra http.Header) (*websocket.Conn, error) {
 	u := *server
 	u.Path = path
 	if u.Scheme == "https" {
@@ -68,6 +71,12 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 	headers := http.Header{"Authorization": {"Bearer " + token}, "Origin": {server.String()}}
 	if path == "/forward/helper" || path == "/forward/resume" {
 		headers.Set("X-Codex-Forward-Resume", "1")
+		headers.Set("X-Codex-Forward-Reverse", "1")
+	}
+	for key, values := range extra {
+		for _, value := range values {
+			headers.Add(key, value)
+		}
 	}
 	c, response, err := d.DialContext(ctx, u.String(), headers)
 	if err != nil {
@@ -93,18 +102,21 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 }
 
 type readyMessage struct {
-	Type           string `json:"type"`
-	Version        int    `json:"version"`
-	ID             string `json:"id"`
-	StreamToken    string `json:"streamToken"`
-	LocalPort      int    `json:"localPort"`
-	TargetHost     string `json:"targetHost"`
-	TargetPort     int    `json:"targetPort"`
-	MaxConnections int    `json:"maxConnections"`
-	DirectProtocol int    `json:"directProtocol"`
-	ResumeProtocol int    `json:"resumeProtocol"`
-	ResumeToken    string `json:"resumeToken"`
-	ResumeMs       int    `json:"resumeMs"`
+	Type            string `json:"type"`
+	Version         int    `json:"version"`
+	ID              string `json:"id"`
+	StreamToken     string `json:"streamToken"`
+	LocalPort       int    `json:"localPort"`
+	TargetHost      string `json:"targetHost"`
+	TargetPort      int    `json:"targetPort"`
+	MaxConnections  int    `json:"maxConnections"`
+	DirectProtocol  int    `json:"directProtocol"`
+	ResumeProtocol  int    `json:"resumeProtocol"`
+	ResumeToken     string `json:"resumeToken"`
+	ResumeMs        int    `json:"resumeMs"`
+	Direction       string `json:"direction"`
+	ReverseProtocol int    `json:"reverseProtocol"`
+	DeviceName      string `json:"deviceName"`
 }
 
 func (r readyMessage) targetIP() string {
@@ -200,6 +212,10 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 	if kind != websocket.TextMessage || string(first) != "{\"type\":\"ready\"}" {
 		return recordFailure(first)
 	}
+	return copyStream(tcp, ws)
+}
+
+func copyStream(tcp *net.TCPConn, ws messageSocket) error {
 	ws.SetReadDeadline(time.Now().Add(45 * time.Second))
 	results := make(chan error, 2)
 	go func() {
@@ -334,18 +350,39 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	if err != nil {
 		return connectionFailure(err)
 	}
-	if kind != websocket.TextMessage || len(data) > 512 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
+	if kind != websocket.TextMessage || len(data) > 2048 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
 		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || ready.targetIP() == "" || ready.TargetPort < 1 || ready.TargetPort > 65535 || ready.MaxConnections != connectionLimit {
 		return errors.New("服务器未返回有效映射授权")
 	}
 	ready.TargetHost = ready.targetIP()
+	if ready.Direction != "" && ready.Direction != "reverse" || ready.Direction == "reverse" && (ready.ReverseProtocol != 1 || !validDeviceName(ready.DeviceName)) {
+		return failure("protocol_error")
+	}
 	if err := state.accept(ready); err != nil {
 		return err
+	}
+	reversed := ready.Direction == "reverse"
+	if reversed && !state.reverseApproved {
+		var approvalError error
+		if state.approve == nil {
+			approvalError = failure("reverse_denied")
+		} else {
+			approvalError = state.approve(ctx, ready)
+		}
+		if approvalError != nil {
+			control.SetWriteDeadline(time.Now().Add(time.Second))
+			control.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"error\",\"code\":\"reverse_denied\"}"))
+			return approvalError
+		}
+		state.reverseApproved = true
 	}
 	if !state.deadline.IsZero() && state.deadline.Before(handshakeDeadline) {
 		control.SetReadDeadline(state.deadline)
 	}
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: ready.LocalPort})
+	var listener *net.TCPListener
+	if !reversed {
+		listener, err = net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: ready.LocalPort})
+	}
 	if err != nil {
 		code := "local_listen_failed"
 		// Windows reports Winsock WSAEADDRINUSE (10048), rather than Go's
@@ -361,8 +398,11 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		}
 		return failure(code)
 	}
-	defer listener.Close()
+	if listener != nil {
+		defer listener.Close()
+	}
 	control.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	control.SetReadDeadline(time.Now().Add(5 * time.Second))
 	listening := "{\"type\":\"listening\"}"
 	if ready.DirectProtocol == 1 {
 		listening = "{\"type\":\"listening\",\"direct\":1}"
@@ -398,29 +438,35 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		})
 	}
 	acceptDone := make(chan struct{})
-	go func() {
-		defer close(acceptDone)
-		for {
-			tcp, err := listener.AcceptTCP()
-			if err != nil {
-				return
-			}
-			if !active.add(tcp) {
-				tcp.Close()
-				continue
-			}
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				if err := proxy(ctx, server, ready.StreamToken, tcp, active, direct); err != nil {
-					output.print(0, "TCP 连接失败：%s", connectionFailure(err))
+	if listener == nil {
+		close(acceptDone)
+	} else {
+		go func() {
+			defer close(acceptDone)
+			for {
+				tcp, err := listener.AcceptTCP()
+				if err != nil {
+					return
 				}
-			}()
-		}
-	}()
+				if !active.add(tcp) {
+					tcp.Close()
+					continue
+				}
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					if err := proxy(ctx, server, ready.StreamToken, tcp, active, direct); err != nil {
+						output.print(0, "TCP 连接失败：%s", connectionFailure(err))
+					}
+				}()
+			}
+		}()
+	}
 	defer func() {
 		cancelRun()
-		listener.Close()
+		if listener != nil {
+			listener.Close()
+		}
 		<-acceptDone
 		active.close()
 		if direct != nil {
@@ -438,7 +484,13 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	} else {
 		output.print(2, "保持助手运行，Ctrl+C 停止。短暂断网自动恢复映射；停止、退出原登录或授权过期后需重新配对。")
 	}
-	output.print(2, "%s：127.0.0.1:%d -> 目标 %s（%s；最多 %d 条连接）", label, ready.LocalPort, net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)), transport, connectionLimit)
+	if reversed {
+		output.print(2, "%s：服务器 127.0.0.1:%d -> 本地设备 %s（%s；最多 %d 条连接）", label, ready.LocalPort, net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)), transport, connectionLimit)
+	} else {
+		output.print(2, "%s：127.0.0.1:%d -> 目标 %s（%s；最多 %d 条连接）", label, ready.LocalPort, net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort)), transport, connectionLimit)
+	}
+	var reverseMu sync.Mutex
+	reversePending := make(map[string]bool)
 	for {
 		kind, bytes, err := control.ReadMessage()
 		if err != nil {
@@ -446,6 +498,34 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 				return nil
 			}
 			return connectionFailure(err)
+		}
+		if reversed && kind == websocket.TextMessage {
+			var request struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			}
+			if json.Unmarshal(bytes, &request) == nil && request.Type == "reverse_open" {
+				var fields map[string]json.RawMessage
+				json.Unmarshal(bytes, &fields)
+				reverseMu.Lock()
+				valid := len(fields) == 2 && mappingPattern.MatchString(request.ID) && !reversePending[request.ID] && len(reversePending) < connectionLimit
+				if valid {
+					reversePending[request.ID] = true
+				}
+				reverseMu.Unlock()
+				if !valid {
+					return failure("protocol_error")
+				}
+				workers.Add(1)
+				go func(id string) {
+					defer workers.Done()
+					defer func() { reverseMu.Lock(); delete(reversePending, id); reverseMu.Unlock() }()
+					if err := reverseProxy(ctx, server, ready, id, active, direct); err != nil {
+						output.print(0, "反向 TCP 连接失败：%s", connectionFailure(err))
+					}
+				}(request.ID)
+				continue
+			}
 		}
 		var value directSignal
 		if direct == nil || kind != websocket.TextMessage || json.Unmarshal(bytes, &value) != nil || !strings.HasPrefix(value.Type, "rtc_") {
@@ -457,6 +537,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 
 func main() {
 	server := flag.String("server", defaultServer, "服务器 HTTPS 根地址")
+	allowReverse := flag.String("allow-reverse", "", "明确授权一个反向目标 IP:端口；省略时在首次配对后交互确认")
 	showVersion := flag.Bool("version", false, "显示版本后退出")
 	showLicenses := flag.Bool("licenses", false, "显示依赖许可证后退出")
 	flag.Parse()
@@ -490,7 +571,31 @@ func main() {
 		if err == nil {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer cancel()
-			err = run(ctx, u, code, os.Stdout)
+			approve := func(ctx context.Context, ready readyMessage) error {
+				target := net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort))
+				fmt.Printf("反向设备授权：%s\n服务器 127.0.0.1:%d 将访问你电脑可达的 %s。\n", ready.DeviceName, ready.LocalPort, target)
+				if *allowReverse != "" {
+					if *allowReverse == target {
+						return nil
+					}
+					return failure("reverse_denied")
+				}
+				fmt.Print("允许此目标请输入 YES（60 秒内），其他输入取消：")
+				answer := make(chan string, 1)
+				go func() { line, _ := readLine(); answer <- line }()
+				timer := time.NewTimer(55 * time.Second)
+				defer timer.Stop()
+				select {
+				case line := <-answer:
+					if line == "YES" {
+						return nil
+					}
+				case <-ctx.Done():
+				case <-timer.C:
+				}
+				return failure("reverse_denied")
+			}
+			err = runWithReverse(ctx, u, code, os.Stdout, approve)
 		}
 	}
 	if err != nil {
