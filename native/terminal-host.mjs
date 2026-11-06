@@ -72,9 +72,15 @@ try {
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await writeFile(lock, String(process.pid) + '\n', { flag: 'wx', mode: 0o600 }); owned = true;
   await mkdir(config.workspace, { recursive: true }); await mkdir(config.transfer, { recursive: true });
+  // systemd-enabled tmux otherwise moves panes into independent scopes. Block
+  // the bus only in the server process, and remove the override from tmux's
+  // shell environment before spawning any task (including the keeper).
+  const serverEnv = { ...env, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null' };
   // One hidden fixed keeper session keeps the server in this service's cgroup
   // even when all four user terminals have exited. It accepts no browser input.
-  await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex-host', '-c', config.workspace, 'sleep', 'infinity'], { env, timeout: 5000, maxBuffer: 16384 });
+  await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket,
+    'start-server', ';', 'set-environment', '-gu', 'DBUS_SESSION_BUS_ADDRESS', ';',
+    'new-session', '-d', '-s', 'codex-host', '-c', config.workspace, 'sleep', 'infinity'], { env: serverEnv, timeout: 5000, maxBuffer: 16384 });
   serverOwned = true; await chmod(socket, 0o600);
   serverSocket = await lstat(socket, { bigint: true });
   await tmux(['new-session', '-d', '-s', 'codex', '-c', config.workspace, 'bash', join(config.root, 'desktop', 'codex-session')]);

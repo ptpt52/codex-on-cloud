@@ -15,14 +15,31 @@ import { randomUUID } from 'node:crypto';
 const exec = promisify(execFile), directory = await mkdtemp(join(tmpdir(), 'codex-terminal-only-'));
 const root = join(directory, 'app'), home = join(directory, 'home'), bin = join(directory, 'bin'), runtime = join(directory, 'run');
 const children = [], sockets = new Set(); let host, panel, manager, agentSecret, env, deadline, tmuxOwner;
+const taskOwners = new Map();
 const systemd = process.env.TERMINAL_TEST_SYSTEMD === '1';
 async function freePort() { const server = net.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(r => server.close(r)); return port; }
 async function until(probe, message) { for (let n = 0; n < 200; n++) { if (await probe()) return; await new Promise(r => setTimeout(r, 50)); } throw Error(message); }
+async function processState(pid) {
+  try {
+    const stat = await readFile('/proc/' + pid + '/stat', 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return { state: fields[0], started: fields[19] };
+  } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+async function rememberTask(pid) {
+  const state = await processState(pid);
+  assert.ok(state, 'test task must exist');
+  taskOwners.set(pid, state.started);
+}
+async function taskAlive(pid) {
+  const state = await processState(pid);
+  return state && state.started === taskOwners.get(pid) && state.state !== 'Z';
+}
 function launch(script) {
   const unit = 'codex-terminal-only-test-' + directory.split('-').at(-1) + '-' + children.length + '.service';
   const variables = ['HOME','PATH','RUNTIME_DIR','WORKSPACE_DIR','DEPLOY_MODE','PUBLIC_ORIGIN','PANEL_PORT','AGENT_PORT','WEBRTC_ENABLED','HISTFILE'];
   const command = systemd ? 'systemd-run' : process.execPath;
-  const args = systemd ? ['--user','--wait','--pipe','--collect','--quiet','--unit='+unit,'--property=WorkingDirectory='+root,'--property=KillMode=control-group','--property=TimeoutStopSec=15','--property=UMask=0077',...variables.map(key=>'--setenv='+key+'='+env[key]),process.execPath,join(root,script)] : [join(root,script)];
+  const args = systemd ? ['--user','--wait','--pipe','--collect','--quiet','--unit='+unit,'--property=WorkingDirectory='+root,'--property=KillMode=control-group','--property=TimeoutStopSec=3','--property=UMask=0077',...variables.map(key=>'--setenv='+key+'='+env[key]),process.execPath,join(root,script)] : [join(root,script)];
   const child = spawn(command, args, { env: systemd ? { ...env, PATH: process.env.PATH } : env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child);
   child.on('error', error => { child.spawnFailure = error; });
   if(systemd)child.unit=unit;
@@ -38,6 +55,7 @@ async function stop(child) {
 try {
   await Promise.race([(async () => {
     for (const path of [root, home, bin]) await mkdir(path, { recursive: true, mode: 0o700 });
+    await writeFile(join(home, '.bashrc'), 'export DBUS_SESSION_BUS_ADDRESS=unix:path=/user-shell-bus\n', { mode: 0o600 });
     for (const folder of ['native', 'desktop', 'panel', 'scripts']) await cp(resolve(folder), join(root, folder), { recursive: true, filter: file => !file.includes('__pycache__') });
     for (const file of ['package.json', 'package-lock.json']) await cp(resolve(file), join(root, file));
     await writeFile(join(bin, 'codex'), '#!/bin/sh\n[ "$1" = --version ] || exit 99\nprintf "test-codex\\n"\n', { mode: 0o700 });
@@ -83,8 +101,8 @@ try {
       ws.send(JSON.stringify({ type: 'resize', id: 1, cols: 100, rows: 30, viewport: true })); return result;
     }
     const first = await attach(initial);
-    first.ws.send(JSON.stringify({ type: 'input', id: 2, data: "export TERMINAL_LIFETIME=preserved; printf '\\n\\x45XPORT-READY\\n'\r" }));
-    await until(() => first.output.includes('EXPORT-READY'), 'shell input missing').catch(error=>{throw Error(error.message+': '+JSON.stringify(first.output.slice(-4096)));}); first.ws.terminate();
+    first.ws.send(JSON.stringify({ type: 'input', id: 2, data: "export TERMINAL_LIFETIME=preserved; printf '\\n\\x45XPORT-READY-%s\\n' \"$DBUS_SESSION_BUS_ADDRESS\"\r" }));
+    await until(() => first.output.includes('EXPORT-READY-unix:path=/user-shell-bus'), 'shell input or user bus environment missing').catch(error=>{throw Error(error.message+': '+JSON.stringify(first.output.slice(-4096)));}); first.ws.terminate();
     const created = await api('/api/terminals', { action: 'create', name: '隔离辅助终端', view: 'terminal' }); assert.equal(created.created, 'aux1');
     if(systemd){
       const serverGroup=await readFile('/proc/'+tmuxOwner.pid+'/cgroup','utf8');assert.ok(serverGroup.includes(host.unit));
@@ -94,6 +112,7 @@ try {
     await api('/api/terminals', { action: 'create', name: '第三辅助终端' });
     await assert.rejects(api('/api/terminals', { action: 'create', name: '超过数量限制' }), /status 409/);
     assert.equal((await api('/api/terminals')).terminals.length,4);
+    for (const terminal of (await api('/api/terminals')).terminals) await rememberTask(Number(terminal.token.split(':')[1]));
     const fileText='headless transfer 中文';
     const upload=await fetch(origin+'/api/files/terminal-test.txt',{method:'PUT',headers:{origin,cookie,'x-viewer-id':viewer,'x-csrf-token':csrf,'content-type':'application/octet-stream'},body:fileText});
     assert.equal(upload.status,200);assert.equal(await(await fetch(origin+'/api/files/terminal-test.txt',{headers:{cookie}})).text(),fileText);
@@ -105,22 +124,53 @@ try {
     await until(async () => { try { return (await api('/api/me')).mode === 'terminal'; } catch { return false; } }, 'gateway restart did not preserve login');
     await api('/api/desktop/claim', { viewer });
     const resumed = (await api('/api/terminals')).terminals; assert.equal(resumed.find(t => t.id === 'main').token, initial.token); assert.equal(resumed.find(t => t.id === 'aux1').token, created.terminals.find(t => t.id === 'aux1').token);
+    for (const terminal of resumed) assert.ok(await taskAlive(Number(terminal.token.split(':')[1])), 'panel/manager restart must preserve each task');
     const second = await attach(initial); second.ws.send(JSON.stringify({ type: 'input', id: 2, data: "printf '\\nLIFETIME-%s\\n' \"$TERMINAL_LIFETIME\"\r" }));
     await until(() => second.output.includes('LIFETIME-preserved'), 'original shell environment did not survive'); second.ws.terminate();
     await tmux(['kill-session', '-t', '=codex']);
     const reopened = await api('/api/terminals', { action: 'create', name: '重新打开主终端', view: 'terminal' }); assert.equal(reopened.created, 'main'); assert.notEqual(reopened.terminals.find(t => t.id === 'main').token, initial.token);
+    await rememberTask(Number(reopened.terminals.find(t => t.id === 'main').token.split(':')[1]));
     assert.equal((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
     const state = await api('/api/state'); assert.equal(state.desktop.ready, true); assert.equal(state.controls.terminalOnly, true);
     await assert.rejects(access(join(home, 'unexpected-x11')), { code: 'ENOENT' }); await assert.rejects(access(join(runtime, 'vnc.sock')), { code: 'ENOENT' }); await assert.rejects(access(join(runtime, 'Xauthority')), { code: 'ENOENT' });
+    if (systemd) {
+      const serverGroup = await readFile('/proc/' + tmuxOwner.pid + '/cgroup', 'utf8');
+      const keeper = Number((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pane_pid}'])).stdout.trim());
+      await rememberTask(keeper);
+      for (const terminal of reopened.terminals) {
+        const pid = Number(terminal.token.split(':')[1]);
+        assert.equal(await readFile('/proc/' + pid + '/cgroup', 'utf8'), serverGroup);
+        assert.ok(!(await readFile('/proc/' + pid + '/environ', 'utf8')).split('\0').includes('DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null'), 'server bus override must not reach user tasks');
+      }
+      assert.equal(await readFile('/proc/' + keeper + '/cgroup', 'utf8'), serverGroup);
+      const stubborn = created.terminals.find(t => t.id === 'aux1');
+      const pid = Number(stubborn.token.split(':')[1]);
+      await tmux(['send-keys', '-t', stubborn.token.split(':')[0], '-l', 'trap "" HUP TERM; exec sleep infinity']);
+      await tmux(['send-keys', '-t', stubborn.token.split(':')[0], 'Enter']);
+      await until(async () => (await readFile('/proc/' + pid + '/comm', 'utf8')).trim() === 'sleep', 'stubborn test task did not start');
+      const ignored = /^SigIgn:\s*([a-f0-9]+)$/im.exec(await readFile('/proc/' + pid + '/status', 'utf8'));
+      assert.ok(ignored && (BigInt('0x' + ignored[1]) & 0x4001n) === 0x4001n, 'test task must ignore HUP and TERM');
+    }
     await stop(panel); await stop(manager); await stop(host);
     await until(async()=>{try{await tmux(['list-sessions']);return false;}catch{return true;}},'terminal host did not release its tmux server');
+    if (systemd) {
+      for (const pid of taskOwners.keys()) await until(async () => !await taskAlive(pid), 'stopping host must kill task ' + pid);
+      host = launch('native/terminal-host.mjs');
+      await until(async () => { try { return (await tmux(['list-panes', '-t', '=codex', '-F', '#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'second terminal host did not start');
+      const pid = Number((await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim());
+      await rememberTask(pid);
+      const hostGroup = await readFile('/proc/' + pid + '/cgroup', 'utf8'); assert.ok(hostGroup.includes(host.unit));
+      await exec('systemctl', ['--user', 'kill', '--kill-who=main', '--signal=KILL', host.unit], { timeout: 3000, maxBuffer: 4096 });
+      await until(async () => !await taskAlive(pid), 'host SIGKILL must clean its task group');
+      await until(() => host.exitCode !== null || host.signalCode !== null, 'killed host unit did not finish');
+    }
     for(const [name,path]of Object.entries({tmux:'/usr/bin/tmux',bash:'/bin/bash',sleep:'/bin/sleep',dirname:'/usr/bin/dirname'}))await symlink(path,join(bin,name));
     await writeFile(join(bin,'python3'),'#!/no-such-codex-test-interpreter\n',{mode:0o700});
     const originalPath=env.PATH;env.PATH=bin;host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>host.exitCode!==null,'failed helper did not terminate its terminal host');assert.notEqual(host.exitCode,0);
     await assert.rejects(tmux(['list-sessions']));await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
     console.log('✓ real terminal-only install, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, four-slot manager, closed browser and panel/manager restarts preserve shell identity/environment, explicit main reopening, fixed host lifetime and shutdown; Codex is a version-only stub');
-    if(systemd)console.log('✓ real transient systemd control groups: tmux and both main/auxiliary tasks belong to the terminal host; stopping whole panel/manager groups preserves tasks; only unique test units were created');
+    if(systemd)console.log('✓ real transient systemd control groups: all tasks and the keeper remain in the host, user bus settings are preserved, panel/manager stops preserve tasks, host stop kills HUP/TERM-ignoring tasks, host SIGKILL cleans its group; only unique test units were created');
   })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(Error('terminal-only native test exceeded four minutes')), 240000); })]);
 } catch (error) { for (const child of children) if (child.output) console.error(child.output.slice(-8192)); throw error; }
 finally {
@@ -130,5 +180,6 @@ finally {
   if (tmuxOwner) {
     try { const stat=await readFile('/proc/'+tmuxOwner.pid+'/stat','utf8'); if(stat.slice(stat.lastIndexOf(')')+2).split(' ')[19]===tmuxOwner.started)process.kill(tmuxOwner.pid,'SIGTERM'); } catch {}
   }
+  for (const pid of taskOwners.keys()) { try { if (await taskAlive(pid)) process.kill(pid, 'SIGKILL'); } catch {} }
   await rm(directory, { recursive: true, force: true });
 }

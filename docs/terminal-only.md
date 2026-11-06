@@ -41,6 +41,8 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 
 任务边界仍为主终端与三个辅助终端。额外只有一个固定、不接收网页输入的 `codex-host` 保活会话，防止所有用户终端退出后 tmux 由管理器重新创建而改变服务归属。私有运行目录为 0700，新增 `terminal.pid` 最多 32 字节、0600；tmux socket 与物理桌面分开。现有历史、消息、缓冲、上传和映射上限保持，未新增任务队列、录制或输入日志。
 
+Ubuntu 等发行版的 tmux 带有 systemd 集成，默认会将窗格任务移入独立的 `tmux-spawn-*.scope`。终端宿主只为自己的私有 tmux 服务进程禁用用户 D-Bus 连接，并在创建任何窗格前清除 shell 环境中的该覆盖，使保活、主终端和辅助任务留在宿主服务的 cgroup 内。用户 shell 仍可从自己的 `~/.bashrc` 配置 D-Bus；无需更换系统 tmux、安装额外依赖或修改系统 D-Bus。
+
 显式停止或重启 terminal 服务、主机重启会结束其中的任务。terminal 服务不自动重建任务；panel 继续采用已有的有限故障恢复策略。端口映射内存授权仍随 panel 重启失效，需重新配对。
 
 已有桌面部署不会自动切换为纯终端；请求不同模式或检测到另一种宿主服务仍在运行时，安装器会停止转换，保留当前任务。此功能用于选择新部署形态，不会删除现有图形包，也不会修改当前运行实例的模式。
@@ -59,4 +61,4 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/terminal
 
 浏览器用例使用真实页面、xterm.js 与加密传输，管理和终端上游为 fixture。它们与真实 PTY、真实 systemd 安装及真实 Codex 使用分别记账，不能互相替代。
 
-本机具备 systemd 用户管理器时，可额外运行 `TERMINAL_TEST_SYSTEMD=1 npm run test:terminal-only`。它只创建唯一命名的临时测试服务，验证 tmux 和主/辅助任务确实属于终端宿主的 cgroup，停止整个 panel/manager 测试 cgroup 后原任务仍保留；不会安装或停止生产 unit。
+本机具备 systemd 用户管理器时，可额外运行 `TERMINAL_TEST_SYSTEMD=1 npm run test:terminal-only`。它只创建唯一命名的临时测试服务，验证 tmux、保活和主/辅助任务确实属于终端宿主的 cgroup，用户 D-Bus 环境不受覆盖，停止整个 panel/manager 测试 cgroup 后原任务仍保留。另检查停止宿主可清理忽略 HUP/TERM 的任务，以及宿主被 SIGKILL 后的 cgroup 清理；不会安装或停止生产 unit。
