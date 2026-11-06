@@ -233,10 +233,12 @@ for (const architecture of ['arm', 'x86', 'unavailable']) {
       expect((await downloading).suggestedFilename()).toBe(FORWARD_CLIENTS[manual].name);
       await expect(page.locator('#forward-mac-help')).toHaveAttribute('open', ''); await expect(page.locator('#forward-mac-help')).toContainText('Start.command');
       await expect(page.locator('#forward-mac-help')).toContainText('macOS 12'); await expect(page.locator('#forward-mac-help')).toContainText('仍要打开');
+      await expect(page.locator('#forward-mac-notice')).toBeVisible(); await expect(page.locator('#forward-mac-notice')).toContainText('Apple 无法验证');
       expect(await page.locator('#forward-dialog').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
       await page.locator('#forward-refresh').click(); await expect(page.locator('.forward-download')).toHaveCount(4);
       await page.locator('#forward-mac-help summary').click(); await expect(page.locator('#forward-mac-help')).not.toHaveAttribute('open', '');
       await page.locator('#forward-refresh').click(); await expect(page.locator('#forward-mac-help')).not.toHaveAttribute('open', '');
+      await expect(page.locator('#forward-mac-notice')).toBeVisible();
       expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
   });

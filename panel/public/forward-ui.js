@@ -76,7 +76,8 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
       hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); target.append(row);
     }
     if (!downloads.length) target.textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
-    $('forward-mac-help').hidden = !downloads.some(file => FORWARD_CLIENTS[file.arch].os === 'darwin');
+    const hasMac = downloads.some(file => FORWARD_CLIENTS[file.arch].os === 'darwin');
+    $('forward-mac-help').hidden = $('forward-mac-notice').hidden = !hasMac;
   }
   function detectPlatform() {
     detection ||= detectForwardClient(navigator).then(value => { platform = value; if (dialog.open && allowed()) renderDownloads(); });
