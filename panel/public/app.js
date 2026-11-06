@@ -4,10 +4,13 @@ import { createForwardUI } from './forward-ui.js';
 import { createWorkspacePanels, createHistoryToolsPortal } from './workspace-panels.js';
 import { createTerminalState, validTerminalIdentity } from './terminal-state.js';
 import { createTerminalTabs } from './terminal-tabs.js';
+import { createAccessUI } from './access-ui.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
+let accessUI;
+let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canForward: true, canReverse: true, canManageDevices: true };
 let fastConnectEnabled = false;
 let streamProtocolEnabled = false;
 let draftStorage;
@@ -141,7 +144,7 @@ function openTerminalManager() {
 function renderTerminalSelection() {
   const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error';
   const disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
-  terminalTabs.render(terminalCatalog, selectedTerminal, { visible: terminalMode() && (terminalCatalog.length > 1 || invalid), disabled, invalid, loading: terminalSelectionState === 'loading' });
+  terminalTabs.render(terminalCatalog, selectedTerminal, { visible: owned && terminalMode() && (terminalCatalog.length > 1 || invalid), disabled, invalid, loading: terminalSelectionState === 'loading' });
   const message = invalid ? '原终端未通过身份校验，草稿已保留；请刷新列表或手动选择目标。'
     : draftNotice || (terminalState.persistenceFailed ? '浏览器未能保存草稿，刷新前请复制重要文字。' : '');
   $('draft-status').textContent = message; $('draft-status').hidden = !message;
@@ -169,16 +172,17 @@ function toggleWorkspacePanel(name) {
 }
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused(),
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
-    busy: inputBusy || inputComposing || terminalBusy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open, revision: displayRevision }, location.origin);
+    busy: inputBusy || inputComposing || terminalBusy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
-  $('desktop-mode').hidden = $('terminal-mode').hidden = terminalOnly;
-  $('desktop-mode').parentElement.hidden = terminalOnly;
+  for (const id of ['toggle-controls-button', 'toggle-input-button', 'fullscreen-button']) $(id).hidden = loggedIn && !owned;
+  $('desktop-mode').hidden = $('terminal-mode').hidden = terminalOnly || loggedIn && !owned;
+  $('desktop-mode').parentElement.hidden = terminalOnly || loggedIn && !owned;
   $('desktop-settings-button').hidden = $('clipboard-button').hidden = terminalOnly;
   $('create-terminal').textContent = terminalOnly ? '新建终端' : '新建辅助终端';
   $('diag-desktop').previousElementSibling.textContent = terminalOnly ? '终端服务' : '远程桌面';
@@ -321,7 +325,7 @@ function waitForViewport(actual, signal) {
 async function resizeViewport() {
   viewportTimer = null;
   if (terminalMode() || !loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
-  if (!nativeIdle || inputPaused() || inputBusy || terminalBusy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || document.hidden) { scheduleViewport(1000); return; }
+  if (!nativeIdle || inputPaused() || inputBusy || terminalBusy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
   if (!followsViewport() && (controlsState.viewport.maximum.width < size.width || controlsState.viewport.maximum.height < size.height)) return;
@@ -353,10 +357,10 @@ $('auto-resolution').addEventListener('change', () => {
   renderDesktopSettings(); scheduleViewport();
 });
 function canInput() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && terminalSelectionState === 'ready' && (!terminalMode() || !terminalReviewing) && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && terminalSelectionState === 'ready' && (!terminalMode() || !terminalReviewing) && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function canManageTerminals() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function renderInputControls() {
   const disabled = inputBusy || inputComposing || frameComposing || !canInput();
@@ -375,12 +379,13 @@ function renderInputControls() {
 }
 function renderConnection() {
   forwardingUI?.update();
+  accessUI?.update();
   if (confirmation && !confirmationValid(confirmation)) closeConfirmation();
   syncScreenLock();
   let label;
   if (accessExpired) label = '访问验证已过期';
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
-  else if (!owned) label = '等待接管';
+  else if (!owned) label = permissions.role === 'temporary' ? '临时访问' : permissions.requiresUnlock ? '屏幕已锁定' : '等待接管';
   else if (desktopReady === false) label = terminalOnly ? '终端后台未就绪' : '桌面未就绪';
   else if (transportSwitching) label = '正在优化连接';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
@@ -414,7 +419,9 @@ function renderConnection() {
   } else if (!navigator.onLine || panelState === 'offline') {
     if (frameState !== 'connected') overlay('等待网络恢复', '连接恢复后会继续原来的会话。未确认成功的输入不会自动重发。');
     else $('desktop-overlay').hidden = true;
-  } else if (!owned) overlay('在这里继续工作', terminalOnly ? '终端已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启任务。' : '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
+  } else if (!owned && permissions.role === 'temporary') overlay('临时访问', '此账号仅可查看连接状态、配置服务器访问本地设备的映射，以及上传和下载共享中转文件。');
+  else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '输入屏幕锁密码后才能在这里使用。连接状态、本地设备映射和文件中转继续可用，原任务不会停止。', true);
+  else if (!owned) overlay('在这里继续工作', terminalOnly ? '终端已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启任务。' : '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) {
     overlay('请选择终端', '原终端未通过身份校验，草稿仍保留。请刷新列表或手动选择目标。');
     $('choose-terminal-button').hidden = false;
@@ -489,7 +496,10 @@ async function api(path, { method = 'GET', body, raw, signal } = {}) {
   }
   const data = await response.json().catch(() => ({}));
   if (!signal?.aborted && response.status === 401 && path !== '/api/login') showLogin(loggedIn ? '登录已过期，请重新登录' : '');
-  if (!response.ok) { const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; throw error; }
+  if (!response.ok) {
+    if (!signal?.aborted && data.access) updateAccess(data.access);
+    const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; error.status = response.status; error.code = data.code; throw error;
+  }
   return data;
 }
 function overlay(title, description, takeover = false) {
@@ -500,11 +510,11 @@ function overlay(title, description, takeover = false) {
   $('choose-terminal-button').hidden = true;
   $('desktop-overlay').hidden = false;
 }
-function stopFrame() {
+function stopFrame({ keepLogout = false } = {}) {
   historyToolsPortal.reset();
   terminalController?.abort();
   shortcutMenu.close();
-  closeConfirmation();
+  if (!keepLogout || confirmation?.kind !== 'logout') closeConfirmation();
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false; frameResizeReady = false;
   clearTimeout(switchTimer); transportSwitching = false;
   resetDirectControl();
@@ -520,6 +530,19 @@ function stopFrame() {
   renderDisplayControls();
   $('desktop-frame').hidden = true;
   $('desktop-frame').src = 'about:blank';
+}
+function restrictWorkspace() {
+  hideWorkspacePanels(); shortcutMenu.close();
+  inputController?.abort(); terminalController?.abort(); settingsController?.abort(); clipboardController?.abort();
+  for (const id of ['desktop-settings-dialog', 'terminals-dialog', 'terminal-switch-dialog', 'clipboard-dialog']) if ($(id).open) $(id).close();
+  if (confirmation && confirmation.kind !== 'logout') closeConfirmation();
+  if (frameLoaded) stopFrame({ keepLogout: true });
+}
+function updateAccess(value) {
+  if (!value) return;
+  permissions = { ...permissions, ...value };
+  if (!permissions.full && owned) { rememberDraft(); owned = false; restrictWorkspace(); }
+  renderConnection();
 }
 function finishDirectControl(error, value) {
   if (!controlPending) return;
@@ -554,6 +577,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  accessUI?.close();
   if (loggedIn) rememberDraft();
   forwardingUI?.reset();
   uiGeneration++; closeConfirmation();
@@ -616,12 +640,14 @@ async function poll() {
     const state = await api('/api/state', { signal: controller.signal });
     if (!loggedIn || pollController !== controller) return;
     let mine = state.mine;
-    if (!mine && owned && state.claimable === true) {
+    if (state.access) permissions = { ...permissions, ...state.access };
+    if (!mine && owned && state.claimable === true && !permissions.requiresUnlock && permissions.canClaim) {
       // A restarted gateway has no owner. Recover only if it is still free at
       // admission; never take over another page or replay uncertain input.
       owned = false; inputController?.abort(); stopFrame(); renderConnection();
-      await api('/api/desktop/claim', { method: 'POST', body: { viewer, ifFree: true }, signal: controller.signal });
+      const recovered = await api('/api/desktop/claim', { method: 'POST', body: { viewer, ifFree: true }, signal: controller.signal });
       if (!loggedIn || pollController !== controller) return;
+      if (recovered.access) permissions = { ...permissions, ...recovered.access };
       mine = true;
     }
     owned = mine;
@@ -633,10 +659,7 @@ async function poll() {
     $('version-label').textContent = state.desktop.version;
     if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
     if (!mine) {
-      hideWorkspacePanels();
-      if ($('terminal-switch-dialog').open) $('terminal-switch-dialog').close();
-      terminalController?.abort();
-      stopFrame();
+      restrictWorkspace();
     } else if (state.desktop.ready) openFrame();
     if (mine && state.desktop.ready && !terminalLoadAttempted) { terminalLoadAttempted = true; void loadTerminals(); }
     renderConnection();
@@ -653,12 +676,17 @@ async function poll() {
     }
   }
 }
-async function claim() {
-  await api('/api/desktop/claim', { method: 'POST', body: { viewer } });
+async function claim(lockPassword, signal) {
+  if (!permissions.canClaim) return;
+  if (permissions.requiresUnlock && !lockPassword) { accessUI?.unlock(); return; }
+  const restore = !owned;
+  const result = await api('/api/desktop/claim', { method: 'POST', body: { viewer, ...(lockPassword ? { lockPassword } : {}) }, signal });
+  if (result.access) permissions = { ...permissions, ...result.access };
   if (!loggedIn) return;
   // A successful claim invalidates every state snapshot fetched before it.
   stopPolling();
   owned = true;
+  if (restore) initializeTerminalSelection();
   terminalSelectionState = 'loading'; terminalCatalogVerified = false; terminalLoadAttempted = false;
   stopFrame();
   renderConnection();
@@ -669,16 +697,21 @@ async function claim() {
 async function showWorkspace(user) {
   uiGeneration++; closeConfirmation();
   loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1;
+  if (user.access) permissions = { ...permissions, ...user.access };
   terminalOnly = user.mode === 'terminal';
   if (terminalOnly) displayPreferences.mode = 'terminal';
   renderDisplayControls();
   accessExpired = false; panelState = 'online'; desktopReady = null;
-  initializeTerminalSelection();
-  $('user-label').textContent = user.username;
+  if (permissions.canClaim && !permissions.requiresUnlock) initializeTerminalSelection();
+  else { selectedTerminal = ''; selectedTerminalToken = ''; terminalCatalog = []; $('mobile-input').value = ''; }
+  $('user-label').textContent = user.username + (permissions.role === 'temporary' ? ' · 临时访问' : '');
   $('password').value = '';
   $('login-view').hidden = true;
   $('workspace-view').hidden = false;
-  try { await claim(); } catch (error) {
+  try {
+    if (permissions.role === 'temporary' || permissions.requiresUnlock) { owned = false; restrictWorkspace(); await poll(); if (permissions.requiresUnlock) accessUI?.unlock(); }
+    else await claim();
+  } catch (error) {
     if (loggedIn && !accessExpired) {
       panelState = 'offline'; renderConnection();
       pollTimer = setTimeout(poll, 4000);
@@ -893,7 +926,7 @@ function syncTerminalView() {
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
-  return inputBusy || inputComposing || frameComposing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || transportSwitching || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy;
+  return !owned || inputBusy || inputComposing || frameComposing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || transportSwitching || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
 }
 function changeMode(mode) {
   if (terminalOnly && mode !== 'terminal') return;
@@ -1287,6 +1320,10 @@ document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!doc
 window.addEventListener('pagehide', () => { historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
 
-forwardingUI = createForwardUI({ api, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online' });
+accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,
+  canUnlock: () => loggedIn && permissions.canClaim && !accessExpired, needsUnlock: () => permissions.requiresUnlock,
+  lockEnabled: () => permissions.screenLockEnabled, claim, changed: updateAccess, activity: () => { renderInputControls(); scheduleViewport(); }, toast });
+forwardingUI = createForwardUI({ api, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online',
+  capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});

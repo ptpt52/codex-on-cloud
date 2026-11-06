@@ -187,15 +187,15 @@ test('logout revokes both the helper and live TCP streams without consuming a ne
   assert.equal(await rejected(app,'/forward/data',control.ready.streamToken),401);
 });
 
-test('a delayed forwarding body survives desktop takeover but cannot survive logout',async t=>{
+test('a delayed server-forwarding body loses permission after takeover and cannot survive logout',async t=>{
   const app=await fixture();t.after(()=>app.close());await app.login();await app.claim();
   const body=JSON.stringify({localPort:2222,targetPort:22}),started=once(app.panel.server,'request');let pending;
   const response=new Promise((resolve,reject)=>{
     pending=http.request(app.config.origin+'/api/forward',{method:'POST',headers:{cookie:app.cookie,origin:app.config.origin,'x-csrf-token':app.csrf,'x-viewer-id':app.viewer,'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{res.resume();res.once('end',()=>resolve(res.statusCode));});
     pending.once('error',reject);pending.write(body.slice(0,1));
   });t.after(()=>pending.destroy());await started;
-  const newViewer='22222222-2222-4222-8222-222222222222';await app.claim(newViewer);pending.end(body.slice(1));assert.equal(await response,200);
-  const result=await(await app.request('/api/forward')).json();assert.equal(result.mappings.length,1);
+  const newViewer='22222222-2222-4222-8222-222222222222';await app.claim(newViewer);pending.end(body.slice(1));assert.equal(await response,409);
+  const result=await(await app.request('/api/forward')).json();assert.equal(result.mappings.length,0);
   const started2=once(app.panel.server,'request');let pending2;
   const response2=new Promise((resolve,reject)=>{
     pending2=http.request(app.config.origin+'/api/forward',{method:'POST',headers:{cookie:app.cookie,origin:app.config.origin,'x-csrf-token':app.csrf,'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{res.resume();res.once('end',()=>resolve(res.statusCode));});pending2.once('error',reject);pending2.write(body.slice(0,1));

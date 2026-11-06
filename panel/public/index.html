@@ -81,6 +81,7 @@
           <span id="pan-description" class="sr-only">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
         </div>
       </div>
+      <div id="access-actions" class="desktop-actions"><button id="access-settings-button" class="view-button" type="button">访问与屏幕锁</button><button id="screen-lock-button" class="view-button" type="button" hidden>立即锁定</button></div>
       </aside>
       <div id="desktop-stage" class="desktop-stage">
         <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
@@ -100,6 +101,29 @@
     </section>
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，任务继续运行</span><span id="version-label"></span></footer>
   </main>
+  <dialog id="unlock-dialog" class="files-dialog action-confirmation" aria-labelledby="unlock-title">
+    <div class="dialog-heading"><h2 id="unlock-title">解锁并在这里使用</h2><button id="unlock-close" class="quiet" type="button" aria-label="取消解锁">✕</button></div>
+    <p class="muted">输入屏幕锁密码后，才能查看和操作桌面或网页终端。取消后仍可使用连接状态、本地设备映射和文件中转。</p>
+    <form id="unlock-form" method="post" action="/api/desktop/claim"><label for="unlock-password">屏幕锁密码</label><input id="unlock-password" name="lockPassword" type="password" autocomplete="off" maxlength="128" required><p id="unlock-error" class="error" role="status"></p><div class="confirmation-actions"><button id="unlock-cancel" class="secondary" type="button">取消</button><button id="unlock-submit" class="primary" type="submit">解锁并在这里使用</button></div></form>
+  </dialog>
+  <dialog id="access-dialog" class="files-dialog access-dialog" aria-labelledby="access-title">
+    <div class="dialog-heading"><h2 id="access-title">访问与屏幕锁</h2><button id="access-close" class="quiet" type="button" aria-label="关闭访问设置">✕</button></div>
+    <form id="screen-lock-form" class="access-form" method="post" action="/api/security/screen-lock">
+      <h3>屏幕锁</h3><label class="access-checkbox"><input id="screen-lock-enabled" type="checkbox">开启屏幕锁</label>
+      <label for="screen-lock-password">新屏幕锁密码</label><input id="screen-lock-password" name="password" type="password" autocomplete="new-password" maxlength="128" placeholder="4–128 个字符；已有密码时留空保留">
+      <p class="muted">开启后，首次进入和每次重新接管都需解锁。桌面锁定时，原任务和已有映射继续运行。</p><button id="screen-lock-save" class="primary" type="submit">保存屏幕锁</button>
+    </form>
+    <form id="temporary-account-form" class="access-form" method="post" action="/api/security/temporary-account">
+      <h3>临时账号</h3><label class="access-checkbox"><input id="temporary-enabled" type="checkbox">允许临时账号登录</label>
+      <label for="temporary-username">临时用户名</label><input id="temporary-username" name="username" autocomplete="off" maxlength="64" placeholder="与管理员不同，例如 visitor">
+      <label for="temporary-password">临时密码</label><input id="temporary-password" name="password" type="password" autocomplete="new-password" maxlength="128" placeholder="8–128 个字符；留空保留现有密码">
+      <label for="temporary-duration">从本次保存起有效</label><select id="temporary-duration"><option value="3600000">1 小时</option><option value="21600000">6 小时</option><option value="86400000" selected>24 小时</option><option value="259200000">3 天</option><option value="604800000">7 天</option></select>
+      <p id="temporary-current" class="muted"></p><p class="muted">仅可配置“服务器访问本地设备”的映射，以及上传、下载共享中转文件；不能解锁桌面、使用终端或读取其他登录的映射。更新账号会撤销旧临时登录及其映射。</p>
+      <div class="desktop-actions"><button id="temporary-save" class="primary" type="submit">保存临时账号</button><button id="temporary-copy" class="secondary" type="button" disabled>复制本次账号密码</button></div>
+      <textarea id="temporary-share" readonly rows="4" hidden aria-label="临时访问信息"></textarea>
+    </form><p id="access-status" class="muted" role="status"></p>
+  </dialog>
+  <dialog id="access-confirm" class="files-dialog action-confirmation" aria-labelledby="access-confirm-title"><h2 id="access-confirm-title">更新临时访问？</h2><p class="muted">旧临时登录及其创建的设备映射会立即失效。管理员的登录、任务和映射保留。</p><div class="confirmation-actions"><button id="access-confirm-cancel" class="secondary" type="button" autofocus>取消</button><button id="access-confirm-accept" class="primary" type="button">确认更新</button></div></dialog>
   <div id="shortcuts-menu" class="shortcuts-menu" role="menu" aria-label="Codex 和终端快捷键" tabindex="-1" popover="auto" hidden>
     <p class="shortcuts-title">Codex 和终端快捷键</p>
     <p class="shortcuts-help">可上下滚动查看，点击条目发送一次。先点选远程 Codex 终端；用途按默认键位标注，自定义键位以当前程序为准。</p>

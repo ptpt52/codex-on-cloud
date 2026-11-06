@@ -74,3 +74,12 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 @media(max-height:540px) and (orientation:landscape){.topbar{height:48px;min-height:48px;padding-top:1px;padding-bottom:1px}}
 
 .forward-dialog>.dialog-heading{position:sticky;top:0;z-index:2;background:var(--surface);padding-bottom:8px}.forward-form .forward-wide{flex-basis:100%;width:100%;min-width:0}.forward-device-fields{display:flex;flex-wrap:wrap;gap:10px}.forward-device-fields[hidden],.forward-device-actions[hidden]{display:none}.forward-device-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.forward-device-row{padding:12px;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.forward-device-row strong{font-size:13px}.forward-device-row p{font-size:12px}.forward-device-row button,.forward-row button{margin-right:8px;margin-top:8px}#forward-devices>summary{cursor:pointer;min-height:44px;padding:12px 0;box-sizing:border-box}#forward-connection-text{box-sizing:border-box;width:100%;min-height:150px;resize:vertical;margin-top:8px;padding:10px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;font:13px ui-monospace,Consolas,monospace}
+
+.access-dialog, #unlock-dialog { max-height: min(calc(var(--workspace-visible-height, 100dvh) - 24px), 900px); overflow-y: auto; }
+.access-dialog > .dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--surface); padding-bottom: 8px; }
+.access-form { display: grid; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.access-form h3 { margin: 0 0 4px; }
+.access-form input:not([type="checkbox"]), .access-form select, #temporary-share, #unlock-password { width: 100%; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.access-checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.access-checkbox input { width: auto; }
+#unlock-form { display: grid; gap: 10px; }

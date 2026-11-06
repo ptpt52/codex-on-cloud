@@ -67,7 +67,7 @@ test('recovering mappings display their deadline, preserve stop confirmation and
   }finally{helper?.ws.terminate();resumed?.ws.terminate();await app.close();}
 });
 
-test('reload and takeover retain helper authorization and let either page manage it; phone controls fit a narrow screen',async({page,context},info)=>{
+test('reload and takeover retain helper authorization; only the current owner manages server-forward mappings',async({page,context},info)=>{
   const app=await fixture({rfb:true,rfbSize:{width:640,height:480}});let helper;
   try{
     if(info.project.name==='mobile')await page.setViewportSize({width:320,height:700});
@@ -85,8 +85,9 @@ test('reload and takeover retain helper authorization and let either page manage
     await second.goto(app.config.origin);await expect(second.locator('#connection-status')).toContainText('桌面在线');
     await expect(page.locator('#takeover-button')).toBeVisible({timeout:10000});await expect(page.locator('#forward-dialog')).toBeVisible();expect(helper.ws.readyState).toBe(WebSocket.OPEN);
     await second.locator('#forward-button').click();await expect(second.locator('.forward-row')).toContainText('已连接');
-    await page.locator('.forward-row button').click();const closed=once(helper.ws,'close');await page.locator('#forward-accept-stop').click();await closed;
-    await expect(page.locator('#forward-recent')).toContainText('映射已由网页明确停止');await expect(second.locator('#forward-recent')).toContainText('映射已由网页明确停止');
+    await expect(page.locator('.forward-row')).toHaveCount(0);await expect(page.locator('#forward-direction')).toHaveValue('reverse');
+    await second.locator('.forward-row button').click();const closed=once(helper.ws,'close');await second.locator('#forward-accept-stop').click();await closed;
+    await expect(page.locator('#forward-recent')).not.toContainText('映射已由网页明确停止');await expect(second.locator('#forward-recent')).toContainText('映射已由网页明确停止');
     expect(app.managementStats.restarts).toBe(0);await second.close();
   }finally{helper?.ws.terminate();await app.close();}
 });

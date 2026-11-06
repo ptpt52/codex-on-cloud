@@ -78,5 +78,5 @@ test('targeted inputs and terminal mutations share one lock and delayed writes c
     request.on('error', reject); request.write(body.slice(0, 1));
   }); t.after(() => request.destroy()); await reading;
   await app.claim('22222222-2222-4222-8222-222222222222'); request.end(body.slice(1));
-  assert.equal(await response, 409); assert.equal((await listed(app)).terminals.length, 2);
+  assert.equal(await response, 409); assert.equal((await app.request('/api/terminals')).status, 409); assert.equal((await app.controls.listTerminals()).terminals.length, 2);
 });

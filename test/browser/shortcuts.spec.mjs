@@ -146,7 +146,7 @@ test('the public offline shell includes shortcut modules and never caches authen
     expect(paths).toContain('/shortcuts.js'); expect(paths).toContain('/shortcut-menu.js');
     expect(paths).toContain('/workspace-panels.js'); expect(paths).toContain('/workspace.css');
     expect(paths).toContain('/terminal-state.js'); expect(paths).toContain('/terminal-tabs.js');
-    expect(paths.length).toBeLessThanOrEqual(13);
+    expect(paths).toContain('/access-ui.js'); expect(paths.length).toBeLessThanOrEqual(14);
     expect(paths.some(path => path.startsWith('/api/') || path.startsWith('/desktop/'))).toBe(false);
     expect(app.inputCalls).toEqual([]);
   } finally { await context.setOffline(false); await app.close(); }

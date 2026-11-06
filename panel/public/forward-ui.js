@@ -1,23 +1,25 @@
 import { FORWARD_CLIENTS, forwardOS, detectForwardClient } from './forward-platform.js';
 
 // The browser grants one short-lived capability; raw TCP bytes never enter it.
-export function createForwardUI({ api, allowed }) {
+export function createForwardUI({ api, allowed, capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }) }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
   let platform = { os: forwardOS(navigator), arch: null }, detection, downloads = [];
   let policyReady = false, portsEnabled = false;
   let devices = [], mappings = [], selectedDevice = '', pendingDelete = '', deviceSignature = '', connectionId = '';
+  let policySignature = '';
   const reversed = () => $('forward-direction').value === 'reverse';
   const targetAddress = item => { const host = item.targetHost || '127.0.0.1'; return (host.includes(':') ? '[' + host + ']' : host) + ':' + item.targetPort; };
   const deviceBody = () => ({ name: $('forward-device-name').value.trim(), protocol: $('forward-protocol').value, localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) });
-  function renderDirection() {
+  function renderDirection(refresh = true) {
     const reverse = reversed();
-    $('forward-device-fields').hidden = $('forward-device-actions').hidden = !reverse;
+    $('forward-device-fields').hidden = !reverse;
+    $('forward-device-actions').hidden = !reverse || !capabilities().manageDevices;
     $('forward-device-name').required = reverse;
     $('forward-local-label').textContent = reverse ? '服务器回环端口' : '本机端口';
     $('forward-target-note').textContent = reverse ? '目标从运行助手的电脑访问。填写本机或局域网设备 IP；服务器仅在本地助手确认后监听回环端口。SSH / Telnet 账号仍由原客户端登录。' : '目标从服务器所在网络访问。127.0.0.1 表示服务器自身，也可填写服务器可达的局域网或公网 IPv4 / IPv6。';
     $('forward-device-editing').textContent = selectedDevice ? '正在编辑已保存设备；保存修改不会改变既有授权。' : '新设备';
-    update();
+    if (refresh) update();
   }
   function selectDevice(device) {
     clearCode(); selectedDevice = device.id;
@@ -83,6 +85,18 @@ export function createForwardUI({ api, allowed }) {
   function cancel() { generation++; controller?.abort(); controller = null; clearTimeout(timer); timer = null; busy = false; }
   function reset() { cancel(); clearCode(); clearConnection(); devices = []; mappings = []; selectedDevice = ''; pendingStop = pendingDelete = ''; deviceSignature = ''; $('forward-device-list').replaceChildren(); if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
   function update() {
+    const permission = capabilities(), signature = JSON.stringify(permission);
+    if (policySignature && policySignature !== signature) {
+      cancel(); clearCode(); clearConnection(); selectedDevice = ''; devices = []; mappings = []; deviceSignature = ''; policyReady = false;
+      $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); $('forward-device-list').replaceChildren();
+      if (confirmation.open) confirmation.close();
+      if (dialog.open) queueMicrotask(load);
+    }
+    policySignature = signature;
+    for (const option of $('forward-direction').options) option.disabled = !permission.directions.includes(option.value);
+    if (!permission.directions.includes($('forward-direction').value)) { $('forward-direction').value = permission.directions[0]; if (reversed() && $('forward-local').value === '2222') $('forward-local').value = '22001'; }
+    $('forward-devices').hidden = !permission.manageDevices;
+    renderDirection(false);
     $('forward-button').disabled = !allowed();
     if (!allowed()) reset();
     $('forward-create').disabled = !allowed() || busy || !room || !policyReady || !portsEnabled;
@@ -90,7 +104,7 @@ export function createForwardUI({ api, allowed }) {
     $('forward-local').disabled = $('forward-host').disabled = $('forward-target').disabled = busy;
     $('forward-direction').disabled = busy;
     $('forward-device-name').disabled = $('forward-protocol').disabled = busy || !reversed();
-    $('forward-device-save').disabled = $('forward-device-new').disabled = busy || !allowed();
+    $('forward-device-save').disabled = $('forward-device-new').disabled = busy || !allowed() || !permission.manageDevices;
   }
   async function request(path, options = {}) {
     const current = generation, abort = new AbortController(); controller = abort;
@@ -106,6 +120,9 @@ export function createForwardUI({ api, allowed }) {
     } finally { clearTimeout(deadline); if (controller === abort) controller = null; }
   }
   function render(data) {
+    const directions = capabilities().directions;
+    data = { ...data, mappings: data.mappings.filter(item => directions.includes(item.direction === 'reverse' ? 'reverse' : 'forward')),
+      recent: (data.recent || []).filter(item => directions.includes(item.direction === 'reverse' ? 'reverse' : 'forward')) };
     const recent = data.recent || [];
     devices = (data.devices || []).slice(0, 16); mappings = data.mappings;
     if (selectedDevice && !devices.some(item => item.id === selectedDevice)) { selectedDevice = ''; renderDirection(); }
@@ -177,7 +194,7 @@ export function createForwardUI({ api, allowed }) {
   $('forward-connection-copy').addEventListener('click', copyConnection);
   $('forward-connection-close').addEventListener('click', clearConnection);
   $('forward-device-save').addEventListener('click', async () => {
-    if (busy || !allowed() || !reversed() || !$('forward-form').reportValidity()) return;
+    if (busy || !allowed() || !capabilities().manageDevices || !reversed() || !$('forward-form').reportValidity()) return;
     cancel(); const current = generation, body = { ...deviceBody(), ...(selectedDevice ? { id: selectedDevice } : {}) };
     busy = true; update(); const data = await request('/api/forward/devices', { method: 'POST', body });
     if (generation !== current || !allowed() || !dialog.open) return;
@@ -187,6 +204,7 @@ export function createForwardUI({ api, allowed }) {
   $('forward-refresh').addEventListener('click', () => { $('forward-status').textContent = ''; void load(); });
   $('forward-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy || !allowed()) return;
+    if (!capabilities().directions.includes($('forward-direction').value)) return;
     cancel();
     const current = generation, body = { localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) };
     if (reversed()) {

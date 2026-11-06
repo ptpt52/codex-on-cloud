@@ -80,7 +80,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (mappings.get(item.id) !== item) return;
     mappings.delete(item.id); clearTimeout(item.timer);
     disconnectStreams(item);
-    recent.unshift({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item), code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
+    recent.unshift({ id: item.id, session: item.session, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item), code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
     recent.splice(FORWARD_LIMITS.recent);
     if (item.control) retire(item.control, code);
   }
@@ -101,13 +101,14 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   function revoke(session) { for (const item of mappings.values()) if (item.session === session) remove(item, 'signed_out'); }
   const timer = setInterval(refresh, 5000).unref();
   function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, deviceId: item.deviceId, protocol: item.protocol, targetStatus: item.targetStatus || { state: 'unverified' } } : {}; }
-  function list() {
+  function list(visible = () => true) {
+    if (typeof visible !== 'function') visible = () => true;
     refresh();
     return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
-      mappings: [...mappings.values()].map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
+      mappings: [...mappings.values()].filter(visible).map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
-      recent: recent.map(({ pairHash: _pair, resumeHash: _resume, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
+      recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
   function create(body, session, authorizationError) {
     refresh();
@@ -126,9 +127,10 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     mappings.set(item.id, item);
     return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item) };
   }
-  function stop(body) {
+  function stop(body, allowed = () => true) {
     if (Object.keys(body).join(',') !== 'id' || typeof body.id !== 'string' || !/^[a-f0-9]{32}$/.test(body.id)) throw fail(400, '映射标识无效');
     const item = mappings.get(body.id);
+    if (item && !allowed(item)) throw fail(403, '当前登录无权操作此映射');
     if (item) remove(item, 'stopped');
     return { ok: true };
   }

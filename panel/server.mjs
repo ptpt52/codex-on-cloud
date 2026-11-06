@@ -22,11 +22,14 @@ import { createForwardDownloads } from './forward-downloads.mjs';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
 import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
+import { createAccessControl } from './access-control.mjs';
+import { createFileTransfers } from './file-transfers.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
+  ['/access-ui.js', ['access-ui.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/workspace-panels.js', ['workspace-panels.js', 'text/javascript; charset=utf-8']],
   ['/terminal-state.js', ['terminal-state.js', 'text/javascript; charset=utf-8']],
@@ -91,12 +94,14 @@ function reply(res, status, data, headers = {}) {
 }
 
 export async function createPanel(config) {
-  const auth = await createAuth(config);
+  const access = await createAccessControl(config);
+  const auth = await createAuth(config, { validSession: session => session.role !== 'temporary' || access.temporaryValid(session) });
   const devices = createDeviceDirectory(config.dataDir);
   const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
   const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics(undefined, config.mode);
   const assets = new Map(await Promise.all([...ASSETS].map(async ([route, [file, type]]) => [route, { bytes: await readFile(new URL(file, PUBLIC)), type }])));
   const failures = new Map();
+  const unlockFailures = new Map();
   const sockets = new Map();
   let streamState;
   let owner = null;
@@ -108,6 +113,7 @@ export async function createPanel(config) {
   let rtcClosing = Promise.resolve();
   const forwarding = createForwarding(config);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
+  const fileTransfers = createFileTransfers();
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -130,11 +136,30 @@ export async function createPanel(config) {
     if (!originAllowed(req) || !equal(req.headers['x-csrf-token'], session.csrf)) throw new HttpError(403, '请求验证失败，请刷新页面');
     return session;
   };
+  const isOwner = (req, session, viewer = req.headers['x-viewer-id']) => session.role !== 'temporary' && !!owner && owner.viewer === viewer && owner.session === session.hash && (!access.screenEnabled || owner.lockRevision === access.screenRevision);
+  // Before the first claim, preserve legacy administrator read/forward access
+  // only when no screen lock is configured. A taken-over page is restricted.
+  const desktopAccess = (req, session, viewer) => session.role !== 'temporary' && (isOwner(req, session, viewer) || !access.screenEnabled && !owner);
+  const accessState = (req, session) => ({ role: session.role || 'admin', full: isOwner(req, session), screenLockEnabled: access.screenEnabled,
+    requiresUnlock: session.role !== 'temporary' && access.screenEnabled && !isOwner(req, session), canClaim: session.role !== 'temporary',
+    canForward: desktopAccess(req, session), canReverse: true, canManageDevices: desktopAccess(req, session) });
+  function denied(req, session) {
+    const error = new HttpError(session.role === 'temporary' ? 403 : access.screenEnabled ? 423 : 409,
+      session.role === 'temporary' ? '临时账号只允许服务器访问本地设备映射和文件中转' : access.screenEnabled ? '请先输入屏幕锁密码解锁' : '桌面已在另一页面打开，请先接管');
+    error.code = session.role === 'temporary' ? 'restricted_account' : access.screenEnabled ? 'screen_locked' : 'control_required';
+    error.access = accessState(req, session); return error;
+  }
+  function requireDesktopRead(req) {
+    const session = requireSession(req);
+    if (!desktopAccess(req, session)) throw denied(req, session);
+    return session;
+  }
   const requireOwner = req => {
     const session = requireWrite(req);
-    if (!owner || owner.viewer !== req.headers['x-viewer-id'] || owner.session !== session.hash) throw new HttpError(409, '桌面已在另一页面打开，请先接管');
+    if (!isOwner(req, session)) throw denied(req, session);
     return session;
   };
+  const mappingAllowed = (req, session, item) => desktopAccess(req, session) || item.direction === 'reverse' && (session.role !== 'temporary' || item.session === session.hash);
   async function ownedBody(req, limit) {
     requireOwner(req);
     const expected = owner;
@@ -159,6 +184,7 @@ export async function createPanel(config) {
     if (streamState && predicate(streamState)) streamState.stream.close();
     for (const [socket, state] of sockets) if (predicate(state)) socket.destroy();
   }
+  function lockDesktop() { owner = null; closeSockets(() => true); }
   function streamFor(id, mode, target, expected, token) {
     if (config.streamProtocol !== 1 || !STREAM_ID.test(id || '')) throw new HttpError(400, '会话协议无效');
     if (streamState?.id === id) {
@@ -220,11 +246,11 @@ export async function createPanel(config) {
       const failure = failures.get(key);
       if (failure && failure.until > Date.now() && failure.count >= 10) throw new HttpError(429, '登录尝试过多，请 15 分钟后再试');
       if (loginBusy >= 2) throw new HttpError(429, '正在验证登录，请稍后再试');
-      let verified;
+      let identity;
       loginBusy++;
-      try { verified = await auth.verify(body.username, body.password); }
+      try { identity = await auth.verify(body.username, body.password) ? { role: 'admin' } : await access.verifyTemporary(body.username, body.password); }
       finally { loginBusy--; }
-      if (!verified) {
+      if (!identity) {
         const latest = failures.get(key);
         const current = latest && latest.until > Date.now() ? latest : { count: 0, until: Date.now() + 900_000 };
         current.count++; failures.set(key, current);
@@ -232,12 +258,15 @@ export async function createPanel(config) {
         throw new HttpError(401, '用户名或密码错误');
       }
       failures.delete(key);
-      const { token, session } = await auth.create();
-      return reply(res, 200, { mode: config.mode || 'desktop', username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0 }, { 'set-cookie': sessionCookie(token, config) });
+      const previous = sessionOf(req);
+      if (previous && owner?.session === previous.hash) lockDesktop();
+      const { token, session } = await auth.create(identity);
+      if (!auth.get(token)) throw new HttpError(401, '登录授权已改变，请重新登录');
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0 }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { mode: config.mode || 'desktop', username: config.username, csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/logout' && req.method === 'POST') {
@@ -248,12 +277,16 @@ export async function createPanel(config) {
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;
       forwarding.refresh();
+      fileTransfers.revalidate();
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', config, true) });
     }
     if (path === '/api/state' && req.method === 'GET') {
       const session = requireSession(req);
       const [desktop, controls] = await Promise.all([desktopHealth(), controlStatus()]);
-      return reply(res, 200, { desktop, controls, claimable: !owner, mine: !!owner && owner.session === session.hash && owner.viewer === req.headers['x-viewer-id'] });
+      requireSession(req);
+      const permission = accessState(req, session);
+      const visibleControls = desktopAccess(req, session) ? controls : { available: controls.available, maintenance: controls.maintenance, inputBusy: false, clipboardBusy: false, viewportBusy: false };
+      return reply(res, 200, { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full });
     }
     if (path === '/api/diagnostics' && req.method === 'GET') {
       requireSession(req);
@@ -261,28 +294,58 @@ export async function createPanel(config) {
       requireSession(req);
       return reply(res, 200, { tunnel, services });
     }
+    if (path.startsWith('/api/')) {
+      const session = requireSession(req);
+      const shared = ['/api/desktop/claim', '/api/files', '/api/forward', '/api/forward/stop'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/');
+      if (!shared && !desktopAccess(req, session)) { if (!['GET', 'HEAD'].includes(req.method)) requireWrite(req); throw denied(req, session); }
+    }
+    if (path === '/api/security' && req.method === 'GET') { const session = requireSession(req); if (!isOwner(req, session)) throw denied(req, session); return reply(res, 200, access.status()); }
+    if (['/api/security/screen-lock', '/api/security/temporary-account'].includes(path) && req.method === 'POST') {
+      const body = await ownedBody(req, 2048), expected = owner;
+      const valid = () => { requireOwner(req); if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '控制权已变化，本次设置未保存'); };
+      const oldRevision = access.screenRevision;
+      const result = path.endsWith('/screen-lock') ? await access.saveScreen(body, valid) : await access.saveTemporary(body, valid);
+      if (oldRevision !== access.screenRevision) {
+        if (access.screenEnabled) lockDesktop();
+        else if (owner) owner.lockRevision = access.screenRevision;
+      }
+      forwarding.refresh();
+      fileTransfers.revalidate();
+      return reply(res, 200, { ...result, access: accessState(req, requireSession(req)) });
+    }
+    if (path === '/api/security/lock' && req.method === 'POST') {
+      await ownedBody(req, 128);
+      if (!access.screenEnabled) throw new HttpError(409, '请先开启屏幕锁');
+      lockDesktop(); return reply(res, 200, { ok: true, access: accessState(req, requireSession(req)) });
+    }
     if (config.mode === 'terminal' && (path.startsWith('/api/desktop/') && path !== '/api/desktop/claim' || ['/api/paste', '/api/key', '/api/terminal', '/api/clipboard/read'].includes(path))) {
       if (req.method === 'GET') requireSession(req); else requireOwner(req);
       throw new HttpError(501, '纯终端部署未启用桌面操作');
     }
     if (path === '/api/desktop/settings' && req.method === 'GET') {
-      requireSession(req);
-      return reply(res, 200, await managerRequest(config, '/settings'));
+      requireDesktopRead(req); const expected = owner;
+      const result = await managerRequest(config, '/settings'); requireDesktopRead(req);
+      if (owner !== expected) throw new HttpError(409, '页面控制权已变化');
+      return reply(res, 200, result);
     }
     if (path === '/api/terminals' && req.method === 'GET') {
-      requireSession(req);
-      return reply(res, 200, await managerRequest(config, '/terminals'));
+      requireDesktopRead(req); const expected = owner;
+      const result = await managerRequest(config, '/terminals'); requireDesktopRead(req);
+      if (owner !== expected) throw new HttpError(409, '页面控制权已变化');
+      return reply(res, 200, result);
     }
     if (path === '/api/forward' && req.method === 'GET') {
       requireSession(req);
       const downloads = await forwardDownloads.list();
-      requireSession(req);
-      const directory = devices.list();
-      return reply(res, 200, { ...directory, ...forwarding.list(), deviceLimit: directory.limit, downloads });
+      const session = requireSession(req), permission = accessState(req, session);
+      const directory = permission.canManageDevices ? devices.list() : { devices: [], limit: 0 };
+      return reply(res, 200, { ...directory, ...forwarding.list(item => mappingAllowed(req, session, item)), deviceLimit: directory.limit, downloads,
+        permissions: { directions: permission.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permission.canManageDevices } });
     }
-    if (path === '/api/forward/devices' && req.method === 'GET') { requireSession(req); return reply(res, 200, devices.list()); }
+    if (path === '/api/forward/devices' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, devices.list()); }
     if (['/api/forward/devices', '/api/forward/devices/remove'].includes(path) && req.method === 'POST') {
-      requireWrite(req); const body = await jsonBody(req, 1024); requireWrite(req);
+      requireWrite(req); requireDesktopRead(req); const expected = owner, body = await jsonBody(req, 1024); requireWrite(req); requireDesktopRead(req);
+      if (owner !== expected) throw new HttpError(409, '控制权已变化，本次设备设置未保存');
       return reply(res, 200, path.endsWith('/remove') ? devices.remove(body) : devices.save(body));
     }
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
@@ -291,7 +354,9 @@ export async function createPanel(config) {
     if (['/api/forward', '/api/forward/stop'].includes(path) && req.method === 'POST') {
       requireWrite(req);
       const body = await jsonBody(req, 1024), session = requireWrite(req), token = cookieToken(req.headers.cookie);
-      if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body));
+      if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body, item => mappingAllowed(req, session, item)));
+      if (body?.direction !== 'reverse' && !desktopAccess(req, session)) throw denied(req, session);
+      if (body?.deviceId !== undefined && !desktopAccess(req, session)) throw denied(req, session);
       if (body?.direction === 'reverse' && body.deviceId !== undefined) {
         if (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) throw new HttpError(400, '设备标识无效');
         const device = devices.find(body.deviceId);
@@ -324,15 +389,33 @@ export async function createPanel(config) {
     }
     if (path === '/api/desktop/claim' && req.method === 'POST') {
       const session = requireWrite(req);
-      const { viewer, ifFree } = await jsonBody(req, 1024);
+      if (session.role === 'temporary') throw denied(req, session);
+      const { viewer, ifFree, lockPassword } = await jsonBody(req, 1024);
       requireWrite(req); // Revoked/expired sessions cannot claim through a delayed body.
       if (typeof viewer !== 'string' || !VIEWER.test(viewer)) throw new HttpError(400, '页面标识无效');
       if (ifFree !== undefined && ifFree !== true) throw new HttpError(400, '恢复认领参数无效');
       if (ifFree && owner && (owner.viewer !== viewer || owner.session !== session.hash)) throw new HttpError(409, '已有其他页面控制桌面，请明确接管');
       if (ifFree && owner) return reply(res, 200, { ok: true });
+      if (access.screenEnabled && !(owner?.viewer === viewer && owner.session === session.hash && owner.lockRevision === access.screenRevision)) {
+        if (typeof lockPassword !== 'string' || !lockPassword) throw denied(req, session);
+        const key = req.socket.remoteAddress || 'unknown', before = owner, version = access.screenRevision;
+        const record = unlockFailures.get(key);
+        if (record?.until > Date.now() && record.count >= 20) throw new HttpError(429, '解锁尝试过多，请一分钟后再试');
+        if (loginBusy >= 2) throw new HttpError(429, '正在验证密码，请稍后重试');
+        loginBusy++; let verified;
+        try { verified = await access.verifyScreen(lockPassword); } finally { loginBusy--; }
+        requireWrite(req);
+        if (!verified) {
+          const previous = unlockFailures.get(key), current = previous?.until > Date.now() ? previous : { count: 0, until: Date.now() + 60000 };
+          current.count++; unlockFailures.set(key, current); if (unlockFailures.size > 1024) unlockFailures.delete(unlockFailures.keys().next().value);
+          throw new HttpError(403, '屏幕锁密码不正确');
+        }
+        if (owner !== before || version !== access.screenRevision || res.destroyed || closing) throw new HttpError(409, '控制权或屏幕锁已变化，请重新解锁');
+        unlockFailures.delete(key);
+      }
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
-      owner = { viewer, session: session.hash };
-      return reply(res, 200, { ok: true });
+      if (owner?.viewer !== viewer || owner?.session !== session.hash) owner = { viewer, session: session.hash, lockRevision: access.screenRevision };
+      return reply(res, 200, { ok: true, access: accessState(req, session) });
     }
     if (['/api/desktop/rtc', '/api/terminal/rtc'].includes(path) && req.method === 'POST') {
       const terminalMode = path === '/api/terminal/rtc';
@@ -450,34 +533,49 @@ export async function createPanel(config) {
     }
     if (path === '/api/files' && req.method === 'GET') {
       requireSession(req);
-      return reply(res, 200, await agent('/files'));
+      const result = await agent('/files'); requireSession(req); return reply(res, 200, result);
     }
     if (path.startsWith('/api/files/') && ['GET', 'PUT'].includes(req.method)) {
-      if (req.method === 'PUT') requireWrite(req); else requireSession(req);
+      const session = req.method === 'PUT' ? requireWrite(req) : requireSession(req);
       const encoded = path.slice('/api/files/'.length);
       let name;
       try { name = decodeURIComponent(encoded); } catch { throw new HttpError(400, '文件名无效'); }
       if (!name || name === '.' || name === '..' || /[/\\\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 240) throw new HttpError(400, '文件名无效');
+      const token = cookieToken(req.headers.cookie), transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT');
+      try {
       if (req.method === 'PUT') {
         const length = Number(req.headers['content-length']);
         if (!Number.isSafeInteger(length) || length < 0 || length > MAX_UPLOAD) throw new HttpError(413, '文件大小必须明确，且不能超过 50 MiB');
+        if (session.role === 'temporary') {
+          const listed = await agent('/files'); transfer.check(); requireWrite(req);
+          if (!Array.isArray(listed.files) || listed.files.length >= 1000) throw new HttpError(413, '共享目录已达到临时上传文件数量上限');
+          let total = 0, replaced = 0;
+          for (const file of listed.files) {
+            if (!Number.isSafeInteger(file.size) || file.size < 0) throw new HttpError(503, '共享目录状态暂不可用');
+            total += file.size; if (file.name === name) replaced = file.size;
+          }
+          if (total - replaced + length > 1024 * 1024 * 1024) throw new HttpError(413, '共享目录已达到临时上传的 1 GiB 容量上限');
+        }
         const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; callback(this.total > MAX_UPLOAD ? new Error('文件过大') : null, chunk); } });
-        const controller = new AbortController();
-        req.once('aborted', () => controller.abort());
         const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream' },
-          body: req.pipe(limiter), duplex: 'half', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(300_000)]),
+          body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
-        return reply(res, response.status, await response.json());
+        const result = await response.json(); transfer.check(); return reply(res, response.status, result);
       }
-      const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: AbortSignal.timeout(300_000) });
+      const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: transfer.signal });
+      transfer.check();
       if (!response.ok) return reply(res, response.status, await response.json());
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}) });
       await pipeline(response.body, res);
       return;
+      } finally { transfer.finish(); }
     }
     if (path.startsWith('/desktop/') || path.startsWith('/terminal/')) {
-      requireSession(req);
+      const session = requireSession(req);
+      // Iframe navigations carry their page identifier in the URL. Static
+      // modules have no private data; all streams and actions check ownership.
+      if (['/desktop/index.html', '/terminal/index.html'].includes(path) && !desktopAccess(req, session, url.searchParams.get('viewer') || undefined)) throw denied(req, session);
       if (config.mode === 'terminal' && (['/desktop/index.html', '/desktop/viewer.js', '/desktop/viewer.css'].includes(path) || path.startsWith('/desktop/novnc/'))) throw new HttpError(501, '纯终端部署未启用桌面资源');
       if (!['GET', 'HEAD'].includes(req.method)) throw new HttpError(405, '只允许读取桌面资源');
       if (path.startsWith('/desktop/novnc/')) {
@@ -504,7 +602,8 @@ export async function createPanel(config) {
   const server = http.createServer((req, res) => {
     route(req, res).catch(error => {
       if (!error.status) console.error(`[panel] ${error.name}: request failed`); // No bodies, cookies or credentials.
-      reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown') });
+      reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown'),
+        ...(error.code && error.access ? { code: error.code, access: error.access } : {}) });
     });
   });
   server.requestTimeout = 310_000;
@@ -520,6 +619,7 @@ export async function createPanel(config) {
     }
     const session = sessionOf(req);
     if (!session) return deny(401);
+    if (!isOwner(req, session, forwardURL.searchParams.get('viewer'))) return deny(session.role === 'temporary' ? 403 : access.screenEnabled ? 423 : 409);
     const url = new URL(req.url, 'http://internal');
     const terminalMode = url.pathname === '/terminal/connect';
     const streamMode = url.pathname === '/session/connect';
@@ -615,6 +715,7 @@ export async function createPanel(config) {
   async function close() {
     closing = true;
     await forwarding.close();
+    fileTransfers.close();
     clearInterval(expiration);
     closeSockets(() => true);
     await rtcClosing;

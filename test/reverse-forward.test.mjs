@@ -77,6 +77,26 @@ test('reverse mapping bounds pending sockets, invalidates old streams on recover
 });
 function controlOpens(control) { return control.records.filter(x => x.type === 'reverse_open'); }
 
+test('live reverse TCP bytes and helper authorization survive screen locking and a password-protected takeover', async t => {
+  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); await app.login(); await app.claim();
+  const mapping = await create(app), control = await helper(app, mapping.code); t.after(() => control.ws.terminate());
+  const tcp = net.createConnection({ host: '127.0.0.1', port: mapping.localPort }); tcp.on('error', () => {}); t.after(() => tcp.destroy()); await once(tcp, 'connect');
+  await until(() => controlOpens(control).length === 1);
+  const data = await open(app, '/forward/data', control.ready.streamToken, { 'x-codex-reverse-stream': controlOpens(control)[0].id }); t.after(() => data.ws.terminate());
+  data.ws.send('{"type":"target_ready"}'); const replies = []; tcp.on('data', bytes => replies.push(bytes));
+  tcp.write('before lock'); await until(() => Buffer.concat(data.records.filter(Buffer.isBuffer)).toString() === 'before lock');
+  assert.equal((await app.request('/api/security/screen-lock', { method: 'POST', body: { enabled: true, password: 'test-screen-password' } })).status, 200);
+  tcp.write(' after lock'); await until(() => Buffer.concat(data.records.filter(Buffer.isBuffer)).toString() === 'before lock after lock');
+  const login = await fetch(app.config.origin + '/api/login', { method: 'POST', headers: { origin: app.config.origin, 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: app.config.password }) });
+  const cookie = login.headers.get('set-cookie').split(';')[0], identity = await login.json(), viewer = '22222222-2222-4222-8222-222222222222';
+  const claim = await fetch(app.config.origin + '/api/desktop/claim', { method: 'POST', headers: { origin: app.config.origin, cookie, 'x-viewer-id': viewer, 'x-csrf-token': identity.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ viewer, lockPassword: 'test-screen-password' }) });
+  assert.equal(claim.status, 200); assert.equal((await app.request('/api/terminals')).status, 423);
+  data.ws.send(Buffer.from('reply after takeover')); await until(() => Buffer.concat(replies).toString() === 'reply after takeover');
+  tcp.write(' after takeover'); await until(() => Buffer.concat(data.records.filter(Buffer.isBuffer)).toString() === 'before lock after lock after takeover');
+  assert.equal(control.ws.readyState, WebSocket.OPEN); assert.equal((await status(app)).mappings[0].id, mapping.id);
+  assert.deepEqual(app.inputCalls, []); assert.equal(app.managementStats.restarts, 0);
+});
+
 test('reverse validates identity and port scope, and reports listen collisions without reaching a device', async t => {
   const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); await app.login();
   const base = { direction: 'reverse', localPort: await freePort(), targetHost: '192.168.1.1', targetPort: 22, deviceName: '路由器' };

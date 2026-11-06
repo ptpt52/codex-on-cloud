@@ -12,10 +12,13 @@ export function equal(a, b) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export async function createAuth(config) {
+export async function createAuth(config, { validSession = () => true } = {}) {
   const salt = randomBytes(32);
   const passwordHash = await scrypt(config.password, salt, 64);
-  const revision = tokenHash(config.password);
+  // Older panels do not understand roles. A separate revision domain makes
+  // them discard these cookies on rollback instead of promoting guests.
+  const legacyRevision = tokenHash(config.password);
+  const revision = tokenHash('codex-cloud-role-sessions-v1\0' + config.password);
   const sessions = new Map();
   const file = join(config.dataDir, 'sessions.json');
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
@@ -30,16 +33,27 @@ export async function createAuth(config) {
     const bytes = Buffer.alloc(SESSION_FILE_LIMIT + 1), { bytesRead } = await source.read(bytes, 0, bytes.length, 0);
     if (bytesRead > SESSION_FILE_LIMIT) throw new Error('Oversized session file');
     const stored = JSON.parse(bytes.subarray(0, bytesRead).toString('utf8'));
-    if (stored.revision === revision && Array.isArray(stored.sessions)) {
-      for (const item of stored.sessions.slice(-8)) {
+    const legacy = stored.revision === legacyRevision;
+    if ((stored.revision === revision || legacy) && Array.isArray(stored.sessions)) {
+      for (const item of stored.sessions.slice(-12)) {
         if (item && typeof item.hash === 'string' && /^[a-f0-9]{64}$/.test(item.hash) && typeof item.csrf === 'string' && /^[a-f0-9]{48}$/.test(item.csrf) && Number.isSafeInteger(item.expires) && item.expires > Date.now()) {
-          sessions.set(item.hash, { hash: item.hash, csrf: item.csrf, expires: item.expires });
+          if (legacy && item.role !== undefined) continue;
+          const role = item.role ?? 'admin';
+          if (!['admin', 'temporary'].includes(role)) continue;
+          const value = { hash: item.hash, csrf: item.csrf, expires: item.expires, role,
+            ...(role === 'temporary' ? { username: item.username, credentialRevision: item.credentialRevision } : {}) };
+          if (role === 'temporary' && (!/^[A-Za-z0-9_-]{1,64}$/.test(value.username || '') || !/^[a-f0-9]{32}$/.test(value.credentialRevision || ''))) continue;
+          if (validSession(value)) sessions.set(item.hash, value);
         }
       }
     }
   } catch (error) {
     if (error.code !== 'ENOENT') throw new Error('登录状态文件无法读取，请检查 data/panel/sessions.json', { cause: error });
   } finally { await source?.close(); }
+  for (const role of ['admin', 'temporary']) {
+    const maximum = role === 'admin' ? 8 : 4;
+    while ([...sessions.values()].filter(value => value.role === role).length > maximum) sessions.delete([...sessions.values()].find(value => value.role === role).hash);
+  }
   let saving = Promise.resolve(), writing = false, dirty = false;
   async function persist() {
     const temp = `${file}.tmp`;
@@ -77,13 +91,19 @@ export async function createAuth(config) {
     get(token) {
       if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
       const session = sessions.get(tokenHash(token));
-      return session && session.expires > Date.now() ? session : null;
+      return session && session.expires > Date.now() && validSession(session) ? session : null;
     },
-    async create() {
+    async create(identity = { role: 'admin' }) {
+      if (!['admin', 'temporary'].includes(identity.role)) throw Error('登录权限无效');
+      if (identity.role === 'temporary' && (!/^[A-Za-z0-9_-]{1,64}$/.test(identity.username || '') || !/^[a-f0-9]{32}$/.test(identity.credentialRevision || '') || !Number.isSafeInteger(identity.expires))) throw Error('临时登录授权无效');
       const token = randomBytes(32).toString('hex');
-      const session = { hash: tokenHash(token), csrf: randomBytes(24).toString('hex'), expires: Date.now() + config.sessionMs };
-      for (const [hash, value] of sessions) if (value.expires <= Date.now()) sessions.delete(hash);
-      while (sessions.size >= 8) sessions.delete(sessions.keys().next().value);
+      const session = { hash: tokenHash(token), csrf: randomBytes(24).toString('hex'), expires: Math.min(Date.now() + config.sessionMs, identity.expires ?? Infinity), role: identity.role,
+        ...(identity.role === 'temporary' ? { username: identity.username, credentialRevision: identity.credentialRevision } : {}) };
+      for (const [hash, value] of sessions) if (value.expires <= Date.now() || !validSession(value)) sessions.delete(hash);
+      const maximum = identity.role === 'temporary' ? 4 : 8;
+      while ([...sessions.values()].filter(value => value.role === identity.role).length >= maximum) {
+        const oldest = [...sessions.values()].find(value => value.role === identity.role); sessions.delete(oldest.hash);
+      }
       sessions.set(session.hash, session);
       await save();
       return { token, session };
