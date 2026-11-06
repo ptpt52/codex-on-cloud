@@ -170,3 +170,38 @@ test('lost live-apply response never repeats the action or falls back to restart
     expect(requests).toBe(1); expect(app.managementStats.viewportResizes).toBe(1); expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });
+
+for (const failure of ['http', 'timeout']) test(`a ${failure} settings refresh failure stays visible over a completed job until a successful retry`, async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  let failRead = true, entered, release;
+  const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
+  try {
+    await open(page, app);
+    await page.locator('#maximize-terminal').click();
+    await expect(page.locator('#desktop-settings-status')).toHaveText('终端显示已更新');
+    await expect(page.locator('#maximize-terminal')).toBeEnabled();
+    await page.clock.install();
+    await page.route('**/api/desktop/settings', async route => {
+      if (route.request().method() !== 'GET' || !failRead) return route.continue();
+      entered();
+      if (failure === 'http') return route.fulfill({ status: 503, json: { error: '设置读取暂不可用' } });
+      await hold;
+      await route.abort().catch(() => {}); // The browser may have already aborted on its deadline.
+    });
+    await page.locator('#refresh-desktop-settings').click(); await started;
+    if (failure === 'timeout') {
+      await expect(page.locator('#desktop-width')).toBeDisabled();
+      await page.clock.fastForward(8001);
+    }
+    const expected = failure === 'http' ? '设置读取暂不可用' : '读取设置超时，请手动刷新';
+    await expect(page.locator('#desktop-settings-status')).toHaveText(expected);
+    await page.clock.fastForward(5000); // The ordinary connection poll also renders settings.
+    await expect(page.locator('#desktop-settings-status')).toHaveText(expected);
+    failRead = false; release();
+    await page.locator('#refresh-desktop-settings').click();
+    await expect(page.locator('#desktop-settings-status')).toHaveText('终端显示已更新');
+    await expect(page.locator('#desktop-width')).toBeEnabled();
+    expect(app.managementStats.saves).toBe(0); expect(app.managementStats.maximizes).toBe(1);
+    expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { release(); await app.close(); }
+});

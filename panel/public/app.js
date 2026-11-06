@@ -34,7 +34,7 @@ const directIssues = { unsupported: '当前浏览器环境不支持直连', disa
   connection: '原直连已断开，正在恢复', heartbeat: '直连心跳无回复，已开始回退中转' };
 let controlReady = false, controlPending = null, controlSequence = 0;
 let transportSwitching = false, switchTimer;
-let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false;
+let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalController = null, terminalLoadAttempted = false;
@@ -1136,7 +1136,8 @@ function renderDesktopSettings() {
     : desktopSettings.applyRequired ? `待应用：${saved.width} × ${saved.height}；${live ? '可立即生效，当前任务继续运行。' : '当前显示无法直接调整，需确认重启。'}` : `已应用：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
   $('settings-recovery').textContent = session?.resumeId ? `将恢复会话 ${session.resumeId}，项目：${session.cwd}` : session?.recoverable ? '当前为 shell，重启后打开新的 shell，不自动启动任务。' : '当前会话无法准确识别或存在多个窗格。结束前台任务后再应用分辨率。';
   $('apply-desktop-settings').textContent = live ? '立即应用分辨率' : session?.resumeId ? '重启桌面并恢复会话' : '重启桌面应用设置';
-  if (job) $('desktop-settings-status').textContent = job.message;
+  if (settingsLoadError) $('desktop-settings-status').textContent = settingsLoadError;
+  else if (job) $('desktop-settings-status').textContent = job.message;
 }
 function stopSettingsPolling() {
   clearTimeout(settingsTimer);
@@ -1145,6 +1146,7 @@ function stopSettingsPolling() {
 async function loadDesktopSettings(resetForm = false) {
   if (!$('desktop-settings-dialog').open || settingsController || !loggedIn) return;
   const controller = new AbortController(); settingsController = controller;
+  settingsLoadError = '';
   renderDesktopSettings();
   const timeout = setTimeout(() => controller.abort(new Error('读取设置超时，请手动刷新')), 8000);
   clearTimeout(settingsTimer);
@@ -1163,7 +1165,7 @@ async function loadDesktopSettings(resetForm = false) {
     renderDesktopSettings();
     if (next.busy) settingsTimer = setTimeout(() => void loadDesktopSettings(), 800);
   } catch (error) {
-    if (settingsController === controller && loggedIn) $('desktop-settings-status').textContent = error.message;
+    if (settingsController === controller && loggedIn) { settingsLoadError = error.message; $('desktop-settings-status').textContent = settingsLoadError; }
   } finally {
     clearTimeout(timeout);
     if (settingsController === controller) { settingsController = null; renderDesktopSettings(); }
@@ -1180,6 +1182,7 @@ async function settingsAction(path, body) {
   if (live) { viewportController = controller; viewportResizing = true; renderInputControls(); }
   const pausesInput = path.endsWith('/apply') || (path.endsWith('/terminal-display') && body.action === 'font');
   if (pausesInput) { maintenancePending = true; controlsState = { ...controlsState, maintenance: true }; renderConnection(); }
+  settingsLoadError = '';
   settingsBusy = true; renderDesktopSettings();
   try {
     const result = await api(path, { method: 'POST', body, signal: controller?.signal || AbortSignal.timeout(10000) });
