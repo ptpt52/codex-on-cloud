@@ -28,7 +28,7 @@ test('directory validation excludes credentials, duplicate origins, unsafe URLs 
 });
 
 test('portal authentication, CSRF, origins and read-only node credentials protect the dynamic registry', async t => {
-  const portal = await portalFixture({ nodes: [node()] }); t.after(portal.close);
+  const portal = await portalFixture({ nodes: [{ ...node(), description: '门户管理的备注' }] }); t.after(portal.close);
   assert.equal((await portal.request('/api/nodes')).status, 401);
   assert.equal((await portal.request('/api/login', { method: 'POST', body: { password: portal.password }, headers: { origin: 'https://attacker.example' } })).status, 403);
   let directory = await portal.login();
@@ -37,6 +37,9 @@ test('portal authentication, CSRF, origins and read-only node credentials protec
   assert.equal((await portal.request('/api/nodes', { method: 'POST', body: { revision: directory.revision, node: node('stale') } })).status, 409);
   directory = await (await portal.request('/api/nodes')).json(); assert.equal(directory.nodes.length, 2);
   const code = await portal.code(); const response = await register(portal, code.code, node()); assert.equal(response.status, 200);
+  assert.equal((await (await portal.request('/api/nodes')).json()).nodes.find(item => item.id === 'home').description, '门户管理的备注');
+  assert.equal((await register(portal, code.code, { ...node(), description: '' })).status, 200);
+  assert.equal((await (await portal.request('/api/nodes')).json()).nodes.find(item => item.id === 'home').description, '门户管理的备注');
   const token = await directoryToken({ nodeSecret: 'b'.repeat(64), portalOrigin: portal.origin });
   assert.equal((await portal.request('/api/directory', { headers: { cookie: '', authorization: 'Bearer ' + token } })).status, 200);
   assert.equal((await portal.request('/api/nodes', { headers: { cookie: '', authorization: 'Bearer ' + token } })).status, 401);

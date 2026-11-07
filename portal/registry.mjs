@@ -48,7 +48,7 @@ export class PortalRegistry {
           const codeHash = typeof body.authorizationCode === 'string' && /^[a-f0-9]{64}$/.test(body.authorizationCode) ? await portalDigest(body.authorizationCode) : '';
           const code = value.codes.find(item => portalEqual(item.hash, codeHash));
           if (!owns && !code) throw portalError(401, '授权码无效或已被门户删除');
-          node = { ...node, id: existing?.id || node.id, enabled: credential ? existing.enabled : true };
+          node = { ...node, id: existing?.id || node.id, description: existing?.description ?? node.description, enabled: credential ? existing.enabled : true };
           const nodes = existing ? value.directory.nodes.map(item => item.id === existing.id ? node : item) : [...value.directory.nodes, node];
           let directory;
           try { directory = parseNodeDirectory({ ...value.directory, nodes }); } catch (error) { throw portalError(400, error.message); }
