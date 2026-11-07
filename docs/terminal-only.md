@@ -20,6 +20,8 @@ WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `host
 
 安装器不安装、登录或修改 Codex，不改写用户 Codex 配置。首次只打开 shell；用户自行运行 Codex，重连不提交提示、输入或审批。
 
+无 systemd 的托管容器需要另行配置进程管理；本次 Cloady / Void Linux 的运行方式、维护命令和重启限制见 [Cloady 部署说明](cloady.md)。
+
 ## 省去的组件
 
 | 内容 | 桌面模式 | 纯终端模式 |
