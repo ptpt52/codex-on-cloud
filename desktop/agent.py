@@ -38,7 +38,12 @@ class Desktop:
             raise RuntimeError('文件中转目录不能是符号链接')
         self.input_lock = threading.Lock()
         self.upload_lock = threading.Lock()
-        self.version = subprocess.run(['codex', '--version'], capture_output=True, text=True, timeout=10).stdout.strip()
+        self.version = ''
+        try:
+            self.version = subprocess.run(['codex', '--version'], capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            if not self.terminal_only:
+                raise
 
     def directory(self):
         return os.open(str(self.transfer_dir), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

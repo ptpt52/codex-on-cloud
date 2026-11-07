@@ -26,7 +26,7 @@ const dependencies = new Map([
   ['python3', 'python3'], ['codex', null],
 ]);
 if (config.mode === 'terminal') {
-  for (const name of [...dependencies.keys()]) if (!['tmux', 'python3', 'codex'].includes(name)) dependencies.delete(name);
+  for (const name of [...dependencies.keys()]) if (!['tmux', 'python3'].includes(name)) dependencies.delete(name);
 }
 if (config.env.TUNNEL_DNS_SERVERS?.trim()) {
   dependencies.set('unshare', 'util-linux');

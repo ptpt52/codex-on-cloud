@@ -4,7 +4,7 @@
 
 ## 安装
 
-准备普通 Linux 用户、可用的 systemd 用户服务、Node.js 22+ 和已安装的 Codex CLI，然后运行：
+准备普通 Linux 用户、可用的 systemd 用户服务、Node.js 22+，然后运行（不要求安装 Codex CLI）：
 
 ```sh
 git clone https://github.com/ptpt52/codex-on-cloud.git
@@ -24,7 +24,7 @@ WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `host
 
 | 内容 | 桌面模式 | 纯终端模式 |
 | --- | --- | --- |
-| 运行基础 | Node.js、Codex、tmux、Python、Bash、systemd 用户服务 | 相同 |
+| 运行基础 | Node.js、Codex、tmux、Python、Bash、systemd 用户服务 | Node.js、tmux、Python、Bash、systemd 用户服务；Codex 可选 |
 | 图形系统 | Xvfb、x11vnc、XFCE、Xterm | 不安装、不启动 |
 | 桌面输入与选区 | xdotool、xclip、xauth、X11 工具 | 不安装、不调用 |
 | 桌面字体与 D-Bus 图形会话 | fontconfig、中文字体、独立图形 D-Bus 会话 | 不安装、不启动 |
@@ -33,7 +33,7 @@ WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `host
 | 常驻项目服务 | desktop、actions、manager、panel | terminal、manager、panel |
 | 公网入口 | 可选 Tunnel | 相同 |
 
-轻量模式按锁文件执行 `npm ci --omit=dev --omit=optional`；noVNC 固定版本改为可选依赖，完整桌面安装仍包含它。网页终端所需的 xterm.js、WebSocket、WebRTC 和认证模块保留。系统包安装列表仅为 `tmux python3`，Node/Codex 和系统基础组件需预先具备。主要节省来自整套图形系统、字体与常驻图形进程；没有给出未经量测的内存或安装体积百分比。
+轻量模式按锁文件执行 `npm ci --omit=dev --omit=optional`；noVNC 固定版本改为可选依赖，完整桌面安装仍包含它。网页终端所需的 xterm.js、WebSocket、WebRTC 和认证模块保留。系统包安装列表仅为 `tmux python3`，Node 和系统基础组件需预先具备，Codex 可选。未安装 Codex、不可执行或版本查询超时时，文件助手仍正常启动，版本信息为空；桌面模式仍要求 Codex 可用。主要节省来自整套图形系统、字体与常驻图形进程；没有给出未经量测的内存或安装体积百分比。
 
 ## 功能与生命周期
 
@@ -59,7 +59,7 @@ npm run test:terminal-only
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/terminal-deployment.spec.mjs
 ```
 
-`test:terminal-only` 在临时目录按生产依赖安装，确认没有 noVNC 或 Playwright；运行真实 tmux、Bash、PTY、Python 文件助手、manager 和 panel，并以会失败的图形命令替身确认不调用 X11。它检查文件传输、名额边界、窗口关闭、面板/管理器重启后的任务身份及 shell 环境、主终端显式重开和宿主停止清理。Codex 只是仅支持版本查询的替身，不启动真实任务；不安装 systemd unit、不改生产配置。
+`test:terminal-only` 在临时目录按生产依赖安装，确认没有 noVNC 或 Playwright；运行真实 tmux、Bash、PTY、Python 文件助手、manager 和 panel，并以会失败的图形命令替身确认不调用 X11。它检查文件传输、名额边界、窗口关闭、面板/管理器重启后的任务身份及 shell 环境、主终端显式重开和宿主停止清理。测试通过指向不存在解释器的 Codex 替身模拟未安装环境，不启动真实任务；不安装 systemd unit、不改生产配置。
 
 浏览器用例使用真实页面、xterm.js 与加密传输，管理和终端上游为 fixture。它们与真实 PTY、真实 systemd 安装及真实 Codex 使用分别记账，不能互相替代。
 

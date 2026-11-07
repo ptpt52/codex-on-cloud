@@ -51,6 +51,21 @@ class AgentTests(unittest.TestCase):
     def test_requires_internal_secret(self):
         self.assertEqual(self.request('GET', '/files', auth=False)[0], 401)
 
+    def test_terminal_mode_starts_without_codex_or_when_version_query_times_out(self):
+        with patch.dict(os.environ, {'DEPLOY_MODE': 'terminal'}):
+            for error in (FileNotFoundError('codex'), PermissionError('codex'), agent.subprocess.TimeoutExpired(['codex', '--version'], 10)):
+                with self.subTest(error=type(error).__name__):
+                    with patch.object(agent.subprocess, 'run', side_effect=error):
+                        desktop = agent.Desktop('private-test-secret', Path(self.temp.name) / 'optional-codex')
+                        self.assertEqual(desktop.version, '')
+                        self.assertTrue(desktop.terminal_only)
+
+    def test_desktop_mode_still_requires_codex(self):
+        with patch.dict(os.environ, {'DEPLOY_MODE': 'desktop'}):
+            with patch.object(agent.subprocess, 'run', side_effect=FileNotFoundError('codex')):
+                with self.assertRaises(FileNotFoundError):
+                    agent.Desktop('private-test-secret', Path(self.temp.name) / 'required-codex')
+
     def test_terminal_mode_rejects_desktop_actions_without_executing_graphical_commands(self):
         self.desktop.terminal_only = True
         with patch.object(agent.subprocess, 'run') as run:

@@ -58,7 +58,8 @@ try {
     await writeFile(join(home, '.bashrc'), 'export DBUS_SESSION_BUS_ADDRESS=unix:path=/user-shell-bus\n', { mode: 0o600 });
     for (const folder of ['native', 'desktop', 'panel', 'scripts']) await cp(resolve(folder), join(root, folder), { recursive: true, filter: file => !file.includes('__pycache__') });
     for (const file of ['package.json', 'package-lock.json']) await cp(resolve(file), join(root, file));
-    await writeFile(join(bin, 'codex'), '#!/bin/sh\n[ "$1" = --version ] || exit 99\nprintf "test-codex\\n"\n', { mode: 0o700 });
+    // Force a missing-executable error even on development hosts with Codex.
+    await writeFile(join(bin, 'codex'), '#!/no-such-codex-test-interpreter\n', { mode: 0o700 });
     for (const name of ['Xvfb', 'x11vnc', 'xterm', 'xdotool', 'xclip', 'xdpyinfo', 'dbus-run-session']) {
       await writeFile(join(bin, name), '#!/bin/sh\nprintf "%s\\n" "$0" >> "$HOME/unexpected-x11"\nexit 99\n', { mode: 0o700 });
     }
@@ -71,6 +72,7 @@ try {
     await assert.rejects(access(join(root, 'node_modules', '@novnc', 'novnc')), { code: 'ENOENT' });
     await assert.rejects(access(join(root, 'node_modules', '@playwright', 'test')), { code: 'ENOENT' });
     await exec(process.execPath, [join(root, 'scripts', 'setup.mjs'), '--mode', 'terminal', '--origin', origin], { env, maxBuffer: 8192 });
+    await exec(process.execPath, [join(root, 'scripts', 'native.mjs'), 'doctor'], { env, maxBuffer: 8192 });
     await writeFile(join(root, '.env'), (await readFile(join(root, '.env'), 'utf8')).replace('MAX_TERMINALS=4', 'MAX_TERMINALS=8'));
     const configuration = await readFile(join(root, '.env'), 'utf8'); assert.match(configuration, /DEPLOY_MODE=terminal/); assert.doesNotMatch(configuration, /DISPLAY_NUMBER|DESKTOP_SIZE/);
     agentSecret = (await readFile(join(root, 'secrets', 'agent_secret'), 'utf8')).trim();
@@ -178,7 +180,7 @@ try {
     const originalPath=env.PATH;env.PATH=bin;host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>host.exitCode!==null,'failed helper did not terminate its terminal host');assert.notEqual(host.exitCode,0);
     await assert.rejects(tmux(['list-sessions']));await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
-    console.log('✓ real terminal-only install, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, closed browser and panel/manager restarts preserve shell identity/environment, explicit main reopening, fixed host lifetime and shutdown; Codex is a version-only stub');
+    console.log('✓ real terminal-only install without an executable Codex, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, closed browser and panel/manager restarts preserve shell identity/environment, explicit main reopening, fixed host lifetime and shutdown');
     if(systemd)console.log('✓ real transient systemd control groups: all tasks and the keeper remain in the host, user bus settings are preserved, panel/manager stops preserve tasks, host stop kills HUP/TERM-ignoring tasks, host SIGKILL cleans its group; only unique test units were created');
   })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(Error('terminal-only native test exceeded four minutes')), 240000); })]);
 } catch (error) { for (const child of children) if (child.output) console.error(child.output.slice(-8192)); throw error; }
