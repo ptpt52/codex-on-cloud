@@ -11,6 +11,7 @@ import { HISTORY_ROWS } from './terminal-history-limits.js';
 import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
+import { FILE_MAX } from './file-wire.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -401,6 +402,7 @@ function renderConnection() {
   $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? terminalMode() ? 'WebRTC 加密直连 · 文字终端' : 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
   $('diag-input-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? '网页终端加密通道' : controlReady ? 'WebRTC 加密直连' : 'HTTPS';
   const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
+  $('file-transport').textContent = serviceLink.files ? '文件内容：WebRTC 加密直连（最多 50 MiB）' : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测直连' : '文件内容：HTTPS';
   const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}`;
   $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用直连';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
@@ -500,7 +502,7 @@ async function api(path, { method = 'GET', body, raw, signal } = {}) {
   const service = serviceAction(path, method);
   if (service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
     try { return await serviceLink.request(service, body || {}, signal); }
-    catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || error.status || signal?.aborted) throw error; }
+    catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
   if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) return framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
   const headers = { 'x-viewer-id': viewer };
@@ -644,6 +646,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  clearFileURLs();
   workspaceInitialized = false; serviceProtocol = 0; serviceLink.stop();
   rtcConfig = undefined; panelRoute = 'https';
   nodeUI?.reset();
@@ -1060,6 +1063,14 @@ $('fullscreen-button').addEventListener('click', () => {
 });
 
 function sizeLabel(size) { return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`; }
+const fileURLs = new Map();
+function clearFileURLs() { for (const [url, timer] of fileURLs) { clearTimeout(timer); URL.revokeObjectURL(url); } fileURLs.clear(); }
+function saveDirectFile(blob, name) {
+  while (fileURLs.size >= 2) { const [url, timer] = fileURLs.entries().next().value; clearTimeout(timer); URL.revokeObjectURL(url); fileURLs.delete(url); }
+  const url = URL.createObjectURL(blob), timer = setTimeout(() => { URL.revokeObjectURL(url); fileURLs.delete(url); }, 30000); fileURLs.set(url, timer);
+  const link = document.createElement('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
+}
+window.addEventListener('pagehide', clearFileURLs);
 async function loadFiles() {
   const { files } = await api('/api/files');
   $('file-list').replaceChildren();
@@ -1071,10 +1082,16 @@ async function loadFiles() {
     const detail = document.createElement('span'); detail.textContent = file.name;
     const info = document.createElement('small'); info.textContent = sizeLabel(file.size); detail.append(info);
     const link = document.createElement('a'); link.href = `/api/files/${encodeURIComponent(file.name)}`; link.textContent = '下载'; link.download = file.name;
+    link.addEventListener('click', event => {
+      const client = serviceLink.files;
+      if (!client || file.size > FILE_MAX) return;
+      event.preventDefault();
+      void action(link, async () => { const blob = await client.download(file.name, file.size); saveDirectFile(blob, file.name); });
+    });
     row.append(detail, link); $('file-list').append(row);
   }
 }
-$('files-button').addEventListener('click', () => void action($('files-button'), async () => { $('files-dialog').showModal(); await loadFiles(); }));
+$('files-button').addEventListener('click', () => void action($('files-button'), async () => { if (serviceProtocol === 1) serviceLink.start(); $('files-dialog').showModal(); await loadFiles(); }));
 $('close-files').addEventListener('click', () => $('files-dialog').close());
 $('refresh-files').addEventListener('click', () => void action($('refresh-files'), loadFiles));
 $('upload-input').addEventListener('change', async () => {
@@ -1084,7 +1101,9 @@ $('upload-input').addEventListener('change', async () => {
   $('upload-input').disabled = true;
   $('upload-status').textContent = `正在上传 ${file.name}…`;
   try {
-    await api(`/api/files/${encodeURIComponent(file.name)}`, { method: 'PUT', raw: file });
+    const client = serviceLink.files;
+    if (client) await client.upload(file);
+    else await api(`/api/files/${encodeURIComponent(file.name)}`, { method: 'PUT', raw: file });
     $('upload-status').textContent = '上传完成，文件已放进桌面中转目录。';
     await loadFiles();
   } catch (error) { $('upload-status').textContent = error.message; }

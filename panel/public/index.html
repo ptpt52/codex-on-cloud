@@ -284,6 +284,7 @@
   </dialog>
   <dialog id="files-dialog" class="files-dialog">
     <div class="dialog-heading"><div><span class="eyebrow">WORKSPACE TRANSFER</span><h2>文件中转</h2></div><button id="close-files" class="quiet" aria-label="关闭文件中转">✕</button></div>
+    <p id="file-transport" class="muted" role="status">文件内容：HTTPS</p>
     <p class="muted">文件位于本机的 <code id="transfer-path">工作目录/transfer</code>。每个文件最大 50 MiB，同名上传会覆盖。</p>
     <label class="upload-zone" for="upload-input"><span aria-hidden="true">↑</span><strong>选择文件上传</strong><small>从手机传到开发桌面</small></label><input id="upload-input" type="file" hidden>
     <p id="upload-status" class="muted" role="status"></p><div id="file-list" class="file-list"></div>

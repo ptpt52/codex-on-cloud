@@ -30,7 +30,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   ] };
   const upstream = http.createServer(async (req, res) => {
     received.push({ method: req.method, url: req.url, headers: req.headers });
-    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    const chunks = []; try { for await (const chunk of req) chunks.push(chunk); } catch (error) { if (req.destroyed) { res.destroy(); return; } throw error; }
     const body = Buffer.concat(chunks);
     if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
     if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试' })); }

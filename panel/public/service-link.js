@@ -1,14 +1,15 @@
 import { desktopTransport } from '/rtc-transport.js';
+import { createFileClient } from './file-client.js';
 const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'GET /api/forward': 'forward-list',
   'POST /api/forward': 'forward-create', 'POST /api/forward/stop': 'forward-stop', 'POST /api/forward/hints': 'forward-hints' };
 export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
 
 // Separate authenticated service link: no frame, desktop claim or input replay.
 export function createServiceLink({ viewer, options, changed }) {
-  let running = false, epoch = 0, current, pending, retry, timer, delay = 15000, busy = false, checking = false;
+  let running = false, epoch = 0, current, files, pending, retry, timer, delay = 15000, busy = false, checking = false;
   const state = { ready: false, issue: '', route: null };
   const publish = () => changed({ ...state });
-  function retire(issue = '') { clearTimeout(timer); const old = current; current = undefined; state.ready = false; state.route = null; state.issue = issue; old?.close(); publish(); }
+  function retire(issue = '') { clearTimeout(timer); const old = current, oldFiles = files; current = files = undefined; state.ready = false; state.route = null; state.issue = issue; oldFiles?.close(); old?.close(); publish(); }
   function schedule(ms = delay) { clearTimeout(retry); if (running && !document.hidden && navigator.onLine) retry = setTimeout(probe, ms); }
   async function monitor(version, peer) {
     if (!running || epoch !== version || current !== peer || checking) return;
@@ -32,6 +33,11 @@ export function createServiceLink({ viewer, options, changed }) {
       await candidate.start(); await candidate.health.ping();
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
       current = candidate; state.ready = true; state.issue = ''; state.route = await candidate.stats(); delay = 15000; publish();
+      if (candidate.features?.filesProtocol === 1) {
+        const channel = candidate.fileChannel();
+        files = createFileClient(channel, () => { if (current === candidate) { retire('connection'); schedule(1000); } });
+        channel.addEventListener('open', publish);
+      }
       timer = setTimeout(() => void monitor(version, candidate), 3000);
     } catch {
       candidate?.close(); if (epoch === version && !controller.signal.aborted) { state.ready = false; publish(); schedule(); delay = Math.min(delay * 2, 60000); }
@@ -42,6 +48,7 @@ export function createServiceLink({ viewer, options, changed }) {
   document.addEventListener('visibilitychange', wake);
   return { state, get running() { return running; }, get ready() { return !!current && state.ready; }, get busy() { return busy; },
     get transport() { return current; },
+    get files() { return files?.ready ? files : null; },
     start() { if (running) return; running = true; epoch++; delay = 15000; void probe(); },
     wake,
     stop() { running = false; epoch++; clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },

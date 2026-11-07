@@ -26,6 +26,7 @@ import { streamRTC } from './stream-rtc.mjs';
 import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
 import { createServiceRTC } from './service-rtc.mjs';
+import { attachServiceFiles } from './service-files.mjs';
 import { createUIAssets } from './ui-assets.mjs';
 import { createNodeDirectoryReader } from './node-directory.mjs';
 import { createPortalConnection } from './portal-connection.mjs';
@@ -79,7 +80,8 @@ export async function createPanel(config) {
   const forwarding = createForwarding(config);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
   const fileTransfers = createFileTransfers();
-  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port });
+  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port,
+    connectFiles: (channel, valid, headers, signal, fail) => attachServiceFiles(channel, { valid, headers, signal, fail, port: () => server.address().port }) });
   const nodeDirectory = createNodeDirectoryReader(config), portalConnection = createPortalConnection(config);
   const rtcConfig = () => ({ serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
 

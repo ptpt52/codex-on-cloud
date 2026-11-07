@@ -163,7 +163,9 @@ test('the public offline shell includes shortcut modules and never caches authen
     expect(paths).toContain('/terminal-history-limits.js');
     expect(paths).toContain('/access-ui.js'); expect(paths).toContain('/forward-report.js');
     expect(paths).toContain('/node-directory.js'); expect(paths).toContain('/node-ui.js');
-    expect(paths).toHaveLength(18); expect(new Set(revisions)).toEqual(new Set([app.panel.uiRevision]));
+    for (const path of ['/service-link.js', '/rtc-transport.js', '/rtc-stats.js', '/transport-policy.js', '/control.js', '/health.js', '/file-wire.js', '/file-client.js']) expect(paths).toContain(path);
+    expect(paths.every(path => path === '/' || /^\/[a-z0-9-]+\.(js|css|svg|webmanifest)$/.test(path))).toBe(true);
+    expect(new Set(revisions)).toEqual(new Set([app.panel.uiRevision]));
     expect(paths.some(path => path.startsWith('/api/') || path.startsWith('/desktop/'))).toBe(false);
     expect(app.inputCalls).toEqual([]);
   } finally { await context.setOffline(false); await app.close(); }
