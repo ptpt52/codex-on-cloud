@@ -19,6 +19,8 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 保存网页草稿后刷新。manager 和 panel 重启保留私有 tmux 中的任务；不要为调整名额重启 terminal 或 desktop 宿主。调低上限时，已存在的终端继续列出、可选择和使用，直到用户自行退出；总数达到新上限时禁止新建。面板重启会清除内存中的端口映射授权，需要重新配对。
 
+从仅支持四个固定槽位的旧桌面版本首次升级时，还需先执行 `systemctl --user restart codex-cloud-actions.service`，让桌面执行服务加载八个槽位，再重启上面的 manager 和 panel。actions 重启会关闭它持有的图形终端窗口，私有 tmux 任务继续运行；在终端管理中重新打开窗口即可附加原任务，不要重新提交原命令。纯终端部署没有 actions 服务；已升级的桌面部署以后只调整 `MAX_TERMINALS` 时，也不需要再次重启 actions。
+
 ## 服务器部署项
 
 下表的 panel、manager、terminal、desktop、actions、tunnel 对应 `codex-cloud-名称.service`。重启宿主（terminal / desktop）会结束其任务，路径、模式和宿主显示参数应安排维护后调整。
