@@ -35,7 +35,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
   }
   function pause(value) { if (value !== isPaused) { isPaused = value; paused(value); } }
   function send(peer, value) {
-    if (!peer || peer.gone || peer.buffered() > 256 * 1024) throw new Error('path unavailable'); peer.send(value);
+    if (!peer || peer.gone || !peer.writable() || peer.buffered() > 256 * 1024) throw new Error('path unavailable'); peer.send(value);
   }
   function close(reason = '') {
     if (ended) return;
@@ -220,8 +220,8 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       if (approved) parent.postMessage({ type: 'codex-direct-finished', frame: new URLSearchParams(location.search).get('frame') }, location.origin);
     }
   }
-  function peerFor(kind, send, close, buffered, deferred = false) {
-    const peer = { kind, send, close, buffered, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0 };
+  function peerFor(kind, send, close, buffered, deferred = false, writable = () => true) {
+    const peer = { kind, send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0 };
     if (!deferred) peer.startTimer = setTimeout(() => lost(peer), 12000); peers.set(kind, peer); return peer;
   }
   function ensureRelay() {
@@ -231,7 +231,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       if (ended || peers.has('relay') || document.hidden || !navigator.onLine) return;
       const url = new URL('/session/connect', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       for (const [key, value] of Object.entries({ viewer, streamId: id, mode: terminal ? 'terminal' : 'desktop', ...(terminal || {}) })) url.searchParams.set(key, value);
-      const ws = new WebSocket(url), peer = peerFor('relay', value => ws.send(JSON.stringify(value)), () => ws.close(), () => ws.bufferedAmount);
+      const ws = new WebSocket(url), peer = peerFor('relay', value => ws.send(JSON.stringify(value)), () => ws.close(), () => ws.bufferedAmount, false, () => ws.readyState === WebSocket.OPEN);
       ws.addEventListener('open', () => { if (!ended && !peer.gone) ws.send(JSON.stringify({ type: 'auth', csrf })); });
       ws.addEventListener('message', event => { try { if (typeof event.data !== 'string' || event.data.length > 24576) throw new Error(); receive(peer, JSON.parse(event.data)); } catch { lost(peer); } });
       ws.addEventListener('close', () => lost(peer)); ws.addEventListener('error', () => lost(peer));
@@ -257,7 +257,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       transport = await desktopTransport(viewer, live => { if (!live && peer) lost(peer); }, { probe: true, signal: controller.signal, terminal, streamId: id, bootstrap, failed: issue });
       if (!transport) throw new Error();
       const channel = transport.video(); channel.binaryType = 'arraybuffer';
-      peer = peerFor('direct', value => sendControl(channel, value), () => transport.close(), () => channel.bufferedAmount, true); peer.transport = transport;
+      peer = peerFor('direct', value => sendControl(channel, value), () => transport.close(), () => channel.bufferedAmount, true, () => channel.readyState === 'open'); peer.transport = transport;
       const decoder = controlDecoder(value => receive(peer, value), () => lost(peer));
       channel.addEventListener('message', event => { if (!peer.gone) decoder.push(event.data); }); channel.addEventListener('close', () => lost(peer)); channel.addEventListener('error', () => lost(peer));
       await transport.start(); await transport.control.request('ping', {});
@@ -286,6 +286,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     panelRequest(action, body = {}, signal) {
       const peer = active;
       if (ended || !peer?.ready || signal?.aborted) return Promise.reject(failure('会话通道未就绪'));
+      if (!peer.writable()) { lost(peer); return Promise.reject(failure('连接正在关闭，本次操作未发送')); }
       if (action === 'switch-terminal') {
         if (!terminal || !peer.terminalSwitch || targetPending || transitioning || claiming || !targetIdle() || inputAck !== sent || targetSequence >= 2147483647) return Promise.reject(failure('终端仍有操作进行中，本次切换未发送'));
         const target = { terminalId: body.terminalId, terminalToken: body.terminalToken };
@@ -311,12 +312,17 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       });
     },
     send(data) {
-      if (!active || claiming || ended || !opened) throw new Error('session paused');
+      const peer = active;
+      if (!peer || claiming || ended || !opened) throw new Error('session paused');
+      // CLOSING can be observable before the close event (notably WebKit).
+      // No bytes were admitted: don't advance the sequence or fabricate an
+      // unknown input on resume. Actual send failures remain unreplayed.
+      if (!peer.writable()) { lost(peer); throw failure('连接正在关闭，本次操作未发送'); }
       const bytes = terminal ? new TextEncoder().encode(data + '\n') : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength);
       if (!bytes.length || bytes.length > 128 * 1024 || inputSizes.size >= 64 || inputBytes + bytes.length > 128 * 1024) { close('input-pressure'); throw new Error('input pressure'); }
       const id = ++sent, parts = Math.ceil(bytes.length / CHUNK); inputSizes.set(id, bytes.length); inputBytes += bytes.length;
-      try { for (let part = 0; part < parts; part++) send(active, { type: 'input', epoch, id, part, parts, data: encode(bytes.subarray(part * CHUNK, (part + 1) * CHUNK)) }); }
-      catch { lost(active); }
+      try { for (let part = 0; part < parts; part++) send(peer, { type: 'input', epoch, id, part, parts, data: encode(bytes.subarray(part * CHUNK, (part + 1) * CHUNK)) }); }
+      catch { lost(peer); }
     },
   });
   Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });

@@ -14,17 +14,28 @@ const root = await mkdtemp(join(tmpdir(), 'codex-lifetime-')), source = resolve(
 const env = { ...process.env, XAUTHORITY: join(root, 'Xauthority'), PATH: `${join(source, 'data/host-tools/usr/bin')}:${process.env.PATH}` };
 delete env.DBUS_SESSION_BUS_ADDRESS; delete env.SESSION_MANAGER;
 const exec = promisify(execFile), run = async (file, args) => (await exec(file, args, { env, timeout: 3000, maxBuffer: 8192 })).stdout.trim();
-const start = (file, args) => { const child = spawn(file, args, { env, detached: true, stdio: 'ignore' }); children.push(child); return child; };
-async function eventually(probe) { for (let n = 0; n < 100; n++) { try { if (await probe()) return; } catch {} await new Promise(r => setTimeout(r, 50)); } throw Error('isolated lifecycle check timed out'); }
+const start = (file, args) => {
+  assert.ok(children.length < 8, 'isolated child process bound');
+  const child = spawn(file, args, { env, detached: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  child.diagnostic = ''; child.stderr.on('data', bytes => { child.diagnostic = (child.diagnostic + bytes.toString()).slice(-4096); });
+  children.push(child); return child;
+};
+async function eventually(probe) { for (let n = 0; n < 100; n++) { try { if (await probe()) return; } catch {} await new Promise(r => setTimeout(r, 50)); } throw Error('isolated lifecycle check timed out\n' + children.filter(child => child.exitCode !== null).map(child => child.diagnostic).join('\n')); }
 const secret = 'synthetic_lifecycle_secret', runtime = join(root, 'run'), socket = join(runtime, 'tmux.sock');
 const clientConfig = { managerSocket: join(runtime, 'manager.sock'), agentSecret: secret };
 try {
   for (const part of ['run', 'secrets', 'workspace', 'data/desktop']) await mkdir(join(root, part), { recursive: true });
   for (const part of ['native', 'desktop']) await cp(join(source, part), join(root, part), { recursive: true });
+  await mkdir(join(root, 'panel/public'), { recursive: true });
+  await cp(join(source, 'panel/public/terminal-slots.js'), join(root, 'panel/public/terminal-slots.js'));
   await writeFile(join(root, 'data/desktop/fonts.conf'), '<fontconfig><include>/etc/fonts/fonts.conf</include></fontconfig>');
   await writeFile(join(root, 'secrets/agent_secret'), secret, { mode: 0o600 });
   for (let number = 94; number < 200; number++) { const busy = await Promise.all([`/tmp/.X${number}-lock`, `/tmp/.X11-unix/X${number}`].map(p => lstat(p).then(() => true, () => false))); if (!busy.some(Boolean)) { env.DISPLAY = ':' + number; break; } }
   assert.ok(env.DISPLAY); await writeFile(env.XAUTHORITY, '', { mode: 0o600 });
+  // Entrypoints merge process.env over .env; inherited deployment variables
+  // must never redirect an isolated worker to the running desktop/workspace.
+  Object.assign(env, { DISPLAY_NUMBER: env.DISPLAY.slice(1), RUNTIME_DIR: runtime, WORKSPACE_DIR: join(root, 'workspace'), DESKTOP_SIZE: '1280x1280', DEPLOY_MODE: 'desktop', MAX_TERMINALS: '8',
+    XDG_CONFIG_HOME: join(root, 'data/desktop/config'), XDG_CACHE_HOME: join(root, 'data/desktop/cache'), XDG_DATA_HOME: join(root, 'data/desktop/share') });
   await writeFile(join(root, '.env'), `DISPLAY_NUMBER=${env.DISPLAY.slice(1)}\nRUNTIME_DIR=${runtime}\nDESKTOP_SIZE=1280x1280\nWORKSPACE_DIR=${join(root, 'workspace')}\n`);
   // Native controllers use the desktop's authority path.
   await run('xauth', ['-f', env.XAUTHORITY, 'add', env.DISPLAY, '.', randomBytes(16).toString('hex')]);

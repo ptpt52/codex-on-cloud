@@ -591,3 +591,11 @@ Shift+← 和 Shift+→ 加入输入助手“更多按键 → 光标导航”，
 254 项脚本语法、301 项 Node 和 15 项 Python 检查通过。真实 DTLS 文件往返覆盖 8 MiB 哈希、空文件、限额、伪造确认与重复块拒绝、HTTP/直连共用临时上传配额，以及中途撤销不重放。另启动真实隔离 Python 文件助手（Codex 仅版本查询替身），验证磁盘文件往返、未完成上传清理及原同名文件保留；其余终端和桌面管理上游仍为 fixture。
 
 Chromium 手机/电脑文件及服务直连专项 10 项、离线页面 2 项通过。Chromium、Firefox、WebKit 七种屏幕配置完成 49 项新增功能场景，并额外验证管理员文件直连保持原桌面；文件内容 HTTP 路径被屏蔽时仍能上传、下载并核对 SHA256，丢弃上传完成消息后只报告未知且不重传，直连不可用时原 HTTPS 可用。隔离浏览器的下载目录需位于与宿主共享的可写临时目录；本机首次取消下载及 Firefox 空读取由该验收环境路径不共享导致，修正目录后按真实下载内容核对。以上不代替 Android/iOS、Mac/Windows 真机或实际 Cloudflare/跨运营商验收，未重载生产服务。
+
+## 2026-11-07：Actions 失败定位与修复
+
+读取实际失败运行 [42361880184](https://github.com/ptpt52/codex-on-cloud/actions/runs/42361880184) 的三个失败 job 日志和 WebKit trace。Chromium 的两处失败为公共离线资源从十八项增长到二十一项后，测试仍断言十八项；文件直连阶段已改为核对必需依赖、版本和公共根路径，并继续禁止缓存 API/桌面资源。native 生命周期测试只复制 native/desktop，缺少新的 `panel/public/terminal-slots.js`，manager 启动失败被隐藏为超时；现补齐依赖，固定测试自己的显示、运行目录、工作区和 XFCE 路径，最多八个测试子进程，每项 stderr 只保留最后 4096 字符。
+
+WebKit 的重连场景在预期两条 WebSocket 时观察到三条。补充关闭中 relay 的受控用例后，稳定复现尚未发送的记录先增加输入序号，恢复时被拒为 `input-unknown`。发送前现检查实际 WebSocket/DataChannel 状态，已知不可写时先退役旧路径，不分配输入序号；真正发送后发生的不确定性仍保留原有不重放规则。修复前的用例明确得到 `input-unknown`，修复后七种浏览器/屏幕配置通过；Chromium 两 worker 的切换/故障回退 38 项、原 Node 301 项与语法 254 项通过。真实隔离 X11/xterm/tmux/剪贴板生命周期检查通过，未向生产桌面发送输入。本机 actionlint 1.7.11 的结构检查通过；本机旧 ShellCheck 不支持其 `--norc`，未将这项外部集成当成通过，GitHub 保持完整检查。
+
+四架构助手已按固定 Go 1.26.4 构建为 `0.7.1+2594075` 对应版本，Windows PE 架构与四份长度/SHA256 核对通过，Mac arm64/amd64 的实际 Mach-O、macOS 12 目标、ZIP CRC/字节/权限及 ARM64 ad-hoc 签名结构检查通过。这里只做交叉构建与包检查，不宣称在 Windows/macOS 真机执行。生产面板、桌面及映射未因本次实现而重载；远端 Actions 需由推送后的实际运行确认。

@@ -154,3 +154,28 @@ test('a relay without the new capability keeps the legacy page reconnect behavio
     expect(await page.evaluate(() => window.relaySent.length)).toBe(0); expect(app.terminalConnections).toBe(2); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
+
+test('a closing relay rejects unsent input before advancing sequence and resumes the same upstream',async({page,context})=>{
+ const app=await create();
+ try{
+  await app.login();await app.claim();const [name,value]=app.cookie.split('=');await context.addCookies([{name,value,url:app.config.origin}]);
+  // Use a real loopback navigation so Chromium assigns its local address space.
+  // Block only the app entrypoint; this test owns its single logical stream.
+  await page.route('**/app.js*',route=>route.abort());await page.goto(app.config.origin);
+  const terminal=(await app.controls.listTerminals()).terminals.find(item=>item.id==='main');
+  await page.evaluate(async({viewer,csrf,terminal})=>{
+   const Native=WebSocket;window.testSockets=[];window.testReady=false;window.testResets=[];window.testMessages=[];
+   window.WebSocket=class extends Native{
+    constructor(...args){super(...args);window.testSockets.push(this);this.addEventListener('message',event=>{const value=JSON.parse(event.data);if(window.testMessages.length<16)window.testMessages.push(value.type);if(value.type==='reset')window.testResets.push(value.reason);});}
+    get readyState(){return this.testClosing?Native.CLOSING:super.readyState;}
+    send(data){if(this.testClosing)throw new DOMException('closing relay','InvalidStateError');super.send(data);}
+   };
+   const {createStreamClient}=await import('/desktop/stream-client.js');window.testStream=createStreamClient({viewer,csrf,terminal:{terminalId:terminal.id,terminalToken:terminal.token},bootstrap:()=>({csrf,webrtc:false,rtcStunUrl:''})});
+   window.testStream.socket.addEventListener('message',event=>{if(JSON.parse(event.data).type==='ready')window.testReady=true;});window.testStream.start();
+  },{viewer:app.viewer,csrf:app.csrf,terminal});
+  await expect.poll(()=>page.evaluate(()=>({ready:window.testReady,messages:window.testMessages,state:window.testStream.socket.readyState,ws:window.testSockets.map(s=>s.readyState)}))).toMatchObject({ready:true});
+  await page.evaluate(()=>{window.testSockets[0].testClosing=true;try{window.testStream.socket.send(JSON.stringify({type:'health',nonce:1}));}catch{}});
+  await expect.poll(()=>page.evaluate(()=>({connections:window.testSockets.length,state:window.testStream.socket.readyState,idle:window.testStream.idle,resets:window.testResets})),{timeout:8000}).toEqual({connections:2,state:1,idle:true,resets:[]});
+  expect(app.terminalConnections).toBe(1);expect(app.terminalChildren).toHaveLength(1);expect(app.terminalInputs).toEqual([]);
+ }finally{await app.close();}
+});
