@@ -76,3 +76,20 @@ test('UTF-8 output and terminal colour state continue across a failed direct pat
     await page.waitForTimeout(1250); await route(page, 'WebSocket'); expect(app.terminalConnections).toBe(1);
   } finally { await app.close(); }
 });
+
+for (const mode of ['desktop', 'terminal']) test(`${mode}: a missing old-relay hold acknowledgement cannot delay a ready direct candidate`, async ({ page }) => {
+  const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
+  try {
+    await page.addInitScript(() => {
+      window.oldRelayHolds = 0; const Native = WebSocket;
+      window.WebSocket = class extends Native { send(data) {
+        if (new URL(this.url).pathname === '/session/connect' && typeof data === 'string' && JSON.parse(data).type === 'hold') { window.oldRelayHolds++; return; }
+        super.send(data);
+      } };
+    });
+    await login(page, app, mode); await route(page, 'WebRTC');
+    expect(await page.frameLocator('#desktop-frame').locator('body').evaluate(() => window.oldRelayHolds)).toBe(0);
+    expect(mode === 'desktop' ? app.vncConnections : app.terminalConnections).toBe(1);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});

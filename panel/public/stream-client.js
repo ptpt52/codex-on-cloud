@@ -11,7 +11,7 @@ const decode = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
 export function createStreamClient({ viewer, csrf, terminal, idle = () => true, settled = idle, prepare = async () => true, paused = () => {}, changed = () => {}, issue = () => {} }) {
   const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
-  let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false;
+  let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
   let relayTimer, directTimer, directDue = 0, promotionTimer, recoveryTimer, directController, relayDelay = 250, probeDelay = 15000, terminalText = '';
   let heldOutput = [], heldBytes = 0;
   const textDecoder = new TextDecoder('utf-8', { fatal: true });
@@ -30,7 +30,7 @@ export function createStreamClient({ viewer, csrf, terminal, idle = () => true, 
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
     ended = true; directController?.abort();
     for (const timer of [relayTimer, directTimer, promotionTimer, recoveryTimer]) clearTimeout(timer);
-    for (const peer of peers.values()) { peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('closed')); peer.close(); }
+    for (const peer of peers.values()) { peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('closed')); peer.prepareWait?.reject(new Error('closed')); peer.close(); }
     peers.clear(); active = undefined; inputSizes.clear(); terminalText = ''; pause(false);
     for (const name of ['online', 'offline']) window.removeEventListener(name, wake);
     navigator.connection?.removeEventListener('change', wake); document.removeEventListener('visibilitychange', wake);
@@ -38,7 +38,7 @@ export function createStreamClient({ viewer, csrf, terminal, idle = () => true, 
   }
   function lost(peer) {
     if (!peer || peer.gone || ended) return;
-    peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('path lost'));
+    peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('path lost')); peer.prepareWait?.reject(new Error('path lost'));
     if (peers.get(peer.kind) === peer) peers.delete(peer.kind); peer.close();
     if (active === peer) {
       active = undefined; claiming = false; pause(true); changed();
@@ -69,7 +69,8 @@ export function createStreamClient({ viewer, csrf, terminal, idle = () => true, 
         if (value.id !== id || !integer(value.epoch)) throw new Error();
         if (opened && value.epoch === 0 && (out || sent)) return close('session-expired');
         epoch = Math.max(epoch, value.epoch);
-        peer.epoch = value.epoch; peer.ready = true; clearTimeout(peer.startTimer); heartbeat(peer);
+        peer.epoch = value.epoch; peer.handoff = value.handoff === 1; peer.ready = true; clearTimeout(peer.startTimer); heartbeat(peer);
+        if (peer.prepareWait || peer.wait?.handoff !== undefined) { peer.prepareWait?.reject(new Error('busy')); peer.wait?.reject(new Error('busy')); return; }
         if (peer.wait && claiming) { send(peer, { type: 'activate', epoch: value.epoch, out, input: sent }); return; }
         peer.welcome?.(); if (!active && !claiming) void activate(peer); return;
       }
@@ -79,7 +80,13 @@ export function createStreamClient({ viewer, csrf, terminal, idle = () => true, 
       }
       if (value.type === 'reset') return close(value.reason || 'session-reset');
       if (value.type === 'held' && peer === active && value.epoch === epoch) { peer.holdWait?.(); peer.holdWait = undefined; return; }
-      if (value.type === 'wait') { peer.wait?.reject(new Error('busy')); peer.wait = undefined; return; }
+      if (value.type === 'prepared') {
+        const pending = peer.prepareWait;
+        if (!pending || pending.id !== value.id) return;
+        if (value.epoch !== epoch || value.input !== sent) throw new Error();
+        pending.resolve(); return;
+      }
+      if (value.type === 'wait') { if (value.prepare !== undefined) { if (peer.prepareWait?.id === value.prepare) peer.prepareWait.reject(new Error('busy')); } else { peer.wait?.reject(new Error('busy')); peer.wait = undefined; } return; }
       if (value.type === 'active') {
         if (!peer.wait || !integer(value.epoch) || !integer(value.out) || value.out > out || value.input !== sent) throw new Error();
         epoch = value.epoch; active = peer; peer.epoch = epoch; inputAck = value.input; inputSizes.clear(); inputBytes = 0;
@@ -116,7 +123,7 @@ export function createStreamClient({ viewer, csrf, terminal, idle = () => true, 
   async function activate(peer, planned = false) {
     if (ended || transitioning || peer.gone || !peer.ready || active === peer || document.hidden || !navigator.onLine) return false;
     transitioning = true;
-    let approved = false, heldPeer; const wasOpened = opened;
+    let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
     try {
       if (planned) {
         if (!idle() || inputAck !== sent || routes.remaining()) return false;
@@ -124,31 +131,45 @@ export function createStreamClient({ viewer, csrf, terminal, idle = () => true, 
         approved = await prepare(controller.signal); if (!approved || ended || peer.gone || !settled() || document.hidden || !navigator.onLine) return false;
       }
       pause(true);
-      if (planned && active) {
-        heldPeer = active;
-        await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => { heldPeer.holdWait = undefined; reject(new Error('hold timeout')); }, 2000);
-          heldPeer.holdWait = () => { clearTimeout(timer); resolve(); };
-          send(heldPeer, { type: 'hold', epoch });
-        });
-      }
-      // Let key releases and parser replies generated by blocking input drain.
+      // Drain releases before freezing the output offset. The new candidate
+      // can then fence the old writer without waiting for the old network.
       const deadline = performance.now() + 1500;
       while (active && (inputAck !== sent || (planned && !settled())) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
       if (planned && (inputAck !== sent || !settled())) return false;
       claiming = true;
+      if (planned && active) {
+        if (peer.handoff) {
+          if (prepareSequence >= 2 ** 40) throw new Error('handoff limit');
+          handoff = ++prepareSequence;
+          await new Promise((resolve, reject) => {
+            const finish = error => { clearTimeout(timer); peer.prepareWait = undefined; error ? reject(error) : resolve(); };
+            const timer = setTimeout(() => finish(new Error('prepare timeout')), 2500);
+            peer.prepareWait = { id: handoff, resolve: () => finish(), reject: finish };
+            try { send(peer, { type: 'prepare', id: handoff, epoch, out, input: sent }); } catch (error) { finish(error); }
+          });
+        } else {
+          heldPeer = active;
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { heldPeer.holdWait = undefined; reject(new Error('hold timeout')); }, 2000);
+            heldPeer.holdWait = () => { clearTimeout(timer); resolve(); };
+            send(heldPeer, { type: 'hold', epoch });
+          });
+        }
+      }
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => { peer.wait = undefined; reject(new Error('activation timeout')); }, 2500);
-        peer.wait = { resolve: () => { clearTimeout(timer); resolve(); }, reject: error => { clearTimeout(timer); reject(error); } };
-        send(peer, { type: 'activate', epoch, out, input: sent });
+        peer.wait = { handoff, resolve: () => { clearTimeout(timer); resolve(); }, reject: error => { clearTimeout(timer); reject(error); } };
+        try { send(peer, { type: 'activate', epoch, out, input: sent, ...(handoff === undefined ? {} : { handoff }) }); committing = true; }
+        catch (error) { peer.wait.reject(error); peer.wait = undefined; }
       });
       if (wasOpened) routes.changed(); relayDelay = 250; return true;
     } catch (error) {
-      if (error.message !== 'busy') { lost(peer); active = undefined; pause(true); }
+      if (error.message !== 'busy') { lost(peer); if (committing && active === previous) { active = undefined; pause(true); } }
       return false;
     }
     finally {
       claiming = false; transitioning = false;
+      if (handoff !== undefined && active !== peer && !peer.gone) { try { send(peer, { type: 'cancel-prepare', epoch, id: handoff }); } catch { lost(peer); } }
       if (heldPeer && active === heldPeer && !heldPeer.gone) { try { send(heldPeer, { type: 'unhold', epoch }); } catch { lost(heldPeer); } }
       const held = heldOutput; heldOutput = []; heldBytes = 0;
       if (active) for (const [from, value] of held) receive(from, value);

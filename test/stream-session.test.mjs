@@ -62,3 +62,35 @@ test('a planned hold buffers output until its new writer is committed, or cancel
   const direct = app.peer('direct'); await activate(direct, 1, 4);
   assert.equal(Buffer.from(direct.records.at(-1).data, 'base64').toString(), 'next'); assert.equal(app.launches, 1);
 });
+
+test('the candidate fences the old writer without a relay acknowledgement and replays only undelivered output', async t => {
+  const app = setup(); t.after(() => app.session.close()); const relay = app.peer('relay'), direct = app.peer('direct');
+  await activate(relay, 0); app.push('seen'); relay.entry.receive({ type: 'ack', epoch: 1, at: 4 });
+  app.push('in flight');
+  direct.entry.receive({ type: 'prepare', id: 1, epoch: 1, out: 4, input: 0 }); await tick();
+  assert.equal(direct.records.at(-1).type, 'prepared'); app.push(' after fence');
+  assert.equal(relay.records.filter(v => v.type === 'chunk').length, 2);
+  direct.entry.receive({ type: 'activate', epoch: 1, out: 4, input: 0, handoff: 1 }); await tick();
+  assert.equal(direct.entry.active, true); assert.equal(app.launches, 1);
+  assert.equal(direct.records.filter(v => v.type === 'chunk').map(v => Buffer.from(v.data, 'base64').toString()).join(''), 'in flight after fence');
+  relay.entry.receive(input(1, 1, 'late old writer')); direct.entry.receive(input(2, 1, 'new writer')); await tick(); assert.deepEqual(app.writes, ['new writer']);
+});
+
+test('cancelling a candidate releases its fence, while stale tickets and a detached candidate cannot commit', async t => {
+  const app = setup(); t.after(() => app.session.close()); const relay = app.peer('relay'), direct = app.peer('direct'); await activate(relay, 0);
+  direct.entry.receive({ type: 'prepare', id: 1, epoch: 1, out: 0, input: 0 }); await tick(); app.push('buffered');
+  relay.entry.receive({ type: 'cancel-prepare', id: 1, epoch: 1 }); await tick(); assert.equal(relay.records.at(-1).type, 'active');
+  direct.entry.receive({ type: 'cancel-prepare', id: 1, epoch: 1 }); await tick(); assert.equal(relay.records.at(-1).type, 'chunk');
+  direct.entry.receive({ type: 'activate', epoch: 1, out: 0, input: 0, handoff: 1 }); await tick(); assert.equal(direct.records.at(-1).type, 'wait'); assert.equal(relay.entry.active, true);
+  direct.entry.receive({ type: 'prepare', id: 2, epoch: 1, out: 0, input: 0 }); await tick(); app.push('still live'); direct.entry.close();
+  assert.equal(relay.records.at(-1).type, 'chunk'); assert.equal(relay.entry.active, true); assert.equal(app.ended, 0);
+});
+
+test('a delayed cancelled or revoked prepare cannot freeze or acquire the original stream', async t => {
+  let release, delay = false, allowed = true; const gate = new Promise(resolve => { release = resolve; });
+  const app = setup({ valid: () => allowed, canActivate: async () => { if (delay) await gate; return true; } }); t.after(() => app.session.close());
+  const relay = app.peer('relay'), direct = app.peer('direct'); await activate(relay, 0); delay = true;
+  direct.entry.receive({ type: 'prepare', id: 1, epoch: 1, out: 0, input: 0 }); direct.entry.receive({ type: 'cancel-prepare', id: 1, epoch: 1 }); release(); await tick();
+  app.push('not frozen'); assert.equal(relay.records.at(-1).type, 'chunk'); assert.equal(direct.records.at(-1).type, 'wait');
+  allowed = false; direct.entry.receive({ type: 'prepare', id: 2, epoch: 1, out: 0, input: 0 }); await tick(); assert.equal(app.session.closed, true);
+});
