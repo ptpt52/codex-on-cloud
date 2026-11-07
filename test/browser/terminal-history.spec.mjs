@@ -271,7 +271,7 @@ test('returning live cancels a snapshot without resending it and late replies ca
   } finally { release(); await app.close(); }
 });
 
-test('real isolated tmux and Python PTY retain ordinary output across reconnect and page a full-screen receiver without replay', async ({ page }) => {
+test('real isolated tmux and Python PTY retain ordinary output across reconnect and page a full-screen receiver without replay', async ({ page }, info) => {
   test.setTimeout(60000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-browser-history-')), socket = join(directory, 'tmux.sock'), clients = [];
   const proof = join(directory, 'once'), tui = join(directory, 'tui.py'), tuiReady = join(directory, 'ready'), keys = join(directory, 'keys');
@@ -279,7 +279,13 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     PATH: `${resolve('data/host-tools/usr/bin')}:${process.env.PATH}`, HISTORY_TEST_PROOF: proof, HISTORY_TEST_TUI: tui };
   delete env.TMUX; delete env.DISPLAY; delete env.XAUTHORITY;
   const exec = promisify(execFile), run = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 8192 });
-  let app;
+  let app, readyConnections = 0;
+  page.on('websocket', ws => {
+    if (new URL(ws.url()).pathname !== '/terminal/connect') return;
+    ws.on('framereceived', ({ payload }) => {
+      try { if (JSON.parse(payload).type === 'ready') readyConnections++; } catch {}
+    });
+  });
   try {
     await exec('tmux', ['-f', resolve('desktop/tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex', '-x', '80', '-y', '24', 'bash --noprofile --norc'], { env, timeout: 3000 });
     const token = (await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim();
@@ -298,10 +304,13 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     expect(await readFile(proof, 'utf8')).toBe('once\n');
     await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -400); await expect(frame.locator('#history-archive')).toBeVisible();
     await expect(frame.locator('#history-archive')).toContainText('NATIVE-HISTORY-0001'); const before = await frame.locator('#history-archive').textContent();
-    clients[0].kill('SIGTERM'); await expect.poll(() => clients.length).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    clients[0].kill('SIGTERM'); await expect.poll(() => clients.length).toBe(2);
+    await expect.poll(() => readyConnections).toBe(2);
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
     expect(await frame.evaluate(() => window.terminalInstances)).toBe(1); expect(await frame.locator('#history-archive').textContent()).toBe(before);
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token); expect(await readFile(proof, 'utf8')).toBe('once\n');
-    await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill("printf '\\033[1;31mNATIVE-STYLED-中文\\033[0m\\n'");
+    // Trailing spaces deliberately share the style run with the marker.
+    await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill("printf '\\033[1;31mNATIVE-STYLED-中文  \\033[0m\\n'");
     await openInput(page); await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(() => frame.evaluate(() => {
       const buffer = window.historyTerminal.buffer.active;
@@ -312,8 +321,35 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
       return false;
     })).toBe(true);
     await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -120);
-    const nativeStyled = frame.locator('#history-archive span').filter({ hasText: /^NATIVE-STYLED-中文$/ }); await expect(nativeStyled).toBeVisible();
-    expect(await nativeStyled.evaluate(element => ({ color: getComputedStyle(element).color, weight: getComputedStyle(element).fontWeight }))).toEqual({ color: 'rgb(239, 41, 41)', weight: '700' });
+    const nativeArchive = frame.locator('#history-archive');
+    try {
+      await expect(nativeArchive).toBeVisible();
+      await expect(nativeArchive).toContainText('NATIVE-STYLED-中文');
+      // tmux may retain row padding/newlines in a style run. Check every
+      // character of the actual output instead of assuming one exact span.
+      const styled = await nativeArchive.evaluate(element => {
+        const needle = 'NATIVE-STYLED-中文', text = element.textContent, start = text.lastIndexOf(needle);
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT), styles = [];
+        let node, offset = 0, covered = 0;
+        while ((node = walker.nextNode())) {
+          const end = offset + node.textContent.length, overlap = Math.max(0, Math.min(end, start + needle.length) - Math.max(offset, start));
+          if (start >= 0 && overlap) { const css = getComputedStyle(node.parentElement); styles.push({ color: css.color, weight: css.fontWeight }); covered += overlap; }
+          offset = end;
+        }
+        return { text: start < 0 ? '' : text.slice(start, start + needle.length), covered, styles };
+      });
+      expect(styled.text).toBe('NATIVE-STYLED-中文'); expect(styled.covered).toBe(styled.text.length);
+      expect(styled.styles.length).toBeGreaterThan(0);
+      expect(styled.styles.every(style => style.color === 'rgb(239, 41, 41)' && style.weight === '700')).toBe(true);
+      expect(readyConnections).toBe(2);
+    } catch (error) {
+      const state = await frame.evaluate(() => ({ history: document.getElementById('history-state')?.textContent,
+        text: document.getElementById('history-archive')?.textContent?.slice(-65536),
+        runs: [...document.querySelectorAll('#history-archive span')].slice(-256).map(span => ({ text: span.textContent.slice(0, 256), style: span.getAttribute('style') })) })).catch(() => ({ frameUnavailable: true }));
+      const pane = (await exec('tmux', ['-S', socket, 'capture-pane', '-e', '-p', '-t', token.split(':', 1)[0], '-S', '-80'], { env, timeout: 3000, maxBuffer: 65536 }).catch(() => ({ stdout: '' }))).stdout;
+      await info.attach('native-history-diagnostics', { body: Buffer.from(JSON.stringify({ readyConnections, clients: clients.map(child => ({ exitCode: child.exitCode, signal: child.signalCode })), state, pane })), contentType: 'application/json' });
+      throw error;
+    }
     await writeFile(tui, `import os, select, termios, time, tty\nfd=0\nprevious=termios.tcgetattr(fd)\ndata=b''\ntry:\n tty.setraw(fd)\n os.write(1,b'\\x1b[?1049h\\x1b[2J\\x1b[HFULL-SCREEN-RECEIVER\\r\\n')\n with open(${JSON.stringify(tuiReady)},'w') as f: f.write('ready')\n deadline=time.monotonic()+12\n while len(data)<8 and time.monotonic()<deadline:\n  if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,8-len(data))\nfinally:\n termios.tcsetattr(fd,termios.TCSANOW,previous)\n os.write(1,b'\\x1b[?1049l')\n with open(${JSON.stringify(keys)},'w') as f: f.write(data.hex())\n`);
     await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill('python3 "$HISTORY_TEST_TUI"'); await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
