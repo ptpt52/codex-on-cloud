@@ -35,7 +35,8 @@ function announce(state) {
   parent.postMessage({ type: 'codex-desktop', state, frame, transport: transportName }, location.origin);
 }
 function reportNetwork() {
-  parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, issue: directIssue }, location.origin);
+  const rttMs = viewing && !streamPaused && !document.hidden && navigator.onLine ? streamClient ? streamClient.socket.rttMs : transport?.health.rttMs ?? null : null;
+  parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, rttMs, issue: directIssue }, location.origin);
 }
 function directFailure(reason) { directIssue = reason; reportNetwork(); }
 async function refreshNetwork() {
@@ -441,7 +442,7 @@ async function connect() {
         transport = streamClient?.transport; transportName = streamClient?.socket.direct ? 'direct' : 'relay'; networkDetails = null;
         if (streamClient?.socket.direct) directIssue = '';
         if (viewing) { announce('connected'); reportControl(); reportNetwork(); void refreshNetwork(); }
-      }, issue: directFailure });
+      }, measured: () => { reportNetwork(); void refreshNetwork(); }, issue: directFailure });
     attachViewer(null, streamClient.socket); streamClient.start(); return;
   }
   frameHold.capture(canvas);

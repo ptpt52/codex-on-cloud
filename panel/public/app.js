@@ -12,6 +12,7 @@ import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
+import { createRoundTrip } from './health.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -34,6 +35,8 @@ let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEp
 let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
 let frameNetwork = null, directIssue = '';
+const frameLatency = createRoundTrip(), relayLatency = createRoundTrip();
+let relayProbeController, relayProbeAt = -Infinity;
 const directIssues = { unsupported: '当前浏览器环境不支持直连', disabled: '服务端已关闭直连', signaling: '直连协商请求未完成',
   negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测',
   'signaling-timeout': '直连协商请求超时，等待后续探测',
@@ -376,8 +379,35 @@ function renderInputControls() {
   renderTerminalSelection();
   sendDisplayPreferences();
 }
+function needsRelayProbe() {
+  return workspaceInitialized && loggedIn && !accessExpired && !pageLeaving && !document.hidden && navigator.onLine &&
+    (!owned ? !serviceLink.ready : frameState === 'connected' && frameTransport !== 'direct' && !streamProtocolEnabled && !terminalMode());
+}
+function syncRelayLatency() {
+  if (!needsRelayProbe()) {
+    relayProbeController?.abort(); relayProbeController = null; relayProbeAt = -Infinity; relayLatency.clear(); return;
+  }
+  if (relayProbeController || performance.now() - relayProbeAt < 3000) return;
+  const controller = relayProbeController = new AbortController();
+  relayProbeAt = performance.now();
+  const timeout = setTimeout(() => controller.abort(), 6000), startedAt = relayProbeAt;
+  // Only restricted HTTPS access and older desktop relays lack an application
+  // heartbeat. A tiny uncached read measures that route without desktop input.
+  void (async () => {
+    try {
+      const response = await fetch('/healthz', { credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal });
+      if (!response.ok || (await response.json()).ok !== true) throw Error('往返检测未完成');
+      if (relayProbeController === controller && needsRelayProbe()) relayLatency.set(performance.now() - startedAt);
+    } catch { if (relayProbeController === controller) relayLatency.clear(); }
+    finally {
+      clearTimeout(timeout);
+      if (relayProbeController === controller) { relayProbeController = null; renderConnection(); }
+    }
+  })();
+}
 function renderConnection() {
   if (workspaceInitialized && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
+  syncRelayLatency();
   nodeUI?.update();
   forwardingUI?.update();
   accessUI?.update();
@@ -406,7 +436,6 @@ function renderConnection() {
   const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}`;
   $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用直连';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
-  $('diag-latency').textContent = route?.rttMs != null ? `${route.rttMs} ms` : '—';
   $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? '已建立加密直连' : directIssues[directIssue] || '尚未检测';
   if (!owned && loggedIn && serviceProtocol === 1) {
     const service = serviceLink.state;
@@ -415,9 +444,13 @@ function renderConnection() {
     $('diag-direct-status').textContent = service.ready ? '已建立加密直连' : service.issue === 'connecting' ? '正在探测服务直连' : directIssues[service.issue] || '等待后续探测';
     $('diag-network').textContent = service.route ? `${service.route.family} / ${service.route.protocol}` : '当前未使用直连';
     $('diag-peer').textContent = service.route ? `${endpoint(service.route.local)} ↔ ${endpoint(service.route.remote)}` : '—';
-    $('diag-latency').textContent = service.route?.rttMs != null ? `${service.route.rttMs} ms` : '—';
     $('diag-input-transport').textContent = '当前账号无桌面输入权限';
   }
+  const latencyActive = loggedIn && !accessExpired && !document.hidden && navigator.onLine && (!owned || frameState === 'connected');
+  const httpsLatency = needsRelayProbe();
+  const rttMs = !latencyActive ? null : !owned && serviceLink.ready ? serviceLink.rttMs : httpsLatency ? relayLatency.value : owned ? frameLatency.value : null;
+  $('diag-latency').textContent = rttMs !== null ? `${rttMs} ms` : latencyActive ? '检测中…' : '—';
+  $('diag-latency').title = httpsLatency ? '浏览器与服务器之间的 HTTPS 请求往返时间，前台约每 4 秒检测。' : '浏览器与服务器之间当前数据通道的心跳往返时间，前台约每 3 秒更新。';
   $('diag-resolution').textContent = terminalMode() ? terminalGeometry ? `${terminalGeometry.cols} 列 × ${terminalGeometry.rows} 行` : '等待终端尺寸' : frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
@@ -592,7 +625,7 @@ function stopFrame({ keepLogout = false } = {}) {
   frameTransport = '';
   frameTerminalKey = ''; terminalGeometry = null; terminalReviewing = false;
   frameComposing = false;
-  frameNetwork = null; directIssue = '';
+  frameNetwork = null; frameLatency.clear(); directIssue = '';
   frameEpoch++;
   displayScale = 0;
   scaleRevision = -1;
@@ -1386,6 +1419,7 @@ window.addEventListener('message', event => {
     const validEnd = value => value && (value.address === null || typeof value.address === 'string' && value.address.length <= 253 && /^[a-zA-Z0-9:.%-]+$/.test(value.address)) && (value.port === null || Number.isInteger(value.port) && value.port >= 1 && value.port <= 65535);
     frameNetwork = route && ['IPv4', 'IPv6', 'unknown'].includes(route.family) && ['UDP', 'TCP', 'unknown'].includes(route.protocol) && validEnd(route.local) && validEnd(route.remote) && (route.rttMs === null || Number.isInteger(route.rttMs) && route.rttMs >= 0 && route.rttMs <= 600000)
       ? { family: route.family, protocol: route.protocol, rttMs: route.rttMs, local: { address: route.local.address, port: route.local.port }, remote: { address: route.remote.address, port: route.remote.port } } : null;
+    frameLatency.set(event.data.rttMs);
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-direct-prepare') {
@@ -1448,15 +1482,19 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
-  if (event.data.state === 'connected') { frameState = 'connected'; frameTransport = event.data.transport === 'direct' ? 'direct' : terminalMode() ? 'terminal' : 'relay'; sendDisplayPreferences(); }
-  else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); frameState = 'reconnecting'; if (panelRoute === 'direct') panelState = 'offline'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
-  else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
+  if (event.data.state === 'connected') {
+    const nextTransport = event.data.transport === 'direct' ? 'direct' : terminalMode() ? 'terminal' : 'relay';
+    if (frameState !== 'connected' || frameTransport !== nextTransport) frameLatency.clear();
+    frameState = 'connected'; frameTransport = nextTransport; sendDisplayPreferences();
+  }
+  else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); frameLatency.clear(); frameState = 'reconnecting'; if (panelRoute === 'direct') panelState = 'offline'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
+  else if (event.data.state === 'connecting') { frameLatency.clear(); if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;
   renderConnection();
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
-document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { shortcutMenu.close(); closeConfirmation(); } });
-window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
+document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { frameLatency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
+window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); syncRelayLatency(); frameLatency.clear(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; if (loggedIn) workspaceInitialized = true; syncScreenLock(); renderConnection(); });
 
 accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,

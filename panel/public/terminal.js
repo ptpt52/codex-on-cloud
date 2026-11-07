@@ -30,7 +30,10 @@ const controlState = () => { parent.postMessage({ type: 'codex-control-state', f
 const targetIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending && pendingWrites === 0;
 const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped,
   canSwitch: () => ready && !blocked && !switching && !streamPaused && targetIdle() });
-const reportNetwork = () => parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, issue: directIssue }, location.origin);
+const reportNetwork = () => {
+  const rttMs = ready && !streamPaused && !document.hidden && navigator.onLine ? socket?.session ? socket.rttMs : health?.rttMs ?? null : null;
+  parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, rttMs, issue: directIssue }, location.origin);
+};
 function directFailure(reason) { directIssue = reason; reportNetwork(); }
 async function refreshNetwork() {
   const current = socket;
@@ -183,7 +186,8 @@ async function connect() {
         else { if (pendingOutputAck && socket) acknowledgeOutput(socket, 0); health?.wake(); size(); }
         inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
       },
-      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } }, issue: directFailure });
+      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } },
+      measured: () => { reportNetwork(); void refreshNetwork(); }, issue: directFailure });
     attachSocket(streamClient.socket); streamClient.start(); return;
   }
   if (!fastConnect && !directFailed && canTryDirect()) {
@@ -241,7 +245,7 @@ function attachSocket(current) {
       if (!document.hidden && navigator.onLine) health.start();
       return;
     }
-    if (value.type === 'health' && ready) { health?.receive(value.nonce); void refreshNetwork(); return; }
+    if (value.type === 'health' && ready) { health?.receive(value.nonce); reportNetwork(); void refreshNetwork(); return; }
     if (value.type === 'geometry' && ready) {
       if (!Number.isInteger(value.maxCols) || value.maxCols < 2 || value.maxCols > 500) return retire(current);
       if (columnLimit !== value.maxCols) { columnLimit = value.maxCols; size(); }

@@ -15,7 +15,7 @@ export function createServiceLink({ viewer, options, changed }) {
     if (!running || epoch !== version || current !== peer || checking) return;
     if (!document.hidden) {
       checking = true;
-      try { await peer.health.ping(); state.route = await peer.stats(); if (current === peer) publish(); }
+      try { await peer.health.ping(); const route = await peer.stats(); if (current === peer && epoch === version) { state.route = route; publish(); } }
       catch { if (current === peer) { retire('connection'); schedule(1000); } return; }
       finally { checking = false; }
     }
@@ -32,7 +32,9 @@ export function createServiceLink({ viewer, options, changed }) {
       if (!candidate) throw Error('服务直连不可用');
       await candidate.start(); await candidate.health.ping();
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
-      current = candidate; state.ready = true; state.issue = ''; state.route = await candidate.stats(); delay = 15000; publish();
+      const route = await candidate.stats();
+      if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
+      current = candidate; state.ready = true; state.issue = ''; state.route = route; delay = 15000; publish();
       if (candidate.features?.filesProtocol === 1) {
         const channel = candidate.fileChannel();
         files = createFileClient(channel, () => { if (current === candidate) { retire('connection'); schedule(1000); } });
@@ -47,6 +49,7 @@ export function createServiceLink({ viewer, options, changed }) {
   window.addEventListener('online', wake); navigator.connection?.addEventListener('change', wake);
   document.addEventListener('visibilitychange', wake);
   return { state, get running() { return running; }, get ready() { return !!current && state.ready; }, get busy() { return busy; },
+    get rttMs() { return current?.health.rttMs ?? null; },
     get transport() { return current; },
     get files() { return files?.ready ? files : null; },
     start() { if (running) return; running = true; epoch++; delay = 15000; void probe(); },

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHealthClient } from '../panel/public/health.js';
+import { createHealthClient, createRoundTrip } from '../panel/public/health.js';
 import { attachRTCHealth } from '../panel/rtc-health.mjs';
 
 const packet = id => { const bytes = Buffer.alloc(4); bytes.writeUInt32BE(id); return bytes; };
@@ -18,6 +18,30 @@ class ClientChannel extends EventTarget {
   close() { this.readyState = 'closed'; this.dispatchEvent(new Event('close')); }
   reply(id) { this.dispatchEvent(new MessageEvent('message', { data: Uint8Array.from(packet(id)).buffer })); }
 }
+
+test('round trips expire, reject invalid samples and retain a real zero millisecond result', () => {
+  let now = 100;
+  const latency = createRoundTrip(() => now);
+  assert.equal(latency.value, null); latency.set(0); assert.equal(latency.value, 0);
+  now += 10000; assert.equal(latency.value, 0); now++; assert.equal(latency.value, null);
+  for (const invalid of [null, undefined, '12', NaN, Infinity, -1, 600001]) { latency.set(invalid); assert.equal(latency.value, null); }
+  latency.set(23.6); assert.equal(latency.value, 24); latency.clear(); assert.equal(latency.value, null);
+});
+
+test('data channel latency starts at the actual send and ignores canceled and duplicate echoes', async t => {
+  let now = 100;
+  t.mock.method(performance, 'now', () => now);
+  const channel = new ClientChannel(); channel.readyState = 'connecting';
+  const health = createHealthClient(channel), first = health.ping();
+  now += 500; channel.readyState = 'open'; channel.dispatchEvent(new Event('open'));
+  now += 37; channel.reply(1); assert.equal(await first, 37); assert.equal(health.rttMs, 37);
+  const canceled = assert.rejects(health.ping(), /取消/); health.cancel(); await canceled;
+  assert.equal(health.rttMs, null);
+  const next = health.ping(); now += 42; channel.reply(2); assert.equal(health.rttMs, null);
+  channel.reply(3); assert.equal(await next, 42);
+  now += 100; channel.reply(3); assert.equal(health.rttMs, 42);
+  now += 10001; assert.equal(health.rttMs, null); health.close();
+});
 
 test('health echoes only authenticated, monotonic four-byte nonces with rate and buffer bounds', () => {
   const wire = serverChannel(); let valid = true, failures = 0;

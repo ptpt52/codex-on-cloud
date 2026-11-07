@@ -57,7 +57,7 @@ test('real terminal UDP/DTLS shares the original task, routes Chinese paste and 
     await app.controls.manageTerminals({ action: 'create', name: '独立任务', view: 'terminal' }); await prepare(page);
     const frame = await login(page, app); await diagnostics(page, DIRECT);
     await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连');
-    await expect(page.locator('#diag-network')).toHaveText('IPv4 / UDP'); await expect(page.locator('#diag-latency')).not.toHaveText('—');
+    await expect(page.locator('#diag-network')).toHaveText('IPv4 / UDP'); await expect(page.locator('#diag-latency')).toHaveText(/^\d+ ms$/);
     const transport = await frame.evaluate(async () => [...(await window.terminalPeers.at(-1).getStats()).values()].find(value => value.type === 'transport'));
     expect(transport.dtlsState).toBe('connected'); expect(transport.dtlsCipher).toBeTruthy(); expect(transport.selectedCandidatePairId).toBeTruthy();
     await page.locator('#close-connection').click(); await page.locator('#toggle-input-button').click();
@@ -82,6 +82,7 @@ test('failed direct negotiation retains authenticated WSS and reports the fallba
     await prepare(page); await page.route('**/api/terminal/rtc', route => route.fulfill({ status: 503, json: { error: '模拟直连暂不可达' } }));
     await login(page, app); await diagnostics(page, RELAY);
     await expect(page.locator('#diag-direct-status')).toHaveText('直连未建立，等待后续探测');
+    await expect(page.locator('#diag-latency')).toHaveText(/^\d+ ms$/);
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 1, rtc: 1 }); expect(app.terminalConnections).toBe(1);
     expect(app.terminalInputs).toEqual([]); expect(app.vncConnections).toBe(0);
   } finally { await app.close(); }

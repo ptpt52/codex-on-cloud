@@ -23,6 +23,20 @@ test('healthy terminal probes schedule the next check without overlapping a pend
   f.tick(3000); assert.deepEqual(f.packets, [1, 2, 3]); f.health.close(); f.tick(10000); assert.equal(f.failures, 0);
 });
 
+test('terminal latency measures matching echoes and clears on suspend, timeout and disposal', t => {
+  let now = 100;
+  t.mock.method(performance, 'now', () => now);
+  const f = fixture(t); f.health.start(); f.tick(3000); now += 73;
+  f.health.receive(1); assert.equal(f.health.rttMs, 73);
+  now += 100; f.health.receive(1); assert.equal(f.health.rttMs, 73);
+  f.health.suspend(); assert.equal(f.health.rttMs, null);
+  f.health.wake(); f.tick(250); now += 19; f.health.receive(1); assert.equal(f.health.rttMs, null);
+  f.health.receive(2); assert.equal(f.health.rttMs, 19);
+  now += 10001; assert.equal(f.health.rttMs, null);
+  f.tick(3000); f.tick(2000); assert.equal(f.failures, 1); assert.equal(f.health.rttMs, null);
+  f.health.close(); assert.equal(f.health.rttMs, null);
+});
+
 test('wake replaces a regular pending probe and repeated network events cannot postpone its fresh deadline', t => {
   const f = fixture(t); f.health.start(); f.tick(3000); f.health.wake();
   f.tick(100); f.health.wake(); f.tick(100); f.health.wake(); f.tick(50);

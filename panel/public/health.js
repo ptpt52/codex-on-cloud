@@ -1,8 +1,21 @@
+// Keep one foreground sample; a restored or disconnected page must not display
+// an old path's latency as if it belonged to the current connection.
+export function createRoundTrip(now = () => performance.now()) {
+  let sample = null, measuredAt = 0;
+  return {
+    get value() { const age = now() - measuredAt; return age >= 0 && age <= 10000 ? sample : null; },
+    set(ms) { sample = Number.isFinite(ms) && ms >= 0 && ms <= 600000 ? Math.round(ms) : null; measuredAt = now(); },
+    clear() { sample = null; },
+  };
+}
+
 // One read-only probe at a time, independent of the single in-flight input.
 export function createHealthClient(channel) {
   let pending, sequence = 0, ended = false;
+  const latency = createRoundTrip();
   channel.binaryType = 'arraybuffer';
   const reject = message => {
+    latency.clear();
     if (!pending) return;
     const current = pending; pending = undefined;
     clearTimeout(current.timer); current.reject(new Error(message));
@@ -17,6 +30,7 @@ export function createHealthClient(channel) {
       if (channel.bufferedAmount > 4096) throw new Error();
       const bytes = new ArrayBuffer(4);
       new DataView(bytes).setUint32(0, pending.id);
+      pending.sentAt = performance.now();
       channel.send(bytes);
     } catch { close(); }
   };
@@ -29,12 +43,14 @@ export function createHealthClient(channel) {
     const id = new DataView(event.data).getUint32(0);
     if (!id || id > sequence) { close(); return; }
     // A canceled/backgrounded probe can arrive late; it cannot satisfy a new one.
-    if (id !== pending?.id) return;
+    if (id !== pending?.id || pending.sentAt === undefined) return;
     const current = pending; pending = undefined;
-    clearTimeout(current.timer); current.resolve();
+    latency.set(performance.now() - current.sentAt);
+    clearTimeout(current.timer); current.resolve(latency.value);
   });
   return {
     close,
+    get rttMs() { return latency.value; },
     cancel() { reject('直连心跳已取消'); },
     ping() {
       if (ended || pending || channel.readyState === 'closed' || channel.readyState === 'closing' || sequence >= 2147483647) return Promise.reject(new Error('直连心跳不可用'));

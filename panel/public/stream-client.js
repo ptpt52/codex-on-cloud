@@ -2,6 +2,7 @@ import { desktopTransport, canTryDirect } from './rtc.js';
 import { controlDecoder, sendControl } from '/control.js';
 import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
 import { TERMINAL_IDS } from '/terminal-slots.js';
+import { createRoundTrip } from '/health.js';
 
 const CHUNK = 12 * 1024, integer = n => Number.isSafeInteger(n) && n >= 0 && n <= 2 ** 40;
 const encode = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
@@ -9,7 +10,7 @@ const decode = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
 
 // One browser-visible channel. Network paths may change; the consumer and its
 // parser stay attached. Only downstream bytes can be replayed, never inputs.
-export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = () => true, settled = idle, targetIdle = settled, prepare = async () => true, paused = () => {}, changed = () => {}, issue = () => {} }) {
+export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = () => true, settled = idle, targetIdle = settled, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {} }) {
   const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
   let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
@@ -71,6 +72,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     if (peer.gone || ended || !peer.ready || peer.ping) return;
     const nonce = ++peer.nonce; peer.ping = nonce;
     peer.deadline = setTimeout(() => lost(peer), 2000);
+    peer.sentAt = performance.now();
     try { send(peer, { type: 'ping', id: nonce }); } catch { lost(peer); }
   }
   function heartbeat(peer, delay = 3000) {
@@ -98,8 +100,10 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
         peer.welcome?.(); if (!active && !claiming) void activate(peer); return;
       }
       if (value.type === 'pong') {
-        if (!integer(value.id) || value.id !== peer.ping) return;
-        clearTimeout(peer.deadline); peer.ping = 0; heartbeat(peer); return;
+        if (!integer(value.id) || !peer.ping || value.id !== peer.ping) return;
+        peer.latency.set(performance.now() - peer.sentAt);
+        clearTimeout(peer.deadline); peer.ping = 0; heartbeat(peer);
+        if (peer === active) measured(); return;
       }
       if (value.type === 'reset') return close(value.reason || 'session-reset');
       if (value.type === 'panel-result') {
@@ -221,7 +225,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     }
   }
   function peerFor(kind, send, close, buffered, deferred = false, writable = () => true) {
-    const peer = { kind, send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0 };
+    const peer = { kind, send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0, latency: createRoundTrip() };
     if (!deferred) peer.startTimer = setTimeout(() => lost(peer), 12000); peers.set(kind, peer); return peer;
   }
   function ensureRelay() {
@@ -274,7 +278,8 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     if (document.hidden || !navigator.onLine) {
       clearTimeout(directTimer); directTimer = undefined;
       clearTimeout(relayTimer); relayTimer = undefined;
-      for (const peer of peers.values()) { clearTimeout(peer.timer); peer.timer = undefined; clearTimeout(peer.deadline); peer.ping = 0; }
+      for (const peer of peers.values()) { clearTimeout(peer.timer); peer.timer = undefined; clearTimeout(peer.deadline); peer.ping = 0; peer.latency.clear(); }
+      measured();
       if (!navigator.onLine) for (const peer of [...peers.values()]) lost(peer);
       return;
     }
@@ -325,7 +330,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       catch { lost(peer); }
     },
   });
-  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
+  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
   for (const name of ['online', 'offline']) window.addEventListener(name, wake);
   navigator.connection?.addEventListener('change', wake); document.addEventListener('visibilitychange', wake);
   return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake,
