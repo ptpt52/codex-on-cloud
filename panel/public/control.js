@@ -84,8 +84,9 @@ export function createPanelBridge({ frame, current, connected, canSwitch = () =>
     if (value.type === 'codex-panel-cancel') { pending.get(value.id)?.controller.abort(); return; }
     if (value.type !== 'codex-panel-request') return;
     const source = current(), action = value.action;
-    const reject = () => parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: '直连操作未就绪或仍在处理，本次未发送', status: 409, outcome: 'rejected' } }, location.origin);
-    if (!['state', 'terminals', 'switch-terminal'].includes(action) || pending.has(value.id) || !connected() || !source?.panelReady || [...pending.values()].some(p => p.action === action) || action === 'switch-terminal' && !canSwitch()) { reject(); return; }
+    const reject = () => parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: '连接操作未就绪或仍在处理，本次未发送', status: 409, outcome: 'rejected' } }, location.origin);
+    const capable = action === 'switch-terminal' ? source?.terminalSwitch && canSwitch() : source?.panelReady;
+    if (!['state', 'terminals', 'switch-terminal'].includes(action) || pending.has(value.id) || !connected() || !capable || [...pending.values()].some(p => p.action === action)) { reject(); return; }
     const entry = { action, controller: new AbortController() }; pending.set(value.id, entry);
     void source.panelRequest(action, value.body, entry.controller.signal).then(result => {
       if (entry.controller.signal.aborted || source !== current()) return;

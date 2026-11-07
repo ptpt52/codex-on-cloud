@@ -26,7 +26,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     if (!targetPending) return;
     const pending = targetPending; targetPending = undefined; clearTimeout(pending.timer); pending.signal?.removeEventListener('abort', pending.abort);
     claiming = false; heldOutput = []; heldBytes = 0;
-    if (!ended) pause(false); error ? pending.reject(error) : pending.resolve(value);
+    if (!ended) { pause(false); scheduleDirect(); } error ? pending.reject(error) : pending.resolve(value);
   }
   function emit(type, data) {
     const event = ['message', 'target'].includes(type) ? new MessageEvent(type, { data }) : new Event(type);
@@ -38,6 +38,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
   }
   function close(reason = '') {
     if (ended) return;
+    if (targetPending) reason = 'target-unknown';
     socket.lastError = reason;
     if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
@@ -88,7 +89,9 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
         // A standby's delayed welcome cannot advance the active writer or an
         // in-flight target switch. Only activation commits that boundary.
         if (!active || peer === active && !targetPending) epoch = Math.max(epoch, value.epoch);
-        peer.epoch = value.epoch; peer.handoff = value.handoff === 1; peer.panel = value.panel === 1; peer.terminalSwitch = value.terminalSwitch === 1; peer.ready = true; clearTimeout(peer.startTimer); heartbeat(peer);
+        peer.epoch = value.epoch; peer.handoff = value.handoff === 1; peer.panel = value.panel === 1;
+        peer.terminalSwitch = value.terminalSwitch === 1 && (peer.kind === 'direct' || value.terminalSwitchRelay === 1);
+        peer.ready = true; clearTimeout(peer.startTimer); heartbeat(peer);
         if (peer.prepareWait || peer.wait?.handoff !== undefined) { peer.prepareWait?.reject(new Error('busy')); peer.wait?.reject(new Error('busy')); return; }
         if (peer.wait && claiming) { send(peer, { type: 'activate', epoch: value.epoch, out, input: sent }); return; }
         peer.welcome?.(); if (!active && !claiming) void activate(peer); return;
@@ -235,19 +238,19 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     }, opened ? relayDelay : 0);
   }
   function scheduleDirect(delay = probeDelay) {
-    if (ended || directController || peers.has('direct') || !canTryDirect() || document.hidden || !navigator.onLine || active?.kind === 'direct') return;
+    if (ended || targetPending || directController || peers.has('direct') || !canTryDirect() || document.hidden || !navigator.onLine || active?.kind === 'direct') return;
     const wait = Math.max(delay, routes.remaining()), due = performance.now() + wait;
     if (directTimer && directDue <= due) return;
     clearTimeout(directTimer); directDue = due;
     directTimer = setTimeout(() => { directTimer = undefined; void connectDirect(); }, wait);
   }
   async function promote(peer) {
-    if (ended || peer.gone || active === peer || document.hidden || !navigator.onLine) return;
+    if (ended || targetPending || peer.gone || active === peer || document.hidden || !navigator.onLine) return;
     if (!active || (idle() && !routes.remaining())) await activate(peer, !!active);
     if (!ended && !peer.gone && active !== peer) { clearTimeout(promotionTimer); promotionTimer = setTimeout(() => void promote(peer), Math.max(1000, routes.remaining())); }
   }
   async function connectDirect() {
-    if (ended || directController || peers.has('direct') || document.hidden || !navigator.onLine || !canTryDirect()) return;
+    if (ended || targetPending || directController || peers.has('direct') || document.hidden || !navigator.onLine || !canTryDirect()) return;
     const controller = directController = new AbortController(); let transport, peer;
     try {
       transport = await desktopTransport(viewer, live => { if (!live && peer) lost(peer); }, { probe: true, signal: controller.signal, terminal, streamId: id, bootstrap, failed: issue });
@@ -262,7 +265,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       await transport.control.request('ping', {}); await transport.control.request('activate', {});
       await new Promise((resolve, reject) => { peer.welcome = resolve; transport.viewerReady(); const timer = setTimeout(() => reject(new Error('no standby')), 3000); peer.welcome = () => { clearTimeout(timer); resolve(); }; });
       probeDelay = 15000; void promote(peer);
-    } catch { if (peer) lost(peer); else transport?.close(); probeDelay = Math.min(60000, probeDelay * 2); }
+    } catch { if (peer) lost(peer); else transport?.close(); if (!controller.signal.aborted) probeDelay = Math.min(60000, probeDelay * 2); }
     finally { if (directController === controller) directController = undefined; scheduleDirect(); }
   }
   function wake() {
@@ -281,7 +284,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     close: () => close(), reconnect: () => lost(active), stats: async () => active?.transport?.stats() || null,
     panelRequest(action, body = {}, signal) {
       const peer = active;
-      if (ended || !peer?.ready || peer.kind !== 'direct' || !peer.panel || signal?.aborted) return Promise.reject(failure('直连管理通道未就绪'));
+      if (ended || !peer?.ready || signal?.aborted) return Promise.reject(failure('会话通道未就绪'));
       if (action === 'switch-terminal') {
         if (!terminal || !peer.terminalSwitch || targetPending || transitioning || claiming || !targetIdle() || inputAck !== sent || targetSequence >= 2147483647) return Promise.reject(failure('终端仍有操作进行中，本次切换未发送'));
         const target = { terminalId: body.terminalId, terminalToken: body.terminalToken };
@@ -290,10 +293,16 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
           const id = ++targetSequence, abort = () => close('target-unknown');
           targetPending = { id, target, peer, resolve, reject, signal, abort, timer: setTimeout(abort, 8000) };
           signal?.addEventListener('abort', abort, { once: true }); pause(true); claiming = true;
+          if (peer.kind === 'relay') {
+            // Retire probes admitted for the previous pane. Their completion
+            // cannot race a target change on the retained relay connection.
+            clearTimeout(directTimer); directTimer = undefined; clearTimeout(promotionTimer);
+            directController?.abort(); const candidate = peers.get('direct'); if (candidate) lost(candidate);
+          }
           try { send(peer, { type: 'switch-terminal', id, epoch, input: sent, target }); } catch { close('target-unknown'); }
         });
       }
-      if (!['state', 'terminals'].includes(action) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('该直连查询正在处理或不受支持', 429));
+      if (peer.kind !== 'direct' || !peer.panel || !['state', 'terminals'].includes(action) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('该直连查询正在处理或不受支持', 429));
       return new Promise((resolve, reject) => {
         const id = ++panelSequence, abort = () => finishPanel(id, failure('直连查询已取消'));
         panelRequests.set(id, { action, peer, epoch, resolve, reject, signal, abort, timer: setTimeout(() => finishPanel(id, failure('直连查询超时', 504)), 5000) }); signal?.addEventListener('abort', abort, { once: true });
@@ -309,7 +318,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       catch { lost(active); }
     },
   });
-  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.kind === 'direct' && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
+  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
   for (const name of ['online', 'offline']) window.addEventListener(name, wake);
   navigator.connection?.addEventListener('change', wake); document.addEventListener('visibilitychange', wake);
   return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake,

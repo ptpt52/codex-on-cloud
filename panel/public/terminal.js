@@ -27,7 +27,7 @@ const pressedKeys = new Set(), pressedPointers = new Set();
 const report = (state, extra = {}) => parent.postMessage({ type: 'codex-desktop', frame, state, transport: socket?.direct ? 'direct' : 'terminal', ...extra }, location.origin);
 const controlState = () => { parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin); panelBridge.report(); };
 const targetIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending && pendingWrites === 0;
-const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped && socket?.direct === true,
+const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped,
   canSwitch: () => ready && !blocked && !switching && !streamPaused && targetIdle() });
 const reportNetwork = () => parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, issue: directIssue }, location.origin);
 function directFailure(reason) { directIssue = reason; reportNetwork(); }

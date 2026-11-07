@@ -458,7 +458,8 @@ export async function createPanel(config) {
         let streamEntry;
         let terminalSession;
         if (terminalMode) state.inputIdle = () => terminalSession?.idle === true;
-        const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state;
+        const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state &&
+          (!resumable || streamState?.stream === stream && (!!streamEntry || JSON.stringify(streamState.target) === JSON.stringify(target)));
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
         bridge = createRTCBridge({ address, ipv6Address, vncSocket: config.vncSocket, valid,

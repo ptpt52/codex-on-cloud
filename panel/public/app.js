@@ -141,9 +141,9 @@ function selectTerminal(id) {
   const terminal = terminalCatalog.find(item => item.id === id && item.supported);
   if (id && !terminal || !id && terminalMode()) return false;
   const identity = id ? { id: terminal.id, token: terminal.token } : { id: '', token: '' };
-  if (terminalMode() && frameLoaded && panelReady && terminalSwitchReady && frameTerminalKey !== `${identity.id}:${identity.token}`) {
+  if (terminalMode() && frameLoaded && terminalSwitchReady && frameTerminalKey !== `${identity.id}:${identity.token}`) {
     if (!rememberDraft()) return false;
-    void switchTerminalDirect(identity); return true;
+    void switchTerminalStream(identity); return true;
   }
   if (!activateTerminal(identity)) { renderTerminalSelection(); return false; }
   shortcutMenu.close(); renderTerminalList(); if (terminalMode()) syncTerminalView();
@@ -531,7 +531,8 @@ function finishPanelRequest(id, error, value) {
   error ? pending.reject(error) : pending.resolve(value);
 }
 function framePanelRequest(action, body = {}, signal) {
-  if (!['state', 'terminals', 'switch-terminal'].includes(action) || !panelReady || !owned || !frameLoaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连管理通道未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
+  const capable = action === 'switch-terminal' ? terminalSwitchReady : panelReady;
+  if (!['state', 'terminals', 'switch-terminal'].includes(action) || !capable || !owned || !frameLoaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('连接操作未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
     const id = ++panelSequence, abort = () => {
       $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-cancel', frame: String(frameEpoch), id }, location.origin);
@@ -546,7 +547,7 @@ function resetPanelRequests() {
   panelReady = terminalSwitchReady = false;
   for (const id of [...panelRequests.keys()]) finishPanelRequest(id, Object.assign(new Error('查看连接已变化'), { status: 409, outcome: 'unknown' }));
 }
-async function switchTerminalDirect(identity) {
+async function switchTerminalStream(identity) {
   const expectedFrame = frameEpoch, generation = uiGeneration;
   historyToolsPortal.reset(); terminalBusy = true; shortcutMenu.close(); renderConnection();
   try {
@@ -1321,13 +1322,14 @@ window.addEventListener('message', event => {
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
   if (event.data?.type === 'codex-panel-state') {
     const wasReady = panelReady;
-    panelReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct'; terminalSwitchReady = panelReady && event.data.terminalSwitch === true;
+    panelReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
+    terminalSwitchReady = terminalMode() && frameState === 'connected' && event.data.terminalSwitch === true;
     if (panelReady && !wasReady) { stopPolling(); void poll(); }
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-panel-result') {
     if (!panelRequests.has(event.data.id)) return;
-    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '直连请求失败'), { status: event.data.error?.status, outcome: event.data.error?.outcome || 'unknown' });
+    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '连接请求失败'), { status: event.data.error?.status, outcome: event.data.error?.outcome || 'unknown' });
     finishPanelRequest(event.data.id, error, event.data.value); return;
   }
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {

@@ -37,12 +37,12 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
     clearTimeout(holdTimer); holding = false; handoff = undefined;
     if (active) flush(active, active.sent); pressure();
   }
-  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0 });
+  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0 });
   function openUpstream() {
     const generation = ++upstreamGeneration;
     upstream = connect({ push: bytes => { if (generation === upstreamGeneration) push(bytes); }, close: () => { if (generation === upstreamGeneration) stop(); } });
   }
-  const panelError = error => ({ status: error.status || 503, message: error.status ? error.message : '直连管理请求未完成', outcome: 'rejected' });
+  const panelError = error => ({ status: error.status || 503, message: error.status ? error.message : '会话请求未完成', outcome: 'rejected' });
   function flush(peer, from) {
     for (const chunk of output) if (chunk.at >= from) {
       peer.sent = chunk.at + chunk.bytes.length;
@@ -135,7 +135,7 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
         return;
       }
       if (value.type === 'switch-terminal') {
-        if (peer.kind !== 'direct' || !switchTarget || !Number.isSafeInteger(value.id) || value.id <= peer.switchId || value.id > 2147483647 || !integer(value.input)) throw new Error();
+        if (!switchTarget || !Number.isSafeInteger(value.id) || value.id <= peer.switchId || value.id > 2147483647 || !integer(value.input)) throw new Error();
         peer.switchId = value.id;
         const requestEpoch = epoch, live = () => check() && active === peer && epoch === requestEpoch && peers.get(peer.kind) === peer;
         const reject = error => { if (live()) send(peer, { type: 'switch-result', epoch, id: value.id, ok: false, error: panelError(error) }); };

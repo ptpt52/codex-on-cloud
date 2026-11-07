@@ -107,10 +107,10 @@ test('direct read RPC is bounded independently of input and never runs on a stan
   relay.entry.receive({ type: 'panel', id: 4, epoch: 2, action: 'state' }); await tick(); assert.equal(calls, 2); assert.equal(direct.entry.active, true);
 });
 
-test('switching a terminal retires old output callbacks and preserves input sequencing on the same peer', async t => {
+for (const kind of ['direct', 'relay']) test(`${kind}: switching a terminal retires old output callbacks and preserves input sequencing on the same peer`, async t => {
   let target = 'main';
   const app = setup({ switchTarget: async next => ({ target: next, commit() { target = next.terminalId; } }) }); t.after(() => app.session.close());
-  const direct = app.peer('direct'); await activate(direct, 0); app.push('old screen');
+  const direct = app.peer(kind); await activate(direct, 0); app.push('old screen');
   direct.entry.receive(input(1, 1, 'old input')); await tick();
   direct.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 1, target: { terminalId: 'aux1', terminalToken: '%1:4100' } }); await tick();
   const switched = direct.records.find(v => v.type === 'switched'); assert.equal(switched.epoch, 2); assert.equal(switched.out, 10); assert.equal(target, 'aux1'); assert.equal(app.launches, 2);
@@ -142,12 +142,22 @@ test('read snapshots cannot cross a committed target epoch and oversized results
   assert.equal(direct.records.some(v => v.type === 'panel-result' && v.id === 1), false); assert.equal(app.session.closed, false);
 });
 
-test('input arriving during target validation rejects the switch without losing or replaying that input', async t => {
+for (const kind of ['direct', 'relay']) test(`${kind}: input arriving during target validation rejects the switch without losing or replaying that input`, async t => {
   let release, committed = false; const gate = new Promise(resolve => { release = resolve; });
   const app = setup({ switchTarget: async target => { await gate; return { target, commit() { committed = true; } }; } }); t.after(() => app.session.close());
-  const direct = app.peer('direct'); await activate(direct, 0); direct.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } }); await tick();
+  const direct = app.peer(kind); await activate(direct, 0); direct.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } }); await tick();
   direct.entry.receive(input(1, 1, 'accepted once')); release(); await tick();
   assert.equal(committed, false); assert.equal(direct.records.at(-1).type, 'switch-result'); assert.deepEqual(app.writes, ['accepted once']); assert.equal(app.launches, 1);
+});
+
+test('a standby cannot switch targets and a revoked relay cannot commit its pending target change', async t => {
+  let allowed = true, release, committed = false; const gate = new Promise(resolve => { release = resolve; });
+  const app = setup({ valid: () => allowed, switchTarget: async target => { await gate; return { target, commit() { committed = true; } }; } });
+  t.after(() => app.session.close()); const relay = app.peer('relay'), direct = app.peer('direct'); await activate(relay, 0);
+  const request = { type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } };
+  direct.entry.receive(request); await tick(); assert.equal(app.launches, 1); assert.equal(direct.records.length, 1);
+  relay.entry.receive(request); await tick(); allowed = false; release(); await tick();
+  assert.equal(committed, false); assert.equal(app.session.closed, true); assert.deepEqual(app.writes, []);
 });
 
 test('attachment failure after committing a target closes the viewer instead of reporting the old target as preserved', async t => {

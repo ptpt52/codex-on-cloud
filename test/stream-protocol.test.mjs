@@ -5,9 +5,12 @@ import WebSocket from 'ws';
 import { fixture } from './fixture.mjs';
 const id = 'c'.repeat(32);
 async function until(fn) { for (let n = 0; n < 100; n++) { if (fn()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error('stream protocol timeout'); }
-function path(app, suffix = '') { return app.config.origin.replace('http:', 'ws:') + `/session/connect?viewer=${app.viewer}&streamId=${id}&mode=desktop${suffix}`; }
-async function connected(app, auth = true) {
-  const ws = new WebSocket(path(app), { origin: app.config.origin, headers: { cookie: app.cookie } }), records = [];
+function path(app, suffix = '', target) {
+  const query = new URLSearchParams({ viewer: app.viewer, streamId: id, mode: target ? 'terminal' : 'desktop', ...(target || {}) });
+  return app.config.origin.replace('http:', 'ws:') + '/session/connect?' + query + suffix;
+}
+async function connected(app, auth = true, target) {
+  const ws = new WebSocket(path(app, '', target), { origin: app.config.origin, headers: { cookie: app.cookie } }), records = [];
   ws.on('message', bytes => records.push(JSON.parse(bytes.toString()))); ws.on('error', () => {});
   await once(ws, 'open'); if (auth) { ws.send(JSON.stringify({ type: 'auth', csrf: app.csrf })); await until(() => records.some(x => x.type === 'welcome')); }
   return { ws, records };
@@ -48,4 +51,29 @@ test('a lost relay resumes one upstream, only output is replayed, and takeover r
   const closed = once(peer.ws, 'close'); await app.claim('d'.repeat(32)); await closed;
   assert.equal(await denied(path(app), { origin: app.config.origin, headers: { cookie: app.cookie } }), 409);
   assert.equal(app.managementStats.restarts, 0);
+});
+
+test('an authenticated relay switches exact terminal identities without reconnecting and rejects delayed old-target authentication', async t => {
+  const app = await fixture({ seamless: true }); t.after(() => app.close()); await app.login(); await app.claim();
+  await app.controls.manageTerminals({ action: 'create', name: 'relay target', view: 'terminal' });
+  const catalog = await app.controls.listTerminals(), target = terminal => ({ terminalId: terminal.id, terminalToken: terminal.token });
+  const main = target(catalog.terminals.find(item => item.id === 'main')), auxiliary = target(catalog.terminals.find(item => item.id === 'aux1'));
+  const peer = await connected(app, true, main); t.after(() => peer.ws.terminate());
+  assert.equal(peer.records[0].terminalSwitchRelay, 1);
+  peer.ws.send(JSON.stringify({ type: 'activate', epoch: 0, out: 0, input: 0 })); await until(() => peer.records.some(value => value.type === 'chunk'));
+  peer.ws.send(JSON.stringify({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { ...auxiliary, terminalToken: '%1:999999' } }));
+  await until(() => peer.records.some(value => value.type === 'switch-result'));
+  assert.equal(peer.records.find(value => value.type === 'switch-result').error.status, 409); assert.equal(app.terminalConnections, 1);
+  const delayed = await connected(app, false, main); t.after(() => delayed.ws.terminate());
+  peer.ws.send(JSON.stringify({ type: 'switch-terminal', id: 2, epoch: 1, input: 0, target: auxiliary }));
+  await until(() => peer.records.some(value => value.type === 'switched')); await until(() => app.terminalConnections === 2);
+  const switched = peer.records.find(value => value.type === 'switched'); assert.deepEqual(switched.target, auxiliary);
+  await until(() => peer.records.some(value => value.type === 'chunk' && value.epoch === switched.epoch));
+  const closed = once(delayed.ws, 'close'); delayed.ws.send(JSON.stringify({ type: 'auth', csrf: app.csrf })); await closed;
+  const data = Buffer.from(JSON.stringify({ type: 'control', id: 1, action: 'paste', text: '仅辅助终端', bracketed: true }) + '\n').toString('base64');
+  peer.ws.send(JSON.stringify({ type: 'input', epoch: switched.epoch, id: 1, part: 0, parts: 1, data }));
+  await until(() => app.terminalInputs.length === 1);
+  assert.deepEqual(app.terminalInputs, [{ terminalId: 'aux1', text: '\x1b[200~仅辅助终端\x1b[201~' }]);
+  assert.equal(peer.ws.readyState, WebSocket.OPEN); assert.equal(app.managementStats.restarts, 0);
+  const revoked = once(peer.ws, 'close'); await app.claim('d'.repeat(32)); await revoked;
 });
