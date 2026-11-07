@@ -6,6 +6,7 @@
 
 | 作业 | 内容 | 期限 |
 | --- | --- | --- |
+| portal | 固定 Wrangler/workerd，真实 SQLite Durable Object 注册、撤销与重启持久化 | 15 分钟 |
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
 | terminal | 只安装 tmux/Python 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
 | browsers | Chromium、Firefox、WebKit 三个独立环境的 63 项兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
@@ -56,3 +57,5 @@ CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对�
 ## 布局与混合时钟的等待
 
 兼容性用例在旋转后轮询按钮的边界和实际命中位置，等待 `requestAnimationFrame` 中的浮层布局完成。快捷键菜单用例先确认忙碌状态已传入桌面 iframe，再推进探测时间；恢复真实 HTTP/ICE/DTLS 协商时用 `clock.runFor` 按顺序执行计时器，避免一次跳跃让握手超时先于网络回复执行。两者均保留原有可见范围、遮挡、连接数和不发送输入的断言。
+
+门户测试包括事务模拟的 Node/浏览器检查，以及独立 `portal` 作业的真实 workerd/SQLite 验证。后者使用固定 `wrangler@4.158.0` 和临时存储，不连接 Cloudflare 账户或真实节点；详见[统一门户](portal.md#验证范围)。
