@@ -101,7 +101,9 @@ try {
   assert.equal(init[4], 32);
   const encodings = Buffer.alloc(12); encodings[0] = 2; encodings.writeUInt16BE(2, 2); encodings.writeInt32BE(-223, 4); socket.write(encodings);
   let width = init.readUInt16BE(0), height = init.readUInt16BE(2), pixelsReceived = false;
-  function request() { const value = Buffer.alloc(10); value[0] = 3; value.writeUInt16BE(width, 6); value.writeUInt16BE(height, 8); socket.write(value); }
+  // Match noVNC: request the initial frame in full, then incremental updates.
+  // Repeated full repaints can starve RandR processing in x11vnc 0.9.16.
+  function request(incremental = true) { const value = Buffer.alloc(10); value[0] = 3; value[1] = incremental ? 1 : 0; value.writeUInt16BE(width, 6); value.writeUInt16BE(height, 8); socket.write(value); }
   async function update() {
     assert.equal((await read(1))[0], 0);
     const header = await read(3), count = header.readUInt16BE(1); assert.ok(count <= 4096);
@@ -113,7 +115,7 @@ try {
     }
     return resized;
   }
-  request(); await update();
+  request(false); await update();
   for (let n = 0; !pixelsReceived && n < 40; n++) { await new Promise(resolve => setTimeout(resolve, 100)); request(); await update(); }
   assert.ok(pixelsReceived, 'the first complete pixel frame must precede resolution changes');
   await new Promise(resolve => setTimeout(resolve, VNC_RESIZE_SETTLE));
