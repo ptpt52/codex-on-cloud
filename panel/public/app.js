@@ -31,10 +31,13 @@ let frameNetwork = null, directIssue = '';
 const directIssues = { unsupported: '当前浏览器环境不支持直连', disabled: '服务端已关闭直连', signaling: '直连协商请求未完成',
   negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测',
   'signaling-timeout': '直连协商请求超时，等待后续探测',
+  'gathering-timeout': '直连地址收集超时，等待后续探测',
   'ice-timeout': '直连 UDP 探测超时；请检查浏览器本地网络权限及 UDP 通道',
   'channel-timeout': '直连 UDP 已接通，加密数据通道建立超时',
   connection: '原直连已断开，正在恢复', heartbeat: '直连心跳无回复，已开始回退中转' };
 let controlReady = false, controlPending = null, controlSequence = 0;
+let panelReady = false, terminalSwitchReady = false, panelSequence = 0, panelRoute = 'https', rtcConfig;
+const panelRequests = new Map();
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
@@ -136,6 +139,10 @@ function selectTerminal(id) {
   const terminal = terminalCatalog.find(item => item.id === id && item.supported);
   if (id && !terminal || !id && terminalMode()) return false;
   const identity = id ? { id: terminal.id, token: terminal.token } : { id: '', token: '' };
+  if (terminalMode() && frameLoaded && panelReady && terminalSwitchReady && frameTerminalKey !== `${identity.id}:${identity.token}`) {
+    if (!rememberDraft()) return false;
+    void switchTerminalDirect(identity); return true;
+  }
   if (!activateTerminal(identity)) { renderTerminalSelection(); return false; }
   shortcutMenu.close(); renderTerminalList(); if (terminalMode()) syncTerminalView();
   return true;
@@ -174,7 +181,7 @@ function toggleWorkspacePanel(name) {
 }
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), rtc: rtcConfig, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
@@ -398,7 +405,7 @@ function renderConnection() {
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
   $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线'].includes(label));
   $('connection-status').lastChild.textContent = label;
-  $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
+  $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? panelRoute === 'direct' ? '可访问（加密直连）' : '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
   $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? terminalMode() ? 'WebRTC 加密直连 · 文字终端' : 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
@@ -489,6 +496,7 @@ function toast(message, failure = false) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
 async function api(path, { method = 'GET', body, raw, signal } = {}) {
+  if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) return framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
   const headers = { 'x-viewer-id': viewer };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -511,6 +519,48 @@ async function api(path, { method = 'GET', body, raw, signal } = {}) {
   }
   return data;
 }
+function cacheRTC(value) {
+  if (typeof value?.webrtc === 'boolean' && typeof value.rtcStunUrl === 'string' && value.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.webrtc, rtcStunUrl: value.rtcStunUrl };
+}
+function finishPanelRequest(id, error, value) {
+  const pending = panelRequests.get(id); if (!pending) return;
+  panelRequests.delete(id); clearTimeout(pending.timer); pending.signal?.removeEventListener('abort', pending.abort);
+  error ? pending.reject(error) : pending.resolve(value);
+}
+function framePanelRequest(action, body = {}, signal) {
+  if (!['state', 'terminals', 'switch-terminal'].includes(action) || !panelReady || !owned || !frameLoaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连管理通道未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
+  return new Promise((resolve, reject) => {
+    const id = ++panelSequence, abort = () => {
+      $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-cancel', frame: String(frameEpoch), id }, location.origin);
+      finishPanelRequest(id, signal?.reason || Object.assign(new Error('直连操作已取消或结果未知'), { status: 409, outcome: action === 'switch-terminal' ? 'unknown' : 'rejected' }));
+    };
+    panelRequests.set(id, { action, resolve, reject, signal, abort, timer: setTimeout(abort, action === 'switch-terminal' ? 9000 : 6000) });
+    signal?.addEventListener('abort', abort, { once: true });
+    $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-request', frame: String(frameEpoch), id, action, body }, location.origin);
+  });
+}
+function resetPanelRequests() {
+  panelReady = terminalSwitchReady = false;
+  for (const id of [...panelRequests.keys()]) finishPanelRequest(id, Object.assign(new Error('查看连接已变化'), { status: 409, outcome: 'unknown' }));
+}
+async function switchTerminalDirect(identity) {
+  const expectedFrame = frameEpoch, generation = uiGeneration;
+  historyToolsPortal.reset(); terminalBusy = true; shortcutMenu.close(); renderConnection();
+  try {
+    const target = await framePanelRequest('switch-terminal', { terminalId: identity.id, terminalToken: identity.token });
+    if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
+    if (target?.terminalId !== identity.id || target?.terminalToken !== identity.token || !activateTerminal(identity)) throw Object.assign(new Error('切换后目标未确认，请重新选择终端；草稿已保留'), { outcome: 'unknown' });
+    frameTerminalKey = `${identity.id}:${identity.token}`; terminalGeometry = null; terminalReviewing = false;
+    renderTerminalList();
+    const deadline = performance.now() + 8000;
+    while (frameEpoch === expectedFrame && owned && frameState !== 'connected' && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    if (frameEpoch === expectedFrame && owned && frameState !== 'connected') throw Object.assign(new Error('终端附加未完成，请重新选择目标'), { outcome: 'unknown' });
+  } catch (error) {
+    if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
+    if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }
+    toast(error.message, true);
+  } finally { if (generation === uiGeneration) { terminalBusy = false; renderConnection(); if (panelReady && !pollController) { stopPolling(); void poll(); } } }
+}
 function overlay(title, description, takeover = false) {
   $('overlay-title').textContent = title;
   $('overlay-description').textContent = description;
@@ -527,6 +577,7 @@ function stopFrame({ keepLogout = false } = {}) {
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false; frameResizeReady = false;
   clearTimeout(switchTimer); transportSwitching = false;
   resetDirectControl();
+  resetPanelRequests();
   frameLoaded = false;
   frameState = 'idle';
   frameTransport = '';
@@ -586,6 +637,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  rtcConfig = undefined; panelRoute = 'https';
   nodeUI?.reset();
   accessUI?.close();
   if (loggedIn) rememberDraft();
@@ -645,6 +697,7 @@ async function poll() {
   if (!loggedIn || accessExpired || pollController) return;
   const controller = new AbortController();
   pollController = controller;
+  const direct = panelReady && frameState === 'connected';
   const timeout = setTimeout(() => controller.abort(new Error('网络响应超时，请稍后重试')), 8000);
   clearTimeout(pollTimer);
   try {
@@ -662,6 +715,7 @@ async function poll() {
       mine = true;
     }
     owned = mine;
+    panelRoute = direct ? 'direct' : 'https'; cacheRTC(state.rtc);
     panelState = 'online';
     desktopReady = state.desktop.ready === true;
     controlsState = state.controls || { available: false, maintenance: false, inputBusy: false };
@@ -676,7 +730,7 @@ async function poll() {
     renderConnection();
   } catch (error) {
     if (loggedIn && pollController === controller) {
-      panelState = 'offline';
+      if (!(direct && panelReady && [409, 429].includes(error.status))) panelState = 'offline';
       renderConnection();
     }
   } finally {
@@ -708,6 +762,7 @@ async function claim(lockPassword, signal) {
 async function showWorkspace(user) {
   uiGeneration++; closeConfirmation();
   loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1;
+  rtcConfig = undefined; cacheRTC(user);
   if (user.access) permissions = { ...permissions, ...user.access };
   terminalOnly = user.mode === 'terminal';
   if (terminalOnly) displayPreferences.mode = 'terminal';
@@ -1257,6 +1312,17 @@ for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data?.type === 'codex-panel-state') {
+    const wasReady = panelReady;
+    panelReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct'; terminalSwitchReady = panelReady && event.data.terminalSwitch === true;
+    if (panelReady && !wasReady) { stopPolling(); void poll(); }
+    renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-panel-result') {
+    if (!panelRequests.has(event.data.id)) return;
+    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '直连请求失败'), { status: event.data.error?.status, outcome: event.data.error?.outcome || 'unknown' });
+    finishPanelRequest(event.data.id, error, event.data.value); return;
+  }
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {
     frameComposing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
   }
@@ -1274,7 +1340,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
-    const allowed = loggedIn && owned && !accessExpired && panelState === 'online' && frameState === 'connected' && !inputPaused() && !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !terminalReviewing && !$('terminals-dialog').open && !$('terminal-switch-dialog').open && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    const allowed = loggedIn && owned && !accessExpired && frameState === 'connected' && !inputPaused() && !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !terminalReviewing && !$('terminals-dialog').open && !$('terminal-switch-dialog').open && !clipboardController && !$('clipboard-dialog').open && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
     if (allowed) {
       transportSwitching = true;
       clearTimeout(switchTimer);
@@ -1289,6 +1355,9 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-stream-state' && typeof event.data.paused === 'boolean') {
     transportSwitching = event.data.paused; renderConnection(); return;
+  }
+  if (event.data?.type === 'codex-stream-reset' && event.data.reason === 'target-unknown') {
+    terminalSelectionState = 'error'; stopFrame(); renderConnection(); toast('终端切换结果未知，草稿已保留；请重新选择目标，不会重发输入。', true); return;
   }
   if (event.data?.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(event.data.reason)) {
     inputMessage('unknown', '部分输入结果未知，请先查看远程画面；不会自动重发提示词、Enter 或审批。');
@@ -1330,7 +1399,7 @@ window.addEventListener('message', event => {
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
   if (event.data.state === 'connected') { frameState = 'connected'; frameTransport = event.data.transport === 'direct' ? 'direct' : terminalMode() ? 'terminal' : 'relay'; sendDisplayPreferences(); }
-  else if (event.data.state === 'disconnected') { resetDirectControl(); frameState = 'reconnecting'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
+  else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); frameState = 'reconnecting'; if (panelRoute === 'direct') panelState = 'offline'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
   else if (event.data.state === 'connecting') { if (frameState !== 'reconnecting') frameState = 'connecting'; }
   else return;
   renderConnection();

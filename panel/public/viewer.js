@@ -5,6 +5,7 @@ import { createFrameHold } from './frame-hold.js';
 import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
 import { createStreamClient } from './stream-client.js';
 import { afterFirstFrame } from './first-frame.js';
+import { createPanelBridge } from '/control.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -12,7 +13,7 @@ const frame = new URLSearchParams(location.search).get('frame');
 const viewport = document.getElementById('viewport');
 const frameHold = createFrameHold(viewport), fastConnect = new URLSearchParams(location.search).get('fast') === '1', routes = routePolicy();
 const streamEnabled = new URLSearchParams(location.search).get('stream') === '1';
-let streamClient, streamPaused = false, streamCsrf = '';
+let streamClient, streamPaused = false, streamCsrf = '', rtcConfig;
 const remoteKeys = new Map();
 let lastMouse = { x: 0, y: 0, buttons: 0 }, releaseMouse = false;
 const screen = document.getElementById('screen');
@@ -47,8 +48,10 @@ async function refreshNetwork() {
 }
 function reportControl() {
   parent.postMessage({ type: 'codex-control-state', frame, ready: transportName === 'direct' && transport?.control.ready === true }, location.origin);
+  panelBridge.report();
   scheduleProbe();
 }
+const panelBridge = createPanelBridge({ frame, current: () => streamClient?.socket, connected: () => viewing && transportName === 'direct' });
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame || !Number.isSafeInteger(value.id) || value.id < 1) return;
@@ -140,7 +143,8 @@ const viewportObserver = new ResizeObserver(applyView);
 viewportObserver.observe(viewport);
 window.addEventListener('message', event => {
   const value = event.data;
-  if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-desktop-options') return;
+  if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-desktop-options' || value.frame !== frame) return;
+  if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl };
   if (!(['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
   preferences.zoom = value.zoom;
@@ -409,7 +413,7 @@ async function connect() {
   status.hidden = false; status.textContent = '正在连接独立桌面…';
   if (streamEnabled) {
     streamClient?.close();
-    streamClient = createStreamClient({ viewer, csrf: streamCsrf, idle: idleForSwitch,
+    streamClient = createStreamClient({ viewer, csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
       settled: () => !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800,
       prepare: prepareSwitch,
       paused: value => {

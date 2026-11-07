@@ -4,13 +4,14 @@ import { createTerminalHistory } from './terminal-history.js';
 import { TERMINAL_THEME } from './terminal-history-style.js';
 import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
 import { createStreamClient } from '/desktop/stream-client.js';
+import { createPanelBridge } from '/control.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
 let probed = false;
 const streamEnabled = query.get('stream') === '1';
 let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
-const terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken');
+let terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken'), rtcConfig;
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
 let blocked = true, busy = false, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
@@ -22,7 +23,10 @@ let candidateController, probeTimer, probeNetworkCheck = false, probeDelay = 150
 let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastInteraction = -Infinity, composing = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 const report = (state, extra = {}) => parent.postMessage({ type: 'codex-desktop', frame, state, transport: socket?.direct ? 'direct' : 'terminal', ...extra }, location.origin);
-const controlState = () => parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin);
+const controlState = () => { parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin); panelBridge.report(); };
+const targetIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending && pendingWrites === 0;
+const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped && socket?.direct === true,
+  canSwitch: () => ready && !blocked && !switching && !streamPaused && targetIdle() });
 const reportNetwork = () => parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, issue: directIssue }, location.origin);
 function directFailure(reason) { directIssue = reason; reportNetwork(); }
 async function refreshNetwork() {
@@ -165,7 +169,7 @@ async function connect() {
   if (stopped || socket || candidateController || !csrf || !navigator.onLine || document.hidden) return;
   message('正在连接原有终端…'); report('connecting');
   if (streamEnabled) {
-    streamClient = createStreamClient({ viewer, csrf, terminal: { terminalId, terminalToken }, idle: idleForSwitch,
+    streamClient = createStreamClient({ viewer, csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle, idle: idleForSwitch,
       settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
       prepare: prepareSwitch,
       paused: value => {
@@ -174,7 +178,7 @@ async function connect() {
         else { if (pendingOutputAck && socket) acknowledgeOutput(socket, 0); health?.wake(); size(); }
         inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
       },
-      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); void refreshNetwork(); } }, issue: directFailure });
+      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } }, issue: directFailure });
     attachSocket(streamClient.socket); streamClient.start(); return;
   }
   if (!fastConnect && !directFailed && canTryDirect()) {
@@ -203,7 +207,16 @@ function attachSocket(current) {
   const currentEpoch = ++epoch;
   ready = false; sequence = 0; historySequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
   previous?.close(); networkDetails = null; reportNetwork();
-  connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
+  connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, current.session ? 45000 : 12000);
+  current.addEventListener('target', event => {
+    if (socket !== current || currentEpoch !== epoch) return;
+    terminalId = event.data.terminalId; terminalToken = event.data.terminalToken;
+    health?.close(); health = undefined;
+    ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; pendingOutputAck = 0;
+    finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; term?.dispose(); term = undefined;
+    createTerminal(); message('正在附加所选终端…'); report('connecting'); controlState();
+    clearTimeout(connectingTimer); connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
+  });
   current.addEventListener('open', () => { if (socket === current && !current.direct && !current.session) current.send(JSON.stringify({ type: 'auth', csrf })); });
   current.addEventListener('message', event => {
     if (socket !== current || currentEpoch !== epoch) return current.close();
@@ -328,6 +341,8 @@ window.addEventListener('message', event => {
   if (event.origin !== location.origin || event.source !== parent) return;
   if (value?.type === 'codex-direct-approved' && value.frame === frame && switchApproval?.id === value.id) { switchApproval.finish(value.allowed === true); return; }
   if (value?.type === 'codex-desktop-options') {
+    if (value.frame !== frame) return;
+    if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl };
     blocked = value.blocked !== false; busy = value.busy === true;
     if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) fontSize = value.terminalFontSize;
     if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;

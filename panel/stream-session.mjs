@@ -11,9 +11,9 @@ function decode(text) {
 
 // One upstream, two authenticated paths, bounded unacknowledged output. Input
 // is never retransmitted. An uncertain input gap requires a fresh attachment.
-export function createStreamSession({ id, valid, connect, canActivate = async () => true, closed = () => {}, ttl = STREAM_TTL }) {
+export function createStreamSession({ id, valid, connect, canActivate = async () => true, performPanel, switchTarget, closed = () => {}, ttl = STREAM_TTL }) {
   const peers = new Map(), output = [];
-  let upstream, active, ended = false, epoch = 0, produced = 0, acked = 0, input = 0, assembly, assemblyTimer, expiry, activating = false, holding = false, holdTimer, handoff;
+  let upstream, active, ended = false, epoch = 0, produced = 0, acked = 0, input = 0, assembly, assemblyTimer, expiry, activating = false, holding = false, holdTimer, handoff, upstreamGeneration = 0;
   const stop = () => {
     if (ended) return; ended = true; clearTimeout(expiry); clearTimeout(assemblyTimer); clearTimeout(holdTimer); clearInterval(guard);
     upstream?.close(); upstream = undefined; assembly = undefined; output.length = 0;
@@ -37,7 +37,12 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
     clearTimeout(holdTimer); holding = false; handoff = undefined;
     if (active) flush(active, active.sent); pressure();
   }
-  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1 });
+  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0 });
+  function openUpstream() {
+    const generation = ++upstreamGeneration;
+    upstream = connect({ push: bytes => { if (generation === upstreamGeneration) push(bytes); }, close: () => { if (generation === upstreamGeneration) stop(); } });
+  }
+  const panelError = error => ({ status: error.status || 503, message: error.status ? error.message : '直连管理请求未完成', outcome: 'rejected' });
   function flush(peer, from) {
     for (const chunk of output) if (chunk.at >= from) {
       peer.sent = chunk.at + chunk.bytes.length;
@@ -105,13 +110,55 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
           acked = value.out; while (output.length && output[0].at + output[0].bytes.length <= acked) output.shift();
           send(peer, { type: 'active', epoch, input, out: value.out });
           flush(peer, value.out);
-          if (!upstream) upstream = connect({ push, close: stop });
+          if (!upstream) openUpstream();
           pressure();
         } finally { activating = false; }
         return;
       }
       // Delayed records from a retired writer cannot act on the new route.
       if (active !== peer || value.epoch !== epoch) return;
+      if (value.type === 'panel') {
+        if (peer.kind !== 'direct' || !performPanel || !Number.isSafeInteger(value.id) || value.id <= peer.panelId || value.id > 2147483647 || !['state', 'terminals'].includes(value.action)) throw new Error();
+        peer.panelId = value.id;
+        const now = Date.now(); if (now - peer.panelAt >= 1000) { peer.panelAt = now; peer.panelCount = 0; }
+        if (++peer.panelCount > 8) throw new Error();
+        if (peer.panelBusy.has(value.action)) { send(peer, { type: 'panel-result', epoch, id: value.id, ok: false, error: { status: 429, message: '此项直连查询仍在处理', outcome: 'rejected' } }); return; }
+        const requestEpoch = epoch, live = () => check() && active === peer && epoch === requestEpoch && peers.get(peer.kind) === peer;
+        peer.panelBusy.add(value.action);
+        try {
+          let result;
+          try { result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: true, value: await performPanel(value.action, live) }; }
+          catch (error) { result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: false, error: panelError(error) }; }
+          if (Buffer.byteLength(JSON.stringify(result)) > 16384) result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: false, error: { status: 413, message: '直连管理响应超过 16 KiB', outcome: 'rejected' } };
+          if (live()) send(peer, result);
+        } finally { peer.panelBusy.delete(value.action); }
+        return;
+      }
+      if (value.type === 'switch-terminal') {
+        if (peer.kind !== 'direct' || !switchTarget || !Number.isSafeInteger(value.id) || value.id <= peer.switchId || value.id > 2147483647 || !integer(value.input)) throw new Error();
+        peer.switchId = value.id;
+        const requestEpoch = epoch, live = () => check() && active === peer && epoch === requestEpoch && peers.get(peer.kind) === peer;
+        const reject = error => { if (live()) send(peer, { type: 'switch-result', epoch, id: value.id, ok: false, error: panelError(error) }); };
+        if (activating || holding || assembly || value.input !== input) { reject({ status: 409, message: '输入尚未结束，暂不切换终端' }); return; }
+        activating = true;
+        let committed = false;
+        try {
+          if (!await canActivate(true) || !live()) { reject({ status: 409, message: '终端忙碌或控制权已变化' }); return; }
+          const change = await switchTarget(value.target, live);
+          if (!live()) return;
+          if (assembly || value.input !== input) { reject({ status: 409, message: '输入状态已变化，请重新选择终端' }); return; }
+          change.commit(); committed = true;
+          // Retire callbacks before closing the viewer; the shell itself lives
+          // in tmux. Old output must never enter the newly selected terminal.
+          upstreamGeneration++; const previous = upstream; upstream = undefined; previous?.close();
+          output.length = 0; acked = produced; epoch++; peer.sent = produced;
+          for (const other of [...peers.values()]) if (other !== peer) detach(other);
+          send(peer, { type: 'switched', id: value.id, epoch, out: produced, input, target: change.target });
+          openUpstream(); pressure();
+        } catch (error) { if (committed) stop(); else reject(error); }
+        finally { activating = false; }
+        return;
+      }
       if (handoff && value.type === 'input') { send(peer, { type: 'reset', reason: 'input-unknown' }); stop(); return; }
       if (handoff && value.type !== 'ack') return;
       if (value.type === 'hold' || value.type === 'unhold') {
@@ -148,7 +195,7 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
     attach(kind, io) {
       if (!check() || !['relay', 'direct'].includes(kind)) { io.close(); return; }
       if (peers.has(kind)) detach(peers.get(kind));
-      const peer = { kind, io, sent: 0, ping: 0, pings: 0, pingAt: Date.now(), prepare: 0 }; peers.set(kind, peer);
+      const peer = { kind, io, sent: 0, ping: 0, pings: 0, pingAt: Date.now(), prepare: 0, panelId: 0, panelBusy: new Set(), panelAt: Date.now(), panelCount: 0, switchId: 0 }; peers.set(kind, peer);
       welcome(peer);
       return { receive: value => { void receive(peer, value); }, close: () => detach(peer), get active() { return active === peer; } };
     },

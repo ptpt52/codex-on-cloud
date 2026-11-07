@@ -9,7 +9,7 @@
 | portal | 固定 Wrangler/workerd，真实 SQLite Durable Object 注册、撤销与重启持久化 | 15 分钟 |
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
 | terminal | 只安装 tmux/Python 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
-| browsers | Chromium、Firefox、WebKit 三个独立环境的 63 项兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
+| browsers | Chromium、Firefox、WebKit 三个独立环境的 84 项兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
 | native | 真实隔离 Xvfb、XFCE、xterm、tmux、剪贴板、noVNC 与端口映射协议检查 | 25 分钟 |
 
 Actions 使用完整 commit SHA；Node 固定 24.22.2、Go 固定项目已有的 1.26.4，Playwright 和应用依赖继续由现有锁文件固定。检查运行在 Ubuntu 24.04，浏览器矩阵最多同时三个作业。失败浏览器产物保留七天，内容来自临时测试实例。

@@ -6,10 +6,10 @@ import { peerAddress } from './rtc-network.mjs';
 import { createMDNSLookup } from './rtc-mdns.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
-import { disconnectGrace } from './public/transport-policy.js';
+import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT } from './public/transport-policy.js';
 export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network.mjs';
 
-export const RTC_TIMEOUT = 12000;
+export const RTC_TIMEOUT = RTC_CONNECT_TIMEOUT;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
 
 export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed, performControl, connectTerminal, connectStream }) {
@@ -26,7 +26,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
   pc.createSctpTransport();
   for (const transport of pc.iceTransports) transport.connection.lookup = createMDNSLookup({ address, ipv6: !!ipv6Address });
   let channel, control, health, upstream, terminal, ended = false, closePromise, activated = false, videoReady = false, openVideo;
-  let timer = setTimeout(() => handle.destroy(), RTC_TIMEOUT + 2000).unref();
+  let timer = setTimeout(() => handle.destroy(), RTC_SIGNAL_TIMEOUT + RTC_TIMEOUT + 2000).unref();
   const handle = {
     activate() {
       if (ended || !valid()) throw new Error('连接控制权已变化');

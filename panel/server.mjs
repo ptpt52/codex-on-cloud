@@ -78,6 +78,7 @@ export async function createPanel(config) {
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
   const fileTransfers = createFileTransfers();
   const nodeDirectory = createNodeDirectoryReader(config), portalConnection = createPortalConnection(config);
+  const rtcConfig = () => ({ webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -158,12 +159,27 @@ export async function createPanel(config) {
     closeSockets(state => state.streamId !== id);
     const state = { id, streamId: id, mode, target, expected, token, session: expected.session, socket: null };
     const valid = () => streamState === state && owner === expected && !!auth.get(token) && !closing && !maintenancePending;
+    const request = { headers: { cookie: 'coc_session=' + token, 'x-viewer-id': expected.viewer } };
     state.stream = createStreamSession({ id, valid,
       canActivate: async planned => {
         const controls = await controlStatus();
         return valid() && controls.available && !controls.maintenance && (!planned || (!controls.inputBusy && !controls.clipboardBusy && !controls.viewportBusy && state.stream.idle));
       },
-      connect: callbacks => mode === 'terminal' ? terminalUpstream(terminalOptions(target, valid), callbacks) : vncUpstream(config.vncSocket, callbacks),
+      performPanel: async (action, live) => {
+        if (!valid() || !live()) throw new HttpError(409, '控制权已变化');
+        const result = action === 'state' ? await panelSnapshot(request, live) : await managerRequest(config, '/terminals', undefined, 3000);
+        if (!valid() || !live()) throw new HttpError(409, '控制权已变化');
+        return result;
+      },
+      ...(mode !== 'terminal' ? {} : { switchTarget: async (body, live) => {
+        let next;
+        try { next = terminalTarget(body); if (!next.terminalId) throw Error(); } catch { throw new HttpError(400, '终端目标无效'); }
+        const catalog = await managerRequest(config, '/terminals', undefined, 3000);
+        if (!valid() || !live()) throw new HttpError(409, '控制权已变化');
+        if (!catalog.terminals.some(item => item.id === next.terminalId && item.token === next.terminalToken && item.supported)) throw new HttpError(409, '终端身份已变化，请刷新列表');
+        return { target: next, commit() { if (!valid() || !live()) throw new HttpError(409, '控制权已变化'); state.target = next; } };
+      } }),
+      connect: callbacks => mode === 'terminal' ? terminalUpstream(terminalOptions(state.target, valid), callbacks) : vncUpstream(config.vncSocket, callbacks),
       closed: () => { if (streamState === state) streamState = undefined; },
     });
     streamState = state;
@@ -189,6 +205,14 @@ export async function createPanel(config) {
     })();
     healthCache = { at: Date.now(), promise };
     return promise;
+  }
+  async function panelSnapshot(req, live = () => true) {
+    const session = requireSession(req);
+    const [desktop, controls] = await Promise.all([desktopHealth(), controlStatus()]);
+    requireSession(req); if (!live()) throw new HttpError(409, '控制权已变化');
+    const permission = accessState(req, session);
+    const visibleControls = desktopAccess(req, session) ? controls : { available: controls.available, maintenance: controls.maintenance, inputBusy: false, clipboardBusy: false, viewportBusy: false };
+    return { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full, rtc: rtcConfig() };
   }
 
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
@@ -227,7 +251,7 @@ export async function createPanel(config) {
       if (previous && owner?.session === previous.hash) lockDesktop();
       const { token, session } = await auth.create(identity);
       if (!auth.get(token)) throw new HttpError(401, '登录授权已改变，请重新登录');
-      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0 }, { 'set-cookie': sessionCookie(token, config) });
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, ...rtcConfig() }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
@@ -261,12 +285,7 @@ export async function createPanel(config) {
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', config, true) });
     }
     if (path === '/api/state' && req.method === 'GET') {
-      const session = requireSession(req);
-      const [desktop, controls] = await Promise.all([desktopHealth(), controlStatus()]);
-      requireSession(req);
-      const permission = accessState(req, session);
-      const visibleControls = desktopAccess(req, session) ? controls : { available: controls.available, maintenance: controls.maintenance, inputBusy: false, clipboardBusy: false, viewportBusy: false };
-      return reply(res, 200, { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full });
+      return reply(res, 200, await panelSnapshot(req));
     }
     if (path === '/api/diagnostics' && req.method === 'GET') {
       requireSession(req);
@@ -639,7 +658,7 @@ export async function createPanel(config) {
         ws.once('message', (bytes, binary) => {
           clearTimeout(timer); let first;
           try { if (binary || bytes.length > 1024) throw new Error(); first = JSON.parse(bytes.toString()); } catch { return ws.terminate(); }
-          if (!valid() || first?.type !== 'auth' || !equal(first.csrf, session.csrf)) return ws.terminate();
+          if (!valid() || streamState?.stream !== stream || JSON.stringify(streamState.target) !== JSON.stringify(target) || first?.type !== 'auth' || !equal(first.csrf, session.csrf)) return ws.terminate();
           state.relayPending = false;
           entry = stream.attach('relay', { send: value => ws.send(JSON.stringify(value)), buffered: () => ws.bufferedAmount, close: () => ws.terminate() });
           ws.on('message', (data, bin) => {

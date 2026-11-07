@@ -1,14 +1,14 @@
 import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute } from './rtc-stats.js';
-import { disconnectGrace } from './transport-policy.js';
+import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT } from './transport-policy.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId } = {}) {
+export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, bootstrap } = {}) {
   if (signal?.aborted) return null;
   if (!canTryDirect()) { failed('unsupported'); return null; }
   const controller = new AbortController();
@@ -16,17 +16,25 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
   signal?.addEventListener('abort', cancel, { once: true });
   let timedOut = false, failureReported = false, stage = 'signaling';
   const failure = reason => { if (!failureReported && !signal?.aborted) { failureReported = true; failed(reason); } };
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    failure(stage === 'signaling' ? 'signaling-timeout' : stage === 'connecting' ?
-      ['connected', 'completed'].includes(peer?.iceConnectionState) ? 'channel-timeout' : 'ice-timeout' : 'timeout');
-    controller.abort();
-  }, 12000);
+  let timeout;
+  const deadline = (nextStage, ms) => {
+    stage = nextStage; clearTimeout(timeout); timeout = setTimeout(() => {
+      timedOut = true;
+      failure(stage === 'signaling' ? 'signaling-timeout' : stage === 'connecting' ?
+        ['connected', 'completed'].includes(peer?.iceConnectionState) ? 'channel-timeout' : 'ice-timeout' : stage === 'gathering' ? 'gathering-timeout' : 'timeout');
+      controller.abort();
+    }, ms);
+  };
+  deadline('signaling', RTC_SIGNAL_TIMEOUT);
   let peer;
   try {
-    const response = await fetch('/api/me', { signal: controller.signal });
-    if (!response.ok) throw new Error('无法验证连接');
-    const { csrf, webrtc, rtcStunUrl } = await response.json();
+    let settings = bootstrap?.();
+    if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256) {
+      const response = await fetch('/api/me', { signal: controller.signal });
+      if (!response.ok) throw new Error('无法验证连接');
+      settings = await response.json();
+    }
+    const { csrf, webrtc, rtcStunUrl } = settings;
     if (controller.signal.aborted) throw new Error('连接已取消');
     if (!webrtc) { failure('disabled'); enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
     peer = new RTCPeerConnection({ iceServers: typeof rtcStunUrl === 'string' && rtcStunUrl.length <= 256 && rtcStunUrl.startsWith('stun:') ? [{ urls: rtcStunUrl }] : [] });
@@ -63,17 +71,17 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     return { get channel() { return channel; }, video, viewerReady, control, health, close,
       async stats() { return ended ? null : selectedRoute(await peer.getStats()); }, async start() {
       try {
-        stage = 'gathering';
+        deadline('gathering', 3000);
         await peer.setLocalDescription(await peer.createOffer());
         await gatherCandidates(peer, controller.signal);
-        stage = 'signaling';
+        deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const result = await fetch(terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
           body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId } : {}) }),
         });
         if (!result.ok) throw new Error('直连暂不可用');
         const answer = await result.json();
-        stage = 'connecting';
+        deadline('connecting', RTC_CONNECT_TIMEOUT);
         await peer.setRemoteDescription(answer);
         await ready;
         if (!probe) await control.request('activate', {});

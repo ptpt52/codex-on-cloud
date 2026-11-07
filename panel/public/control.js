@@ -71,3 +71,29 @@ export function createControlClient(channel, changed) {
     },
   };
 }
+
+// Three fixed operations, one pending request per operation, no replay queue.
+// The parent verifies source + frame generation again before using any result.
+export function createPanelBridge({ frame, current, connected, canSwitch = () => false }) {
+  const pending = new Map();
+  const report = () => parent.postMessage({ type: 'codex-panel-state', frame, ready: connected() && current()?.panelReady === true,
+    terminalSwitch: connected() && current()?.terminalSwitch === true }, location.origin);
+  window.addEventListener('message', event => {
+    const value = event.data;
+    if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame || !Number.isSafeInteger(value.id) || value.id < 1) return;
+    if (value.type === 'codex-panel-cancel') { pending.get(value.id)?.controller.abort(); return; }
+    if (value.type !== 'codex-panel-request') return;
+    const source = current(), action = value.action;
+    const reject = () => parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: '直连操作未就绪或仍在处理，本次未发送', status: 409, outcome: 'rejected' } }, location.origin);
+    if (!['state', 'terminals', 'switch-terminal'].includes(action) || pending.has(value.id) || !connected() || !source?.panelReady || [...pending.values()].some(p => p.action === action) || action === 'switch-terminal' && !canSwitch()) { reject(); return; }
+    const entry = { action, controller: new AbortController() }; pending.set(value.id, entry);
+    void source.panelRequest(action, value.body, entry.controller.signal).then(result => {
+      if (entry.controller.signal.aborted || source !== current()) return;
+      parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: true, value: result }, location.origin);
+    }, error => {
+      if (!entry.controller.signal.aborted) parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: error.message, status: error.status, outcome: error.outcome || 'unknown' } }, location.origin);
+    }).finally(() => pending.delete(value.id));
+  });
+  window.addEventListener('pagehide', () => { for (const entry of pending.values()) entry.controller.abort(); pending.clear(); });
+  return { report };
+}

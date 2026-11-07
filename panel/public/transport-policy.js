@@ -1,6 +1,8 @@
 export const DISCONNECT_GRACE = 1500;
 export const STABLE_ROUTE = 1500;
 export const ROUTE_COOLDOWN = 30000;
+export const RTC_SIGNAL_TIMEOUT = 12000;
+export const RTC_CONNECT_TIMEOUT = 12000;
 
 // One bounded deadline, shared by browser and native WebRTC adapters.
 export function disconnectGrace(failed, { delay = DISCONNECT_GRACE, schedule = setTimeout, cancel = clearTimeout } = {}) {
