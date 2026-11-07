@@ -297,6 +297,8 @@ cloudflared 的诊断接口固定监听 `127.0.0.1:36903`，可用 `TUNNEL_METRI
 
 可将 `codex.x-wrt.dev` 部署为独立 Cloudflare Workers 门户，home、work 和后续节点分别使用自己的域名与 Tunnel。门户动态管理节点、生成长期复用授权码；在节点的“工具 → 门户接入”粘贴授权码即可注册。删除授权码只禁止新注册，已接入节点保留身份。节点不依赖门户在线，切换保留任务、登录和端口映射。
 
+当前入口：[统一门户](https://codex.x-wrt.dev)、[home 工作台](https://home-codex.x-wrt.dev)。work 保留待部署入口。门户密码保存在部署主机的 `secrets/portal_password`；home 使用原工作台账号和密码。
+
 门户目录保存在 SQLite Durable Object，各节点的桌面、文件和映射仍留在各自机器。初始化、发布、界面接入、资源边界与验证说明见[统一门户](docs/portal.md)。
 
 ## Cloudflare 外网访问
@@ -312,7 +314,7 @@ npm run native:cloudflared
 它下载官方 `2026.10.0` 程序并校验 SHA-256，保存到 `data/host-tools/usr/bin`。有 API Token 时可直接创建专用 Tunnel 和域名：
 
 ```bash
-npm run native:publish -- --domain remote-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
+npm run native:publish -- --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
 ```
 
 脚本需要账户 Tunnel 编辑、目标区域 Zone 读取和 DNS 编辑权限，不覆盖无关记录。也可手动配置 Tunnel、HTTPS 域名并把 Tunnel 运行 token 写入 `secrets/tunnel_token`。随后启动：

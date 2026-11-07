@@ -1,6 +1,6 @@
 # Cloudflare 原生部署
 
-先确保 `http://localhost:36080` 的真实桌面可用。此方案直接运行本机 cloudflared，不使用 Docker、Workers 或自定义中继协议。
+先确保 `http://localhost:36080` 的真实桌面可用。节点直接运行本机 cloudflared，不使用 Docker 或自定义中继协议；可选的[统一门户](portal.md)单独部署为 Worker，节点流量仍通过自己的 Tunnel。
 
 ## 1. 安装 cloudflared
 
@@ -16,7 +16,7 @@ API Token 与 Tunnel 运行 token 是不同的凭据。自动部署使用 API To
 
 ```bash
 npm run native:publish -- \
-  --domain remote-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
+  --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
 systemctl --user restart codex-cloud-panel.service
 npm run native:tunnel
 ```
@@ -88,8 +88,8 @@ journalctl --user -u codex-cloud-tunnel -u codex-cloud-panel -u codex-cloud-desk
 进程显示 active 不代表 Tunnel 已连接。检查近期日志中的 `Registered tunnel connection`，并通过公网健康接口验证实际链路：
 
 ```bash
-curl -4 -fsS --max-time 15 https://remote-codex.x-wrt.dev/healthz
-curl -6 -fsS --max-time 15 https://remote-codex.x-wrt.dev/healthz
+curl -4 -fsS --max-time 15 https://home-codex.x-wrt.dev/healthz
+curl -6 -fsS --max-time 15 https://home-codex.x-wrt.dev/healthz
 ```
 
 本次故障中，本机面板正常，但系统 DNS `127.0.0.53` 查询 `_v2-origintunneld._tcp.argotunnel.com` 超时或失败，Tunnel 无法发现接入节点。IPv4 和 IPv6 浏览器都能到达 Cloudflare，但收到 1033。直接使用公共 DNS 可以正确解析。

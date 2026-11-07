@@ -11,6 +11,8 @@
 | 后续 work | `https://work-codex.x-wrt.dev` |
 | 后续其他节点 | 使用各自独立域名，例如 `xxx-codex.x-wrt.dev` |
 
+当前门户与 home 节点已经上线；work 尚未部署，目录入口保持停用。home 继续使用原工作台账号、密码和屏幕锁，门户使用独立的 `secrets/portal_password`，两者分别登录。原节点入口已改为 home 域名，不保留旧域名兼容。
+
 访问节点不要求先经过门户。未接入、门户离线、授权码被删除，都不结束节点自身的任务或端口映射。各节点继续使用自己的账号、登录 Cookie 和屏幕锁；门户登录不代替节点登录。
 
 ## 初始化与发布门户
@@ -26,6 +28,12 @@ npm run build:portal
 ```
 
 `portal:setup` 创建高强度随机门户密码到 `secrets/portal_password`，权限 0600，不打印密码。再次执行保留密码和初始配置。请由服务器主机用户读取该文件以登录门户，门户只有一位管理员。
+
+在部署主机的项目目录中查看门户密码：
+
+```sh
+cat secrets/portal_password
+```
 
 初始目录位于 `data/portal-nodes.json`：home 启用，work 尚未部署，入口停用。通用示例见 [nodes.example.json](../portal/nodes.example.json)。初始目录只在新 Durable Object 第一次成功写入时导入；已经发布的门户以动态存储为准，重新构建不会覆盖它。
 
@@ -45,6 +53,15 @@ npx --yes wrangler@4.158.0 secret bulk data/portal-build/worker-secrets.json \
 ```
 
 多账户时可设置 `CLOUDFLARE_ACCOUNT_ID`。也可采用 Wrangler 支持的 API Token 认证；不把 API Token 写入源码或生成配置。部署会绑定门户的自定义域名，请先确认 `codex.x-wrt.dev` 没有其他用途。
+
+首次使用 Workers 的账户可能在上传时返回错误 `10063`，要求先创建账户级 `workers.dev` 子域名；这与门户是否启用该访问入口是两件事。可以在 Cloudflare 控制台打开 Workers & Pages 完成初始化，也可以使用本项目的命令：
+
+```sh
+npm run portal:account -- --account-id YOUR_ACCOUNT_ID \
+  --api-token-file /path/to/cf_token --subdomain your-workers-name
+```
+
+已有子域名时只查询并保留，不会改名；尚未初始化时必须显式提供 `--subdomain`，名称需在 Cloudflare 可用。命令只读取最多 512 字节、当前用户拥有且权限为 0600 的令牌文件，请求与响应均有超时和大小限制，不打印令牌、不自动重试写入。它不发布 Worker，随后仍需执行上面的发布步骤。门户配置继续保持 `workers_dev: false` 和 `preview_urls: false`。
 
 API Token 需要覆盖目标账户的 **Workers Scripts 编辑**权限，以及目标区域的 **Workers Routes 编辑**权限。使用新的 Workers 权限界面时，应授予包含新 Worker 创建权限的相应角色；只授权已有 Worker 不能创建本门户。沿用节点发布令牌时，还需保留原来的 DNS、Tunnel 权限。参见 [Worker 上传权限](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/)和 [Workers 域名权限](https://developers.cloudflare.com/workers/authorization/workers/)。
 
@@ -76,7 +93,7 @@ API Token 需要覆盖目标账户的 **Workers Scripts 编辑**权限，以及�
 
 新节点先按原流程独立部署，确认 `PUBLIC_ORIGIN` 为自己的 HTTPS 域名。随后在节点的“工具 → 门户接入”中填写名称、粘贴授权码，确认显示的目标门户地址，再点“保存并注册”。
 
-域名、模式和节点私有身份由节点后台确定。注册成功后自动启用入口；预先登记的同域名 home/work 条目会被接入，不会重复新增。门户手动停用已接入节点后，普通重新保存不会把它自动启用。
+域名、模式和节点私有身份由节点后台确定。注册成功后自动启用入口；预先登记的同域名 home/work 条目会被接入，不会重复新增。门户填写的节点说明在注册和重新保存后保留；门户手动停用已接入节点后，普通重新保存不会把它自动启用。
 
 节点获得自己的目录访问身份，共享授权码不会被存入节点配置。以后留空授权码可以保存原有接入。响应丢失时不会自动发送，手动重试使用已保存的节点身份，避免创建重复节点。门户允许同一节点凭自己的身份更新自己，不允许仅凭共享授权码覆盖另一节点已经绑定的身份。
 
@@ -88,6 +105,10 @@ API Token 需要覆盖目标账户的 **Workers Scripts 编辑**权限，以及�
 | `data/panel/portal-pending.json` | 在途接入身份，最多 2 KiB，0600，用于丢失响应后的手动重试 |
 
 注册失败时保留原有有效门户配置。门户配置不可用只影响目录功能，不阻止面板启动、登录、文件传输或桌面/终端工作。
+
+修改节点域名后，长时间运行的桌面终端可能仍继承旧 `PUBLIC_ORIGIN`。请从新域名的网页保存接入，先确认界面显示的“当前节点”正确。宿主命令需要读取最新 `.env` 时，可先移除旧终端的同名覆盖，例如 `env -u PUBLIC_ORIGIN -u ALLOWED_HOSTS npm run native:doctor`；不要用旧环境中的地址注册节点。
+
+本次 home 改名另存了两个固定私有备份：`data/.env.before-home-rename`（最多 64 KiB）和 `data/cloudflare-deployment.before-home-rename.json`（最多 4 KiB），权限 0600，已有备份不会被覆盖。它们只用于人工核对，不自动恢复域名或服务。
 
 ## 节点切换
 
