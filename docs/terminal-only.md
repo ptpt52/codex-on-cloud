@@ -14,6 +14,8 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 
 系统依赖已齐时可省略 `--install-deps`。`--enable-linger` 用于无人登录时的开机自启，需要 sudo；系统安装步骤也需要 sudo，其余操作以普通用户执行。只检查终端模式的依赖可用 `npm run deploy -- --mode terminal --check`，不会转换已有配置、安装软件或改变服务。
 
+WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `hostAddressLoopback=true` 并备份；`--check` 只检测，缺少时提示运行正常部署。配置需保存任务后重启 WSL 生效，部署不会终止 WSL。Windows 重启后先启动对应发行版，再由用户服务恢复终端后台；完整说明及本次问题复盘见 [WSL 部署与直连排障](wsl.md)。
+
 本机入口为 `http://localhost:36080`，登录信息只保存到 `secrets/credentials.txt`，不打印密码。面板和内部文件助手仍只监听回环。远程访问继续使用 SSH 本地端口转发，或原有 `--domain / --zone / --api-token-file` Cloudflare 部署参数。端口映射助手构建仍为可选的 `--build-forward`，只有构建助手才需要 Go。
 
 安装器不安装、登录或修改 Codex，不改写用户 Codex 配置。首次只打开 shell；用户自行运行 Codex，重连不提交提示、输入或审批。

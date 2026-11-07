@@ -39,6 +39,8 @@ WEBRTC_STUN_URL=stun:stun.cloudflare.com:3478
 
 多网卡、VPN 或容器网桥环境可以明确指定 LAN 地址；必须是本机已分配的 RFC 1918 私有 IPv4 或回环地址。不指定时，每次协商重新选择当前接口，以适应 DHCP 地址变化。Linux 优先从有效默认路由中按 metric 选择有私有 IPv4 的网卡；默认路由不可读或无可用接口时，回退到网卡顺序，最后使用回环。明确指定后则需手动更新配置并重启面板，建议在路由器预留地址。主机本身的浏览器也可连接该 LAN 地址。
 
+Windows 本机浏览器连接 WSL 镜像网络是一个例外：通过宿主机局域网 IPv4 访问 WSL 需要 `.wslconfig` 的 `[experimental] hostAddressLoopback=true`，否则可能回环 UDP 正常、局域网 IP 的 UDP 超时。部署会识别并自动补齐该项、保留备份，配置需重启 WSL 后生效；只读检查和排障步骤见 [WSL 部署说明](wsl.md)。
+
 WebRTC 仅在协商时绑定所选 IPv4/IPv6 地址的 **UDP 40000–40015**，每个 peer 至多两个 host socket，不监听公共 TCP VNC 端口。公网 IPv6 需要主机和路由器允许相应 UDP 入站，或允许 ICE 双向出站探测建立回复状态；本项目不自动修改防火墙。IPv6 不需要 NAT 端口映射，但仍可能被运营商或防火墙阻止。浏览器 mDNS 解析可能使用 UDP 5353，STUN 发现需要访问所配置的 UDP 服务。面板和 helper 仍仅监听回环，VNC 仍为私有 Unix socket，Tunnel 的 IPv6 优先策略保持原状。
 
 IPv6 默认优先选择与 LAN IPv4 同一网卡上的一个公网地址，没有可用地址时保留 IPv4；未固定地址时每次协商重新选择。`WEBRTC_IPV6=0` 关闭公网 IPv6。普通公网 IPv6 限于 2000::/3，并排除文档、6to4、2001::/23 等特殊范围；ULA、链路本地、scope ID、映射地址和组播不作为公网候选。固定地址必须已分配给本机，地址变化后需更新配置并重启面板。

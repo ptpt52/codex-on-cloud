@@ -13,9 +13,10 @@ import { serviceUnits } from '../native/service-units.mjs';
 async function harness(t, { active = [], installed = true, failure = '', bus = 'degraded\n', healthError } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'codex deploy 中文 '));
   t.after(() => rm(root,{recursive:true,force:true}));
-  const calls = [], logs = []; let healthy = false;
+  const calls = [], logs = [], wslCalls = []; let healthy = false;
   const config = 'PUBLIC_ORIGIN=http://localhost:36080\nPANEL_PORT=36080\n';
   const context = {root, platform:'linux',uid:1000,username:'test-user',nodeVersion:'24.0.0',log:text=>logs.push(text),
+    wslNetwork:async options=>{wslCalls.push(options);return{};},
     health:async()=>{if(healthError)throw new Error(healthError);healthy=true;},
     run:async(command,args,flags)=>{
       calls.push({command,args:[...args],capture:flags.capture});assert.ok(calls.length<=40);
@@ -34,7 +35,7 @@ async function harness(t, { active = [], installed = true, failure = '', bus = '
       }
       return{status:0,stdout:''};
     }};
-  return {root,calls,logs,context,get healthy(){return healthy;}};
+  return {root,calls,logs,wslCalls,context,get healthy(){return healthy;}};
 }
 
 test('deploy options validate public configuration before work and do not accept unknown flags',()=>{
@@ -85,6 +86,36 @@ test('check-only tolerates a degraded user manager and performs no installs, set
 
 test('missing user bus stops before initialization rather than reporting a working deployment',async t=>{
   const h=await harness(t,{bus:''});await assert.rejects(deploy({},h.context),/systemd 用户服务/);assert.equal(h.calls.length,1);
+});
+
+test('deployment configures WSL automatically, while check-only only diagnoses and reports a missing setting', async t => {
+  const h = await harness(t);
+  await deploy({ mode: 'terminal' }, { ...h.context, wslNetwork: async options => {
+    assert.equal(options.check, false);
+    assert.ok(h.calls.some(call => call.args[0] === 'scripts/native.mjs' && call.args[1] === 'install'));
+    assert.ok(h.calls.every(call => !call.args.includes('start')));
+    return { restartRequired: true };
+  } });
+  assert.ok(h.logs.some(line => line.includes('WSL 网络配置待生效')));
+  assert.ok(h.calls.every(call => !call.args.includes('--shutdown') && !call.args.includes('stop') && !call.args.includes('restart')));
+  const check = await harness(t);
+  await assert.rejects(deploy({ check: true }, { ...check.context, wslNetwork: async options => {
+    assert.equal(options.check, true); return { needsConfiguration: true };
+  } }), /直连配置待修复/);
+  assert.ok(check.calls.every(call => call.capture || call.args[1] === 'doctor'));
+  assert.ok(check.logs.every(line => !line.includes('环境检查通过')));
+  await assert.rejects(readFile(join(check.root, '.env')), { code: 'ENOENT' });
+});
+
+test('explicit opt-out and disabled WebRTC preserve WSL settings, and failed preflight never configures them', async t => {
+  const skip = await harness(t);
+  await deploy(options(['--mode', 'terminal', '--skip-wsl-network']), skip.context);
+  assert.equal(skip.wslCalls.length, 0);
+  const disabled = await harness(t);
+  await writeFile(join(disabled.root, '.env'), 'DEPLOY_MODE=terminal\nWEBRTC_ENABLED=0\n');
+  await deploy({}, disabled.context); assert.equal(disabled.wslCalls.length, 0);
+  const busy = await harness(t, { active: ['codex-cloud-panel.service'], installed: false });
+  await assert.rejects(deploy({}, busy.context)); assert.equal(busy.wslCalls.length, 0);
 });
 
 test('first deployment installs locked dependencies and initializes, enables and starts services before checking readiness',async t=>{

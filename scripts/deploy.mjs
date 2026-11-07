@@ -1,22 +1,28 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { parseArgs, parseEnv } from 'node:util';
+import * as util from 'node:util';
 import { open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { userInfo } from 'node:os';
 import http from 'node:http';
 import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
+import { configureWSLNetwork } from './wsl-network.mjs';
+
+// Keep the version guard reachable even when older Node lacks util.parseEnv.
+const { parseArgs, parseEnv } = util;
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const packages = ['xvfb', 'x11vnc', 'xfwm4', 'xfdesktop4', 'xfce4-panel', 'xfce4-settings', 'xterm', 'tmux', 'xclip', 'xdotool', 'xauth', 'x11-utils', 'dbus', 'fontconfig', 'fonts-noto-cjk', 'python3'];
 export const help = `用法：npm run deploy -- [选项]
 需要普通 Linux 用户、systemd 用户服务、Node.js 22+ 和已安装的 Codex CLI。
 默认自动执行 npm ci、初始化、依赖检查、安装并启动用户服务。
+WSL 镜像网络自动配置 hostAddressLoopback 并备份；重启 WSL 需自行保存任务后执行。
   --check                  只检查，不安装、不修改配置或服务
   --mode desktop|terminal  新部署选择桌面或纯网页终端；默认 desktop，已有模式保持
   --install-deps           使用 sudo apt-get 按模式安装系统依赖（Ubuntu/Debian）
   --enable-linger          使用 sudo loginctl 启用无人登录时的开机自启
+  --skip-wsl-network       保留 Windows WSL 网络配置，不执行自动检查或修改
   --origin URL             新部署的访问根地址；已有 .env 保持不变
   --domain HOST --zone ZONE --api-token-file FILE
                            配置 Cloudflare 公网入口；会重启已运行的面板
@@ -27,7 +33,7 @@ export const help = `用法：npm run deploy -- [选项]
 export function options(args) {
   const { values } = parseArgs({ args, options: {
     check: { type:'boolean' }, 'install-deps': { type:'boolean' }, 'enable-linger': { type:'boolean' },
-    'build-forward': { type:'boolean' }, origin: { type:'string' }, domain: { type:'string' },
+    'build-forward': { type:'boolean' }, 'skip-wsl-network': { type:'boolean' }, origin: { type:'string' }, domain: { type:'string' },
     zone: { type:'string' }, 'api-token-file': { type:'string' }, help: { type:'boolean' }, mode: { type:'string' },
   } });
   if (values.help) return values;
@@ -91,12 +97,13 @@ export async function checkHealth(config) {
 }
 
 export async function deploy(values, { root = projectRoot, run = execute, health = checkHealth, log = console.log,
-  platform = process.platform, uid = process.getuid?.(), username = userInfo().username, nodeVersion = process.versions.node } = {}) {
+  platform = process.platform, uid = process.getuid?.(), username = userInfo().username, nodeVersion = process.versions.node,
+  wslNetwork = configureWSLNetwork } = {}) {
   if (platform !== 'linux') throw new Error('服务端需要 Linux 和 systemd；Mac/Windows 可运行端口映射助手');
   if (uid === 0) throw new Error('请以普通用户运行安装命令；只有显式选择的系统依赖和开机自启步骤使用 sudo');
   if (Number(nodeVersion.split('.')[0]) < 22) throw new Error('需要 Node.js 22+；安装器不会替换现有 Node 或 Codex');
-  let existingMode;
-  try { existingMode = deploymentMode(parseEnv(await boundedFile(join(root, '.env'), 65536)).DEPLOY_MODE); }
+  let existingMode, existingEnv = {};
+  try { existingEnv = parseEnv(await boundedFile(join(root, '.env'), 65536)); existingMode = deploymentMode(existingEnv.DEPLOY_MODE); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const mode = deploymentMode(values.mode || existingMode);
   if (!values.check && existingMode && values.mode && existingMode !== mode) throw Error('已有部署模式不同，不会自动切换或停止任务；请在新部署中选择模式');
@@ -104,6 +111,8 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   const call = (command, args, capture = false) => run(command, args, {cwd:root, capture});
   const step = async (label, command, args) => { log(label); if ((await call(command, args)).status !== 0) throw new Error(label + '失败，请处理上述错误后重新运行'); };
   const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command, ...(values.check && values.mode ? ['--mode', mode] : [])]);
+  const configureWSL = check => !values['skip-wsl-network'] && (process.env.WEBRTC_ENABLED ?? existingEnv.WEBRTC_ENABLED) !== '0'
+    ? wslNetwork({ check, run: (command, args) => call(command, args, true), log }) : undefined;
   const bus = await call('systemctl', ['--user', 'is-system-running'], true);
   if (!/^(running|degraded|starting|initializing)\s*$/.test(bus.stdout || '')) throw new Error('无法连接 systemd 用户服务，请通过普通用户登录主机后重试');
   if (values['api-token-file']) {
@@ -111,7 +120,9 @@ export async function deploy(values, { root = projectRoot, run = execute, health
     if (!token || /[\s\0]/.test(token)) throw new Error('Cloudflare API token 文件需为单行 token');
   }
   if (values.check) {
+    const wsl = await configureWSL(true);
     await native('doctor');
+    if (wsl?.needsConfiguration) throw Error('WSL 镜像网络直连配置待修复；运行 npm run deploy 自动配置。本次检查未修改文件或服务。');
     log('环境检查通过。未安装依赖、修改配置、启动或重启服务。'); return;
   }
   const oppositeHost = mode === 'terminal' ? 'codex-cloud-desktop.service' : 'codex-cloud-terminal.service';
@@ -129,6 +140,7 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   const origin = values.origin || (values.domain ? 'https://' + values.domain.toLowerCase() : undefined);
   await step('初始化（保留已有密码与配置）', process.execPath, ['scripts/setup.mjs', ...(values.mode ? ['--mode', mode] : []), ...(origin ? ['--origin', origin] : [])]);
   await native('install');
+  const wsl = await configureWSL(false);
   if (values['enable-linger']) await step('启用开机自启（无需用户登录）', 'sudo', ['loginctl', 'enable-linger', username]);
   if (values.domain) {
     await step('安装固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);
@@ -151,6 +163,7 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   await health();
   log(`部署完成，面板和${mode === 'terminal' ? '终端后台' : '桌面'}已就绪。入口：` + (env.PUBLIC_ORIGIN || 'http://localhost:36080'));
   log('登录信息：' + join(root, 'secrets', 'credentials.txt') + '（密码不打印到日志）');
+  if (wsl?.restartRequired) log('WSL 网络配置待生效：保存任务后重启 WSL，再刷新网页验证直连；wsl --shutdown 会结束所有 WSL 任务。');
   if (!tunnel) log('本机访问使用 localhost；远程服务器可通过 SSH 本地端口转发访问，或按 README 配置 Cloudflare 公网入口。');
   if (!values['enable-linger']) log('如需开机且无需登录时运行，可加 --enable-linger，或执行 sudo loginctl enable-linger ' + username);
 }
