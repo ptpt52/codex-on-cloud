@@ -132,3 +132,18 @@ systemctl --user restart codex-cloud-panel.service codex-cloud-tunnel.service
 ```
 
 来源：[cloudflared 官方下载](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)、[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/)、[Access 自托管应用](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)。
+
+## 修改本项目节点域名
+
+已有部署修改为 `home-codex.x-wrt.dev` 时，显式使用 `--rename`，沿用本项目记录的 Tunnel，不创建共享副本：
+
+```sh
+npm run native:publish -- --domain home-codex.x-wrt.dev --zone x-wrt.dev \
+  --api-token-file /path/to/cf_token --rename
+systemctl --user restart codex-cloud-panel.service
+npm run native:tunnel
+```
+
+只允许在原账户和区域内修改；目标域名有无关 DNS 记录、Tunnel 有无关域名路由时拒绝覆盖。成功后仅清理本项目状态记录且仍匹配原 Tunnel 的旧 CNAME，不保留旧入口兼容。中途失败可用同一目标域名重复执行以完成操作，不能在待完成状态再改第三个域名。
+
+修改后需要通过新域名登录，助手使用新地址重新配对。面板重启会结束内存中的映射，桌面和 Codex 任务继续。完成域名设置后，可在“工具 → 门户接入”注册到[统一门户](portal.md)。

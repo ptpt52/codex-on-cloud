@@ -4,9 +4,10 @@ import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { root, settings } from '../native/config.mjs';
+import { cloudflareDomainPlan, assertManagedIngress, renamedDNSRecord } from '../native/cloudflare-domain.mjs';
 
 const { values } = parseArgs({ options: {
-  domain: { type: 'string' }, zone: { type: 'string' }, 'api-token-file': { type: 'string' },
+  domain: { type: 'string' }, zone: { type: 'string' }, 'api-token-file': { type: 'string' }, rename: { type: 'boolean' },
 } });
 const domain = values.domain?.toLowerCase();
 const zoneName = values.zone?.toLowerCase();
@@ -41,7 +42,7 @@ if (!zone) throw new Error('当前 API token 看不到指定区域');
 const account = zone.account.id;
 const base = `/accounts/${account}/cfd_tunnel`;
 const dnsBase = `/zones/${zone.id}/dns_records`;
-if (state && (state.hostname !== domain || state.accountId !== account || state.zoneId !== zone.id)) throw new Error('已有另一部署的状态，不会覆盖；请先检查 data/cloudflare-deployment.json');
+state = cloudflareDomainPlan(state, { domain, accountId: account, zoneId: zone.id, rename: values.rename });
 const records = await api(dnsBase + '?name=' + encodeURIComponent(domain));
 if (records.length && (!state?.tunnelId || records.some(record => record.type !== 'CNAME' || record.content !== `${state.tunnelId}.cfargotunnel.com`))) {
   throw new Error('此域名已有其他 DNS 记录，不会覆盖');
@@ -55,11 +56,15 @@ if (!state) {
   await save();
   console.log('已创建本项目专用 Tunnel。');
 }
+const current = await api(`${base}/${state.tunnelId}/configurations`);
+assertManagedIngress(state, current);
+const oldRecords = state.previousHostname ? await api(dnsBase + '?name=' + encodeURIComponent(state.previousHostname)) : [];
+// Save the bounded pending rename before changing routing, so the same command
+// can finish it after an API or local filesystem failure.
+if (state.previousHostname) await save();
 const tunnelToken = await api(`${base}/${state.tunnelId}/token`);
 await writeFile(join(root, 'secrets', 'tunnel_token'), tunnelToken + '\n', { mode: 0o600 });
 await chmod(join(root, 'secrets', 'tunnel_token'), 0o600);
-const current = await api(`${base}/${state.tunnelId}/configurations`);
-if (current?.config?.ingress?.some(rule => rule.hostname && rule.hostname !== domain)) throw new Error('此 Tunnel 已有其他域名路由，不会覆盖');
 await api(`${base}/${state.tunnelId}/configurations`, 'PUT', { config: { ingress: [
   { hostname: domain, service: `http://127.0.0.1:${config.panelPort}`, originRequest: {} },
   { service: 'http_status:404' },
@@ -80,4 +85,7 @@ const desired = { type: 'CNAME', name: domain, content: `${state.tunnelId}.cfarg
 const record = records.length ? await api(`${dnsBase}/${records[0].id}`, 'PUT', desired) : await api(dnsBase, 'POST', desired);
 state.dnsRecordId = record.id;
 await save();
+const oldRecord = renamedDNSRecord(state, oldRecords);
+if (oldRecord) await api(`${dnsBase}/${oldRecord.id}`, 'DELETE');
+if (state.previousHostname) { delete state.previousHostname; delete state.previousDnsRecordId; await save(); }
 console.log(`域名和路由已配置：https://${domain}\nAPI token 未保存到项目。运行以下命令使配置生效：\nsystemctl --user restart codex-cloud-panel.service\nnpm run native:tunnel\n当前使用工作台账号密码登录；Cloudflare Access 可按 docs/cloudflare.md 另行添加。`);
