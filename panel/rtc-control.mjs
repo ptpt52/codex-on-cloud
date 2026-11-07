@@ -1,6 +1,6 @@
 import { controlDecoder, sendControl } from './public/control.js';
 
-export function attachRTCControl(channel, { valid, perform }) {
+export function attachRTCControl(channel, { valid, perform, failureMessage = '直连桌面操作失败，请先查看桌面确认' }) {
   let ended = false, busy = false, lastId = 0;
   const close = () => { if (ended) return; ended = true; decoder.reset(); channel.close(); };
   const decoder = controlDecoder(value => {
@@ -13,7 +13,7 @@ export function attachRTCControl(channel, { valid, perform }) {
         response = { id: value.id, ok: true, value: result };
       } catch (error) {
         response = { id: value.id, ok: false, error: { status: error.status || 502,
-          message: error.status ? error.message : '直连桌面操作失败，请先查看桌面确认', outcome: error.outcome || (error.status ? 'rejected' : 'unknown') } };
+          message: error.status ? error.message : failureMessage, outcome: error.outcome || (error.status ? 'rejected' : 'unknown') } };
       }
       if (ended || !valid()) { close(); return; }
       try { sendControl(channel, response); } catch { close(); }

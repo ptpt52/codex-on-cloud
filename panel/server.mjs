@@ -25,6 +25,7 @@ import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
 import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
+import { createServiceRTC } from './service-rtc.mjs';
 import { createUIAssets } from './ui-assets.mjs';
 import { createNodeDirectoryReader } from './node-directory.mjs';
 import { createPortalConnection } from './portal-connection.mjs';
@@ -78,8 +79,9 @@ export async function createPanel(config) {
   const forwarding = createForwarding(config);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
   const fileTransfers = createFileTransfers();
+  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port });
   const nodeDirectory = createNodeDirectoryReader(config), portalConnection = createPortalConnection(config);
-  const rtcConfig = () => ({ webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
+  const rtcConfig = () => ({ serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -256,7 +258,7 @@ export async function createPanel(config) {
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, serviceProtocol: 1, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/nodes' && req.method === 'GET') {
@@ -282,7 +284,7 @@ export async function createPanel(config) {
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;
       forwarding.refresh();
-      fileTransfers.revalidate();
+      fileTransfers.revalidate(); services.revalidate();
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', config, true) });
     }
     if (path === '/api/state' && req.method === 'GET') {
@@ -293,6 +295,13 @@ export async function createPanel(config) {
       const [tunnel, services] = await Promise.all([tunnelDiagnostics(), serviceDiagnostics()]);
       requireSession(req);
       return reply(res, 200, { tunnel, services });
+    }
+    if (path === '/api/service/rtc' && req.method === 'POST') {
+      requireWrite(req);
+      const body = await jsonBody(req, 48 * 1024), session = requireWrite(req);
+      const controller = new AbortController(); res.once('close', () => { if (!res.writableFinished) controller.abort(); });
+      const headers = { host: req.headers.host, origin: req.headers.origin, cookie: req.headers.cookie, 'x-csrf-token': session.csrf, 'x-viewer-id': req.headers['x-viewer-id'] || '' };
+      return reply(res, 200, await services.negotiate({ token: cookieToken(req.headers.cookie), session, viewer: headers['x-viewer-id'], body, headers, signal: controller.signal }));
     }
     if (path.startsWith('/api/')) {
       const session = requireSession(req);
@@ -314,7 +323,7 @@ export async function createPanel(config) {
           else if (owner) owner.lockRevision = access.screenRevision;
         }
         forwarding.refresh();
-        fileTransfers.revalidate();
+        fileTransfers.revalidate(); services.revalidate();
       }
       return reply(res, 200, { ...result, access: accessState(req, requireSession(req)) });
     }
@@ -725,6 +734,7 @@ export async function createPanel(config) {
   async function close() {
     closing = true;
     await forwarding.close();
+    await services.close();
     fileTransfers.close();
     clearInterval(expiration);
     closeSockets(() => true);

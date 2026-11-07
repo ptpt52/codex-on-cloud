@@ -10,6 +10,7 @@ import { createNodeUI } from './node-ui.js';
 import { HISTORY_ROWS } from './terminal-history-limits.js';
 import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints } from './rtc-hints.js';
+import { createServiceLink, serviceAction } from './service-link.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -66,6 +67,8 @@ let browserStorage;
 try { browserStorage = localStorage; } catch {}
 const browserPreferences = createBrowserPreferences(browserStorage), displayPreferences = browserPreferences.value;
 const directHints = createRTCHints(browserStorage);
+let workspaceInitialized = false, serviceProtocol = 0;
+const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection() });
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
@@ -373,6 +376,7 @@ function renderInputControls() {
   sendDisplayPreferences();
 }
 function renderConnection() {
+  if (workspaceInitialized && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
   nodeUI?.update();
   forwardingUI?.update();
   accessUI?.update();
@@ -402,6 +406,16 @@ function renderConnection() {
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
   $('diag-latency').textContent = route?.rttMs != null ? `${route.rttMs} ms` : '—';
   $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? '已建立加密直连' : directIssues[directIssue] || '尚未检测';
+  if (!owned && loggedIn && serviceProtocol === 1) {
+    const service = serviceLink.state;
+    $('diag-panel').textContent = service.ready ? '可访问（加密直连）' : panelState === 'online' ? '可访问（HTTPS）' : '连接中断';
+    $('diag-transport').textContent = service.ready ? 'WebRTC 加密直连 · 受限服务' : 'HTTPS 中转 · 受限服务';
+    $('diag-direct-status').textContent = service.ready ? '已建立加密直连' : service.issue === 'connecting' ? '正在探测服务直连' : directIssues[service.issue] || '等待后续探测';
+    $('diag-network').textContent = service.route ? `${service.route.family} / ${service.route.protocol}` : '当前未使用直连';
+    $('diag-peer').textContent = service.route ? `${endpoint(service.route.local)} ↔ ${endpoint(service.route.remote)}` : '—';
+    $('diag-latency').textContent = service.route?.rttMs != null ? `${service.route.rttMs} ms` : '—';
+    $('diag-input-transport').textContent = '当前账号无桌面输入权限';
+  }
   $('diag-resolution').textContent = terminalMode() ? terminalGeometry ? `${terminalGeometry.cols} 列 × ${terminalGeometry.rows} 行` : '等待终端尺寸' : frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
@@ -465,6 +479,7 @@ async function loadDiagnostics() {
 }
 function expireAccess() {
   accessExpired = true;
+  serviceLink.stop();
   hideWorkspacePanels();
   stopPolling();
   stopFrame();
@@ -482,6 +497,11 @@ function toast(message, failure = false) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
 async function api(path, { method = 'GET', body, raw, signal } = {}) {
+  const service = serviceAction(path, method);
+  if (service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
+    try { return await serviceLink.request(service, body || {}, signal); }
+    catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || error.status || signal?.aborted) throw error; }
+  }
   if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) return framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
   const headers = { 'x-viewer-id': viewer };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
@@ -624,6 +644,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  workspaceInitialized = false; serviceProtocol = 0; serviceLink.stop();
   rtcConfig = undefined; panelRoute = 'https';
   nodeUI?.reset();
   accessUI?.close();
@@ -747,6 +768,7 @@ async function claim(lockPassword, signal) {
   await poll();
 }
 async function showWorkspace(user) {
+  workspaceInitialized = false; serviceProtocol = user.serviceProtocol === 1 ? 1 : 0;
   uiGeneration++; closeConfirmation();
   maxTerminals = DEFAULT_TERMINAL_LIMIT;
   loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1;
@@ -773,6 +795,7 @@ async function showWorkspace(user) {
     }
     toast(error.message, true);
   }
+  workspaceInitialized = true; renderConnection();
 }
 async function action(button, work) {
   if (button.disabled) return;
@@ -1094,6 +1117,7 @@ $('direct-hints-form').addEventListener('submit', event => {
     $('direct-browser-ip').value = directHints.value.browser;
     $('direct-hints-status').textContent = `${directHints.persisted ? '已保存到当前浏览器。' : '浏览器未能保存；仅当前页面生效。'}后续直连协商将使用这些提示，现有连接继续运行。`;
     sendDisplayPreferences();
+    serviceLink.wake();
     if (frameLoaded && owned) $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-probe', frame: String(frameEpoch) }, location.origin);
   } catch (error) { $('direct-hints-status').textContent = error.message; }
 });
@@ -1413,8 +1437,8 @@ window.addEventListener('message', event => {
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
 document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { shortcutMenu.close(); closeConfirmation(); } });
-window.addEventListener('pagehide', () => { historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
-window.addEventListener('pageshow', () => { pageLeaving = false; syncScreenLock(); });
+window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
+window.addEventListener('pageshow', () => { pageLeaving = false; if (loggedIn) workspaceInitialized = true; syncScreenLock(); renderConnection(); });
 
 accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,
   canUnlock: () => loggedIn && permissions.canClaim && !accessExpired, needsUnlock: () => permissions.requiresUnlock,
