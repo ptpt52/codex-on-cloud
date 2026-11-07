@@ -116,12 +116,25 @@ test('narrow dropdown remains in the visual viewport, has touch-sized rows and s
 test('an open shortcut menu postpones background transport replacement until it closes', async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, webrtc: true }); let offers = 0;
   await page.clock.install();
+  await page.addInitScript(() => {
+    if (window === parent) return;
+    window.addEventListener('message', event => {
+      if (event.source === parent && event.data?.type === 'codex-desktop-options') window.shortcutFrameBusy = event.data.busy === true;
+    });
+  });
   await page.route('**/api/desktop/rtc', route => ++offers === 1 ? route.fulfill({ status: 503, json: { error: '首次直连不可用' } }) : route.continue());
   try {
-    await login(page, app); await open(page); await page.clock.fastForward(16000);
+    await login(page, app); await open(page);
+    const frame = page.frames().find(frame => frame.url().includes('/desktop/index.html'));
+    await expect.poll(() => frame.evaluate(() => window.shortcutFrameBusy)).toBe(true);
+    await page.clock.fastForward(16000);
     expect(offers).toBe(1); expect(app.vncConnections).toBe(1); expect(app.inputCalls).toEqual([]);
     await expect(page.locator('#shortcuts-menu')).toBeVisible();
-    await page.keyboard.press('Escape'); await page.clock.fastForward(6000);
+    await page.keyboard.press('Escape'); await expect(page.locator('#shortcuts-menu')).toBeHidden();
+    await expect.poll(() => frame.evaluate(() => window.shortcutFrameBusy)).toBe(false);
+    // Real HTTP/ICE/DTLS replies must run between the probe's timers. Jumping
+    // over them can expire an in-flight handshake before its reply is handled.
+    await page.clock.runFor(6000);
     await expect.poll(() => app.vncConnections, { timeout: 15000 }).toBe(2);
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     expect(offers).toBe(2); expect(app.inputCalls).toEqual([]);
