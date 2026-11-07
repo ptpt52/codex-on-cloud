@@ -25,6 +25,8 @@ import { streamRTC } from './stream-rtc.mjs';
 import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
 import { createUIAssets } from './ui-assets.mjs';
+import { createNodeDirectoryReader } from './node-directory.mjs';
+import { createPortalConnection } from './portal-connection.mjs';
 
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -75,6 +77,7 @@ export async function createPanel(config) {
   const forwarding = createForwarding(config);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
   const fileTransfers = createFileTransfers();
+  const nodeDirectory = createNodeDirectoryReader(config), portalConnection = createPortalConnection(config);
 
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
@@ -230,6 +233,21 @@ export async function createPanel(config) {
       const session = requireSession(req);
       return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
+    }
+    if (path === '/api/nodes' && req.method === 'GET') {
+      const session = requireSession(req);
+      if (session.role === 'temporary') throw new HttpError(403, '临时账号不能读取服务器目录');
+      try { return reply(res, 200, await nodeDirectory()); } catch (error) { throw new HttpError(503, error.message); }
+    }
+    if (path === '/api/portal' && req.method === 'GET') {
+      requireDesktopRead(req);
+      try { return reply(res, 200, await portalConnection.status()); } catch { throw new HttpError(503, '本机门户配置不可用，请检查 data/panel/portal.json'); }
+    }
+    if (path === '/api/portal/register' && req.method === 'POST') {
+      const body = await ownedBody(req, 4096), expected = owner;
+      const result = await portalConnection.register(body); requireOwner(req);
+      if (owner !== expected) throw new HttpError(409, '控制权已变化，门户接入可能已保存，请重新读取');
+      return reply(res, 200, result);
     }
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);

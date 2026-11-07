@@ -284,5 +284,5 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
   $('forward-diagnostics-select')?.addEventListener('click', copyReport);
   $('forward-diagnostics-close')?.addEventListener('click', () => { $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; });
   renderDirection();
-  return { update, reset };
+  return { update, reset, get busy() { return busy; } };
 }

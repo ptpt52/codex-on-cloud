@@ -36,7 +36,7 @@
 
   <main id="workspace-view" class="workspace" hidden>
     <header class="topbar">
-      <div class="brand"><img src="/icon.svg" width="30" height="30" alt=""><span>Codex<span class="brand-light"> on Cloud</span></span></div>
+      <div class="brand"><img src="/icon.svg" width="30" height="30" alt=""><span id="node-brand">Codex<span class="brand-light"> on Cloud</span></span><button id="servers-button" class="node-entry" type="button" aria-haspopup="dialog" aria-controls="servers-dialog" hidden><span id="current-server-name"></span><span aria-hidden="true"> ▾</span></button></div>
       <div class="topbar-right"><span id="user-label" class="user-label"></span><button id="connection-button" class="quiet">连接状态</button><button id="forward-button" class="quiet" type="button" disabled>端口映射</button><button id="files-button" class="secondary">文件中转</button><button id="logout-button" class="quiet logout-entry" title="退出登录，桌面任务继续运行">退出</button></div>
     </header>
     <section id="desktop-card" class="desktop-card" aria-label="远程桌面">
@@ -81,7 +81,7 @@
           <span id="pan-description" class="sr-only">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
         </div>
       </div>
-      <div id="access-actions" class="desktop-actions"><button id="access-settings-button" class="view-button" type="button">访问与屏幕锁</button><button id="screen-lock-button" class="view-button" type="button" hidden>立即锁定</button></div>
+      <div id="access-actions" class="desktop-actions"><button id="portal-settings-button" class="view-button" type="button">门户接入</button><button id="access-settings-button" class="view-button" type="button">访问与屏幕锁</button><button id="screen-lock-button" class="view-button" type="button" hidden>立即锁定</button></div>
       </aside>
       <div id="desktop-stage" class="desktop-stage">
         <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
@@ -274,6 +274,17 @@
     <label class="upload-zone" for="upload-input"><span aria-hidden="true">↑</span><strong>选择文件上传</strong><small>从手机传到开发桌面</small></label><input id="upload-input" type="file" hidden>
     <p id="upload-status" class="muted" role="status"></p><div id="file-list" class="file-list"></div>
     <button id="refresh-files" class="secondary">刷新文件列表</button>
+  </dialog>
+  <dialog id="servers-dialog" class="files-dialog servers-dialog" aria-labelledby="servers-title">
+    <div class="dialog-heading"><h2 id="servers-title">切换服务器</h2><button id="servers-close" class="quiet" type="button" aria-label="关闭服务器列表">✕</button></div>
+    <p id="servers-status" class="muted" role="status"></p><button id="servers-retry" class="secondary" type="button" hidden>重新读取</button>
+    <section id="servers-selection"><div id="servers-list"></div><button id="servers-portal" class="secondary" type="button" hidden>返回统一门户</button></section>
+    <section id="servers-confirmation" hidden><h3 id="servers-destination"></h3><p class="muted">确认切换？当前服务器的任务和已授权端口映射继续运行。目标服务器独立登录和解锁；请先确认正在下载的文件已完成。</p><div class="confirmation-actions"><button id="servers-cancel" class="secondary" type="button">取消</button><button id="servers-accept" class="primary" type="button">确认切换</button></div></section>
+  </dialog>
+  <dialog id="portal-settings-dialog" class="files-dialog" aria-labelledby="portal-settings-title">
+    <div class="dialog-heading"><h2 id="portal-settings-title">门户接入</h2><button id="portal-settings-close" class="quiet" type="button" aria-label="关闭门户接入">✕</button></div>
+    <p class="muted">当前节点：<span id="portal-node-origin"></span>。门户是可选的，节点始终可以独立访问。</p>
+    <form id="portal-register-form"><label for="portal-node-name">节点名称</label><input id="portal-node-name" maxlength="48" required><label for="portal-authorization-code">门户授权码</label><textarea id="portal-authorization-code" rows="3" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="粘贴门户生成的 coc1. 授权码"></textarea><p class="muted">目标门户：<span id="portal-target-origin"></span></p><p id="portal-config-status" class="muted" role="status"></p><button id="portal-register" class="primary" type="submit" disabled>保存并注册</button></form>
   </dialog>
   <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="/app.js"></script>

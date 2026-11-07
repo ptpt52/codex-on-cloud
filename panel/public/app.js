@@ -5,11 +5,13 @@ import { createWorkspacePanels, createHistoryToolsPortal } from './workspace-pan
 import { createTerminalState, validTerminalIdentity } from './terminal-state.js';
 import { createTerminalTabs } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
+import { createNodeUI } from './node-ui.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
 let accessUI;
+let nodeUI;
 let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canForward: true, canReverse: true, canManageDevices: true };
 let fastConnectEnabled = false;
 let streamProtocolEnabled = false;
@@ -301,7 +303,7 @@ $('tools-fullscreen-button').addEventListener('click', () => { closeWorkspacePan
 for (const id of ['input-keyboard-button', 'assistant-send-button']) $(id).addEventListener('click', () => $('mobile-input').focus({ preventScroll: true }));
 renderDisplayControls();
 
-function inputPaused() { return viewportResizing || controlsState.viewportBusy || transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
+function inputPaused() { return nodeUI?.blocking || viewportResizing || controlsState.viewportBusy || transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
 function scheduleViewport(delay = 500) {
   clearTimeout(viewportTimer);
   if (!loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
@@ -378,6 +380,7 @@ function renderInputControls() {
   sendDisplayPreferences();
 }
 function renderConnection() {
+  nodeUI?.update();
   forwardingUI?.update();
   accessUI?.update();
   if (confirmation && !confirmationValid(confirmation)) closeConfirmation();
@@ -583,6 +586,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  nodeUI?.reset();
   accessUI?.close();
   if (loggedIn) rememberDraft();
   forwardingUI?.reset();
@@ -715,6 +719,7 @@ async function showWorkspace(user) {
   $('password').value = '';
   $('login-view').hidden = true;
   $('workspace-view').hidden = false;
+  void nodeUI?.load();
   try {
     if (permissions.role === 'temporary' || permissions.requiresUnlock) { owned = false; restrictWorkspace(); await poll(); if (permissions.requiresUnlock) accessUI?.unlock(); }
     else await claim();
@@ -1340,6 +1345,14 @@ accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions
   lockEnabled: () => permissions.screenLockEnabled, claim, changed: updateAccess, activity: () => { renderInputControls(); scheduleViewport(); }, toast });
 forwardingUI = createForwardUI({ api, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online',
   capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
+nodeUI = createNodeUI({ api,
+  allowed: () => loggedIn && !accessExpired && permissions.role !== 'temporary',
+  canConfigure: () => loggedIn && owned && !accessExpired && permissions.role !== 'temporary' && !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController,
+  canLeave: () => !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy,
+  saveDraft: rememberDraft,
+  changed: () => { renderInputControls(); sendDisplayPreferences(); scheduleViewport(); },
+  leave: origin => { pageLeaving = true; syncScreenLock(); location.assign(origin + '/'); },
+});
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
