@@ -71,4 +71,6 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 浏览器字号、缩放、宽度适配、网页历史行数、亮屏选择和面板折叠属于当前浏览器，详见 [浏览器偏好](browser-preferences.md)。终端选择和草稿属于当前标签页。连接诊断、控制权、实际亮屏锁和在线状态属于运行状态。
 
+“连接状态”里的服务器 IP / 浏览器端 IP 直连提示也属于当前浏览器；它们随已认证协商发给服务端，作为额外 ICE 候选使用，不写 `.env`，不替换自动发现或部署时选择的监听地址。
+
 每份草稿 32768 字符、最多 9 份 / 2 MiB，文件上传和并发传输上限、WebRTC UDP 40000–40015 以及超时/背压等目前是代码中的资源或协议边界，不能在 `.env` 中随意设置。终端保活会话不占 `MAX_TERMINALS` 名额。

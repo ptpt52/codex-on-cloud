@@ -2,6 +2,7 @@ import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute } from './rtc-stats.js';
 import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT } from './transport-policy.js';
+import { rtcHints, createRTCHints } from '/rtc-hints.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -29,6 +30,11 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
   let peer;
   try {
     let settings = bootstrap?.();
+    let storedHints;
+    // Legacy viewers can start before the parent sends its bootstrap message.
+    // Read the same bounded browser entry without waiting for that message.
+    if (settings?.hints === undefined) { let storage; try { storage = localStorage; } catch {} storedHints = createRTCHints(storage).value; }
+    const hints = rtcHints(settings?.hints ?? storedHints);
     if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256) {
       const response = await fetch('/api/me', { signal: controller.signal });
       if (!response.ok) throw new Error('无法验证连接');
@@ -77,7 +83,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const result = await fetch(terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
-          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId } : {}) }),
+          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
         });
         if (!result.ok) throw new Error('直连暂不可用');
         const answer = await result.json();

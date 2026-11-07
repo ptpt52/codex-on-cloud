@@ -26,7 +26,7 @@ tmux 使用本项目运行目录下的专用 socket，新建窗格的历史上�
 
 默认通过已认证 HTTPS 交换 WebRTC SDP，noVNC 直接使用可靠、有序的 DataChannel，将 DTLS 加密的 IPv4 局域网 / 公网 IPv6 UDP 流接到原有 VNC Unix socket。每次重新选择至多一个本机私有 IPv4 和一个公网 IPv6，绑定 UDP 40000–40015；浏览器通过可配置的 UDP STUN 发现地址，最多等待 1.5 秒收集候选，总协商期限 12 秒。独立控制通道只接受粘贴、白名单按键和剪贴板读取，复用私有桌面管理服务，每端一项请求、有界分块、单调 ID，无自动重发。`werift@0.26.0` 校验远端证书指纹；协商、候选、端口和背压界限见[双栈直连](lan.md)。它与 WebSocket 共用画面连接的接管、会话到期、退出和维护关闭机制。直连失败后回退到现有链路，其他 API 仍走 HTTPS；没有部署 TURN、ICE-TCP 或本地证书服务。
 
-SDP 只保留最多 8 个去重 UDP 候选，两族均存在时各预留 4 个，允许私有 IPv4/mDNS host 与公网 IPv6 host/srflx；解析后的候选对再次过滤，禁止公网 IPv4、特殊 IPv6 和 relay。公网 UDP 在固定版本 ICE agent 的 socket 接收入口验证原始 STUN 报文 HMAC、双方 ufrag 和会话权限，避免先修改角色或创建未认证 peer。每秒窗口至多 64 个检查、16 个已认证远端端点、16 个 early checks，STUN 报文最多 2 KiB；数据只允许来自已认证或选中的端点。服务端显式清除 werift 在空 iceServers 时隐式选用的默认 STUN，只收集绑定的 host 地址；未修改依赖或用户 Codex 配置。
+SDP 保留最多 8 个去重自动 UDP 候选，两族均存在时各预留 4 个，允许私有 IPv4/mDNS host 与公网 IPv6 host/srflx。浏览器可在本地保存一对可选 IP 提示（单条 256 字符），随已认证 HTTPS 协商发送；服务端在 offer / answer 中各补最多 4 个同族、同已收集端口的候选，保留全部自动候选和原 ICE 凭据，不改变监听地址。每轮读取提示快照，修改仅用于后续探测，既有连接保持。解析后的候选对再次过滤，禁止公网 IPv4、特殊 IPv6 和 relay。公网 UDP 在固定版本 ICE agent 的 socket 接收入口验证原始 STUN 报文 HMAC、双方 ufrag 和会话权限，避免先修改角色或创建未认证 peer。每秒窗口至多 64 个检查、16 个已认证远端端点、16 个 early checks，STUN 报文最多 2 KiB；数据只允许来自已认证或选中的端点。服务端显式清除 werift 在空 iceServers 时隐式选用的默认 STUN，只收集绑定的 host 地址；未修改依赖或用户 Codex 配置。
 
 直连诊断只保留一份实际选中 candidate pair 的两端、地址族、协议和 RTT，不持久化 SDP、候选历史或 IP 日志。连接建立和成功心跳后更新，最多一个在途 stats 请求；换流后丢弃旧结果。浏览器隐藏的地址保持为空并明确显示隐藏。父窗口继续校验 Origin、来源、观看代次与字段界限，断线/接管清除路径。
 

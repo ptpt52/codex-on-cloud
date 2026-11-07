@@ -6,6 +6,7 @@ import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS, HISTORY_BYTES, HISTORY_CHUNK } from
 import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
 import { createStreamClient } from '/desktop/stream-client.js';
 import { createPanelBridge } from '/control.js';
+import { rtcHints } from '/rtc-hints.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
@@ -288,7 +289,7 @@ function scheduleProbe(delay = probeDelay, network = false) {
   probeTimer = setTimeout(() => { probeTimer = undefined; probeNetworkCheck = false; void probeDirect(); }, fastConnect ? Math.max(delay, routes.remaining()) : delay);
 }
 function makeCandidate(controller) {
-  return terminalDirect(viewer, { terminalId, terminalToken }, { signal: controller.signal,
+  return terminalDirect(viewer, { terminalId, terminalToken }, { signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }),
     failed: reason => { if (!stopped && candidateController === controller && !controller.signal.aborted) directFailure(reason); } });
 }
 function finishSwitch(force = false) {
@@ -343,10 +344,13 @@ async function probeDirect() {
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent) return;
+  if (value?.type === 'codex-direct-probe' && value.frame === frame) { resume(); return; }
   if (value?.type === 'codex-direct-approved' && value.frame === frame && switchApproval?.id === value.id) { switchApproval.finish(value.allowed === true); return; }
   if (value?.type === 'codex-desktop-options') {
     if (value.frame !== frame) return;
-    if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl };
+    if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
+      try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, hints: rtcHints(value.rtc.hints) }; } catch {}
+    }
     blocked = value.blocked !== false; busy = value.busy === true;
     if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) fontSize = value.terminalFontSize;
     if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;

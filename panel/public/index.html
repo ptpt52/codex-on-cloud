@@ -216,6 +216,17 @@
     </dl>
     <p id="diag-note" class="muted" role="status">仅查看连接信息，不会重启桌面。</p>
     <button id="refresh-connection" class="secondary">刷新状态</button>
+    <details class="direct-hints">
+      <summary>直连地址提示（可选）</summary>
+      <p class="muted">自动探测继续运行。可填写服务器 IP、浏览器端电脑 IP，或两者都填；留空使用自动发现。支持私有 IPv4、普通公网 IPv6，不含端口。</p>
+      <form id="direct-hints-form">
+        <label for="direct-server-ip">服务器 IP<input id="direct-server-ip" type="text" maxlength="45" placeholder="例如：192.168.1.10" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
+        <label for="direct-browser-ip">浏览器端 IP<input id="direct-browser-ip" type="text" maxlength="45" placeholder="例如：192.168.1.20" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
+        <button id="save-direct-hints" type="submit" class="secondary">保存并尝试直连</button>
+      </form>
+      <p class="muted">地址仅保存到当前浏览器，并随直连协商发送给服务器。修改用于后续探测，已建立的连接继续运行；清空后保存可移除提示。</p>
+      <p id="direct-hints-status" class="muted" role="status"></p>
+    </details>
   </dialog>
   <dialog id="forward-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-title">
     <div class="dialog-heading"><h2 id="forward-title">TCP 端口映射</h2><button id="forward-close" class="quiet" type="button" aria-label="关闭端口映射">✕</button></div>

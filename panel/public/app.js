@@ -9,6 +9,7 @@ import { createAccessUI } from './access-ui.js';
 import { createNodeUI } from './node-ui.js';
 import { HISTORY_ROWS } from './terminal-history-limits.js';
 import { createBrowserPreferences } from './browser-preferences.js';
+import { createRTCHints } from './rtc-hints.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -64,6 +65,7 @@ $('mobile-input').addEventListener('blur', () => { inputComposing = false; rende
 let browserStorage;
 try { browserStorage = localStorage; } catch {}
 const browserPreferences = createBrowserPreferences(browserStorage), displayPreferences = browserPreferences.value;
+const directHints = createRTCHints(browserStorage);
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
@@ -164,7 +166,7 @@ function toggleWorkspacePanel(name) {
 }
 function sendDisplayPreferences() {
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), rtc: rtcConfig, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows } : {}),
@@ -1074,6 +1076,9 @@ window.addEventListener('offline', () => {
   pollTimer = setTimeout(poll, 4000);
 });
 $('connection-button').addEventListener('click', () => {
+  $('direct-server-ip').value = directHints.value.server;
+  $('direct-browser-ip').value = directHints.value.browser;
+  $('direct-hints-status').textContent = directHints.persisted ? '' : '浏览器未能保存地址提示；当前页面仍可使用。';
   $('connection-dialog').showModal();
   renderConnection();
   void loadDiagnostics();
@@ -1081,6 +1086,17 @@ $('connection-button').addEventListener('click', () => {
 $('close-connection').addEventListener('click', () => $('connection-dialog').close());
 $('connection-dialog').addEventListener('close', stopDiagnostics);
 $('refresh-connection').addEventListener('click', () => { void poll(); void loadDiagnostics(); });
+$('direct-hints-form').addEventListener('submit', event => {
+  event.preventDefault();
+  try {
+    directHints.save({ server: $('direct-server-ip').value, browser: $('direct-browser-ip').value });
+    $('direct-server-ip').value = directHints.value.server;
+    $('direct-browser-ip').value = directHints.value.browser;
+    $('direct-hints-status').textContent = `${directHints.persisted ? '已保存到当前浏览器。' : '浏览器未能保存；仅当前页面生效。'}后续直连协商将使用这些提示，现有连接继续运行。`;
+    sendDisplayPreferences();
+    if (frameLoaded && owned) $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-probe', frame: String(frameEpoch) }, location.origin);
+  } catch (error) { $('direct-hints-status').textContent = error.message; }
+});
 for (const id of ['access-refresh-button', 'login-refresh-button']) $(id).addEventListener('click', () => location.reload());
 function clipboardAccess() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && !inputPaused();

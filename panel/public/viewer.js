@@ -6,6 +6,7 @@ import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
 import { createStreamClient } from './stream-client.js';
 import { afterFirstFrame } from './first-frame.js';
 import { createPanelBridge } from '/control.js';
+import { rtcHints } from '/rtc-hints.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -143,8 +144,12 @@ const viewportObserver = new ResizeObserver(applyView);
 viewportObserver.observe(viewport);
 window.addEventListener('message', event => {
   const value = event.data;
-  if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-desktop-options' || value.frame !== frame) return;
-  if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl };
+  if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame) return;
+  if (value.type === 'codex-direct-probe') { networkChanged(); return; }
+  if (value.type !== 'codex-desktop-options') return;
+  if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
+    try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, hints: rtcHints(value.rtc.hints) }; } catch {}
+  }
   if (!(['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
   preferences.zoom = value.zoom;
@@ -304,7 +309,7 @@ async function probeDirect() {
   const controller = probeController = new AbortController(), epoch = connectionEpoch;
   let candidate, prepared = false, requested = false, promoted = false;
   try {
-    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal: controller.signal,
+    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }),
       failed: reason => { if (epoch === connectionEpoch && !controller.signal.aborted) directFailure(reason); } });
     if (!candidate) throw new Error('直连未就绪');
     await candidate.start();
@@ -440,7 +445,7 @@ async function connect() {
     attachViewer(null, streamClient.socket); streamClient.start(); return;
   }
   frameHold.capture(canvas);
-  const direct = fastConnect || directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure });
+  const direct = fastConnect || directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }) });
   if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
   const instance = attachViewer(direct);
   // RFB handlers are attached before negotiation can deliver video bytes.

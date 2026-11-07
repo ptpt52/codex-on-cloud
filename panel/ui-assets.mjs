@@ -13,6 +13,7 @@ export const ASSETS = new Map([
   ['/node-ui.js', ['node-ui.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
+  ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
   ['/workspace-panels.js', ['workspace-panels.js', 'text/javascript; charset=utf-8']],
   ['/terminal-state.js', ['terminal-state.js', 'text/javascript; charset=utf-8']],
   ['/terminal-slots.js', ['terminal-slots.js', 'text/javascript; charset=utf-8']],

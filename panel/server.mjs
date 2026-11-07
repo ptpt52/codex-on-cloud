@@ -12,6 +12,7 @@ import { createServiceDiagnostics } from './service-diagnostics.mjs';
 import { createDeviceDirectory } from './devices.mjs';
 import { managerRequest } from './manager-client.mjs';
 import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
+import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { validateInput } from '../native/input.mjs';
 import { clipboardSource } from '../native/clipboard.mjs';
 import { terminalTarget } from '../native/terminals.mjs';
@@ -428,8 +429,11 @@ export async function createPanel(config) {
       const resumable = body.streamId !== undefined;
       if (resumable && (config.streamProtocol !== 1 || !STREAM_ID.test(body.streamId))) throw new HttpError(400, '会话协议无效');
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
-      let offer;
-      try { offer = rtcOffer(body, { ipv6: config.webrtcIPv6 === true }); } catch (error) { throw new HttpError(400, error.message); }
+      let offer, hints;
+      try {
+        hints = rtcHints(body.hints);
+        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true }), hints.browser, { ipv6: config.webrtcIPv6 === true });
+      } catch (error) { throw new HttpError(400, error.message); }
       let target;
       if (terminalMode) {
         try { target = terminalTarget(body); if (!target.terminalId) throw new Error(); }
@@ -507,7 +511,7 @@ export async function createPanel(config) {
         state.socket = bridge;
         sockets.set(bridge, state);
         res.once('close', () => { if (!res.writableFinished) void bridge.destroy(); });
-        const answer = await bridge.answer(offer);
+        const answer = withHintCandidates(await bridge.answer(offer), hints.server, { ipv6: !!ipv6Address });
         requireOwner(req);
         if (!valid()) throw new HttpError(409, '页面控制权已变化');
         return reply(res, 200, answer);
