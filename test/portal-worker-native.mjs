@@ -24,7 +24,7 @@ try {
   const setup = await setupPortal({ root, origin, home: 'https://home-codex.example.com' });
   const output = join(root, 'build'); await buildPortal({ config: setup.config, output, passwordFile: setup.passwordFile });
   const secret = JSON.parse(await readFile(join(output, 'worker-secrets.json'), 'utf8'));
-  const options = { name: 'portal-test', host: '127.0.0.1', port, cf: false, scriptPath: join(output, 'worker.mjs'), modules: true, compatibilityDate: PORTAL_COMPATIBILITY_DATE, bindings: secret,
+  const options = { name: 'portal-test', host: '127.0.0.1', port, cf: false, scriptPath: join(output, 'worker.mjs'), modules: true, modulesRoot: output, compatibilityDate: PORTAL_COMPATIBILITY_DATE, bindings: secret,
     durableObjects: { NODE_REGISTRY: { className: 'NodeRegistry', useSQLite: true } }, resourcePersistencePath: join(root, 'state'), log: new Log(LogLevel.ERROR) };
   runtime = new Miniflare(convertV4MiniflareOptions(options)); await runtime.ready;
   let cookie = '', csrf = '';
