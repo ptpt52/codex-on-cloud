@@ -33,13 +33,13 @@ test('Windows helper download, explicit pairing, status and default-cancel stop 
     await page.locator('#forward-copy').click();expect(await page.evaluate(()=>window.forwardCopied)).toBe(code);
     helper=await paired(app,code);await expect(page.locator('.forward-row')).toContainText('已连接');
     await page.screenshot({path:'test-results/'+info.project.name+'-tcp-forward.png'});
-    await page.locator('.forward-row button').click();await expect(page.locator('#forward-cancel-stop')).toBeFocused();await page.keyboard.press('Enter');
+    await page.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();await expect(page.locator('#forward-cancel-stop')).toBeFocused();await page.keyboard.press('Enter');
     await expect(page.locator('#forward-confirm')).not.toBeVisible();expect(helper.ws.readyState).toBe(WebSocket.OPEN);
     await page.locator('#forward-close').click();expect(helper.ws.readyState).toBe(WebSocket.OPEN);
     await page.locator('#terminal-mode').click();await page.locator('#accept-confirmation').click();
     await expect(page.locator('#connection-status')).toContainText('终端在线');expect(helper.ws.readyState).toBe(WebSocket.OPEN);
     await page.locator('#forward-button').click();await expect(page.locator('.forward-row')).toContainText('已连接');
-    await expect(page.locator('#forward-code')).toHaveValue('');await page.locator('.forward-row button').click();const stopped=once(helper.ws,'close');await page.locator('#forward-accept-stop').click();await stopped;
+    await expect(page.locator('#forward-code')).toHaveValue('');await page.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();const stopped=once(helper.ws,'close');await page.locator('#forward-accept-stop').click();await stopped;
     await expect(page.locator('#forward-list')).toContainText('尚未创建映射');
     expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
   }finally{helper?.ws.terminate();await app.close();await rm(directory,{recursive:true,force:true});}
@@ -56,13 +56,13 @@ test('recovering mappings display their deadline, preserve stop confirmation and
     const closed=once(helper.ws,'close');helper.ws.terminate();await closed;await page.locator('#forward-refresh').click();
     await expect(page.locator('.forward-row')).toContainText('正在自动恢复');await expect(page.locator('.forward-row')).toContainText('剩余');
     await expect(page.locator('.forward-row')).toHaveAttribute('data-forward',id);await expect(page.locator('#forward-code')).toHaveValue('');
-    await page.locator('.forward-row button').click();await expect(page.locator('#forward-cancel-stop')).toBeFocused();await page.keyboard.press('Enter');
+    await page.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();await expect(page.locator('#forward-cancel-stop')).toBeFocused();await page.keyboard.press('Enter');
     await expect(page.locator('#forward-confirm')).toBeHidden();await expect(page.locator('.forward-row')).toContainText('正在自动恢复');
     resumed=await paired(app,token,'/forward/resume',true);await page.locator('#forward-refresh').click();
     await expect(page.locator('.forward-row')).toContainText('已连接');await expect(page.locator('.forward-row')).toHaveAttribute('data-forward',id);
     expect(creates).toBe(1);expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
     const disconnected=once(resumed.ws,'close');resumed.ws.terminate();await disconnected;await page.locator('#forward-refresh').click();
-    await expect(page.locator('.forward-row')).toContainText('正在自动恢复');await page.locator('.forward-row button').click();await page.locator('#forward-accept-stop').click();
+    await expect(page.locator('.forward-row')).toContainText('正在自动恢复');await page.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();await page.locator('#forward-accept-stop').click();
     await expect(page.locator('#forward-recent')).toContainText('映射已由网页明确停止');await expect(page.locator('.forward-row')).toHaveCount(0);
   }finally{helper?.ws.terminate();resumed?.ws.terminate();await app.close();}
 });
@@ -86,7 +86,7 @@ test('reload and takeover retain helper authorization; only the current owner ma
     await expect(page.locator('#takeover-button')).toBeVisible({timeout:10000});await expect(page.locator('#forward-dialog')).toBeVisible();expect(helper.ws.readyState).toBe(WebSocket.OPEN);
     await second.locator('#forward-button').click();await expect(second.locator('.forward-row')).toContainText('已连接');
     await expect(page.locator('.forward-row')).toHaveCount(0);await expect(page.locator('#forward-direction')).toHaveValue('reverse');
-    await second.locator('.forward-row button').click();const closed=once(helper.ws,'close');await second.locator('#forward-accept-stop').click();await closed;
+    await second.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();const closed=once(helper.ws,'close');await second.locator('#forward-accept-stop').click();await closed;
     await expect(page.locator('#forward-recent')).not.toContainText('映射已由网页明确停止');await expect(second.locator('#forward-recent')).toContainText('映射已由网页明确停止');
     expect(app.managementStats.restarts).toBe(0);await second.close();
   }finally{helper?.ws.terminate();await app.close();}
@@ -195,10 +195,10 @@ for (const host of ['192.168.1.10', '2001:db8:1234:5678:9abc:def0:1234:5678']) {
       const closed=once(helper.ws,'close');helper.ws.terminate();await closed;await page.locator('#forward-refresh').click();await expect(page.locator('.forward-row')).toContainText('正在自动恢复');
       resumed=await paired(app,helper.ready.resumeToken,'/forward/resume',true);await page.locator('#forward-refresh').click();await expect(page.locator('.forward-row')).toContainText('已连接');
       expect(resumed.ready.targetHost).toBe(host);expect(resumed.ready.targetPort).toBe(5432);
-      await page.locator('.forward-row button').click();await expect(page.locator('#forward-confirm-description')).toContainText(destination);
+      await page.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();await expect(page.locator('#forward-confirm-description')).toContainText(destination);
       await page.keyboard.press('Enter');expect(resumed.ws.readyState).toBe(WebSocket.OPEN);
       expect(await page.locator('#forward-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
-      await page.locator('.forward-row button').click();await page.locator('#forward-accept-stop').click();
+      await page.locator('.forward-row').getByRole('button', { name: '停止', exact: true }).click();await page.locator('#forward-accept-stop').click();
       await expect(page.locator('#forward-recent')).toContainText(destination);
       expect(app.inputCalls).toEqual([]);expect(app.terminalInputs).toEqual([]);expect(app.managementStats.restarts).toBe(0);
     } finally { helper?.ws.terminate();resumed?.ws.terminate();await app.close(); }

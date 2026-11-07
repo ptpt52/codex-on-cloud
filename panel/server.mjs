@@ -296,7 +296,7 @@ export async function createPanel(config) {
     }
     if (path.startsWith('/api/')) {
       const session = requireSession(req);
-      const shared = ['/api/desktop/claim', '/api/files', '/api/forward', '/api/forward/stop'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/');
+      const shared = ['/api/desktop/claim', '/api/files', '/api/forward', '/api/forward/stop', '/api/forward/hints'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/');
       if (!shared && !desktopAccess(req, session)) { if (!['GET', 'HEAD'].includes(req.method)) requireWrite(req); throw denied(req, session); }
     }
     if (path === '/api/security' && req.method === 'GET') { const session = requireSession(req); if (!isOwner(req, session)) throw denied(req, session); return reply(res, 200, access.status()); }
@@ -356,10 +356,11 @@ export async function createPanel(config) {
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
       requireSession(req); return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res);
     }
-    if (['/api/forward', '/api/forward/stop'].includes(path) && req.method === 'POST') {
+    if (['/api/forward', '/api/forward/stop', '/api/forward/hints'].includes(path) && req.method === 'POST') {
       requireWrite(req);
       const body = await jsonBody(req, 1024), session = requireWrite(req), token = cookieToken(req.headers.cookie);
       if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body, item => mappingAllowed(req, session, item)));
+      if (path.endsWith('/hints')) return reply(res, 200, forwarding.updateHints(body, item => mappingAllowed(req, session, item)));
       if (body?.direction !== 'reverse' && !desktopAccess(req, session)) throw denied(req, session);
       if (body?.deviceId !== undefined && !desktopAccess(req, session)) throw denied(req, session);
       if (body?.direction === 'reverse' && body.deviceId !== undefined) {

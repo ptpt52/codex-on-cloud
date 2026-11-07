@@ -1,9 +1,10 @@
 import { FORWARD_CLIENTS, forwardOS, detectForwardClient } from './forward-platform.js';
 
 import { forwardReport, forwardFaultArea } from './forward-report.js';
+import { rtcHints } from './rtc-hints.js';
 
 // The browser grants one short-lived capability; raw TCP bytes never enter it.
-export function createForwardUI({ api, allowed, capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }) }) {
+export function createForwardUI({ api, allowed, hints = () => ({}), capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }) }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
   let platform = { os: forwardOS(navigator), arch: null }, detection, downloads = [];
@@ -13,6 +14,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
   const clearReport = () => { reportText = ''; if ($('forward-diagnostics')) { $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; } };
   const reversed = () => $('forward-direction').value === 'reverse';
   const serialMode = () => reversed() && $('forward-protocol').value === 'serial';
+  const mappingHints = () => rtcHints({ server: hints().server || '', browser: $('forward-helper-ip').value.trim() || hints().browser || '' });
   const serialBody = () => ({ path: $('forward-serial-path').value.trim(), baud: Number($('forward-serial-baud').value), dataBits: Number($('forward-serial-bits').value), parity: $('forward-serial-parity').value, stopBits: Number($('forward-serial-stop').value), dtr: $('forward-serial-dtr').checked, rts: $('forward-serial-rts').checked });
   const targetAddress = item => { if (item.protocol === 'serial') return item.serial?.path + ' @ ' + item.serial?.baud; const host = item.targetHost || '127.0.0.1'; return (host.includes(':') ? '[' + host + ']' : host) + ':' + item.targetPort; };
   const deviceBody = () => ({ name: $('forward-device-name').value.trim(), protocol: $('forward-protocol').value, localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) });
@@ -113,6 +115,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     $('forward-create').disabled = !allowed() || busy || !room || !policyReady || !portsEnabled;
     $('forward-refresh').disabled = !allowed() || busy;
     $('forward-local').disabled = busy; $('forward-host').disabled = $('forward-target').disabled = busy || serialMode();
+    $('forward-helper-ip').disabled = busy;
     $('forward-direction').disabled = busy;
     $('forward-device-name').disabled = $('forward-protocol').disabled = busy || !reversed();
     $('forward-device-save').disabled = $('forward-device-new').disabled = busy || !allowed() || !permission.manageDevices || serialMode();
@@ -170,7 +173,16 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
       const expires = item.authorization?.expiresAt;
       authorization.textContent = (item.authorization?.createdHere ? '本次登录创建' : '其他登录创建') + ' · ' + (item.authorization?.role === 'temporary' ? '临时账号授权' : '管理员授权') + ' · ' + (Number.isSafeInteger(expires) && expires > 0 && expires < 8640000000000000 ? '登录授权到期：' + new Date(expires).toLocaleString() : '授权到期时间暂不可用') + ' · 锁屏后保留';
       if (item.errorCode) authorization.textContent += ' · 故障环节：' + forwardFaultArea(item.errorCode);
-      row.append(title, state, authorization); if (item.state === 'active') row.append(network); row.append(stop); $('forward-list').append(row);
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'secondary'; apply.textContent = '应用当前直连提示'; apply.disabled = busy;
+      apply.addEventListener('click', async () => {
+        if (busy || !allowed()) return;
+        let next; try { next = mappingHints(); } catch (error) { $('forward-status').textContent = error.message; return; }
+        const current = generation;
+        busy = true; update(); const result = await request('/api/forward/hints', { method: 'POST', body: { id: item.id, hints: next } });
+        if (current !== generation || !allowed() || !dialog.open) return;
+        busy = false; update(); if (result) $('forward-status').textContent = '已更新；后续探测使用新地址，正在传输的连接保留。新助手会在旧直连空闲后重新探测。'; void load();
+      });
+      row.append(title, state, authorization); if (item.state === 'active') row.append(network); row.append(stop, apply); $('forward-list').append(row);
       if (reverse && item.state === 'active') { const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary'; copy.textContent = '复制给 Codex'; copy.disabled = busy; copy.addEventListener('click', () => { if (!busy && allowed()) showConnection(item); }); row.append(copy); }
     }
     if (!data.mappings.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '尚未创建映射。'; $('forward-list').append(empty); }
@@ -224,6 +236,7 @@ export function createForwardUI({ api, allowed, capabilities = () => ({ directio
     if (!capabilities().directions.includes($('forward-direction').value)) return;
     cancel();
     const current = generation, body = { localPort: Number($('forward-local').value), targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) };
+    try { const next = mappingHints(); if (next.server || next.browser) body.hints = next; } catch (error) { $('forward-status').textContent = error.message; return; }
     if (serialMode()) {
       delete body.targetHost; delete body.targetPort; Object.assign(body, { direction: 'reverse', protocol: 'serial', deviceName: $('forward-device-name').value.trim(), serial: serialBody() });
     } else if (reversed()) {

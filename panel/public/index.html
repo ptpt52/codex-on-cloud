@@ -259,6 +259,8 @@
       <label><input id="forward-serial-dtr" type="checkbox">DTR 高电平</label><label><input id="forward-serial-rts" type="checkbox">RTS 高电平</label>
       <p class="muted">需要 0.7.0 助手，仅允许一个客户端，使用原始 TCP 接入，无硬件流控。打开串口时 DTR/RTS 可能短暂跳变并使设备复位。配置需由助手明确确认；运行助手 --list-serial 可列出名称。本版串口资料不加入设备目录。</p>
     </fieldset>
+      <label class="forward-wide" for="forward-helper-ip">助手端 IP（可选）<input id="forward-helper-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空继承连接状态中的浏览器端 IP"></label>
+      <p class="muted forward-wide">服务器 IP 默认继承当前浏览器的直连地址提示。浏览器与助手在不同电脑时，可单独填写助手端 IP；仅补充探测地址，不改变设备目标。</p>
       <button id="forward-create" class="primary" type="submit" disabled>生成一次性配对码</button>
       <div id="forward-device-actions" class="forward-device-actions forward-wide" hidden><button id="forward-device-save" class="secondary" type="button">保存到设备目录</button><button id="forward-device-new" class="quiet" type="button">作为新设备</button><span id="forward-device-editing" class="muted"></span></div>
     </form>

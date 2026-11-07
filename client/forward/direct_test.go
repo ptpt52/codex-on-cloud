@@ -116,3 +116,25 @@ func TestDrainingPeerKeepsIdleExistingConnectionsHealthy(t *testing.T) {
 		t.Fatal("Idle draining connection did not resume")
 	}
 }
+
+func TestHintCandidatesHaveSeparateBoundAndConfigUpdatesPreservePeer(t *testing.T) {
+	base := "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 " + strings.Repeat("AB:", 31) + "AB\r\n"
+	for i := 0; i < 5; i++ {
+		base += "a=candidate:1 1 udp 123 127.0.0.1 40048 typ host\r\n"
+	}
+	for i := 0; i < 5; i++ {
+		base += "a=candidate:hint1 1 udp 122 10.0.0.1 40048 typ host\r\n"
+	}
+	result, err := directSDP(base, false)
+	if err != nil || strings.Count(result, "a=candidate:") != 8 {
+		t.Fatal("hint candidate bounds", err)
+	}
+	p := &directPeer{id: 1, ready: true, available: true, streams: map[*directChannel]struct{}{nil: {}}}
+	m := &directManager{peer: p, configured: true, wake: make(chan struct{}, 1), write: func(any) error { return nil }}
+	cfg := directSignal{Type: "rtc_config", Enabled: true}
+	cfg.Hints.Browser = "10.0.0.1"
+	m.accept(cfg)
+	if m.peer != p || !p.draining || p.available || len(p.streams) != 1 || !m.hintsChanged {
+		t.Fatal("config update interrupted old streams")
+	}
+}

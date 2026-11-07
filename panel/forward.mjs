@@ -7,6 +7,7 @@ import { FORWARD_ERRORS } from './forward-errors.mjs';
 import { createForwardPeer } from './forward-rtc.mjs';
 import { rtcOffer } from './rtc-network.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
+import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
 import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
 
@@ -109,13 +110,16 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
       mappings: [...mappings.values()].filter(visible).map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
         createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer },
-        maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections,
+        hints: { ...item.hints }, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections,
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
       recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
   function create(body, session, authorizationError, authorization = {}) {
     refresh();
+    let hints;
+    try { hints = rtcHints(body?.hints); } catch (error) { throw fail(400, error.message); }
+    if (body && Object.hasOwn(body, 'hints')) { body = { ...body }; delete body.hints; }
     const reversed = body?.direction === 'reverse', serial = reversed && body.protocol === 'serial' ? serialConfig(body.serial) : null;
     const fieldsValid = serial ? Object.keys(body).sort().join(',') === 'deviceName,direction,localPort,protocol,serial' : body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'deviceId', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
     if (!fieldsValid || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || reversed && blockedPort(body.localPort)) throw fail(400, '监听端口需在 1024–65535 之间，不能占用工作台管理端口');
@@ -126,7 +130,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (authorizationError()) throw fail(401, '登录授权已失效，请重新登录');
     if (mappings.size >= FORWARD_LIMITS.mappings) throw fail(409, '最多保留 4 个映射，请先停止不用的映射');
     if ([...mappings.values()].some(item => item.direction === (reversed ? 'reverse' : undefined) && item.localPort === body.localPort && (reversed || item.session === session))) throw fail(409, '该监听端口已有待配对或活动映射');
-    const code = secret(), item = { id: randomBytes(16).toString('hex'), session, authorizationError, authorization, createdAt: now(), pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
+    const code = secret(), item = { id: randomBytes(16).toString('hex'), session, hints, authorizationError, authorization, createdAt: now(), pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
       localPort: body.localPort, targetHost, targetPort: serial ? undefined : body.targetPort, ...(serial ? { serial } : {}), ...(reversed ? { direction: 'reverse', deviceName, deviceId: body.deviceId, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
     mappings.set(item.id, item);
     return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item) };
@@ -138,6 +142,16 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (item) remove(item, 'stopped');
     return { ok: true };
   }
+  function updateHints(body, allowed) {
+    if (!body || Object.keys(body).sort().join(',') !== 'hints,id' || typeof body.id !== 'string' || !/^[a-f0-9]{32}$/.test(body.id)) throw fail(400, '映射参数无效');
+    const item = mappings.get(body.id);
+    if (!item) throw fail(404, '映射已结束');
+    if (!authorized(item) || !allowed(item)) throw fail(403, '当前登录无权操作此映射');
+    try { item.hints = rtcHints(body.hints); } catch (error) { throw fail(400, error.message); }
+    if (active(item) && item.directClient) sendConfig(item);
+    return { ok: true };
+  }
+  function sendConfig(item) { send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', hints: item.hints }); }
   function control(item, ws, resume = false, capable = false) {
     clearTimeout(item.timer);
     item.activating = false;
@@ -174,7 +188,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         clearTimeout(item.timer); item.activating = false; item.state = 'active'; item.recoverUntil = undefined; item.resumeAttempts = 0; item.errorCode = ''; ws.send('{"type":"listening"}');
         item.directClient = value.direct === 1;
         if (item.direction === 'reverse') heartbeat(ws, () => suspend(item, ws, 'heartbeat_timeout'));
-        if (item.directClient) send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '' });
+        if (item.directClient) sendConfig(item);
       };
       if (item.direction === 'reverse') void reverse.start(item, current).then(activate).catch(() => {});
       else activate();
@@ -201,7 +215,8 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     };
     if (!config.webrtc) return rejected('rtc_disabled');
     if (negotiating || now() - item.peerAt < 10000 || item.peer?.streams || peers.size >= 4 && !item.peer) return rejected('rtc_busy');
-    let offer; try { offer = rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6 }); } catch { return rejected('rtc_negotiation_failed'); }
+    const hints = { ...item.hints };
+    let offer; try { offer = withHintCandidates(rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6 }), hints.browser, { ipv6: !!config.webrtcIPv6 }); } catch { return rejected('rtc_negotiation_failed'); }
     negotiating = true; item.peerAt = now();
     try {
       await item.peer?.destroy();
@@ -218,7 +233,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       peers.add(peer); const destroy = peer.destroy;
       peer.destroy = reason => { const result = destroy(reason); if (result) void Promise.resolve(result).finally(() => peers.delete(peer)); return result; };
       item.peer = peer; report(item, peer.state);
-      const sdp = await peer.answer(offer);
+      const sdp = withHintCandidates({ type: 'answer', sdp: await peer.answer(offer) }, hints.server, { ipv6: !!ipv6Address }).sdp;
       if (current() && item.peer === peer) send(item, { type: 'rtc_answer', id: value.id, typeDescription: 'answer', sdp });
     } catch { rejected('rtc_negotiation_failed'); }
     finally { negotiating = false; }
@@ -345,5 +360,5 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     controls.close(); streams.close();
     return Promise.allSettled([...listeners, ...[...peers].map(peer => peer.destroy())]);
   }
-  return { list, create, stop, revoke, refresh, upgrade, close };
+  return { list, create, stop, updateHints, revoke, refresh, upgrade, close };
 }

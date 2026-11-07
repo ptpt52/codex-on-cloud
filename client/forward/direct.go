@@ -47,7 +47,7 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 	}
 	lines := strings.Split(strings.ReplaceAll(sdp, "\r\n", "\n"), "\n")
 	result := make([]string, 0, len(lines))
-	v4, v6 := 0, 0
+	v4, v6, hints := 0, 0, 0
 	media, fingerprint := 0, false
 	for _, line := range lines {
 		if strings.HasPrefix(line, "m=") {
@@ -73,7 +73,12 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 			if err != nil || port < 1024 || port > 65535 || parseErr != nil || address.Is4In6() || fields[6] != "typ" {
 				continue
 			}
-			if strings.Contains(fields[4], ":") {
+			if strings.HasPrefix(fields[0], "hint") && fields[7] == "host" {
+				if hints >= 4 {
+					continue
+				}
+				hints++
+			} else if strings.Contains(fields[4], ":") {
 				if v6 >= 4 {
 					continue
 				}
@@ -94,12 +99,16 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 }
 
 type directSignal struct {
-	Type      string `json:"type"`
-	ID        uint32 `json:"id"`
-	SDP       string `json:"sdp"`
-	Enabled   bool   `json:"enabled"`
-	IPv6      bool   `json:"ipv6"`
-	STUN      string `json:"stun"`
+	Type    string `json:"type"`
+	ID      uint32 `json:"id"`
+	SDP     string `json:"sdp"`
+	Enabled bool   `json:"enabled"`
+	IPv6    bool   `json:"ipv6"`
+	STUN    string `json:"stun"`
+	Hints   struct {
+		Server  string `json:"server"`
+		Browser string `json:"browser"`
+	} `json:"hints"`
 	Available bool   `json:"available"`
 	Healthy   bool   `json:"healthy"`
 	Family    string `json:"family"`
@@ -118,20 +127,21 @@ type directPeer struct {
 	draining         bool
 }
 type directManager struct {
-	mu         sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
-	write      func(any) error
-	report     func(string)
-	token      string
-	peer       *directPeer
-	config     directSignal
-	configured bool
-	id         uint32
-	answers    chan directSignal
-	wake       chan struct{}
-	done       chan struct{}
-	lastStatus string
+	mu           sync.Mutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	write        func(any) error
+	report       func(string)
+	token        string
+	peer         *directPeer
+	config       directSignal
+	configured   bool
+	hintsChanged bool
+	id           uint32
+	answers      chan directSignal
+	wake         chan struct{}
+	done         chan struct{}
+	lastStatus   string
 }
 
 func newDirectManager(ctx context.Context, token string, write func(any) error, report func(string)) *directManager {
@@ -141,12 +151,19 @@ func newDirectManager(ctx context.Context, token string, write func(any) error, 
 	return m
 }
 func (m *directManager) accept(value directSignal) {
+	var drainID uint32
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
-		if m.configured {
+		if m.configured && m.config.Hints == value.Hints {
 			m.mu.Unlock()
 			return
+		}
+		m.hintsChanged = m.configured
+		if m.configured && m.peer != nil && len(m.peer.streams) > 0 {
+			m.peer.draining = true
+			m.peer.available = false
+			drainID = m.peer.id
 		}
 		m.config = value
 		m.configured = true
@@ -194,6 +211,9 @@ func (m *directManager) accept(value directSignal) {
 		}
 	}
 	m.mu.Unlock()
+	if drainID != 0 {
+		_ = m.write(map[string]any{"type": "rtc_drain", "id": drainID})
+	}
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -230,8 +250,12 @@ func (m *directManager) run() {
 		p := m.peer
 		healthy := p != nil && p.ready && p.available && time.Since(p.updated) < 10*time.Second
 		busy := p != nil && len(p.streams) > 0
+		probe := enabled && !busy && (m.hintsChanged || !healthy && !time.Now().Before(next))
+		if probe {
+			m.hintsChanged = false
+		}
 		m.mu.Unlock()
-		if enabled && !healthy && !busy && !time.Now().Before(next) {
+		if probe {
 			m.negotiate()
 			next = time.Now().Add(delay)
 			delay = min(delay*2, 60*time.Second)
