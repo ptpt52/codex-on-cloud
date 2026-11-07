@@ -21,7 +21,7 @@ test('real auxiliary shells share the primary bashrc, prompt, tools and paste se
   const directory = await mkdtemp(join(tmpdir(), 'codex-shell-'));
   const root = join(directory, "app ' $(never) `never`"), home = join(directory, 'home'), results = join(directory, 'results');
   const selectedBin = join(directory, 'selected-bin'), userBin = join(directory, 'user-bin');
-  const config = { root, runtime: directory, workspace: join(directory, "work ' $(never) `never`"), transfer: join(directory, 'transfer'), display: ':199',
+  const config = { root, maxTerminals: 8, runtime: directory, workspace: join(directory, "work ' $(never) `never`"), transfer: join(directory, 'transfer'), display: ':199',
     env: { ...process.env, HOME: home, HISTFILE: '/dev/null', PATH: `${selectedBin}:${process.env.PATH}`, SHELL_TEST_RESULTS: results, SHELL_TEST_USER_BIN: userBin } };
   for (const path of [join(root, 'desktop'), home, results, selectedBin, userBin, config.workspace, config.transfer]) await mkdir(path, { recursive: true, mode: 0o700 });
   for (const name of ['codex-session', 'terminal.bashrc', 'tmux.conf']) await copyFile(join(source, 'desktop', name), join(root, 'desktop', name));
@@ -69,7 +69,7 @@ printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
     assert.equal(expected[14], 'function-loaded'); assert.equal(expected[15], join(selectedBin, 'selected-tool')); assert.match(expected[16], /set enable-bracketed-paste on/);
     // Changes made inside the primary shell stay local to that shell.
     await tmux(['send-keys', '-t', 'codex:0.0', '-l', 'export SHELL_TEST_CUSTOM=main-only']); await tmux(['send-keys', '-t', 'codex:0.0', 'Enter']);
-    for (let index = 1; index <= 3; index++) {
+    for (let index = 1; index <= 7; index++) {
       const created = await controls.manage({ action: 'create', name: `辅助 ${index}`, view: 'terminal' });
       const terminal = created.terminals.find(item => item.id === created.created);
       assert.equal(await tmux(['display-message', '-p', '-t', terminal.token.split(':')[0], '#{history_limit}']), '10000');

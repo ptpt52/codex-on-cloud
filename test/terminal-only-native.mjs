@@ -63,7 +63,7 @@ try {
       await writeFile(join(bin, name), '#!/bin/sh\nprintf "%s\\n" "$0" >> "$HOME/unexpected-x11"\nexit 99\n', { mode: 0o700 });
     }
     const port = await freePort(), agentPort = await freePort(), origin = 'http://127.0.0.1:' + port;
-    env = { ...process.env, HOME: home, PATH: bin + ':' + process.env.PATH, RUNTIME_DIR: runtime, WORKSPACE_DIR: join(root, 'workspaces'), DEPLOY_MODE: 'terminal', PUBLIC_ORIGIN: origin,
+    env = { ...process.env, HOME: home, PATH: bin + ':' + process.env.PATH, RUNTIME_DIR: runtime, WORKSPACE_DIR: join(root, 'workspaces'), DEPLOY_MODE: 'terminal', MAX_TERMINALS: '8', PUBLIC_ORIGIN: origin,
       PANEL_PORT: String(port), AGENT_PORT: String(agentPort), WEBRTC_ENABLED: '0', HISTFILE: '/dev/null', DISPLAY: ':199', XAUTHORITY: '/must-not-use-xauthority' };
     for(const key of ['TMUX','TMUX_PANE','BASH_ENV','ENV'])delete env[key];
     console.log('Terminal-only: install locked production dependencies without noVNC or browser tests');
@@ -71,6 +71,7 @@ try {
     await assert.rejects(access(join(root, 'node_modules', '@novnc', 'novnc')), { code: 'ENOENT' });
     await assert.rejects(access(join(root, 'node_modules', '@playwright', 'test')), { code: 'ENOENT' });
     await exec(process.execPath, [join(root, 'scripts', 'setup.mjs'), '--mode', 'terminal', '--origin', origin], { env, maxBuffer: 8192 });
+    await writeFile(join(root, '.env'), (await readFile(join(root, '.env'), 'utf8')).replace('MAX_TERMINALS=4', 'MAX_TERMINALS=8'));
     const configuration = await readFile(join(root, '.env'), 'utf8'); assert.match(configuration, /DEPLOY_MODE=terminal/); assert.doesNotMatch(configuration, /DISPLAY_NUMBER|DESKTOP_SIZE/);
     agentSecret = (await readFile(join(root, 'secrets', 'agent_secret'), 'utf8')).trim();
     host = launch('native/terminal-host.mjs');
@@ -104,14 +105,22 @@ try {
     first.ws.send(JSON.stringify({ type: 'input', id: 2, data: "export TERMINAL_LIFETIME=preserved; printf '\\n\\x45XPORT-READY-%s\\n' \"$DBUS_SESSION_BUS_ADDRESS\"\r" }));
     await until(() => first.output.includes('EXPORT-READY-unix:path=/user-shell-bus'), 'shell input or user bus environment missing').catch(error=>{throw Error(error.message+': '+JSON.stringify(first.output.slice(-4096)));}); first.ws.terminate();
     const created = await api('/api/terminals', { action: 'create', name: '隔离辅助终端', view: 'terminal' }); assert.equal(created.created, 'aux1');
+    for (let number = 2; number <= 7; number++) {
+      const result = await api('/api/terminals', { action: 'create', name: `隔离辅助 ${number}`, view: 'terminal' });
+      assert.equal(result.created, `aux${number}`);
+    }
+    const full = await api('/api/terminals'); assert.equal(full.limit, 8); assert.equal(full.terminals.length, 8);
+    await assert.rejects(api('/api/terminals', { action: 'create', name: '第九个', view: 'terminal' }), /最多保留/);
+    const last = full.terminals.find(item => item.id === 'aux7');
+    await rememberTask(Number(last.token.split(':')[1]));
+    const lastViewer = await attach(last);
+    lastViewer.ws.send(JSON.stringify({ type: 'input', id: 2, data: "printf '\\n\\x45IGHTH-SLOT-READY\\n'\r" }));
+    await until(() => lastViewer.output.includes('EIGHTH-SLOT-READY'), 'eighth terminal PTY did not attach'); lastViewer.ws.terminate();
     if(systemd){
       const serverGroup=await readFile('/proc/'+tmuxOwner.pid+'/cgroup','utf8');assert.ok(serverGroup.includes(host.unit));
-      for(const terminal of created.terminals)assert.equal(await readFile('/proc/'+terminal.token.split(':')[1]+'/cgroup','utf8'),serverGroup);
+      for(const terminal of full.terminals)assert.equal(await readFile('/proc/'+terminal.token.split(':')[1]+'/cgroup','utf8'),serverGroup);
     }
-    await api('/api/terminals', { action: 'create', name: '第二辅助终端' });
-    await api('/api/terminals', { action: 'create', name: '第三辅助终端' });
-    await assert.rejects(api('/api/terminals', { action: 'create', name: '超过数量限制' }), /status 409/);
-    assert.equal((await api('/api/terminals')).terminals.length,4);
+    assert.equal((await api('/api/terminals')).terminals.length,8);
     for (const terminal of (await api('/api/terminals')).terminals) await rememberTask(Number(terminal.token.split(':')[1]));
     const fileText='headless transfer 中文';
     const upload=await fetch(origin+'/api/files/terminal-test.txt',{method:'PUT',headers:{origin,cookie,'x-viewer-id':viewer,'x-csrf-token':csrf,'content-type':'application/octet-stream'},body:fileText});
@@ -169,7 +178,7 @@ try {
     const originalPath=env.PATH;env.PATH=bin;host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>host.exitCode!==null,'failed helper did not terminate its terminal host');assert.notEqual(host.exitCode,0);
     await assert.rejects(tmux(['list-sessions']));await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
-    console.log('✓ real terminal-only install, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, four-slot manager, closed browser and panel/manager restarts preserve shell identity/environment, explicit main reopening, fixed host lifetime and shutdown; Codex is a version-only stub');
+    console.log('✓ real terminal-only install, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, closed browser and panel/manager restarts preserve shell identity/environment, explicit main reopening, fixed host lifetime and shutdown; Codex is a version-only stub');
     if(systemd)console.log('✓ real transient systemd control groups: all tasks and the keeper remain in the host, user bus settings are preserved, panel/manager stops preserve tasks, host stop kills HUP/TERM-ignoring tasks, host SIGKILL cleans its group; only unique test units were created');
   })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(Error('terminal-only native test exceeded four minutes')), 240000); })]);
 } catch (error) { for (const child of children) if (child.output) console.error(child.output.slice(-8192)); throw error; }

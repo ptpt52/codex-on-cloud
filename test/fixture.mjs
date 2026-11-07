@@ -13,7 +13,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -104,7 +104,7 @@ export async function fixture({ mode = 'desktop', port = 0, dataDir, password = 
   } : undefined;
   let panePid = 4000, paneCommand = 'codex', terminalVisible = true, terminalChild;
   const auxiliary = new Map(); let activeWindow = '999', nextAuxPid = 4100;
-  const controls = createDesktopControls({ root: directory, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
+  const controls = createDesktopControls({ root: directory, maxTerminals, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
     viewport: viewportControls,
     performInput: async value => { inputCalls.push(value); await inputHook?.(value); },
@@ -123,7 +123,7 @@ export async function fixture({ mode = 'desktop', port = 0, dataDir, password = 
       await desktopHook?.(command, args);
       if (command === 'xdotool' && args[0] === 'getdisplaygeometry') return `${screenGeometry.width} ${screenGeometry.height}`;
       if (command === 'xdotool' && args[0] === 'search') {
-        const id = args.at(-1).match(/terminal-(aux[123])/i)?.[1];
+        const id = args.at(-1).match(/terminal-(aux[1-7])/i)?.[1];
         if (id) return auxiliary.get(id)?.visible ? String(1000 + Number(id.slice(-1))) : '';
         return terminalVisible ? '999' : '';
       }

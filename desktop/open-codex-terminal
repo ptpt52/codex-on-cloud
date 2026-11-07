@@ -4,7 +4,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 terminal_id="${1:-main}"
 case "$terminal_id" in
   main) terminal_class=codex-on-cloud-terminal; terminal_title=Codex ;;
-  aux1|aux2|aux3) terminal_class="codex-on-cloud-terminal-$terminal_id"; terminal_title="Codex $terminal_id" ;;
+  aux[1-7]) terminal_class="codex-on-cloud-terminal-$terminal_id"; terminal_title="Codex $terminal_id" ;;
   *) exit 2 ;;
 esac
 # Reuse this desktop's terminal instead of opening an unbounded number of windows.

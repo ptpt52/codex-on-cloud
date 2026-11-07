@@ -5,10 +5,32 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { fixture } from './fixture.mjs';
 import { validateInput } from '../native/input.mjs';
+import { settings } from '../native/config.mjs';
+import { createTerminalManager } from '../native/terminals.mjs';
 
 const target = terminal => ({ terminalId: terminal.id, terminalToken: terminal.token });
 async function listed(app) { return (await app.request('/api/terminals')).json(); }
 async function create(app, name) { const response = await app.request('/api/terminals', { method: 'POST', body: { action: 'create', name } }); assert.equal(response.status, 200); return response.json(); }
+
+test('deployment terminal limits default to four and reject values outside one to eight', () => {
+  assert.equal(settings({}).maxTerminals, 4);
+  for (const limit of [1, 4, 8]) assert.equal(settings({ MAX_TERMINALS: String(limit) }).maxTerminals, limit);
+  for (const value of ['', '0', '-1', '9', '1.5', 'NaN', 'unbounded']) assert.throws(() => settings({ MAX_TERMINALS: value }), /MAX_TERMINALS/);
+});
+
+test('lowering the deployment limit preserves existing targets and prevents new shells', async () => {
+  let launches = 0;
+  const rows = ['codex\t%0\t4000\tbash\t0\t0\t', 'codex-aux7\t%7\t4107\tbash\t0\t0\t'];
+  const manager = createTerminalManager({ runtime: '/isolated', workspace: '/workspace', maxTerminals: 1 }, { run: async (_command, args) => {
+    if (args.includes('list-panes')) return rows.join('\n');
+    launches++; throw new Error('unexpected mutation');
+  } });
+  const listed = await manager.list(); assert.equal(listed.limit, 1); assert.equal(listed.terminals.length, 2);
+  const destination = target(listed.terminals.at(-1));
+  assert.deepEqual(await manager.manage({ action: 'open', view: 'terminal', ...destination }), { ...listed, opened: 'aux7' });
+  await assert.rejects(manager.manage({ action: 'create', name: '超过新上限' }), /最多保留 1 个/);
+  assert.equal(launches, 0);
+});
 
 test('terminal endpoints authenticate reads and guard mutations with ownership, CSRF, Origin and bounded bodies', async t => {
   const app = await fixture(); t.after(() => app.close());
@@ -23,19 +45,24 @@ test('terminal endpoints authenticate reads and guard mutations with ownership, 
   assert.equal((await listed(app)).terminals.length, 1); assert.equal(app.inputCalls.length, 0);
 });
 
-test('three independent auxiliary slots keep literal names, survive repeated reads and forbid automatic desktop recovery', async t => {
+test('seven independent auxiliary slots keep literal names, survive repeated reads and forbid automatic desktop recovery', async t => {
   const calls = [];
-  const app = await fixture({ desktopHook: (command, args) => calls.push({ command, args }) }); t.after(() => app.close()); await app.login(); await app.claim();
+  const app = await fixture({ maxTerminals: 8, desktopHook: (command, args) => calls.push({ command, args }) }); t.after(() => app.close()); await app.login(); await app.claim();
   const original = await (await app.request('/api/desktop/settings')).json();
   const label = "测试 ' $(never) `never`";
   const first = await create(app, label);
   assert.equal(first.created, 'aux1'); assert.equal(first.opened, 'aux1'); assert.equal(first.terminals[1].name, label);
-  await create(app, '运行服务'); await create(app, '查看日志');
+  for (let number = 2; number <= 7; number++) await create(app, `辅助 ${number}`);
   assert.equal((await app.request('/api/terminals', { method: 'POST', body: { action: 'create', name: '超过上限' } })).status, 409);
   const before = await listed(app);
+  assert.equal(before.limit, 8);
+  assert.deepEqual(before.terminals.map(item => item.id), ['main', 'aux1', 'aux2', 'aux3', 'aux4', 'aux5', 'aux6', 'aux7']);
+  const last = before.terminals.at(-1);
+  assert.equal((await app.request('/api/key', { method: 'POST', body: { key: 'Enter', ...target(last) } })).status, 200);
+  assert.deepEqual(app.inputCalls, [{ action: 'key', key: 'Enter', ...target(last) }]);
   await app.request('/api/terminals'); await app.request('/api/state');
   assert.deepEqual(await listed(app), before);
-  assert.equal(calls.filter(item => item.args.includes('new-session')).length, 3);
+  assert.equal(calls.filter(item => item.args.includes('new-session')).length, 7);
   assert.equal(calls.find(item => item.args.includes('@codex_cloud_name')).args.at(-1), label);
   for (const call of calls.filter(item => item.args.includes('new-session'))) {
     assert.deepEqual(call.args.slice(-2), ['bash', join(app.directory, 'desktop', 'codex-session')]);
@@ -56,7 +83,7 @@ test('targeted paste and keys verify the live terminal token and focus; stale or
     const response = await app.request('/api/key', { method: 'POST', body: { key: 'Enter', ...destination, terminalToken } });
     assert.equal(response.status, 409); assert.equal((await response.json()).outcome, 'rejected');
   }
-  for (const terminalId of ['codex', 'aux4', '../main', 'aux1; echo x']) assert.throws(() => validateInput({ action: 'key', key: 'Enter', terminalId, terminalToken: terminal.token }));
+  for (const terminalId of ['codex', 'aux0', 'aux8', '../main', 'aux1; echo x']) assert.throws(() => validateInput({ action: 'key', key: 'Enter', terminalId, terminalToken: terminal.token }));
   assert.throws(() => validateInput({ action: 'key', key: 'Enter', terminalId: 'main' }));
   assert.throws(() => validateInput({ action: 'paste', text: 'x', target: 'application', ...destination }));
   assert.equal(app.inputCalls.length, 2);

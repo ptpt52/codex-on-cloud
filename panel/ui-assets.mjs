@@ -15,6 +15,7 @@ export const ASSETS = new Map([
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
   ['/workspace-panels.js', ['workspace-panels.js', 'text/javascript; charset=utf-8']],
   ['/terminal-state.js', ['terminal-state.js', 'text/javascript; charset=utf-8']],
+  ['/terminal-slots.js', ['terminal-slots.js', 'text/javascript; charset=utf-8']],
   ['/terminal-history-limits.js', ['terminal-history-limits.js', 'text/javascript; charset=utf-8']],
   ['/terminal-tabs.js', ['terminal-tabs.js', 'text/javascript; charset=utf-8']],
   ['/workspace.css', ['workspace.css', 'text/css; charset=utf-8']],

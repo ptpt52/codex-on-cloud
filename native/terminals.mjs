@@ -1,9 +1,10 @@
 import { join } from 'node:path';
 import { open } from 'node:fs/promises';
+import { TERMINAL_IDS, terminalLimit } from '../panel/public/terminal-slots.js';
 
 export const TERMINALS = Object.freeze([
   { id: 'main', session: 'codex', name: 'Codex 主终端', className: 'codex-on-cloud-terminal' },
-  ...[1, 2, 3].map(number => ({ id: `aux${number}`, session: `codex-aux${number}`, name: `辅助终端 ${number}`, className: `codex-on-cloud-terminal-aux${number}` })),
+  ...TERMINAL_IDS.slice(1).map(id => ({ id, session: `codex-${id}`, name: `辅助终端 ${id.slice(3)}`, className: `codex-on-cloud-terminal-${id}` })),
 ].map(Object.freeze));
 const definitions = new Map(TERMINALS.map(item => [item.id, item]));
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -25,8 +26,9 @@ async function processParent(pid) {
   } finally { await file.close(); }
 }
 export function createTerminalManager(config, { run, launch, parentPid = processParent }) {
+  const limit = terminalLimit(config.maxTerminals);
   const tmux = args => run('tmux', ['-S', join(config.runtime, 'tmux.sock'), ...args]);
-  const children = new Map(); // Four fixed window slots; no queue or persisted intents.
+  const children = new Map(); // Eight fixed window slots; no queue or persisted intents.
   async function list() {
     let text;
     try { text = await tmux(['list-panes', '-a', '-F', '#{session_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{window_index}\t#{pane_index}\t#{@codex_cloud_name}']); }
@@ -43,7 +45,7 @@ export function createTerminalManager(config, { run, launch, parentPid = process
       terminals.push({ id: definition.id, name: title, command: String(command || '').slice(0, 64), supported,
         token: supported ? `${paneId}:${pid}` : null, primary: session === 'codex' });
     }
-    return { terminals, limit: TERMINALS.length };
+    return { terminals, limit };
   }
   async function selected(body) {
     terminalTarget(body);
@@ -101,10 +103,11 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     if (body?.action === 'create') {
       const label = name(body.name);
       const before = await list();
+      if (before.terminals.length >= limit) throw fail(409, `最多保留 ${limit} 个终端，请先退出不用的终端`);
       const mainMissing = config.mode === 'terminal' && !before.terminals.some(item => item.id === 'main');
       if (!mainMissing && !before.terminals.some(item => item.id === 'main' && item.supported)) throw fail(409, '主终端布局无法识别，暂不创建辅助终端');
-      const slot = mainMissing ? TERMINALS[0] : TERMINALS.slice(1).find(item => !before.terminals.some(terminal => terminal.id === item.id));
-      if (!slot) throw fail(409, '最多保留主终端和 3 个辅助终端');
+      const slot = mainMissing ? TERMINALS[0] : TERMINALS.slice(1, limit).find(item => !before.terminals.some(terminal => terminal.id === item.id));
+      if (!slot) throw fail(409, `最多保留 ${limit} 个终端，请先退出不用的终端`);
       // Share the primary shell's initialization, including the user bashrc and
       // selected tool PATH. Multiple argv entries avoid a shell-command string;
       // the script path and workspace stay literal, even with shell characters.

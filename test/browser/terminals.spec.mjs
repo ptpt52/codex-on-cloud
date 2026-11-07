@@ -47,7 +47,7 @@ test('create, rename and switch independent terminals, route paste and Enter sep
 });
 
 test('cancelled creation and lost accepted replies never retry; stale target tokens are rejected and capacity is bounded', async ({ page }) => {
-  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } }); let creates = 0;
+  const app = await fixture({ maxTerminals: 8, rfb: true, rfbSize: { width: 640, height: 480 } }); let creates = 0;
   try {
     await login(page, app); await open(page);
     await page.locator('#new-terminal-name').fill('先取消'); await page.locator('#create-terminal').click(); await page.keyboard.press('Enter');
@@ -68,8 +68,9 @@ test('cancelled creation and lost accepted replies never retry; stale target tok
     await page.locator('#close-terminals').click(); await openInput(page); await page.locator('#input-terminal').selectOption('aux1');
     await openInput(page); await page.locator('[data-key="Enter"]').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'rejected'); expect(app.inputCalls).toEqual([]);
     await page.unroute('**/api/terminals'); await open(page);
-    await create(page, '第二个'); await create(page, '第三个');
-    await expect(page.locator('#create-terminal')).toBeDisabled(); await expect(page.locator('.terminal-row')).toHaveCount(4);
+    for (let number = 2; number <= 7; number++) await create(page, `辅助 ${number}`);
+    await expect(page.locator('#create-terminal')).toBeDisabled(); await expect(page.locator('.terminal-row')).toHaveCount(8);
+    await expect(page.locator('#terminals-status')).toContainText('8 / 8');
     expect((await app.controls.get()).session).toBeNull(); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });

@@ -11,6 +11,16 @@ test('terminal drafts and selection survive reconstruction without crossing iden
   assert.deepEqual(restored.selection, auxiliary); assert.equal(restored.read(main), '主终端\n中文'); assert.equal(restored.read(auxiliary), '日志');
   assert.equal(restored.read({ ...auxiliary, token: '%1:4200' }), '');
 });
+test('all eight user terminals and the current window retain separate bounded drafts', () => {
+  const storage = memory(), state = createTerminalState(storage);
+  const identities = [current, main, ...Array.from({ length: 7 }, (_, index) => ({ id: `aux${index + 1}`, token: `%${index + 1}:${4100 + index}` }))];
+  for (const identity of identities) assert.equal(state.save(identity, `草稿 ${identity.id}`), true);
+  state.choose(identities.at(-1));
+  const restored = createTerminalState(storage);
+  for (const identity of identities) assert.equal(restored.read(identity), `草稿 ${identity.id}`);
+  assert.deepEqual(restored.selection, identities.at(-1));
+  assert.equal(restored.choose({ id: 'aux8', token: '%8:4200' }), false);
+});
 test('draft slots, individual text and escaped serialized state have explicit bounds', () => {
   const storage = memory(), state = createTerminalState(storage), identities = Array.from({ length: DRAFT_SLOTS }, (_, index) => ({ id: 'aux1', token: `%1:${4100 + index}` }));
   for (const identity of identities) assert.equal(state.save(identity, '\0'.repeat(DRAFT_LIMIT)), true);

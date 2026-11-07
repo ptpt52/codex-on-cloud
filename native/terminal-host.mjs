@@ -77,7 +77,7 @@ try {
   // shell environment before spawning any task (including the keeper).
   const serverEnv = { ...env, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null' };
   // One hidden fixed keeper session keeps the server in this service's cgroup
-  // even when all four user terminals have exited. It accepts no browser input.
+  // even when all eight user terminals have exited. It accepts no browser input.
   await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket,
     'start-server', ';', 'set-environment', '-gu', 'DBUS_SESSION_BUS_ADDRESS', ';',
     'new-session', '-d', '-s', 'codex-host', '-c', config.workspace, 'sleep', 'infinity'], { env: serverEnv, timeout: 5000, maxBuffer: 16384 });

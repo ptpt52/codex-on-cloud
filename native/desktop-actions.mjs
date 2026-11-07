@@ -8,7 +8,7 @@ import { TERMINALS } from './terminals.mjs';
 const exec = promisify(execFile);
 const reject = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
 
-// Four terminal children and one foreground selection owner. No action queue,
+// Eight terminal children and one foreground selection owner. No action queue,
 // shell strings, credentials on disk, or automatic clipboard reads.
 export function createDesktopActions(config, env, { spawnProcess = spawn, run = async (command, args) => (await exec(command, args, { env, timeout: 1000, maxBuffer: 8192 })).stdout.trim() } = {}) {
   const windows = new Map(), owners = new Set(); let clipboard, stopped = false;

@@ -3,6 +3,7 @@ import { SHORTCUT_BY_KEY } from './shortcuts.js';
 import { createForwardUI } from './forward-ui.js';
 import { createWorkspacePanels, createHistoryToolsPortal } from './workspace-panels.js';
 import { createTerminalState, validTerminalIdentity } from './terminal-state.js';
+import { TERMINAL_IDS, TERMINAL_CAPACITY, DEFAULT_TERMINAL_LIMIT } from './terminal-slots.js';
 import { createTerminalTabs } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
 import { createNodeUI } from './node-ui.js';
@@ -45,6 +46,7 @@ let desktopSettings = null, settingsController = null, settingsTimer, settingsBu
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalController = null, terminalLoadAttempted = false;
+let maxTerminals = DEFAULT_TERMINAL_LIMIT;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false;
 let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
@@ -359,7 +361,7 @@ function renderInputControls() {
   if (disabled) shortcutMenu.close();
   for (const control of [$('terminals-button'), $('create-terminal'), ...$('terminal-list').querySelectorAll('button, input')]) control.disabled = !canManageTerminals() || control.closest('.terminal-row')?.dataset.supported === 'false';
   $('input-terminal').disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
-  $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= 4;
+  $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
   $('refresh-terminals').disabled = !loggedIn || terminalBusy;
   $('paste-target').disabled = !!selectedTerminal;
   $('desktop-mode').disabled = $('terminal-mode').disabled = modeChangeBusy() || !!confirmation;
@@ -744,6 +746,7 @@ async function claim(lockPassword, signal) {
 }
 async function showWorkspace(user) {
   uiGeneration++; closeConfirmation();
+  maxTerminals = DEFAULT_TERMINAL_LIMIT;
   loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1;
   rtcConfig = undefined; cacheRTC(user);
   if (user.access) permissions = { ...permissions, ...user.access };
@@ -934,15 +937,16 @@ async function terminalRequest(body) {
   try {
     const result = await api('/api/terminals', { method: body ? 'POST' : 'GET', body, signal: controller.signal });
     if (terminalController !== controller || generation !== uiGeneration || !loggedIn || (body && !owned)) return;
-    if (!Array.isArray(result.terminals) || result.terminals.length > 4 || result.terminals.some(item =>
-      !['main', 'aux1', 'aux2', 'aux3'].includes(item?.id) || typeof item.supported !== 'boolean' ||
+    if (!Number.isInteger(result.limit) || result.limit < 1 || result.limit > TERMINAL_CAPACITY || !Array.isArray(result.terminals) || result.terminals.length > TERMINAL_CAPACITY || result.terminals.some(item =>
+      !TERMINAL_IDS.includes(item?.id) || typeof item.supported !== 'boolean' ||
       (item.supported ? !validTerminalIdentity(item) : item.token !== null) || typeof item.name !== 'string' || item.name.length > 96
     ) || new Set(result.terminals.map(item => item.id)).size !== result.terminals.length) throw new Error('终端列表格式无效，请手动刷新');
     terminalCatalog = result.terminals;
+    maxTerminals = result.limit;
     terminalCatalogVerified = true;
     reconcileTerminalSelection(result.opened);
     if (body?.action === 'create') $('new-terminal-name').value = '';
-    $('terminals-status').textContent = body ? '终端操作已完成。' : `共 ${terminalCatalog.length} / 4 个终端。`;
+    $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
     renderTerminalList();
   } catch (error) {
     if (terminalController === controller && generation === uiGeneration) {

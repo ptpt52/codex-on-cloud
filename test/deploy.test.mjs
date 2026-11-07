@@ -175,11 +175,13 @@ test('oversized token files and failed health do not produce a success message o
 test('real isolated setup uses the documented desktop size and preserves existing credentials and configuration on rerun',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'codex-real-setup-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   for(const folder of ['scripts','native'])await mkdir(join(directory,folder));
-  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs','native/deployment-mode.mjs'])await copyFile(resolve(file),join(directory,file));
+  await mkdir(join(directory,'panel','public'),{recursive:true});
+  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs','native/deployment-mode.mjs','panel/public/terminal-slots.js'])await copyFile(resolve(file),join(directory,file));
   const exec=promisify(execFile);await exec(process.execPath,[join(directory,'scripts/setup.mjs')],{maxBuffer:8192});
   const files=['.env','secrets/panel_password','secrets/agent_secret','secrets/credentials.txt'];
   const before=await Promise.all(files.map(file=>readFile(join(directory,file),'utf8')));
   assert.match(before[0],/DESKTOP_SIZE=1600x3200/);
+  assert.match(before[0],/MAX_TERMINALS=4/);
   const result=await exec(process.execPath,[join(directory,'scripts/setup.mjs'),'--origin','https://other.example.com','--username','other'],{maxBuffer:8192});
   assert.deepEqual(await Promise.all(files.map(file=>readFile(join(directory,file),'utf8'))),before);
   assert.equal(result.stdout.includes(before[1].trim()),false);

@@ -1,6 +1,7 @@
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { controlDecoder, sendControl } from '/control.js';
 import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
+import { TERMINAL_IDS } from '/terminal-slots.js';
 
 const CHUNK = 12 * 1024, integer = n => Number.isSafeInteger(n) && n >= 0 && n <= 2 ** 40;
 const encode = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
@@ -288,7 +289,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       if (action === 'switch-terminal') {
         if (!terminal || !peer.terminalSwitch || targetPending || transitioning || claiming || !targetIdle() || inputAck !== sent || targetSequence >= 2147483647) return Promise.reject(failure('终端仍有操作进行中，本次切换未发送'));
         const target = { terminalId: body.terminalId, terminalToken: body.terminalToken };
-        if (!['main', 'aux1', 'aux2', 'aux3'].includes(target.terminalId) || typeof target.terminalToken !== 'string' || !/^%\d{1,10}:\d{1,10}$/.test(target.terminalToken)) return Promise.reject(failure('终端目标无效', 400));
+        if (!TERMINAL_IDS.includes(target.terminalId) || typeof target.terminalToken !== 'string' || !/^%\d{1,10}:\d{1,10}$/.test(target.terminalToken)) return Promise.reject(failure('终端目标无效', 400));
         return new Promise((resolve, reject) => {
           const id = ++targetSequence, abort = () => close('target-unknown');
           targetPending = { id, target, peer, resolve, reject, signal, abort, timer: setTimeout(abort, 8000) };

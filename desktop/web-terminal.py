@@ -16,7 +16,7 @@ import sys
 import termios
 import time
 
-SESSIONS = {'main': 'codex', 'aux1': 'codex-aux1', 'aux2': 'codex-aux2', 'aux3': 'codex-aux3'}
+SESSIONS = {'main': 'codex', **{f'aux{number}': f'codex-aux{number}' for number in range(1, 8)}}
 HISTORY_BYTES = 1024 * 1024
 HISTORY_CHUNK = 8192
 HISTORY_ROWS = 10000
@@ -115,7 +115,7 @@ def view_session(slot):
 
 @contextmanager
 def viewer_lock(socket, slot):
-    # At most four empty 0600 lock files in the private runtime directory. A
+    # At most eight empty 0600 lock files in the private runtime directory. A
     # kernel lock also survives races between reconnecting PTYs and the guardian.
     path = os.path.join(os.path.dirname(socket), 'view-' + slot + '.lock')
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -188,7 +188,7 @@ def yield_desktop(socket, slot, own_tty):
             continue
         with viewer_lock(socket, slot):
             parked = view_session(slot)
-            # Four fixed sessions at most. Multiple argv items execute directly;
+            # Eight fixed sessions at most. Multiple argv items execute directly;
             # no shell command is constructed from terminal or browser text.
             exists = subprocess.run(['tmux', '-S', socket, 'has-session', '-t', '=' + parked],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)

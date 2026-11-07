@@ -1,8 +1,10 @@
+import { TERMINAL_IDS } from './terminal-slots.js';
+
 export const TERMINAL_STATE_KEY = 'codex-cloud.terminals.v1';
 export const DRAFT_LIMIT = 32768;
-export const DRAFT_SLOTS = 9; // current window, four terminals, four stale identities
+export const DRAFT_SLOTS = 9; // current window and eight terminals; stale identities share this bound
 export const STATE_LIMIT = 2 * 1024 * 1024; // includes worst-case JSON escaping
-const ids = new Set(['main', 'aux1', 'aux2', 'aux3']);
+const ids = new Set(TERMINAL_IDS);
 export function validTerminalIdentity(value) {
   return !!value && ((value.id === '' && value.token === '') || (ids.has(value.id) && typeof value.token === 'string' && /^%\d{1,10}:\d{1,10}$/.test(value.token)));
 }

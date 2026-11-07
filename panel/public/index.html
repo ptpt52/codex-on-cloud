@@ -141,7 +141,7 @@
   </dialog>
   <dialog id="terminals-dialog" class="files-dialog terminals-dialog" aria-labelledby="terminals-title">
     <div class="dialog-heading"><h2 id="terminals-title">终端管理</h2><button id="close-terminals" class="quiet" aria-label="关闭终端管理">✕</button></div>
-    <p class="muted">主终端加最多 3 个辅助终端，任务分别运行。关闭窗口后可重新打开；浏览器离开不会结束任务。</p>
+    <p class="muted">主终端与辅助终端的任务分别运行，数量上限见下方。关闭窗口后可重新打开；浏览器离开不会结束任务。</p>
     <div id="terminal-list" class="terminal-list"></div>
     <form id="create-terminal-form" class="terminal-create"><label for="new-terminal-name">新终端名称<input id="new-terminal-name" maxlength="24" placeholder="例如：运行测试" required></label><button id="create-terminal" class="primary" type="submit" disabled>新建辅助终端</button></form>
     <p id="terminals-status" class="muted" role="status"></p>

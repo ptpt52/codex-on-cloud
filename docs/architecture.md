@@ -1,6 +1,6 @@
 # 原生实现
 
-新部署可选纯网页终端模式（`DEPLOY_MODE=terminal`），安装入口为 `npm run deploy -- --mode terminal`。该模式只运行 terminal、manager、panel 和可选 Tunnel，不安装图形栈或 noVNC；独立终端宿主持有私有 tmux、四个固定用户终端及一个固定保活会话，管理器与网页只持有客户端。图形动作在 HTTP/WebSocket 入口和内部助手处拒绝，保留认证、控制权、CSRF、文件与端口映射边界。详见[纯终端部署](terminal-only.md)；以下显示与窗口实现用于默认的桌面模式。
+新部署可选纯网页终端模式（`DEPLOY_MODE=terminal`），安装入口为 `npm run deploy -- --mode terminal`。该模式只运行 terminal、manager、panel 和可选 Tunnel，不安装图形栈或 noVNC；独立终端宿主持有私有 tmux、由 `MAX_TERMINALS` 限制的用户终端（默认四个、最多八个）及一个固定保活会话，管理器与网页只持有客户端。图形动作在 HTTP/WebSocket 入口和内部助手处拒绝，保留认证、控制权、CSRF、文件与端口映射边界。详见[纯终端部署](terminal-only.md)；以下显示与窗口实现用于默认的桌面模式。
 
 ## 进程与显示
 
@@ -16,11 +16,11 @@ VNC 的 Unix socket 位于权限 0700 的运行目录内，socket 权限为 0600
 
 tmux 使用本项目运行目录下的专用 socket，新建窗格的历史上限为 10000 行；管理器明确创建终端前也设置此默认值，兼容已运行的旧私有 server；已有窗格保留创建时的上限，不自动重启或清除。不会连接宿主默认 tmux server。Codex 使用本机可执行程序、HOME 和权限。项目不修改 Codex 配置，不自动启动任务。
 
-多终端使用固定的主会话 `codex` 及三个辅助槽 `codex-aux1` 至 `codex-aux3`，每槽一个 shell 和一种固定 xterm class。创建辅助会话前必须已存在可识别的主会话，shell 由既有私有 tmux server 创建，始终属于桌面生命周期；窗口仅 attach 已存在的辅助会话。每个会话的 `@codex_cloud_name` 最多 24 个字符 / 96 字节，不建立额外文件、历史或待执行队列。列表输出最多 16 KiB / 32 行，只返回四个固定槽；窗口启动器最多跟踪四个子进程。新建、命名、打开与输入、剪贴板、尺寸和维护共用互斥状态。HTTP `/api/terminals` 读取需登录，写入继续校验 Host、Origin、CSRF 和当前认领代次，正文最多 1 KiB。
+多终端使用固定的主会话 `codex` 及最多七个辅助槽 `codex-aux1` 至 `codex-aux7`（`MAX_TERMINALS` 默认 4、范围 1–8），每槽一个 shell 和一种固定 xterm class。创建辅助会话前必须已存在可识别的主会话，shell 由既有私有 tmux server 创建，始终属于桌面生命周期；窗口仅 attach 已存在的辅助会话。每个会话的 `@codex_cloud_name` 最多 24 个字符 / 96 字节，不建立额外文件、历史或待执行队列。列表输出最多 16 KiB / 32 行，只返回八个固定槽；窗口启动器最多跟踪八个子进程。新建、命名、打开与输入、剪贴板、尺寸和维护共用互斥状态。HTTP `/api/terminals` 读取需登录，写入继续校验 Host、Origin、CSRF 和当前认领代次，正文最多 1 KiB。
 
 输入助手可显式携带固定 `terminalId` 和由 pane ID / shell PID 组成的 `terminalToken`。管理服务重新读取私有 tmux 元数据，要求对应槽只有 `0.0` 一个窗格且 token 一致；指定窗口关闭时拒绝输入，打开窗口只发生于明确终端操作。发送前切换 xterm 并校验活动窗口、窗口 PID、tmux client 的父进程及实际连接会话，在最终 xdotool 发送前再次校验；`/proc` 读取每项最多 8 KiB，client 列表最多 8 KiB / 16 行。显式打开可将被手动切走的 client 切回固定会话，普通输入不能隐式改变其 tmux 连接。目标元数据通过既有 HTTP / DataChannel 传输，不接受客户端窗口 ID、进程命令或任意会话名称。未指定终端时保留跟随当前桌面焦点的行为；指定终端使用 Ctrl+Shift+V 粘贴。
 
-浏览器只在内存保存一份最多四项的目录、当前目标、一个终端请求及确认对象；刷新和登录变化不恢复旧目标。确认绑定目标 token、UI 与画面代次，目标变化或接管清除意图。新建/打开先确认，结果未知不重试；初始列表读取与用户刷新只读，不创建终端。终端管理弹层和在途操作延后自动换流与窗口适配。主终端的字号和窗口设置保持原范围；存在任何辅助会话时，单会话桌面重启恢复仍被拒绝。由管理服务打开的 xterm 可能随管理服务停止，私有 tmux 的任务继续保留，窗口可明确重新打开。
+浏览器只在内存保存一份最多八项的目录、当前目标、一个终端请求及确认对象；刷新和登录变化不恢复旧目标。确认绑定目标 token、UI 与画面代次，目标变化或接管清除意图。新建/打开先确认，结果未知不重试；初始列表读取与用户刷新只读，不创建终端。终端管理弹层和在途操作延后自动换流与窗口适配。主终端的字号和窗口设置保持原范围；存在任何辅助会话时，单会话桌面重启恢复仍被拒绝。由管理服务打开的 xterm 可能随管理服务停止，私有 tmux 的任务继续保留，窗口可明确重新打开。
 
 ## 浏览器与认证
 
@@ -56,7 +56,7 @@ Host 白名单保护 HTTP 与 WebSocket。写操作验证 Origin 和 CSRF。每�
 
 `/terminal/` 页面和固定白名单内的本地资源需登录，不能访问任意 node_modules 路径。仅该页面允许 xterm 需要的动态样式，脚本依旧只来自本域；OSC 52 被消费，不自动访问本机剪贴板。`/terminal/connect` 与 VNC / WebRTC 共用单观看者、接管、退出、过期和维护关闭机制，升级时校验 Host、Origin、Cookie、viewer 及当前终端 token，首次 JSON 帧需在 2.5 秒内通过 CSRF 才启动 PTY。文字模式另通过 `/api/terminal/rtc` 使用现有 WebRTC 协商，保持原来的固定 UDP 端口范围和桌面通道协议。
 
-面板每次仅为当前观看者附加一个 Python PTY client，使用固定 argv 连接已存在的四个私有 tmux 槽之一；不接受用户命令模板、任意 socket、进程或会话名。helper 环境沿用虚拟显示与 Xauthority，断线只关闭 PTY master 和附加的 tmux client，原 shell / Codex 留在桌面 tmux 中。输入和 resize 前检查 client 实际会话及 pane ID / PID，拒绝被手动切走或重建的目标；服务端每三秒重新核对目录，失效就关闭连接。新建终端可携带固定 `view: terminal`，跳过 X 窗口创建和聚焦。
+面板每次仅为当前观看者附加一个 Python PTY client，使用固定 argv 连接已存在的八个私有 tmux 槽之一；不接受用户命令模板、任意 socket、进程或会话名。helper 环境沿用虚拟显示与 Xauthority，断线只关闭 PTY master 和附加的 tmux client，原 shell / Codex 留在桌面 tmux 中。输入和 resize 前检查 client 实际会话及 pane ID / PID，拒绝被手动切走或重建的目标；服务端每三秒重新核对目录，失效就关闭连接。新建终端可携带固定 `view: terminal`，跳过 X 窗口创建和聚焦。
 
 终端 WebSocket 单帧最多 256 KiB，原生输入一帧最多 8 KiB、每秒 64 KiB；助手文本最多 32 KiB，安全粘贴加固定首尾标记（最多额外 12 字节），不追加 Enter。控制记录 ID 单调递增，固定按键转为固定终端编码，双 Esc 分两次发送并间隔 80 毫秒；每次仅一项助手操作，结果丢失或取消直接关闭旧通道，不使用 HTTP 补发。helper stdin JSON 缓冲最多 96 KiB、每条最多 64 KiB、待写最多 64 条 / 64 KiB；Node stdin 高水位 64 KiB、关联请求最多 64 项，均不落盘。
 
