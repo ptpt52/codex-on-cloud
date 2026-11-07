@@ -25,6 +25,8 @@ test('real auxiliary shells share the primary bashrc, prompt, tools and paste se
     env: { ...process.env, HOME: home, HISTFILE: '/dev/null', PATH: `${selectedBin}:${process.env.PATH}`, SHELL_TEST_RESULTS: results, SHELL_TEST_USER_BIN: userBin } };
   for (const path of [join(root, 'desktop'), home, results, selectedBin, userBin, config.workspace, config.transfer]) await mkdir(path, { recursive: true, mode: 0o700 });
   for (const name of ['codex-session', 'terminal.bashrc', 'tmux.conf']) await copyFile(join(source, 'desktop', name), join(root, 'desktop', name));
+  // Emulate an older private server without restarting its primary shell.
+  await writeFile(join(root, 'desktop', 'tmux.conf'), (await readFile(join(root, 'desktop', 'tmux.conf'), 'utf8')).replace('history-limit 10000', 'history-limit 2000'));
   await writeFile(join(home, '.bash_profile'), 'touch "$SHELL_TEST_RESULTS/profile-loaded"\n');
   await writeFile(join(home, '.bashrc'), `
 PS1='[项目 shell] \\w\\$ '
@@ -59,6 +61,7 @@ printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
   try {
     await run('tmux', ['-f', join(root, 'desktop', 'tmux.conf'), '-S', join(directory, 'tmux.sock'), 'new-session', '-d', '-s', 'codex', '-c', config.workspace, 'bash', join(root, 'desktop', 'codex-session')]);
     const controls = manager(), main = (await controls.list()).terminals[0], expected = await probe(main);
+    assert.equal(await tmux(['display-message', '-p', '-t', main.token.split(':')[0], '#{history_limit}']), '2000');
     assert.equal(expected[0], '[项目 shell] \\w\\$ '); assert.equal(expected[1], `${env.PATH}:${userBin}:/usr/bin:/bin`);
     assert.equal(expected[2], 'from-user-bashrc'); assert.equal(expected[3], 'test-editor'); assert.equal(expected[4], config.workspace);
     assert.deepEqual(expected.slice(5, 7), ['C.UTF-8', 'C.UTF-8']); assert.equal(expected[8], config.display);
@@ -69,11 +72,13 @@ printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
     for (let index = 1; index <= 3; index++) {
       const created = await controls.manage({ action: 'create', name: `辅助 ${index}`, view: 'terminal' });
       const terminal = created.terminals.find(item => item.id === created.created);
+      assert.equal(await tmux(['display-message', '-p', '-t', terminal.token.split(':')[0], '#{history_limit}']), '10000');
       assert.deepEqual(await probe(terminal), expected);
       await manager().manage({ action: 'open', terminalId: terminal.id, terminalToken: terminal.token, view: 'terminal' });
       assert.equal(await readFile(join(results, `ready-${terminal.token.split(':')[1]}`), 'utf8'), 'loaded\n', 'reopening must not rerun shell initialization');
     }
     assert.equal((await controls.list()).terminals[0].token, main.token);
+    assert.equal(await tmux(['display-message', '-p', '-t', main.token.split(':')[0], '#{history_limit}']), '2000');
     assert.equal(await readFile(join(results, `ready-${main.token.split(':')[1]}`), 'utf8'), 'loaded\n');
     await assert.rejects(access(join(results, 'profile-loaded')), { code: 'ENOENT' });
     await assert.rejects(access(join(results, 'unwanted-command')), { code: 'ENOENT' });

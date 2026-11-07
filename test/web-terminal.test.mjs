@@ -23,7 +23,7 @@ async function until(probe) { for (let i = 0; i < 150; i++) { if (probe()) retur
 
 test('terminal assets and WebSockets authenticate Host, Origin, viewer, target token and a CSRF handshake before launching a PTY', async t => {
   const app = await fixture(); t.after(() => app.close());
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/terminal-history.js', '/terminal/terminal-history-style.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-rtc.js', '/terminal/terminal-history.js', '/terminal/terminal-history-style.js', '/terminal/terminal-history-limits.js', '/terminal/xterm.js']) assert.equal((await app.request(path)).status, 401);
   assert.equal(await denied(app), 401); await app.login(); assert.equal(await denied(app), 409); await app.claim();
   for (const headers of [{ origin: 'https://evil.test' }, { host: 'evil.test', origin: 'http://evil.test' }]) assert.equal(await denied(app, {}, headers), 403);
   assert.equal(await denied(app, { terminalId: '../main' }), 400); assert.equal(await denied(app, { terminalToken: '%0:9999' }), 409);
@@ -34,7 +34,7 @@ test('terminal assets and WebSockets authenticate Host, Origin, viewer, target t
     const malformed = new WebSocket(url(app), { headers: { cookie: app.cookie, origin: app.config.origin } });
     await once(malformed, 'open'); const malformedClosed = once(malformed, 'close'); malformed.send(first); await malformedClosed; assert.equal(app.terminalConnections, 0);
   }
-  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-history.js', '/terminal/terminal-history-style.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
+  for (const path of ['/terminal/index.html', '/terminal/terminal.js', '/terminal/terminal-health.js', '/terminal/terminal-history.js', '/terminal/terminal-history-style.js', '/terminal/terminal-history-limits.js', '/terminal/xterm.js', '/terminal/fit.js', '/terminal/xterm.css']) assert.equal((await app.request(path)).status, 200);
   const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));
   assert.equal(app.terminalConnections, 1); assert.equal(app.inputCalls.length, 0); assert.equal(app.terminalInputs.length, 0);
 });
@@ -170,6 +170,33 @@ test('malformed history records close before reading and takeover discards a del
   ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0 })); await started;
   const closed = once(ws, 'close'); await app.claim('22222222-2222-4222-8222-222222222222'); release(); await closed;
   assert.equal(records.some(value => value.type === 'history'), false); assert.deepEqual(app.terminalInputs, []);
+});
+
+test('opt-in history reads a full 1 MiB in bounded chunks while legacy readers retain their 64 KiB limit', async t => {
+  const text = 'long-history-row\n'.repeat(70000), app = await fixture({ terminalHistory: text });
+  t.after(() => app.close()); await app.login(); await app.claim();
+  const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(value => value.type === 'ready'));
+  const parts = []; let offset = 0;
+  for (let id = 1; id <= 128; id++) {
+    ws.send(JSON.stringify({ type: 'history', id, offset, limit: 1048576 }));
+    await until(() => records.some(value => value.type === 'history' && value.id === id));
+    const value = records.find(value => value.type === 'history' && value.id === id);
+    assert.equal(value.ok, true); assert.equal(value.offset, offset); assert.equal(value.truncated, true);
+    const bytes = Buffer.from(value.data, 'base64'); assert.equal(bytes.length, 8192); parts.push(bytes); offset = value.next;
+    assert.equal(value.done, id === 128);
+  }
+  assert.deepEqual(Buffer.concat(parts), Buffer.from(text).subarray(-1048576));
+  assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.clipboardReads, []);
+});
+
+test('history rejects unsupported limits and offsets beyond the selected bound before invoking the helper', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  for (const query of [{ limit: 0 }, { limit: 65535 }, { limit: 1048577 }, { limit: '1048576' }, { limit: true },
+    { limit: 1048576, offset: 1056768 }, { limit: 1048576, offset: 65537 }, { offset: 73728 }]) {
+    const { ws, records } = await connected(app); await until(() => records.some(value => value.type === 'ready'));
+    const closed = once(ws, 'close'); ws.send(JSON.stringify({ type: 'history', id: 1, offset: 0, ...query })); await closed;
+  }
+  assert.equal(app.terminalHistoryReads.length, 0); assert.deepEqual(app.terminalInputs, []);
 });
 
 test('history styling is explicitly requested; legacy readers remain plain and malformed format flags fail closed', async t => {

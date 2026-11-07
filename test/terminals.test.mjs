@@ -36,7 +36,7 @@ test('three independent auxiliary slots keep literal names, survive repeated rea
   await app.request('/api/terminals'); await app.request('/api/state');
   assert.deepEqual(await listed(app), before);
   assert.equal(calls.filter(item => item.args.includes('new-session')).length, 3);
-  assert.equal(calls.find(item => item.args.includes('set-option')).args.at(-1), label);
+  assert.equal(calls.find(item => item.args.includes('@codex_cloud_name')).args.at(-1), label);
   for (const call of calls.filter(item => item.args.includes('new-session'))) {
     assert.deepEqual(call.args.slice(-2), ['bash', join(app.directory, 'desktop', 'codex-session')]);
     assert.equal(call.args[call.args.indexOf('-c') + 1], '/test-workspace');

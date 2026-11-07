@@ -2,6 +2,7 @@ import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
 import { TERMINAL_THEME } from './terminal-history-style.js';
+import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS, HISTORY_BYTES, HISTORY_CHUNK } from './terminal-history-limits.js';
 import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
 import { createStreamClient } from '/desktop/stream-client.js';
 import { createPanelBridge } from '/control.js';
@@ -19,6 +20,7 @@ let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
+let historyRows = DEFAULT_HISTORY_ROWS;
 let candidateController, probeTimer, probeNetworkCheck = false, probeDelay = 15000, directFailed = false, directIssue = '', networkDetails = null, statsPending = false;
 let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastInteraction = -Infinity, composing = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
@@ -52,26 +54,28 @@ function finishHistory(error, value) {
   const current = historyPending; historyPending = undefined; clearTimeout(current.timer); current.signal.removeEventListener('abort', current.abort);
   error ? current.reject(error) : current.resolve(value);
 }
-function historyChunk(offset, signal) {
+function historyChunk(offset, signal, timeout) {
   if (signal.aborted || historyPending || !ready || blocked || busy || switching || pending || document.hidden || !navigator.onLine) return Promise.reject(new Error('当前连接或输入忙碌，请稍后重试'));
   if (offset === 0 && performance.now() - historyFetchAt < 1000) return Promise.reject(new Error('请稍后再补取历史'));
   return new Promise((resolve, reject) => {
-    const styled = historyStyles, id = send({ type: 'history', offset, ...(styled ? { styled: true } : {}) }); if (!id) return reject(new Error('历史暂不可读取'));
+    const styled = historyStyles, id = send({ type: 'history', offset, limit: HISTORY_BYTES, ...(styled ? { styled: true } : {}) }); if (!id) return reject(new Error('历史暂不可读取'));
     if (offset === 0) historyFetchAt = performance.now();
     historySequence = id;
     const abort = () => finishHistory(new Error('历史读取已取消'));
-    historyPending = { id, offset, styled, resolve, reject, signal, abort, timer: setTimeout(() => finishHistory(new Error('历史读取超时，未自动重试')), 5000) };
+    historyPending = { id, offset, styled, resolve, reject, signal, abort, timer: setTimeout(() => finishHistory(new Error('历史读取超时，未自动重试')), Math.min(5000, timeout)) };
     signal.addEventListener('abort', abort, { once: true });
   });
 }
 async function readHistory(signal) {
   let offset = 0, text = ''; const decoder = new TextDecoder();
-  for (let count = 0; count < 8; count++) {
-    const value = await historyChunk(offset, signal); if (signal.aborted) throw new Error('历史读取已取消');
+  const deadline = performance.now() + 60000;
+  for (let count = 0; count < HISTORY_BYTES / HISTORY_CHUNK; count++) {
+    if (performance.now() >= deadline) throw new Error('历史读取超时，未自动重试');
+    const value = await historyChunk(offset, signal, deadline - performance.now()); if (signal.aborted) throw new Error('历史读取已取消');
     text += decoder.decode(value.bytes, { stream: !value.done }); offset = value.next;
     if (value.done) return { text, styled: value.styled === true, alternate: value.alternate, truncated: value.truncated };
   }
-  throw new Error('历史超过 64 KiB 上限');
+  throw new Error('历史超过 1 MiB 上限');
 }
 function size() {
   cancelAnimationFrame(layout);
@@ -121,7 +125,7 @@ function raw(data) {
 function createTerminal() {
   if (term) { size(); return; }
   host.replaceChildren();
-  term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: 2000,
+  term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: historyRows,
     scrollOnUserInput: false, scrollOnEraseInDisplay: false,
     cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: TERMINAL_THEME });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
@@ -246,7 +250,7 @@ function attachSocket(current) {
       if (value.id !== historyPending?.id) { if (Number.isSafeInteger(value.id) && value.id <= historySequence) return; return retire(current); }
       if (value.ok !== true) { finishHistory(new Error('当前终端历史不可读取')); return; }
       let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
-      if (bytes.length > 8192 || value.offset !== historyPending.offset || value.next !== value.offset + bytes.length || value.next > 65536 || typeof value.done !== 'boolean' || (!value.done && bytes.length !== 8192) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return retire(current);
+      if (bytes.length > HISTORY_CHUNK || value.offset !== historyPending.offset || value.next !== value.offset + bytes.length || value.next > HISTORY_BYTES || typeof value.done !== 'boolean' || (!value.done && (bytes.length !== HISTORY_CHUNK || value.next === HISTORY_BYTES)) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return retire(current);
       if ((value.styled === true) !== historyPending.styled || (value.styled !== undefined && typeof value.styled !== 'boolean')) return retire(current);
       finishHistory(null, { ...value, bytes }); return;
     }
@@ -346,6 +350,10 @@ window.addEventListener('message', event => {
     blocked = value.blocked !== false; busy = value.busy === true;
     if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) fontSize = value.terminalFontSize;
     if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;
+    if (HISTORY_ROWS.includes(value.terminalHistoryRows)) {
+      historyRows = value.terminalHistoryRows;
+      if (term && term.options.scrollback !== historyRows) term.options.scrollback = historyRows;
+    }
     inputState();
     if (typeof value.csrf === 'string' && value.csrf.length <= 256 && value.csrf && !csrf) { csrf = value.csrf; connect(); }
     size(); return;

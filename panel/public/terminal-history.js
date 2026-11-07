@@ -1,4 +1,4 @@
-// One in-memory xterm buffer: 2,000 history rows, at most 500 columns.
+// One in-memory xterm buffer: at most 20,000 history rows and 500 columns.
 // Local scrolling never sends input. Program paging is an explicit opt-in.
 import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
@@ -8,6 +8,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   const toggle = document.getElementById('history-tools-toggle'), tools = document.getElementById('history-tools'), query = document.getElementById('history-query');
   const previousMatch = document.getElementById('history-find-prev'), nextMatch = document.getElementById('history-find-next'), findState = document.getElementById('history-find-state');
   const copySelection = document.getElementById('history-copy-selection'), copyAll = document.getElementById('history-copy-all'), copyState = document.getElementById('history-copy-state');
+  const download = document.getElementById('history-download');
   const manual = document.getElementById('history-copy-manual'), copyText = document.getElementById('history-copy-text');
   const retryCopy = document.getElementById('history-copy-retry'), copyResult = document.getElementById('history-copy-result');
   const archive = document.createElement('pre'); archive.id = 'history-archive'; archive.hidden = true; archive.tabIndex = 0; archive.setAttribute('aria-label', '远端历史快照'); host.appendChild(archive);
@@ -18,6 +19,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   let unseen = false, archiveStyled = false, archiveSimplified = false;
   let view, archiveLocal = false, toolsOpen = false, searchTimer, queryComposing = false, appliedQuery = '', matches = [], groups = [], current = -1, limited = false;
   let copying = false, copyGeneration = 0;
+  let downloadURL, downloadTimer;
   const listeners = [], subscriptions = [];
   const listen = (target, name, handler, options) => { target.addEventListener(name, handler, options); listeners.push(() => target.removeEventListener(name, handler, options)); };
   const floating = () => tools.ownerDocument !== document;
@@ -41,9 +43,9 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     up.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program;
-    let label = loading ? '正在按需补取历史，最多 64 KiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 64 KiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
+    let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
-    if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 64 KiB）' : ''}`;
+    if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
     if (reviewing && unseen) label += ' · 有新输出';
     if (state.textContent !== label) { state.textContent = label; state.title = label; }
     host.dataset.reviewing = String(reviewing);
@@ -51,6 +53,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (different) changed(reviewing);
   }
   function cancelRead() { const current = loading; loading = undefined; current?.abort(); }
+  function clearDownload() { clearTimeout(downloadTimer); if (downloadURL) URL.revokeObjectURL(downloadURL); downloadURL = undefined; }
   function focusControl(element) {
     // These controls can be adopted into the parent page. Firefox needs its
     // browsing context focused before an iframe shortcut can focus the field.
@@ -98,6 +101,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     }
     query.disabled = !view; previousMatch.disabled = nextMatch.disabled = !matches.length;
     copyAll.disabled = copying || !view?.text.length; copySelection.disabled = copying || !selectedText();
+    download.disabled = !view?.text.length;
     retryCopy.disabled = copying || !manual.open || !copyText.value;
     retryCopy.textContent = copying && manual.open ? '复制中…' : '复制到本机';
     const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
@@ -134,7 +138,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     current = -1; setCurrent(matches.length ? 0 : -1, navigate && !!query.value);
   }
   function closeTools() {
-    toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); search(); updateTools();
+    toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); clearDownload(); search(); updateTools();
     placeTools();
   }
   function freezeLocal() {
@@ -155,7 +159,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   }
   async function copy(text, label, source) {
     if (copying || !text) return;
-    if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 64 KiB，请缩小选区'; return; }
+    if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
     clearCopy(); const generation = copyGeneration; copying = true; updateTools();
     try {
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
@@ -248,6 +252,19 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   listen(copySelection, 'mousedown', event => event.preventDefault());
   listen(copySelection, 'click', () => { void copy(selectedText(), '选区', copySelection); });
   listen(copyAll, 'click', () => { void copy(view?.text || '', '当前快照', copyAll); });
+  listen(download, 'click', () => {
+    if (disposed || !toolsOpen || !view?.text) return;
+    const blob = new Blob([view.text], { type: 'text/plain;charset=utf-8' });
+    if (blob.size > HISTORY_TEXT_LIMIT) { copyState.textContent = '快照超过 1 MiB，无法下载'; updateTools(); return; }
+    clearDownload();
+    const link = download.ownerDocument.createElement('a');
+    try {
+      downloadURL = URL.createObjectURL(blob); link.href = downloadURL; link.download = 'codex-terminal-history.txt'; link.hidden = true;
+      download.ownerDocument.body.appendChild(link); link.click();
+      downloadTimer = setTimeout(clearDownload, 30000); copyState.textContent = '已导出当前快照';
+    } catch { clearDownload(); copyState.textContent = '下载失败，可复制当前快照'; }
+    finally { link.remove(); updateTools(); }
+  });
   listen(document.getElementById('history-copy-dismiss'), 'click', dismissCopy);
   listen(document.getElementById('history-copy-select'), 'click', selectCopy);
   listen(retryCopy, 'click', () => { void copyFromWindow(); });
@@ -290,6 +307,6 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, get reviewing() { return reviewing; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); if (searchTimer !== undefined || query.value !== appliedQuery) search(); cancelRead(); update(); placeTools(); },
-    dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
+  return { update, get reviewing() { return reviewing; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) search(); cancelRead(); update(); placeTools(); },
+    dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

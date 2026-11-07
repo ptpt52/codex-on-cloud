@@ -6,6 +6,7 @@ import { createTerminalState, validTerminalIdentity } from './terminal-state.js'
 import { createTerminalTabs } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
 import { createNodeUI } from './node-ui.js';
+import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS } from './terminal-history-limits.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -59,7 +60,7 @@ $('mobile-input').addEventListener('blur', () => { inputComposing = false; rende
 
 // One bounded browser preference entry; it contains no terminal text or credentials.
 const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport', terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' };
+const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport', terminalHistoryRows: DEFAULT_HISTORY_ROWS, terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' };
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
@@ -80,6 +81,7 @@ try {
         if (['desktop', 'terminal'].includes(value.mode)) displayPreferences.mode = value.mode;
         if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) displayPreferences.terminalFontSize = value.terminalFontSize;
         if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) displayPreferences.terminalWidthMode = value.terminalWidthMode;
+        if (HISTORY_ROWS.includes(value.terminalHistoryRows)) displayPreferences.terminalHistoryRows = value.terminalHistoryRows;
         if (typeof value.terminalInputCollapsed === 'boolean') displayPreferences.terminalInputCollapsed = value.terminalInputCollapsed;
         if (['touch', 'trackpad'].includes(value.pointerMode)) displayPreferences.pointerMode = value.pointerMode;
         if (['viewport', 'remote'].includes(value.scrollTarget)) displayPreferences.scrollTarget = value.scrollTarget;
@@ -184,7 +186,7 @@ function sendDisplayPreferences() {
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), rtc: rtcConfig, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode } : {}),
+    csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows } : {}),
     busy: inputBusy || inputComposing || terminalBusy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
@@ -207,6 +209,7 @@ function renderDisplayControls() {
   $('terminal-font-label').title = displayPreferences.terminalWidthMode === 'scale' && fittedFont > displayPreferences.terminalFontSize
     ? `基础字号 ${displayPreferences.terminalFontSize}，适应宽度后为 ${fittedFont}` : `字号 ${displayPreferences.terminalFontSize}`;
   $('terminal-width-mode').value = displayPreferences.terminalWidthMode;
+  $('terminal-history-rows').value = String(displayPreferences.terminalHistoryRows);
   $('terminal-font-down').disabled = displayPreferences.terminalFontSize <= 10; $('terminal-font-up').disabled = displayPreferences.terminalFontSize >= 28;
   renderWakeStatus();
   $('auto-resolution').checked = followsViewport();
@@ -1015,6 +1018,10 @@ $('terminal-view-select').addEventListener('change', () => selectTerminal($('ter
 $('terminal-font-down').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.max(10, displayPreferences.terminalFontSize - 1) }));
 $('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));
 $('terminal-width-mode').addEventListener('change', () => updateDisplayPreferences({ terminalWidthMode: $('terminal-width-mode').value }));
+$('terminal-history-rows').addEventListener('change', () => {
+  const rows = Number($('terminal-history-rows').value);
+  if (HISTORY_ROWS.includes(rows)) updateDisplayPreferences({ terminalHistoryRows: rows });
+});
 $('login-form').addEventListener('submit', event => {
   event.preventDefault();
   void action($('login-button'), async () => {

@@ -145,6 +145,7 @@ export async function fixture({ mode = 'desktop', port = 0, dataDir, password = 
         const id = args[args.indexOf('-s') + 1].replace('codex-', ''); auxiliary.set(id, { pid: nextAuxPid++, name: '', visible: false }); return '';
       }
       if (command === 'tmux' && args.includes('set-option')) {
+        if (args.includes('history-limit')) return '';
         const id = args[args.indexOf('-t') + 1].replace('codex-', '');
         if (id === 'codex') return '';
         auxiliary.get(id).name = args.at(-1); return '';
@@ -189,11 +190,12 @@ export async function fixture({ mode = 'desktop', port = 0, dataDir, password = 
               await terminalHistoryHook?.(value.offset);
               const historyText = typeof terminalHistory === 'function' ? terminalHistory() : terminalHistory;
               const source = Buffer.from(value.styled ? historyText : historyText.replace(/\x1b\[[\d;:]*m/g, ''));
-              let bytes = source.subarray(-65536);
-              if (value.styled && source.length > 65536) { const boundary = bytes.indexOf(10); if (boundary >= 0 && boundary < bytes.length - 1) bytes = bytes.subarray(boundary + 1); }
+              const limit = value.limit ?? 65536;
+              let bytes = source.subarray(-limit);
+              if (value.styled && source.length > limit) { const boundary = bytes.indexOf(10); if (boundary >= 0 && boundary < bytes.length - 1) bytes = bytes.subarray(boundary + 1); }
               const data = bytes.subarray(value.offset, value.offset + 8192);
               emit({ type: 'history', id: value.id, offset: value.offset, next: value.offset + data.length, data: data.toString('base64'), done: value.offset + data.length === bytes.length,
-                alternate: terminalHistoryAlternate, truncated: source.length > 65536, styled: value.styled === true, ok: true }); return;
+                alternate: terminalHistoryAlternate, truncated: source.length > limit, styled: value.styled === true, ok: true }); return;
             }
             if (value.action === 'resize') { terminalSizes.push({ terminalId: target.terminalId, cols: value.cols, rows: value.rows }); emit({ type: 'geometry', maxCols: value.viewport ? 500 : terminalGeometry.maxCols }); }
             else { const data = Buffer.from(value.data, 'base64'), text = data.toString(); terminalInputs.push({ terminalId: target.terminalId, text }); await terminalHook?.(text); for (let offset = 0; offset < data.length; offset += 8192) emit({ type: 'output', data: data.subarray(offset, offset + 8192).toString('base64') }); }

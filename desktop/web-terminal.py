@@ -17,17 +17,20 @@ import termios
 import time
 
 SESSIONS = {'main': 'codex', 'aux1': 'codex-aux1', 'aux2': 'codex-aux2', 'aux3': 'codex-aux3'}
-HISTORY_BYTES = 64 * 1024
+HISTORY_BYTES = 1024 * 1024
 HISTORY_CHUNK = 8192
+HISTORY_ROWS = 10000
+HISTORY_SCAN_BYTES = 32 * 1024 * 1024
 
 
-def history_snapshot(socket, pane, styled=False):
+def history_snapshot(socket, pane, styled=False, limit=HISTORY_BYTES):
     """Read only a fixed pane, retaining a bounded tail without a disk log."""
     alternate = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1).stdout.strip() == b'1'
-    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-2000'] + (['-e'] if styled else []),
+    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-' + str(HISTORY_ROWS)] + (['-e'] if styled else []),
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    tail = bytearray()
+    chunks = collections.deque()
+    retained = 0
     total = 0
     deadline = time.monotonic() + 1
     try:
@@ -41,21 +44,23 @@ def history_snapshot(socket, pane, styled=False):
             if not chunk:
                 break
             total += len(chunk)
-            if total > 4 * 1024 * 1024:
+            if total > HISTORY_SCAN_BYTES:
                 raise ValueError('history scan limit')
-            tail.extend(chunk)
-            if len(tail) > HISTORY_BYTES:
-                del tail[:-HISTORY_BYTES]
+            chunks.append(chunk)
+            retained += len(chunk)
+            while chunks and retained - len(chunks[0]) >= limit:
+                retained -= len(chunks.popleft())
         if child.wait(timeout=0.5) != 0:
             raise ValueError('history unavailable')
+        tail = b''.join(chunks)[-limit:]
         # tmux starts each captured row with its own attributes. Drop a partial
         # leading row when clipping styled output, so neither UTF-8 nor SGR
         # sequences start halfway through and the first complete row is faithful.
-        if styled and total > HISTORY_BYTES:
+        if styled and total > limit:
             boundary = tail.find(b'\n')
             if 0 <= boundary < len(tail) - 1:
-                del tail[:boundary + 1]
-        return bytes(tail).decode('utf8', errors='ignore').encode('utf8'), alternate, total > HISTORY_BYTES
+                tail = tail[boundary + 1:]
+        return tail.decode('utf8', errors='ignore').encode('utf8'), alternate, total > limit
     finally:
         child.stdout.close()
         if child.poll() is None:
@@ -238,6 +243,7 @@ def main():
     history_alternate = False
     history_truncated = False
     history_styled = False
+    history_limit = HISTORY_BYTES
     viewport_layout = False
 
     def emit(value):
@@ -314,17 +320,21 @@ def main():
                         queued += len(content)
                     elif value['action'] == 'history':
                         offset = value['offset']
-                        if type(offset) is not int or offset < 0 or offset > HISTORY_BYTES:
+                        limit = value.get('limit', 64 * 1024)
+                        if type(limit) is not int or limit not in (64 * 1024, HISTORY_BYTES):
+                            raise ValueError('invalid history limit')
+                        if type(offset) is not int or offset < 0 or offset > limit or offset % HISTORY_CHUNK:
                             raise ValueError('invalid history offset')
                         styled = value.get('styled', False)
                         if type(styled) is not bool:
                             raise ValueError('invalid history format')
                         try:
                             if offset == 0:
-                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0], styled)
+                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0], styled, limit)
                                 history_styled = styled
+                                history_limit = limit
                                 history_offset = 0
-                            if offset != history_offset or (offset and not history) or styled != history_styled:
+                            if offset != history_offset or (offset and not history) or styled != history_styled or limit != history_limit:
                                 raise ValueError('expired history')
                             if not verify():
                                 raise ValueError('history target changed')

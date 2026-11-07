@@ -9,7 +9,7 @@ import { join, resolve } from 'node:path';
 
 async function prepare(page) {
   await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+    if (window === parent && !localStorage.getItem('codex-cloud.display.v1')) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal; window.terminalInstances = 0;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,
@@ -157,12 +157,79 @@ test('local history stays in the browser, pauses input, and keeps its position w
 test('history has a hard row bound, respects screen clears and never stores terminal text in browser storage', async ({ page }) => {
   const app = await fixture();
   try {
-    const frame = await seeded(page, app, 2500); const value = await buffer(frame);
-    expect(value.length).toBeLessThanOrEqual(value.rows + 2000); expect(value.all).not.toContain('LOCAL-HISTORY-0000');
+    const frame = await seeded(page, app, 10500); const value = await buffer(frame);
+    expect(value.length).toBeLessThanOrEqual(value.rows + 10000); expect(value.all).not.toContain('LOCAL-HISTORY-0000');
     output(app, '\x1b[H\x1b[2JAFTER-CLEAR\r\n'); await expect.poll(async () => (await buffer(frame)).all.includes('AFTER-CLEAR')).toBe(true);
-    expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-2400');
+    expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-10400');
     expect(await frame.evaluate(() => [localStorage, sessionStorage].every(storage => Object.values(storage).every(value => !String(value).includes('LOCAL-HISTORY'))))).toBe(true);
     expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('history row choices apply without reconnecting, discard oldest rows when reduced and persist only valid preferences', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app, 2600);
+    expect(await frame.evaluate(() => window.historyTerminal.options.scrollback)).toBe(10000);
+    expect((await buffer(frame)).all).toContain('LOCAL-HISTORY-0000');
+    const connections = app.terminalConnections;
+    for (const rows of [2000, 5000, 10000, 20000]) {
+      await openTools(page); await page.locator('#terminal-history-rows').selectOption(String(rows));
+      await expect.poll(() => frame.evaluate(() => window.historyTerminal.options.scrollback)).toBe(rows);
+      expect(await page.evaluate(() => JSON.parse(localStorage.getItem('codex-cloud.display.v1')).terminalHistoryRows)).toBe(rows);
+      if (rows === 2000) { const value = await buffer(frame); expect(value.length).toBeLessThanOrEqual(value.rows + rows); expect(value.all).not.toContain('LOCAL-HISTORY-0000'); }
+    }
+    expect(app.terminalConnections).toBe(connections); expect(await frame.evaluate(() => window.terminalInstances)).toBe(1);
+    await page.reload(); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    const restored = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
+    expect(await restored.evaluate(() => window.historyTerminal.options.scrollback)).toBe(20000);
+    for (const invalid of [999999, '20000']) {
+      await page.evaluate(value => { const key = 'codex-cloud.display.v1', saved = JSON.parse(localStorage.getItem(key)); saved.terminalHistoryRows = value; localStorage.setItem(key, JSON.stringify(saved)); }, invalid);
+      await page.reload(); await expect(page.locator('#connection-status')).toContainText('终端在线');
+      const current = page.frames().find(frame => frame.url().includes('/terminal/index.html'));
+      expect(await current.evaluate(() => window.historyTerminal.options.scrollback)).toBe(10000);
+    }
+    expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('a 1 MiB history snapshot downloads literal UTF-8 text without additional reads or terminal input', async ({ page }) => {
+  const source = Array.from({ length: 12500 }, (_, index) => `DOWNLOAD-${String(index).padStart(5, '0')} 中文😀 ${'x'.repeat(80)}\n`).join('');
+  let expected = Buffer.from(source).subarray(-1048576); expected = expected.subarray(expected.indexOf(10) + 1);
+  const app = await fixture({ terminalHistory: source });
+  try {
+    await prepare(page); const frame = await login(page, app);
+    await frame.evaluate(() => {
+      const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+      window.historyURLs = new Set();
+      URL.createObjectURL = blob => { const url = create(blob); window.historyURLs.add(url); return url; };
+      URL.revokeObjectURL = url => { window.historyURLs.delete(url); revoke(url); };
+    });
+    await frame.locator('#history-up').click();
+    const archive = frame.locator('#history-archive'); await expect(archive).toContainText('DOWNLOAD-12499', { timeout: 20000 });
+    expect(await archive.textContent()).toBe(expected.toString()); expect(expected.length).toBeGreaterThan(65536);
+    await expect(frame.locator('#history-state')).toContainText('1 MiB');
+    const reads = app.terminalHistoryReads.length; await frame.locator('#history-tools-toggle').click();
+    for (let index = 0; index < 2; index++) {
+      const pending = page.waitForEvent('download'); await page.locator('#history-download').click(); const download = await pending;
+      expect(download.suggestedFilename()).toBe('codex-terminal-history.txt');
+      expect(await readFile(await download.path(), 'utf8')).toBe(expected.toString());
+      expect(await frame.evaluate(() => window.historyURLs.size)).toBe(1);
+    }
+    await frame.locator('#history-latest').click(); expect(app.terminalHistoryReads.length).toBe(reads);
+    expect(await frame.evaluate(() => window.historyURLs.size)).toBe(0);
+    expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('local history tools include more than 2200 loaded rows without fetching remote history', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app, 6000); await frame.evaluate(() => window.historyTerminal.scrollToTop());
+    await frame.locator('#history-tools-toggle').click(); const archive = frame.locator('#history-archive');
+    await expect(archive).toContainText('LOCAL-HISTORY-0000'); await expect(archive).toContainText('LOCAL-HISTORY-5999');
+    expect(Buffer.byteLength(await archive.textContent())).toBeGreaterThan(65536);
+    expect(app.terminalHistoryReads).toEqual([]); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
 
@@ -367,9 +434,9 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     const clippedStyle = frame.locator('#history-archive span').filter({ hasText: 'LARGE-HISTORY-1000' });
     expect(await clippedStyle.evaluate(element => getComputedStyle(element).color)).toBe('rgb(239, 41, 41)');
     expect(await frame.locator('#history-archive').textContent()).not.toContain('\x1b');
-    expect(Buffer.byteLength(await frame.locator('#history-archive').textContent())).toBeLessThanOrEqual(65536);
-    const complete = await exec('tmux', ['-S', socket, 'capture-pane', '-e', '-p', '-t', token.split(':', 1)[0], '-S', '-2000'], { env, timeout: 3000, maxBuffer: 4 * 1024 * 1024 });
-    if (Buffer.byteLength(complete.stdout) > 65536) await expect(frame.locator('#history-state')).toContainText('64 KiB');
+    expect(Buffer.byteLength(await frame.locator('#history-archive').textContent())).toBeLessThanOrEqual(1048576);
+    const complete = await exec('tmux', ['-S', socket, 'capture-pane', '-e', '-p', '-t', token.split(':', 1)[0], '-S', '-10000'], { env, timeout: 3000, maxBuffer: 32 * 1024 * 1024 });
+    if (Buffer.byteLength(complete.stdout) > 1048576) await expect(frame.locator('#history-state')).toContainText('1 MiB');
     else await expect(frame.locator('#history-state')).not.toContainText('截取');
     expect(await readFile(proof, 'utf8')).toBe('once\n');
   } finally {

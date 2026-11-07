@@ -1,5 +1,6 @@
 // Match the pinned xterm 6 palette. Only text and SGR attributes reach the DOM;
 // no terminal parser, HTML, URLs, clipboard operations or network requests.
+import { HISTORY_BYTES, MAX_HISTORY_ROWS } from './terminal-history-limits.js';
 const names = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
   'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'];
 const ansi = ['#2e3436', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf',
@@ -7,7 +8,7 @@ const ansi = ['#2e3436', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', 
 export const TERMINAL_THEME = Object.freeze({ background: '#222222', foreground: '#e7eee9', cursor: '#f7971d', selectionBackground: '#584329',
   ...Object.fromEntries(names.map((name, index) => [name, ansi[index]])) });
 export const HISTORY_STYLE_LIMIT = 4096;
-export const HISTORY_TEXT_LIMIT = 65536, HISTORY_SEARCH_LIMIT = 1000, HISTORY_QUERY_LIMIT = 128;
+export const HISTORY_TEXT_LIMIT = HISTORY_BYTES, HISTORY_SEARCH_LIMIT = 1000, HISTORY_QUERY_LIMIT = 128;
 const defaults = () => ({ fg: null, bg: null, underlineColor: null, bold: false, dim: false, italic: false, underline: 0, inverse: false, hidden: false, strike: false, overline: false });
 const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
 const rgb = values => '#' + values.map(value => value.toString(16).padStart(2, '0')).join('');
@@ -137,32 +138,47 @@ export function findHistoryMatches(text, query) {
   return { matches, limited: false };
 }
 export function captureHistoryBuffer(term) {
-  const buffer = term.buffer.active, encoder = new TextEncoder(), rows = [], parsed = { runs: [], simplified: false };
+  const buffer = term.buffer.active, encoder = new TextEncoder(), rows = [], older = [], parsed = { runs: [], simplified: false };
+  const plainStyle = css(defaults());
   let bytes = 0, truncated = false;
-  const first = Math.min(buffer.viewportY, buffer.length - 1), last = Math.min(buffer.length - 1, first + 2199);
+  const first = Math.min(buffer.viewportY, buffer.length - 1), last = Math.min(buffer.length - 1, first + MAX_HISTORY_ROWS + 199);
   function row(index, prepend = false) {
     const line = buffer.getLine(index), text = line?.translateToString(true, 0, term.cols).slice(0, HISTORY_TEXT_LIMIT) || '';
     const length = encoder.encode(text).length + 1;
     if (bytes + length > HISTORY_TEXT_LIMIT) { truncated = true; return false; }
-    bytes += length; prepend ? rows.unshift({ index, text }) : rows.push({ index, text }); return true;
+    bytes += length; (prepend ? older : rows).push({ index, text }); return true;
   }
   for (let index = first; index <= last; index++) if (!row(index)) break;
   for (let index = first - 1; index >= 0; index--) if (!row(index, true)) break;
+  rows.unshift(...older.reverse());
   const cell = buffer.getNullCell();
   for (let index = 0; index < rows.length; index++) {
-    const source = rows[index], line = buffer.getLine(source.index); let length = 0;
+    const source = rows[index], line = buffer.getLine(source.index); let length = 0, runText = '', runKey, runStyle;
+    const flush = () => { appendRun(parsed, runText, runStyle); runText = ''; };
     for (let col = 0; col < Math.min(line.length, term.cols) && length < source.text.length; col++) {
+      if (parsed.simplified) { flush(); appendRun(parsed, source.text.slice(length), plainStyle); break; }
       line.getCell(col, cell); if (!cell.getWidth()) continue;
       const chars = (cell.getChars() || ' ').slice(0, source.text.length - length); length += chars.length;
-      const value = (foreground) => {
-        const mode = foreground ? cell.isFgRGB() : cell.isBgRGB(), palette = foreground ? cell.isFgPalette() : cell.isBgPalette();
-        const color = foreground ? cell.getFgColor() : cell.getBgColor();
-        return mode ? '#' + color.toString(16).padStart(6, '0') : palette ? color : null;
-      };
-      appendRun(parsed, chars, css({ ...defaults(), fg: value(true), bg: value(false), bold: !!cell.isBold(), dim: !!cell.isDim(), italic: !!cell.isItalic(),
-        underline: cell.isUnderline() ? 1 : 0, inverse: !!cell.isInverse(), hidden: !!cell.isInvisible(), strike: !!cell.isStrikethrough(), overline: !!cell.isOverline() }));
+      if (cell.isAttributeDefault()) {
+        if (runKey !== 'default') { flush(); runKey = 'default'; runStyle = plainStyle; }
+      } else {
+        const flags = [cell.isBold(), cell.isDim(), cell.isItalic(), cell.isUnderline(), cell.isInverse(), cell.isInvisible(), cell.isStrikethrough(), cell.isOverline()].map(Boolean);
+        const key = [cell.getFgColorMode(), cell.getFgColor(), cell.getBgColorMode(), cell.getBgColor(), ...flags].join(':');
+        if (key !== runKey) {
+          flush(); runKey = key;
+          const value = (foreground) => {
+            const mode = foreground ? cell.isFgRGB() : cell.isBgRGB(), palette = foreground ? cell.isFgPalette() : cell.isBgPalette();
+            const color = foreground ? cell.getFgColor() : cell.getBgColor();
+            return mode ? '#' + color.toString(16).padStart(6, '0') : palette ? color : null;
+          };
+          const [bold, dim, italic, underline, inverse, hidden, strike, overline] = flags;
+          runStyle = css({ ...defaults(), fg: value(true), bg: value(false), bold, dim, italic, underline: underline ? 1 : 0, inverse, hidden, strike, overline });
+        }
+      }
+      runText += chars;
     }
-    if (index < rows.length - 1) appendRun(parsed, '\n', css(defaults()));
+    flush();
+    if (index < rows.length - 1) appendRun(parsed, '\n', plainStyle);
   }
   return { ...parsed, truncated: truncated || rows[0]?.index > 0 || rows.at(-1)?.index < buffer.length - 1,
     viewportRow: Math.max(0, first - (rows[0]?.index || 0)) };

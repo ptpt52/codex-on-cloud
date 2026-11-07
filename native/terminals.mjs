@@ -108,6 +108,9 @@ export function createTerminalManager(config, { run, launch, parentPid = process
       // Share the primary shell's initialization, including the user bashrc and
       // selected tool PATH. Multiple argv entries avoid a shell-command string;
       // the script path and workspace stay literal, even with shell characters.
+      // Migrate the default for new panes on an already-running private server.
+      // tmux keeps the history limit of every existing pane unchanged.
+      await tmux(['set-option', '-g', 'history-limit', '10000']);
       await tmux(['new-session', '-d', '-s', slot.session, '-c', config.workspace, 'bash', join(config.root, 'desktop', 'codex-session')]);
       try {
         await tmux(['set-option', '-t', slot.session, '@codex_cloud_name', label]);

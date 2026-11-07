@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { HISTORY_BYTES, LEGACY_HISTORY_BYTES, HISTORY_CHUNK } from './public/terminal-history-limits.js';
 
 const helper = fileURLToPath(new URL('../desktop/web-terminal.py', import.meta.url));
 export const TERMINAL_KEYS = Object.freeze({ Enter: '\r', Tab: '\t', Escape: '\x1b', Backspace: '\x7f', Delete: '\x1b[3~',
@@ -45,7 +46,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   function command(action, value, clientId, history = false) {
     if (ended || !ready || !valid() || sequence >= 2147483647 || requests.size >= 64 || child.stdin.writableLength > 64 * 1024) throw new Error('terminal unavailable');
     const id = ++sequence;
-    requests.set(id, history ? { history: clientId, offset: value.offset, styled: value.styled } : clientId || 0);
+    requests.set(id, history ? { history: clientId, offset: value.offset, limit: value.limit, styled: value.styled } : clientId || 0);
     child.stdin.write(JSON.stringify({ id, action, ...value }) + '\n');
   }
   child.stdout.on('data', bytes => {
@@ -73,7 +74,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       } else if (value.type === 'history' && requests.get(value.id)?.history) {
         const request = requests.get(value.id), id = request.history; requests.delete(value.id); historyBusy = false;
         if (value.ok !== true) { send({ type: 'history', id, ok: false }); continue; }
-        if (typeof value.data !== 'string' || value.data.length > 11000 || value.offset !== request.offset || !Number.isSafeInteger(value.next) || value.next < value.offset || value.next > 65536 || value.next - value.offset > 8192 || Buffer.from(value.data, 'base64').length !== value.next - value.offset || typeof value.done !== 'boolean' || (!value.done && value.next - value.offset !== 8192) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return close();
+        if (typeof value.data !== 'string' || value.data.length > 11000 || value.offset !== request.offset || !Number.isSafeInteger(value.next) || value.next < value.offset || value.next > request.limit || value.next - value.offset > HISTORY_CHUNK || Buffer.from(value.data, 'base64').length !== value.next - value.offset || typeof value.done !== 'boolean' || (!value.done && (value.next - value.offset !== HISTORY_CHUNK || value.next === request.limit)) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return close();
         if ((value.styled === true) !== request.styled || (value.styled !== undefined && typeof value.styled !== 'boolean')) return close();
         send({ ...value, id, styled: request.styled });
       } else if (value.type === 'result' && requests.has(value.id)) {
@@ -105,10 +106,11 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
     try {
       if (value.type === 'history') {
         const fields = Object.keys(value);
-        if (bytes.length > 128 || fields.some(key => !['type', 'id', 'offset', 'styled'].includes(key)) || (value.styled !== undefined && value.styled !== true) || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 65536 || value.offset % 8192 !== 0) return close();
+        const limit = value.limit === undefined ? LEGACY_HISTORY_BYTES : value.limit;
+        if (bytes.length > 128 || fields.some(key => !['type', 'id', 'offset', 'styled', 'limit'].includes(key)) || ![LEGACY_HISTORY_BYTES, HISTORY_BYTES].includes(limit) || (value.styled !== undefined && value.styled !== true) || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > limit || value.offset % HISTORY_CHUNK !== 0) return close();
         if (historyBusy || (value.offset === 0 && Date.now() - historyAt < 1000)) { send({ type: 'history', id: value.id, ok: false }); return; }
         if (value.offset === 0) historyAt = Date.now();
-        historyBusy = true; command('history', { offset: value.offset, styled: value.styled === true }, value.id, true); return;
+        historyBusy = true; command('history', { offset: value.offset, limit, styled: value.styled === true }, value.id, true); return;
       }
       if (value.type === 'resize') {
         if (!Number.isInteger(value.cols) || !Number.isInteger(value.rows) || value.cols < 2 || value.cols > 500 || value.rows < 1 || value.rows > 200 || (value.geometry !== undefined && value.geometry !== true) || (value.viewport !== undefined && typeof value.viewport !== 'boolean')) return close();
