@@ -322,6 +322,8 @@ Tunnel 的上游是 **`http://127.0.0.1:36080`**。不需要开放路由器端�
 
 公网入口使用工作台自身的账号密码登录，HTTPS Cookie 带 Secure。Cloudflare Access 是可选的额外身份验证层，配置方式见部署文档。
 
+后续设计见 [TURN 中继与自有 VPS 公网入口规划](docs/turn-selfhost-plan.md)：先为现有部署增加 TURN，再支持 Caddy/frp/coturn 自建入口。该文档为待实施方案，当前部署参数与功能不变。
+
 ## 生命周期与运维
 
 | 操作 | 桌面与 tmux 进程 | 文件与 Codex 登录 |
