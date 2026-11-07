@@ -108,8 +108,9 @@ test('login survives a gateway restart; raw session tokens are not stored and pa
 });
 
 test('expired sessions and repeated failed logins are rejected', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
   const app = await fixture({ sessionMs: 20 }); t.after(() => app.close());
-  await app.login(); await new Promise(resolve => setTimeout(resolve, 30));
+  await app.login(); now += 30;
   assert.equal((await app.request('/api/me')).status, 401);
   for (let index = 0; index < 10; index++) assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 401);
   assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' } })).status, 429);
