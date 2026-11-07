@@ -193,9 +193,12 @@ export function createDesktopControls(config, dependencies = {}) {
   }
   function save(body) {
     if (busy()) throw new ControlError(409, '已有桌面操作进行中');
-    if (body?.revision !== preferenceRevision(saved())) throw new ControlError(409, '设置已变化，请刷新后重新保存');
+    const current = saved();
+    if (body?.revision !== preferenceRevision(current)) throw new ControlError(409, '设置已变化，请刷新后重新保存');
     let value;
-    try { value = validatePreferences({ width: body.width, height: body.height, fontSize: body.fontSize }); }
+    // Browser resolution writes omit the legacy native font default. Preserve
+    // it; it must never become a new browser's display preference.
+    try { value = validatePreferences({ width: body.width, height: body.height, fontSize: body.fontSize === undefined ? current.fontSize : body.fontSize }); }
     catch (error) { throw new ControlError(400, error.message); }
     writePreferences(config.preferencesFile, value);
     job = null;

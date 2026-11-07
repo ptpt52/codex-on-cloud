@@ -16,7 +16,6 @@ test('save persists pending settings; only explicit confirmed apply restarts and
   try {
     await open(page, app);
     await page.locator('#resolution-preset').selectOption('1920x1600');
-    await page.locator('#terminal-font-size').fill('18');
     await expect(page.locator('#apply-desktop-settings')).toBeDisabled();
     await page.locator('#save-desktop-settings').click();
     await expect(page.locator('#settings-pending')).toContainText('待应用：1920 × 1600');
@@ -26,7 +25,7 @@ test('save persists pending settings; only explicit confirmed apply restarts and
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await openTools(page); await page.locator('#desktop-settings-button').click();
     await expect(page.locator('#desktop-width')).toHaveValue('1920');
-    await expect(page.locator('#terminal-font-size')).toHaveValue('18');
+    await expect(page.locator('#terminal-font-size')).toHaveCount(0);
     await expect(page.locator('#settings-recovery')).toContainText('11111111-1111-4111-8111-111111111111');
     await expect(page.locator('#apply-desktop-settings')).toBeDisabled();
     await page.locator('#confirm-desktop-restart').check();
@@ -42,16 +41,12 @@ test('save persists pending settings; only explicit confirmed apply restarts and
   } finally { await app.close(); }
 });
 
-test('terminal font and window actions preserve tasks and never submit terminal input', async ({ page }) => {
+test('shared window controls preserve tasks and browser preferences expose no global font update', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
     await open(page, app);
-    await page.locator('#terminal-font-size').fill('20');
-    await expect(page.locator('#apply-terminal-font')).toBeDisabled();
-    await page.locator('#save-desktop-settings').click();
-    await expect(page.locator('#apply-terminal-font')).toBeEnabled();
-    await page.locator('#apply-terminal-font').click();
-    await expect(page.locator('#desktop-settings-status')).toContainText('终端显示已更新');
+    await expect(page.locator('#terminal-font-size')).toHaveCount(0);
+    await expect(page.locator('#apply-terminal-font')).toHaveCount(0);
     await expect(page.locator('#maximize-terminal')).toBeEnabled();
     await page.locator('#maximize-terminal').click();
     await expect.poll(() => app.managementStats.maximizes).toBe(1);
@@ -59,11 +54,11 @@ test('terminal font and window actions preserve tasks and never submit terminal 
     await page.locator('#restore-terminal').click();
     await expect.poll(() => app.managementStats.restores).toBe(1);
     await expect(page.locator('#restore-terminal')).toBeEnabled();
-    expect(app.managementStats.fontChanges).toBe(1); expect(app.managementStats.restarts).toBe(0); expect(app.managementStats.resumes).toBe(0);
+    expect(app.managementStats.fontChanges).toBe(0); expect(app.managementStats.restarts).toBe(0); expect(app.managementStats.resumes).toBe(0);
     expect(app.inputCalls).toHaveLength(0);
     await page.locator('#desktop-width').fill('9999');
     await page.locator('#save-desktop-settings').click();
-    expect(app.managementStats.saves).toBe(1);
+    expect(app.managementStats.saves).toBe(0);
     expect(await page.locator('#desktop-width').evaluate(input => input.validity.rangeOverflow)).toBe(true);
     await page.locator('#close-desktop-settings').click();
     await expect(page.locator('#desktop-settings-dialog')).not.toBeVisible();
@@ -117,7 +112,7 @@ test('oversized saved resolution requires explicit restart confirmation and neve
     await page.getByRole('button', { name: '连接工作空间' }).click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await openTools(page); await page.locator('#desktop-settings-button').click();
     await started;
-    for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'terminal-font-size', 'save-desktop-settings', 'apply-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
+    for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'save-desktop-settings', 'apply-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
     expect(app.managementStats.saves).toBe(0);
     release();
     await page.locator('#desktop-width').fill('1920'); await page.locator('#save-desktop-settings').click();
@@ -144,12 +139,12 @@ test('refresh locks settings fields until the saved values arrive, then accepts 
       const response = await route.fetch(); entered(); await hold; await route.fulfill({ response });
     });
     await page.locator('#refresh-desktop-settings').click(); await started;
-    for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'terminal-font-size', 'save-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
+    for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'save-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
     release();
-    await page.locator('#desktop-width').fill('1920'); await page.locator('#terminal-font-size').fill('18');
+    await page.locator('#desktop-width').fill('1920');
     await page.locator('#save-desktop-settings').click();
     await expect(page.locator('#settings-pending')).toContainText('待应用：1920 × 1600');
-    await expect(page.locator('#desktop-width')).toHaveValue('1920'); await expect(page.locator('#terminal-font-size')).toHaveValue('18');
+    await expect(page.locator('#desktop-width')).toHaveValue('1920');
     expect(app.managementStats.saves).toBe(1); expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
   } finally { release(); await app.close(); }
 });

@@ -82,7 +82,7 @@ test('a stalled write times out once, preserves the draft and does not resend', 
   } finally { hold.release(); await app.close(); }
 });
 
-test('closing settings during a font update keeps input blocked until maintenance finishes', async ({ page }) => {
+test('closing settings during legacy server maintenance keeps input blocked until maintenance finishes', async ({ page }) => {
   const hold = gate(), started = gate();
   const app = await fixture({ rfb: true, desktopHook: async (command, args) => {
     if (command === 'xdotool' && args[0] === 'windowclose') { started.release(); await hold.promise; }
@@ -96,8 +96,15 @@ test('closing settings during a font update keeps input blocked until maintenanc
   try {
     await login(page, app);
     await openTools(page); await page.locator('#desktop-settings-button').click();
-    await expect(page.locator('#apply-terminal-font')).toBeEnabled();
-    await page.locator('#apply-terminal-font').click();
+    // The compatibility maintenance API stays protected even though ordinary
+    // browser preferences no longer expose a global font operation.
+    await page.evaluate(async () => {
+      const { csrf } = await (await fetch('/api/me')).json();
+      const viewer = new URL(document.getElementById('desktop-frame').src).searchParams.get('viewer');
+      const { revision } = await (await fetch('/api/desktop/settings', { headers: { 'x-viewer-id': viewer } })).json();
+      const response = await fetch('/api/desktop/terminal-display', { method: 'POST', headers: { 'content-type': 'application/json', 'x-viewer-id': viewer, 'x-csrf-token': csrf }, body: JSON.stringify({ action: 'font', revision }) });
+      if (!response.ok) throw Error('legacy maintenance rejected');
+    });
     await started.promise;
     await page.locator('#close-desktop-settings').click();
     await closePanels(page);

@@ -6,7 +6,8 @@ import { createTerminalState, validTerminalIdentity } from './terminal-state.js'
 import { createTerminalTabs } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
 import { createNodeUI } from './node-ui.js';
-import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS } from './terminal-history-limits.js';
+import { HISTORY_ROWS } from './terminal-history-limits.js';
+import { createBrowserPreferences } from './browser-preferences.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -58,37 +59,15 @@ $('mobile-input').addEventListener('compositionstart', () => { inputComposing = 
 $('mobile-input').addEventListener('compositionend', () => { inputComposing = false; renderInputControls(); sendDisplayPreferences(); });
 $('mobile-input').addEventListener('blur', () => { inputComposing = false; renderInputControls(); sendDisplayPreferences(); });
 
-// One bounded browser preference entry; it contains no terminal text or credentials.
-const displayKey = 'codex-cloud.display.v1';
-const displayPreferences = { layout: 2, zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, autoResolution: false, keepAwake: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport', terminalHistoryRows: DEFAULT_HISTORY_ROWS, terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' };
+let browserStorage;
+try { browserStorage = localStorage; } catch {}
+const browserPreferences = createBrowserPreferences(browserStorage), displayPreferences = browserPreferences.value;
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
 const followsViewport = () => displayPreferences.autoResolution;
 const fixedSize = () => controlsState.viewport?.fixed || { width: 1600, height: 3200 };
 let displayScale = 0, displayRevision = 0, scaleRevision = -1;
-try {
-  const stored = localStorage.getItem(displayKey);
-  if (stored && stored.length <= 512) {
-    const value = JSON.parse(stored);
-    if (value && (['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) && typeof value.pan === 'boolean' && typeof value.collapsed === 'boolean' && (value.controlsCollapsed === undefined || typeof value.controlsCollapsed === 'boolean')) {
-      Object.assign(displayPreferences, { pan: value.pan, collapsed: value.collapsed });
-      if (typeof value.controlsCollapsed === 'boolean') displayPreferences.controlsCollapsed = value.controlsCollapsed;
-      if (value.layout === 2) {
-        displayPreferences.zoom = value.zoom;
-        if (typeof value.autoResolution === 'boolean') displayPreferences.autoResolution = value.autoResolution;
-        if (typeof value.keepAwake === 'boolean') displayPreferences.keepAwake = value.keepAwake;
-        if (['desktop', 'terminal'].includes(value.mode)) displayPreferences.mode = value.mode;
-        if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) displayPreferences.terminalFontSize = value.terminalFontSize;
-        if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) displayPreferences.terminalWidthMode = value.terminalWidthMode;
-        if (HISTORY_ROWS.includes(value.terminalHistoryRows)) displayPreferences.terminalHistoryRows = value.terminalHistoryRows;
-        if (typeof value.terminalInputCollapsed === 'boolean') displayPreferences.terminalInputCollapsed = value.terminalInputCollapsed;
-        if (['touch', 'trackpad'].includes(value.pointerMode)) displayPreferences.pointerMode = value.pointerMode;
-        if (['viewport', 'remote'].includes(value.scrollTarget)) displayPreferences.scrollTarget = value.scrollTarget;
-      }
-    }
-  }
-} catch {}
 const workspacePanels = createWorkspacePanels({ tools: $('workspace-tools'), input: $('input-dock'),
   toolsButton: $('toggle-controls-button'), inputButton: $('toggle-input-button'), close: closeWorkspacePanel });
 const historyToolsPortal = createHistoryToolsPortal({ frame: $('desktop-frame'), container: $('desktop-card'),
@@ -191,6 +170,7 @@ function sendDisplayPreferences() {
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
+  $('browser-preferences-note').textContent = browserPreferences.persisted ? '显示偏好仅保存到当前浏览器，所有终端共用。' : '浏览器未能保存偏好；当前页面仍可使用，刷新后可能恢复默认。';
   for (const id of ['toggle-controls-button', 'toggle-input-button', 'fullscreen-button']) $(id).hidden = loggedIn && !owned;
   $('desktop-mode').hidden = $('terminal-mode').hidden = terminalOnly || loggedIn && !owned;
   $('desktop-mode').parentElement.hidden = terminalOnly || loggedIn && !owned;
@@ -239,8 +219,7 @@ function renderDisplayControls() {
 }
 function updateDisplayPreferences(change) {
   if (change.zoom !== undefined && change.zoom !== displayPreferences.zoom) displayRevision++;
-  Object.assign(displayPreferences, change);
-  try { localStorage.setItem(displayKey, JSON.stringify(displayPreferences)); } catch {}
+  browserPreferences.update(change);
   renderDisplayControls();
   sendDisplayPreferences();
   scheduleViewport();
@@ -1180,21 +1159,20 @@ $('copy-clipboard').addEventListener('click', async () => {
 });
 window.addEventListener('pagehide', clearClipboard);
 function settingsValues() {
-  return { width: Number($('desktop-width').value), height: Number($('desktop-height').value), fontSize: Number($('terminal-font-size').value) };
+  return { width: Number($('desktop-width').value), height: Number($('desktop-height').value) };
 }
 function settingsDirty() {
   const value = settingsValues();
-  return !desktopSettings || ['width', 'height', 'fontSize'].some(key => value[key] !== desktopSettings.saved[key]);
+  return !desktopSettings || ['width', 'height'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
   const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
   const live = desktopSettings?.canResize === true;
   for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !writable || !!adaptive;
-  $('terminal-font-size').disabled = !writable;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
-  for (const id of ['apply-terminal-font', 'maximize-terminal', 'restore-terminal']) $(id).disabled = !writable || (id === 'apply-terminal-font' && dirty);
+  for (const id of ['maximize-terminal', 'restore-terminal']) $(id).disabled = !writable;
   $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !frameResizeReady || !nativeIdle || frameState !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
   $('desktop-restart-notice').hidden = !desktopSettings?.restartRequired;
   if (!desktopSettings) return;
@@ -1226,7 +1204,7 @@ async function loadDesktopSettings(resetForm = false) {
     desktopSettings = next;
     if (controlsState.viewport && next.fixed) controlsState.viewport = { ...controlsState.viewport, fixed: next.fixed, ...(next.maximum ? { maximum: next.maximum } : {}) };
     if (fill) {
-      $('desktop-width').value = next.saved.width; $('desktop-height').value = next.saved.height; $('terminal-font-size').value = next.saved.fontSize;
+      $('desktop-width').value = next.saved.width; $('desktop-height').value = next.saved.height;
       const size = `${next.saved.width}x${next.saved.height}`;
       $('resolution-preset').value = ['1280x1280', '1600x1600', '1600x3200', '1920x1600'].includes(size) ? size : 'custom';
     }
@@ -1248,7 +1226,7 @@ async function settingsAction(path, body) {
   const timeout = live ? setTimeout(() => controller.abort(), 10000) : null;
   const expected = { width: desktopSettings.saved.width, height: desktopSettings.saved.height };
   if (live) { viewportController = controller; viewportResizing = true; renderInputControls(); }
-  const pausesInput = path.endsWith('/apply') || (path.endsWith('/terminal-display') && body.action === 'font');
+  const pausesInput = path.endsWith('/apply');
   if (pausesInput) { maintenancePending = true; controlsState = { ...controlsState, maintenance: true }; renderConnection(); }
   settingsLoadError = '';
   settingsBusy = true; renderDesktopSettings();
@@ -1261,7 +1239,7 @@ async function settingsAction(path, body) {
       await waitForViewport(result.actual, controller.signal);
     }
     if (result.job) desktopSettings = { ...desktopSettings, job: result.job, busy: true };
-    else $('desktop-settings-status').textContent = '已保存。分辨率与字号需分别显式应用。';
+    else $('desktop-settings-status').textContent = '服务器分辨率已保存，需显式应用。';
     $('confirm-desktop-restart').checked = false;
     stopSettingsPolling();
     await loadDesktopSettings(true);
@@ -1299,7 +1277,7 @@ $('resolution-preset').addEventListener('change', () => {
   }
   $('confirm-desktop-restart').checked = false; renderDesktopSettings();
 });
-for (const id of ['desktop-width', 'desktop-height', 'terminal-font-size']) $(id).addEventListener('input', () => {
+for (const id of ['desktop-width', 'desktop-height']) $(id).addEventListener('input', () => {
   const size = `${$('desktop-width').value}x${$('desktop-height').value}`;
   $('resolution-preset').value = ['1280x1280', '1600x1600', '1600x3200', '1920x1600'].includes(size) ? size : 'custom';
   $('confirm-desktop-restart').checked = false; renderDesktopSettings();
@@ -1314,7 +1292,7 @@ $('apply-desktop-settings').addEventListener('click', () => {
   if (desktopSettings.canResize) return void settingsAction('/api/desktop/resolution', { revision: desktopSettings.revision });
   void settingsAction('/api/desktop/apply', { revision: desktopSettings.revision, panePid: desktopSettings.session.pid, resumeId: desktopSettings.session.resumeId, confirm: $('confirm-desktop-restart').checked });
 });
-for (const [id, action] of [['apply-terminal-font', 'font'], ['maximize-terminal', 'maximize'], ['restore-terminal', 'restore']]) $(id).addEventListener('click', () => {
+for (const [id, action] of [['maximize-terminal', 'maximize'], ['restore-terminal', 'restore']]) $(id).addEventListener('click', () => {
   if (!$(id).disabled) void settingsAction('/api/desktop/terminal-display', { action, revision: desktopSettings.revision });
 });
 window.addEventListener('message', event => {

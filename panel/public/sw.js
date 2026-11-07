@@ -1,6 +1,6 @@
 const REVISION = '__UI_REVISION__';
 const CACHE = 'codex-cloud-shell-' + REVISION;
-const SHELL = ['/', '/app.js', '/access-ui.js', '/node-directory.js', '/node-ui.js', '/workspace-panels.js', '/workspace.css', '/terminal-state.js', '/terminal-tabs.js', '/terminal-history-limits.js', '/forward-ui.js', '/forward-report.js', '/forward-platform.js', '/shortcut-menu.js', '/shortcuts.js', '/styles.css', '/icon.svg', '/manifest.webmanifest'].map(path => path + '?ui=' + REVISION);
+const SHELL = ['/', '/app.js', '/browser-preferences.js', '/access-ui.js', '/node-directory.js', '/node-ui.js', '/workspace-panels.js', '/workspace.css', '/terminal-state.js', '/terminal-tabs.js', '/terminal-history-limits.js', '/forward-ui.js', '/forward-report.js', '/forward-platform.js', '/shortcut-menu.js', '/shortcuts.js', '/styles.css', '/icon.svg', '/manifest.webmanifest'].map(path => path + '?ui=' + REVISION);
 self.addEventListener('install', event => event.waitUntil((async () => {
   const cache = await caches.open(CACHE); await cache.addAll(SHELL);
   const keys = (await caches.keys()).filter(key => key.startsWith('codex-cloud-shell-'));

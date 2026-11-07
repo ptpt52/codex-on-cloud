@@ -62,6 +62,15 @@ test('settings routes require authentication, CSRF and current ownership; saving
   }
 });
 
+test('browser resolution writes preserve the native font default without inheriting a browser preference', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  const initial = await app.controls.get(); app.controls.save({ ...initial.saved, fontSize: 23, revision: initial.revision });
+  const current = await (await app.request('/api/desktop/settings')).json();
+  const response = await app.request('/api/desktop/settings', { method: 'POST', body: { width: 1920, height: 1600, revision: current.revision } });
+  assert.equal(response.status, 200); assert.equal((await response.json()).saved.fontSize, 23);
+  assert.equal((await app.controls.get()).saved.fontSize, 23); assert.equal(app.managementStats.fontChanges, 0); assert.equal(app.managementStats.restarts, 0);
+});
+
 test('delayed settings requests cannot mutate after another page takes ownership', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
   const initial = await (await app.request('/api/desktop/settings')).json();

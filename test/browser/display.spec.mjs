@@ -165,12 +165,14 @@ test('a framebuffer reconnect restores display controls without replaying input'
   } finally { await app.close(); }
 });
 
-test('invalid saved display preferences fall back to a usable interactive view', async ({ page }) => {
+test('invalid saved zoom falls back while valid dragging remains usable and can be turned off', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ zoom: 100000, pan: true, collapsed: true })));
   await login(page);
   await expect(page.locator('#width-button')).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('#pan-button')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#pan-button')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#input-dock')).toBeHidden();
+  await expect(page.frameLocator('#desktop-frame').locator('#pan-layer')).toBeVisible();
+  await openTools(page); await page.locator('#pan-button').click(); await closePanels(page);
   await expect(page.frameLocator('#desktop-frame').locator('#pan-layer')).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

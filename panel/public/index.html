@@ -57,6 +57,7 @@
       </div>
       <aside id="workspace-tools" class="workspace-panel tools-panel" role="dialog" aria-labelledby="tools-title" tabindex="-1" hidden>
         <div class="panel-heading"><h2 id="tools-title">桌面工具</h2><button id="close-controls-button" class="quiet" type="button" aria-label="关闭工具面板">✕</button></div>
+        <p id="browser-preferences-note" class="muted settings-help" role="status">显示偏好仅保存到当前浏览器，所有终端共用。</p>
         <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
       <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
         <div id="terminal-view-controls" class="terminal-view-controls" hidden><label for="terminal-view-select">终端<select id="terminal-view-select" aria-label="网页终端目标"></select></label><button id="terminal-view-manage" class="view-button" type="button">管理</button><select id="terminal-width-mode" aria-label="终端宽度适配"><option value="viewport">界面适应宽度</option><option value="scale">内容放大适宽</option><option value="manual">手动字号</option></select><button id="terminal-font-down" class="view-button" type="button" aria-label="缩小终端字号">A−</button><output id="terminal-font-label">15</output><button id="terminal-font-up" class="view-button" type="button" aria-label="放大终端字号">A＋</button><label for="terminal-history-rows">网页历史<select id="terminal-history-rows" title="仅调整当前浏览器的滚动历史；调小会丢弃最早的行"><option value="2000">2000 行</option><option value="5000">5000 行</option><option value="10000" selected>10000 行</option><option value="20000">20000 行</option></select></label></div>
@@ -74,9 +75,9 @@
           <p class="muted">触控板单指移动，点一下左键，双指点按右键、上下滑动滚动。需要移动窗口或选择文字时，开启画面下方的“拖动”。</p>
         </div>
         <div class="view-actions">
-          <button id="desktop-settings-button" class="view-button">桌面设置</button>
+          <button id="desktop-settings-button" class="view-button">服务器桌面设置</button>
           <button id="awake-button" class="view-button" type="button" aria-pressed="false" aria-describedby="awake-description">保持亮屏</button>
-          <span id="awake-description" class="sr-only">在支持的浏览器中，保持当前设备屏幕亮起。切到后台或系统省电时可能暂停。</span>
+          <span id="awake-description" class="sr-only">仅当前浏览器的亮屏偏好，保持当前设备屏幕亮起。切到后台或系统省电时可能暂停。</span>
           <button id="pan-button" class="view-button" aria-pressed="false" aria-describedby="pan-description">拖动画面</button>
           <span id="pan-description" class="sr-only">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
         </div>
@@ -169,7 +170,8 @@
     <p id="clipboard-status" class="muted" role="status">只在点击读取时获取；关闭窗口会清空预览。</p>
   </dialog>
   <dialog id="desktop-settings-dialog" class="files-dialog desktop-settings-dialog">
-    <div class="dialog-heading"><h2>桌面设置</h2><button id="close-desktop-settings" class="quiet" aria-label="关闭桌面设置">✕</button></div>
+    <div class="dialog-heading"><h2>服务器桌面设置</h2><button id="close-desktop-settings" class="quiet" aria-label="关闭桌面设置">✕</button></div>
+    <p class="muted settings-help">这里修改共享服务器桌面。阅读大小请使用本浏览器的画面缩放；网页终端字号在工具中调整。</p>
     <p id="settings-current" class="muted">正在读取当前桌面…</p>
     <label class="viewport-option"><input id="auto-resolution" type="checkbox"><span>桌面大小跟随浏览器窗口，保留当前任务</span></label>
     <p id="viewport-note" class="muted settings-help"></p>
@@ -177,13 +179,12 @@
       <label class="settings-label" for="resolution-preset">分辨率预设</label>
       <select id="resolution-preset"><option value="1280x1280">1280 × 1280</option><option value="1600x1600">1600 × 1600</option><option value="1600x3200">1600 × 3200</option><option value="1920x1600">1920 × 1600</option><option value="custom">自定义尺寸</option></select>
       <div class="settings-dimensions"><label for="desktop-width">宽度<input id="desktop-width" type="number" min="320" max="4096" step="1" required></label><span aria-hidden="true">×</span><label for="desktop-height">高度<input id="desktop-height" type="number" min="320" max="4096" step="1" required></label></div>
-      <label class="settings-label" for="terminal-font-size">新终端字号</label><input id="terminal-font-size" type="number" min="10" max="28" step="1" required>
-    <p class="muted settings-help">宽高 320–4096 像素，字号 10–28。保存后点击应用；显示上限内立即生效并保留当前任务，超出上限才需确认重启。</p>
+    <p class="muted settings-help">宽高 320–4096 像素。保存后点击应用；显示上限内立即生效并保留当前任务，超出上限才需确认重启。</p>
       <button id="save-desktop-settings" class="primary" type="submit" disabled>保存设置</button>
     </form>
     <p id="settings-pending" class="muted settings-help"></p>
-    <div class="terminal-display-actions"><button id="apply-terminal-font" class="secondary" disabled>更新字号</button><button id="maximize-terminal" class="secondary" disabled>最大化终端</button><button id="restore-terminal" class="secondary" disabled>恢复窗口</button></div>
-    <p class="muted settings-help">更新字号会重新打开终端窗口，保留 tmux 中的任务。</p>
+    <div class="terminal-display-actions"><button id="maximize-terminal" class="secondary" disabled>最大化终端</button><button id="restore-terminal" class="secondary" disabled>恢复窗口</button></div>
+    <p class="muted settings-help">窗口操作作用于共享服务器桌面，保留 tmux 中的任务。</p>
     <div class="desktop-apply-section">
       <div id="desktop-restart-notice" hidden>
       <p id="settings-recovery" class="muted"></p>
