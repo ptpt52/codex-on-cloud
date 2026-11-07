@@ -21,10 +21,15 @@ async function login(page, app, terminal = false) {
 }
 const dimensions = frame => frame.evaluate(() => ({ rows: window.compatTerminal.rows, cols: window.compatTerminal.cols, height: document.getElementById('terminal').clientHeight }));
 async function reachable(locator, viewport) {
-  const rect = await locator.boundingBox(); expect(rect).not.toBeNull();
-  expect(rect.x).toBeGreaterThanOrEqual(0); expect(rect.y).toBeGreaterThanOrEqual(0);
-  expect(rect.x + rect.width).toBeLessThanOrEqual(viewport.width + 1); expect(rect.y + rect.height).toBeLessThanOrEqual(viewport.height + 1);
-  expect(await locator.evaluate(el => { const r = el.getBoundingClientRect(); return el.ownerDocument.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el; })).toBe(true);
+  // Viewport changes schedule portal layout in requestAnimationFrame. A large
+  // textarea can still have its old height before that frame has completed.
+  await expect.poll(async () => {
+    const rect = await locator.boundingBox();
+    return {
+      inside: !!rect && rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= viewport.width + 1 && rect.y + rect.height <= viewport.height + 1,
+      uncovered: !!rect && await locator.evaluate(el => { const r = el.getBoundingClientRect(); return el.ownerDocument.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el; }),
+    };
+  }).toEqual({ inside: true, uncovered: true });
 }
 
 test('controls and drafts remain usable in portrait, landscape and tablet layouts without a remote resize', async ({ page }) => {
