@@ -40,6 +40,10 @@ async function finish(controls) {
   await eventually(async () => { view = await controls.get(); return !view.busy; });
   assert.equal(view.job.status, 'complete', view.job.message);
 }
+async function maximized(id) {
+  const state = await run('xprop', ['-id', id, '_NET_WM_STATE']);
+  return state.includes('_NET_WM_STATE_MAXIMIZED_VERT') && state.includes('_NET_WM_STATE_MAXIMIZED_HORZ');
+}
 try {
   await writeFile(env.XAUTHORITY, '', { mode: 0o600 });
   await run('xauth', ['-f', env.XAUTHORITY, 'add', config.display, '.', randomBytes(16).toString('hex')]);
@@ -53,10 +57,16 @@ try {
   await eventually(async () => !!(await controls.get()).session);
   const first = await controls.get(), pid = first.session.pid;
   const window = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']);
+  await eventually(() => maximized(window));
   controls.terminal({ action: 'maximize' }); await finish(controls);
   await eventually(async () => (await run('xprop', ['-id', window, '_NET_WM_STATE'])).includes('_NET_WM_STATE_MAXIMIZED_VERT'));
   controls.terminal({ action: 'restore' }); await finish(controls);
   await eventually(async () => !(await run('xprop', ['-id', window, '_NET_WM_STATE'])).includes('_NET_WM_STATE_MAXIMIZED_VERT'));
+  const viewerPid = await run('xdotool', ['getwindowpid', window]);
+  await run(join(root, 'desktop/open-codex-terminal'), []);
+  assert.equal(await maximized(window), false, 'opening an existing window must respect the user restoring it');
+  assert.equal(await run('xdotool', ['getwindowpid', window]), viewerPid);
+  assert.equal((await controls.get()).session.pid, pid);
   const saved = controls.save({ ...first.saved, fontSize: 20, revision: first.revision });
   for (let i = 0; i < 2; i++) {
     controls.terminal({ action: 'font', revision: saved.revision }); await finish(controls);
@@ -155,12 +165,14 @@ try {
   const auxSession = (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_tty}\t#{session_name}'])).split('\n').find(line => line.startsWith(`${auxClient}\t`))?.split('\t')[1];
   assert.equal(auxSession, 'codex-aux1');
   const auxWindow = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']);
+  await eventually(() => maximized(auxWindow));
   await run('xdotool', ['windowclose', auxWindow]);
   await eventually(async () => !(await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']).catch(() => '')));
   await assert.rejects(controls.input({ action: 'key', key: 'Enter', ...destination }), { status: 409, outcome: 'rejected' });
   const recovered = createDesktopControls(config, { launch });
   assert.deepEqual((await recovered.listTerminals()).terminals.map(({ id, name, token }) => ({ id, name, token })), created.terminals.map(({ id, name, token }) => ({ id, name, token })));
   await recovered.manageTerminals({ action: 'open', ...destination });
+  await eventually(async () => maximized(await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$'])));
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex-aux1', '-F', '#{pane_current_command}']), 'sleep');
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
   await assert.rejects(recovered.input({ action: 'key', key: 'Enter', ...destination, terminalToken: '%999:12345' }), { status: 409, outcome: 'rejected' });
@@ -236,7 +248,7 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log(`✓ isolated real X11 and PTY: browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, ${keyCases.length} key encodings, font/clipboard and dummy resume passed without starting Codex`);
+  console.log(`✓ isolated real X11 and PTY: new/reopened windows maximize, existing restored windows keep their geometry; browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, ${keyCases.length} key encodings, font/clipboard and dummy resume passed without starting Codex`);
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
