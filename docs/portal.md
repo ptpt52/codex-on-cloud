@@ -46,6 +46,10 @@ npx --yes wrangler@4.158.0 secret bulk data/portal-build/worker-secrets.json \
 
 多账户时可设置 `CLOUDFLARE_ACCOUNT_ID`。也可采用 Wrangler 支持的 API Token 认证；不把 API Token 写入源码或生成配置。部署会绑定门户的自定义域名，请先确认 `codex.x-wrt.dev` 没有其他用途。
 
+API Token 需要覆盖目标账户的 **Workers Scripts 编辑**权限，以及目标区域的 **Workers Routes 编辑**权限。使用新的 Workers 权限界面时，应授予包含新 Worker 创建权限的相应角色；只授权已有 Worker 不能创建本门户。沿用节点发布令牌时，还需保留原来的 DNS、Tunnel 权限。参见 [Worker 上传权限](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/)和 [Workers 域名权限](https://developers.cloudflare.com/workers/authorization/workers/)。
+
+账户令牌使用 `/accounts/{account_id}/tokens/verify` 核验，用户令牌使用 `/user/tokens/verify`。令牌有效或能够列出 Workers，不代表具备上传脚本、设置 Secret 和绑定域名的权限。发布出现 HTTP 403、`No access to the specified resource` 时，先检查权限及账户/区域范围；不要切换现有节点域名或重启服务，待门户发布成功后再继续。
+
 没有上传密码校验值时，敏感 API 拒绝访问。`workers.dev` 和预览入口默认关闭，Worker 还会核对访问域名。门户公开的只有登录页面与固定静态资源，目录、授权码和管理接口均需认证。
 
 ## 动态管理服务器
