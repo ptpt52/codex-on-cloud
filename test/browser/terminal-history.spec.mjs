@@ -247,7 +247,7 @@ test('reconnect and cached page restoration keep the same renderer, history and 
   } finally { await app.close(); }
 });
 
-test('program paging is opt-in, rate bounded and never adds Enter; returning live only changes the local view', async ({ page }) => {
+test('program paging is opt-in and rate bounded; returning live sends one Ctrl+End without Enter', async ({ page }) => {
   const app = await fixture();
   try {
     const frame = await seeded(page, app); await wheel(frame, -200); await reviewing(frame); expect(app.terminalInputs).toEqual([]);
@@ -260,7 +260,69 @@ test('program paging is opt-in, rate bounded and never adds Enter; returning liv
     await page.locator('#desktop-mode').click(); await expect(frame.locator('#history-up')).toBeDisabled(); const before = app.terminalInputs.length;
     await wheel(frame, -200); expect(app.terminalInputs.length).toBe(before); await page.locator('#cancel-confirmation').click();
     await frame.locator('#history-latest').click(); await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
-    expect(app.terminalInputs.length).toBe(before); expect(app.terminalInputs.every(value => ['\x1b[5~', '\x1b[6~'].includes(value.text))).toBe(true);
+    await expect.poll(() => app.terminalInputs.length).toBe(before + 1);
+    expect(app.terminalInputs.at(-1).text).toBe('\x1b[1;5F');
+    expect(app.terminalInputs.every(value => ['\x1b[5~', '\x1b[6~', '\x1b[1;5F'].includes(value.text))).toBe(true);
+    await expect(frame.locator('#history-latest')).toBeDisabled();
+    await frame.locator('#history-latest').dispatchEvent('click'); expect(app.terminalInputs.length).toBe(before + 1);
+  } finally { await app.close(); }
+});
+
+test('program history can return live immediately and after paging is disabled or local history is opened', async ({ page }) => {
+  let position = 1; // The application can still be scrolled after a page reload.
+  const app = await fixture({ webrtc: true, terminalHook: async text => {
+    if (text === '\x1b[5~') position++;
+    if (text === '\x1b[6~') position = Math.max(0, position - 1);
+    if (text === '\x1b[1;5F') position = 0;
+  } });
+  try {
+    const frame = await seeded(page, app);
+    await frame.locator('#history-program').click(); await frame.locator('#history-latest').click();
+    await expect.poll(() => position).toBe(0);
+    expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[1;5F']);
+    await frame.locator('#history-program').click(); await frame.locator('#history-up').click();
+    await expect.poll(() => position).toBe(1);
+    await frame.locator('#history-latest').click(); await expect.poll(() => position).toBe(0);
+    expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[1;5F', '\x1b[5~', '\x1b[1;5F']);
+    await page.waitForTimeout(200);
+    await frame.locator('#history-program').click(); await frame.locator('#history-up').click();
+    await expect.poll(() => position).toBe(1); const before = app.terminalInputs.length;
+    await frame.locator('#history-program').click();
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
+    await expect(frame.locator('#history-latest')).toBeEnabled();
+    expect(app.terminalInputs.length).toBe(before);
+    await frame.locator('#history-tools-toggle').click(); await expect(frame.locator('#history-archive')).toBeVisible();
+    await frame.locator('#history-latest').click(); await expect.poll(() => position).toBe(0);
+    await expect(frame.locator('#history-archive')).toBeHidden();
+    expect(app.terminalInputs.at(-1).text).toBe('\x1b[1;5F'); expect(app.terminalConnections).toBe(1);
+    expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('offline return-live never queues a program key or replays it when the connection recovers', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app);
+    await frame.locator('#history-program').click(); await frame.locator('#history-up').click();
+    await expect.poll(() => app.terminalInputs.length).toBe(1);
+    await frame.evaluate(() => {
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+      window.dispatchEvent(new Event('offline'));
+    });
+    // The disconnected overlay blocks pointer access; dispatch the pending
+    // click directly to verify the guard even during that network/UI race.
+    await frame.locator('#history-latest').dispatchEvent('click');
+    await expect(frame.locator('#history-state')).toContainText('未发送');
+    expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
+    await frame.evaluate(() => {
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+      window.dispatchEvent(new Event('online'));
+    });
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
+    await frame.locator('#history-latest').click();
+    await expect.poll(() => app.terminalInputs.length).toBe(2);
+    expect(app.terminalInputs.at(-1).text).toBe('\x1b[1;5F');
   } finally { await app.close(); }
 });
 
@@ -417,14 +479,15 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
       await info.attach('native-history-diagnostics', { body: Buffer.from(JSON.stringify({ readyConnections, clients: clients.map(child => ({ exitCode: child.exitCode, signal: child.signalCode })), state, pane })), contentType: 'application/json' });
       throw error;
     }
-    await writeFile(tui, `import os, select, termios, time, tty\nfd=0\nprevious=termios.tcgetattr(fd)\ndata=b''\ntry:\n tty.setraw(fd)\n os.write(1,b'\\x1b[?1049h\\x1b[2J\\x1b[HFULL-SCREEN-RECEIVER\\r\\n')\n with open(${JSON.stringify(tuiReady)},'w') as f: f.write('ready')\n deadline=time.monotonic()+12\n while len(data)<8 and time.monotonic()<deadline:\n  if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,8-len(data))\nfinally:\n termios.tcsetattr(fd,termios.TCSANOW,previous)\n os.write(1,b'\\x1b[?1049l')\n with open(${JSON.stringify(keys)},'w') as f: f.write(data.hex())\n`);
+    await writeFile(tui, `import os, select, termios, time, tty\nfd=0\nprevious=termios.tcgetattr(fd)\ndata=b''\ntry:\n tty.setraw(fd)\n os.write(1,b'\\x1b[?1049h\\x1b[2J\\x1b[HFULL-SCREEN-RECEIVER\\r\\n')\n with open(${JSON.stringify(tuiReady)},'w') as f: f.write('ready')\n deadline=time.monotonic()+12\n while len(data)<14 and time.monotonic()<deadline:\n  if select.select([fd],[],[],0.1)[0]: data+=os.read(fd,14-len(data))\nfinally:\n termios.tcsetattr(fd,termios.TCSANOW,previous)\n os.write(1,b'\\x1b[?1049l')\n with open(${JSON.stringify(keys)},'w') as f: f.write(data.hex())\n`);
     await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill('python3 "$HISTORY_TEST_TUI"'); await openInput(page); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(() => readFile(tuiReady, 'utf8').catch(() => '')).toBe('ready');
     await frame.locator('#history-program').click(); await frame.locator('#history-up').click(); await page.waitForTimeout(200); await frame.locator('#history-down').click();
-    await expect.poll(() => readFile(keys, 'utf8').catch(() => '')).toBe('1b5b357e1b5b367e');
+    await frame.locator('#history-latest').click();
+    await expect.poll(() => readFile(keys, 'utf8').catch(() => '')).toBe('1b5b357e1b5b367e1b5b313b3546');
     expect(await readFile(proof, 'utf8')).toBe('once\n');
-    await frame.locator('#history-latest').click(); await openInput(page); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'\\033[1;31mLARGE-HISTORY-%04d %080d\\033[0m\\n\' "$i" 0; done');
+    await openInput(page); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'\\033[1;31mLARGE-HISTORY-%04d %080d\\033[0m\\n\' "$i" 0; done');
     await openInput(page); await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();
     await expect.poll(async () => (await buffer(frame)).all.includes('LARGE-HISTORY-1000')).toBe(true);
     // Explicit snapshot requests are limited to one per second.

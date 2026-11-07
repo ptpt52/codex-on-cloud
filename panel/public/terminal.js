@@ -135,9 +135,15 @@ function createTerminal() {
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
   // Applications may not silently write the browser's clipboard via OSC 52.
   term.parser.registerOscHandler(52, () => true);
-  history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !pending && !document.hidden && navigator.onLine,
+  history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !streamPaused && !pending && !document.hidden && navigator.onLine,
     read: readHistory,
-    page: direction => { lastInteraction = performance.now(); if (!send({ type: 'input', data: direction < 0 ? '\x1b[5~' : '\x1b[6~' })) retire(socket, 0); },
+    navigate: key => {
+      const data = { PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Ctrl+End': '\x1b[1;5F' }[key];
+      if (!data) return false;
+      lastInteraction = performance.now();
+      if (!send({ type: 'input', data })) { retire(socket, 0); return false; }
+      return true;
+    },
     changed: reviewing => { inputState(); parent.postMessage({ type: 'codex-terminal-history', frame, reviewing }, location.origin); } });
   term.attachCustomKeyEventHandler(event => {
     if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyC' && term.hasSelection()) {

@@ -48,3 +48,11 @@
 列表与确认操作都不持久化。打开列表时延后自动换流和窗口尺寸适配；关闭后恢复检查。隐藏页面、失去焦点、断线、接管、退出和折叠输入会关闭列表。老浏览器没有 Popover API 时使用同一列表的定位回退，支持方向键、Home/End、Tab 和 Esc，触控条目至少 44 像素。
 
 快捷键说明依据 [OpenAI 官方 CLI 交互说明](https://learn.chatgpt.com/docs/developer-commands?surface=cli#interactive-shortcuts) 与 [CLI 外部编辑器说明](https://learn.chatgpt.com/docs/cli-customization#prompt-editor)，并核对本机固定版本。原生验证使用隔离 Xvfb、xterm 与私有 tmux 捕获实际字节，不向工作中的 Codex 发送测试按键。
+
+## 网页终端的程序翻页与回到实时
+
+普通本地回看不发送按键。明确开启“程序翻页”后，上翻/下翻发送 PageUp/PageDown；滚轮与触摸同样限速，每 160 毫秒最多一次。只打开或关闭该模式不发送按键。
+
+开启程序翻页，或实际向程序翻页后，点击“回到实时”发送一次 `Ctrl+End`（`ESC [ 1 ; 5 F`），再关闭程序翻页；不会循环发送 PageDown、附加 Enter 或用 Esc 中断任务。先关闭程序翻页或打开本地查找快照，也保留返回入口。此标记只在当前终端页面内存保存，切换终端目标后清除；重连和网络恢复不自动发送。不可发送时明确提示，需连接恢复后再次点击。
+
+当前 Codex 0.166.0 的自有历史视图将 `Ctrl+End` 映射为跳到最新输出，普通 End 属于编辑器行尾行为；对应 [JumpTarget 与滚动处理源码](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/tui/src/transcript_view/input.rs)。其他程序或自定义键位的具体行为由该程序决定，本项目不修改 Codex 配置。

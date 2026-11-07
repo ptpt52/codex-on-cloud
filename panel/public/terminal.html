@@ -9,7 +9,7 @@
   <div id="terminal-tools" role="group" aria-label="终端历史滚动">
     <button id="history-program" type="button" aria-pressed="false" title="开启后将翻页操作发送给当前程序">程序翻页</button>
     <button id="history-up" type="button" title="本地回看每次最多 3 行；程序翻页时发送 PageUp">上翻</button><button id="history-down" type="button" title="本地回看每次最多 3 行；程序翻页时发送 PageDown">下翻</button>
-    <button id="history-latest" type="button">回到实时</button>
+    <button id="history-latest" type="button" title="本地回看直接回到底部；程序翻页后发送一次 Ctrl+End 跳到程序末尾，不发送回车">回到实时</button>
     <button id="history-tools-toggle" type="button" aria-expanded="false" aria-controls="history-tools">查找/复制</button>
     <div id="history-status-row"><span id="history-state" role="status">本地回看：滚动不发送按键</span></div>
     <section id="history-tools" aria-label="历史查找与复制" tabindex="-1" hidden>

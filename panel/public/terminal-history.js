@@ -2,7 +2,7 @@
 // Local scrolling never sends input. Program paging is an explicit opt-in.
 import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
-export function createTerminalHistory(term, host, { allowed, page, read, changed }) {
+export function createTerminalHistory(term, host, { allowed, navigate, read, changed }) {
   const mode = document.getElementById('history-program'), up = document.getElementById('history-up');
   const down = document.getElementById('history-down'), latest = document.getElementById('history-latest'), state = document.getElementById('history-state');
   const toggle = document.getElementById('history-tools-toggle'), tools = document.getElementById('history-tools'), query = document.getElementById('history-query');
@@ -15,6 +15,9 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
   const newer = document.createElement('button'); newer.id = 'history-new-output'; newer.type = 'button'; newer.hidden = true;
   newer.textContent = '有新输出 · 回到实时'; host.appendChild(newer);
   let program = false, reviewing = false, disposed = false, pixels = 0, lastPage = -Infinity, gesture, loading, notice = '';
+  // Remote program scrolling is independent of the local buffer and toggle.
+  // Keep a flag, never a queue or an automatically replayed return key.
+  let programScrolled = false;
   let archiveOpen = false, archiveAlternate = false, archiveTruncated = false;
   let unseen = false, archiveStyled = false, archiveSimplified = false;
   let view, archiveLocal = false, toolsOpen = false, searchTimer, queryComposing = false, appliedQuery = '', matches = [], groups = [], current = -1, limited = false;
@@ -42,8 +45,9 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     mode.setAttribute('aria-pressed', String(program));
     up.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
-    latest.disabled = !reviewing && !program;
+    latest.disabled = !reviewing && !program && !programScrolled;
     let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
+    if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
     if (reviewing && unseen) label += ' · 有新输出';
@@ -153,9 +157,24 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus && !query.disabled) focusControl(query);
   }
-  function live() {
+  function resetLocalView() {
     cancelRead(); closeTools(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
     archiveOpen = false; archive.hidden = true; unseen = false; notice = ''; program = false; pixels = 0; term.scrollToBottom(); update();
+  }
+  function live() {
+    const returnProgram = program || programScrolled;
+    resetLocalView();
+    if (!returnProgram) return;
+    // Ctrl+End returns Codex's owned transcript to its latest output. Plain
+    // End moves the composer cursor; Escape can interrupt a running turn.
+    if (!allowed() || !navigate('Ctrl+End')) {
+      programScrolled = true;
+      notice = '回到程序末尾的按键未发送；连接可用后请再点“回到实时”';
+    } else {
+      programScrolled = false;
+      notice = '已向程序发送 Ctrl+End 回到末尾；未发送回车';
+    }
+    update();
   }
   async function copy(text, label, source) {
     if (copying || !text) return;
@@ -209,7 +228,9 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     }
     const now = performance.now();
     if (!allowed() || reviewing || now - lastPage < 160) return;
-    lastPage = now; page(direction);
+    lastPage = now;
+    if (navigate(direction < 0 ? 'PageUp' : 'PageDown')) programScrolled = true;
+    update();
   }
   function scroll(delta, deltaMode = 0) {
     if (!Number.isFinite(delta) || !delta) return;
@@ -223,7 +244,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     else if (count < 0 && term.buffer.active.viewportY === 0) { pixels = 0; void fetchHistory(Math.min(distance(true), -count * line)); }
     else { pixels -= count * step; term.scrollLines(Math.max(-term.rows, Math.min(term.rows, count))); update(); }
   }
-  listen(mode, 'click', () => { const next = !program; live(); program = next; update(); });
+  listen(mode, 'click', () => { const next = !program; resetLocalView(); program = next; update(); });
   listen(up, 'click', () => turn(-1)); listen(down, 'click', () => turn(1)); listen(latest, 'click', live);
   listen(newer, 'click', live);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
@@ -301,7 +322,7 @@ export function createTerminalHistory(term, host, { allowed, page, read, changed
     if (event.key === 'PageUp') turn(-1, true);
     else if (event.key === 'PageDown') turn(1, true);
     else if (event.key === 'Home') { if (archiveOpen) archive.scrollTop = 0; else term.scrollToTop(); }
-    else live();
+    else resetLocalView();
     update();
   }, { capture: true });
   listen(archive, 'scroll', update);
