@@ -17,6 +17,20 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
     const due = performance.now() + ms; if (retry && retryDue <= due) return;
     clearTimeout(retry); retryDue = due; trace('retry', { path: 'direct', waitMs: Math.round(ms), reason: state.issue }); retry = setTimeout(probe, ms);
   }
+  function openFiles(candidate) {
+    if (current !== candidate || files) return;
+    const channel = candidate.fileChannel();
+    const client = createFileClient(channel, recoverable => {
+      if (current !== candidate || files !== client) return;
+      files = undefined;
+      if (!recoverable) { retire('connection'); schedule(1000); return; }
+      const reopen = () => { if (running && current === candidate && !files) { openFiles(candidate); publish(); } };
+      if (channel.readyState === 'closed') queueMicrotask(reopen);
+      else channel.addEventListener('close', reopen, { once: true });
+      publish();
+    });
+    files = client; channel.addEventListener('open', publish, { once: true });
+  }
   async function monitor(version, peer) {
     if (!running || epoch !== version || current !== peer || checking) return;
     if (!document.hidden) {
@@ -48,9 +62,7 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
       current = candidate; state.ready = true; state.issue = ''; state.route = route; delay = 15000; attempts = healthMisses = 0; publish();
       if (candidate.features?.filesProtocol === 1) {
-        const channel = candidate.fileChannel();
-        files = createFileClient(channel, () => { if (current === candidate) { retire('connection'); schedule(1000); } });
-        channel.addEventListener('open', publish);
+        openFiles(candidate);
       }
       timer = setTimeout(() => void monitor(version, candidate), 3000);
     } catch {

@@ -30,7 +30,7 @@ test('a lost upload completion is reported as uncertain and never retried throug
  }finally{await app.close();}
 });
 test('temporary direct uploads use the same rename and exact-version confirmation without HTTP bodies',async({page})=>{
- const app=await fixture({webrtc:true});app.files.set('shared.txt',Buffer.from('original'));let bodies=0;
+ const app=await fixture({webrtc:true});app.files.set('shared.txt',Buffer.from('original'));let bodies=0,signals=0;page.on('request',r=>{if(r.url().endsWith('/api/service/rtc'))signals++;});
  try{
   await page.route('**/api/files/**',r=>{bodies++;return r.abort();});await login(app,page);await expect(page.locator('#file-transport')).toContainText('WebRTC',{timeout:15000});
   const select=()=>page.locator('#upload-input').setInputFiles({name:'shared.txt',mimeType:'text/plain',buffer:Buffer.from('new')});
@@ -38,6 +38,8 @@ test('temporary direct uploads use the same rename and exact-version confirmatio
   await select();await expect(page.locator('#file-conflict-dialog')).toBeVisible();await page.locator('#file-conflict-replace').click();await expect(page.locator('#upload-status')).toContainText('上传完成：shared.txt');expect(app.files.get('shared.txt').toString()).toBe('new');
   await select();await expect(page.locator('#file-conflict-dialog')).toBeVisible();app.files.set('shared.txt',Buffer.from('newer'));await page.locator('#file-conflict-replace').click();await expect(page.locator('#upload-status')).toContainText('原文件已变化');expect(app.files.get('shared.txt').toString()).toBe('newer');expect(bodies).toBe(0);
   expect(app.received.filter(r=>r.method==='PUT')).toHaveLength(2);expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
+  await expect(page.locator('#file-transport')).toContainText('WebRTC',{timeout:5000});expect(signals).toBe(1);
+  await page.locator('#upload-input').setInputFiles({name:'after-conflict.txt',mimeType:'text/plain',buffer:Buffer.from('same service peer')});await expect(page.locator('#upload-status')).toContainText('上传完成：after-conflict.txt');expect(bodies).toBe(0);expect(signals).toBe(1);
  }finally{await app.close();}
 });
 test('revoking a temporary account dismisses a pending replacement without uploading',async({page})=>{

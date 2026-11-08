@@ -78,7 +78,7 @@ export function createRTCBridge({ address, ipv6Address, vncSocket, valid, closed
       return;
     }
     if (serviceOnly) {
-      if (!files && connectFiles && value.label === 'codex-files' && value.protocol === 'files-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null && authorized()) files = connectFiles(value, authorized, () => { void handle.destroy(); });
+      if (!files && connectFiles && value.label === 'codex-files' && value.protocol === 'files-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null && authorized()) files = connectFiles(value, authorized, recoverable => { if (recoverable) files = undefined; else void handle.destroy(); });
       else void handle.destroy();
       return;
     }

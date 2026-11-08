@@ -112,3 +112,5 @@ npm run reset-password -- --admin --generate
 ## 验证边界
 
 `access-control`、`access-policy`、`file-transfers` 和 `reverse-forward` 的 Node 测试覆盖持久化、权限隔离、撤销、并发边界及锁定/接管时真实 TCP/WebSocket 字节流继续传输。浏览器 `access.spec.mjs` 使用实际 Chrome、noVNC 和模拟 RFB/管理后端验证手机/电脑布局及完整登录流程；它不代替手机真机、真实 X11 桌面和公网网络验收。
+
+同名冲突、版本变化、配额不足等明确业务拒绝只结束本次文件传输。新协议允许重建单个文件通道并保留服务控制peer，状态和映射管理不因这类错误切回HTTPS；同一时间仍只有一个文件通道，服务端结束等待最多3秒。未知结果、协议错误、授权失效与网络故障继续关闭对应连接，不重传文件内容。

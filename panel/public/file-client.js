@@ -1,16 +1,17 @@
 import { createFileWire, sendFileChunks, FILE_CHUNK, FILE_MAX } from './file-wire.js';
 import { uploadOptions, uploadResult } from './file-upload.js';
 export function createFileClient(channel, failed = () => {}) {
- let active,id=0;
+ let active,id=0,recoverable=false;
  const unknown=()=>Object.assign(Error('文件直连已断开，结果未知；请检查文件状态后手动重试'),{outcome:'unknown'});
  const settle=(err,result)=>{if(!active)return;const entry=active;active=null;clearTimeout(entry.timer);entry.signal?.removeEventListener('abort',entry.abort);err?entry.reject(err):entry.resolve(result);};
- const wire=createFileWire(channel,{failed(err){settle(err);failed();},chunk(bytes){
+ const wire=createFileWire(channel,{failed(err){settle(err);failed(recoverable);},chunk(bytes){
   if(!active||active.direction!=='download'||!active.started||active.received+bytes.length>active.size||active.received+bytes.length>FILE_MAX)throw unknown();
   active.received+=bytes.length;active.chunks.push(bytes.slice());
  },control(value){
   const entry=active;if(!entry||value.id!==entry.id)throw unknown();
   if(value.type==='error'){
-   settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome:'unknown'}));wire.close();return;
+   recoverable=value.recoverable===true&&[404,409,412,413,429,507].includes(value.status);
+   settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome:recoverable?'rejected':'unknown'}));wire.close();return;
   }
   if(value.type==='ready'){
    if(entry.started||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX||entry.direction==='upload'&&value.size!==entry.size)throw unknown();

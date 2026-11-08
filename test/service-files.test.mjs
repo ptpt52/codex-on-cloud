@@ -23,6 +23,8 @@ test('dedicated file channel transfers 8 MiB and empty files over real DTLS, has
  assert.equal((await files.upload(new File(['another'],'中文.bin'),{mode:'rename'})).name,'中文 (2).bin');assert.equal(hash(app.files.get('中文.bin')),hash(bytes));
  assert.equal((await files.upload(new File(['replaced'],'中文.bin'),{mode:'replace',version:original.version})).name,'中文.bin');
  await assert.rejects(files.upload(new File(['stale'],'中文.bin'),{mode:'replace',version:original.version}),/原文件已变化/);assert.equal(app.files.get('中文.bin').toString(),'replaced');
+ assert.equal((await c.rpc('ping')).ok,true,'a business rejection preserves the encrypted service control peer');
+ const replacement=await fileClient(c);await replacement.upload(new File(['same peer'],'after-conflict'));assert.equal(app.files.get('after-conflict').toString(),'same peer');
  assert.equal(app.received.filter(r=>r.method==='PUT'&&r.url==='/files/%E4%B8%AD%E6%96%87.bin').length,3);
 });
 test('file direct shares guest quotas and rejects oversized input without replay',async t=>{

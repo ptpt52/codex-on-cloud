@@ -6,15 +6,16 @@ function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!
 // This adapter can only address the existing authenticated file API on loopback.
 // Its request participates in the same global four-stream and guest upload quota.
 export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
- let active,lastId=0,ended=false;
+ let active,lastId=0,ended=false,recoverable=false,retireTimer;
  const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:bytes=>channel.send(bytes),close:()=>channel.close(),
   addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(state=>{if(state==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};
- const wire=createFileWire(adapter,{control,chunk:receive,failed(){ended=true;cleanup();fail();}});
+ const wire=createFileWire(adapter,{control,chunk:receive,failed(){ended=true;clearTimeout(retireTimer);cleanup();fail(recoverable);}});
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
- function reject(entry,err){if(active!==entry)return;try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试'});}catch{}cleanup();}
+ function reject(entry,err){if(active!==entry)return;recoverable=[404,409,412,413,429,507].includes(err.status);try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
  async function control(value){
+  if(recoverable)throw fault(409,'文件通道正在结束');
   if(value.type==='start'){
    const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload');
    if(active||fields!==(hasUpload?'direction,id,name,size,type,upload':'direction,id,name,size,type')||hasUpload&&value.direction!=='upload'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!fileName(value.name)||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
