@@ -8,6 +8,7 @@ import { privateIngressReady } from '../scripts/cloudflare-publication.mjs';
 import http from 'node:http';
 import { once } from 'node:events';
 import { chmod } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 
 async function fixture(t, { fresh = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'cloudflare-publication-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -58,6 +59,30 @@ test('a failed start rolls back preparation locally without mutating the public 
   assert.deepEqual(h.configuration,before);assert.ok(h.calls.every(c=>c.method==='GET'));
   assert.equal(await readFile(join(h.root,'.env'),'utf8'),h.env);assert.equal(await readFile(join(h.root,'secrets/credentials.txt'),'utf8'),h.credentials);
   await assert.rejects(stat(join(h.root,'secrets/tunnel_token')),{code:'ENOENT'});
+});
+
+test('commit refuses operator changes to prepared local configuration before touching public routing',async t=>{
+  for(const file of ['.env','secrets/credentials.txt','secrets/tunnel_token'])await t.test(file,async t=>{
+    const h=await fixture(t),p=h.make(),before=structuredClone(h.configuration);await p.prepare(h.options);
+    const path=join(h.root,file),prepared=await readFile(path,'utf8'),edited=prepared+'# operator edit\n';
+    await writeFile(path,edited,{mode:0o600});
+    await assert.rejects(p.commit(h.options),/本机配置已变化/);
+    assert.deepEqual(h.configuration,before);assert.ok(h.calls.every(c=>c.method==='GET'));
+    assert.equal(await readFile(path,'utf8'),edited);
+    assert.equal(JSON.parse(await readFile(join(h.root,'data/cloudflare-publication.json'),'utf8')).phase,'prepared');
+    await writeFile(path,prepared,{mode:0o600});await p.commit(h.options);
+    assert.equal(h.configuration.ingress[0].service,'unix:/tmp/synthetic-private.sock');
+  });
+});
+
+test('commit rechecks local preparation after remote preflight requests',async t=>{
+  const h=await fixture(t),p=h.make(),before=structuredClone(h.configuration);await p.prepare(h.options);
+  const path=join(h.root,'.env'),edited='PUBLIC_ORIGIN=https://operator.example.test\n';
+  h.fail=({path:request,method})=>{if(method==='GET'&&request.includes('/dns_records'))writeFileSync(path,edited,{mode:0o600});};
+  await assert.rejects(p.commit(h.options),/本机配置已变化/);
+  assert.deepEqual(h.configuration,before);assert.ok(h.calls.every(c=>c.method==='GET'));
+  assert.equal(await readFile(path,'utf8'),edited);
+  assert.equal(JSON.parse(await readFile(join(h.root,'data/cloudflare-publication.json'),'utf8')).phase,'prepared');
 });
 
 test('lost routing or DNS acknowledgements reconcile and restore exactly the previous entry',async t=>{

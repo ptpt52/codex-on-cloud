@@ -18,9 +18,9 @@ API Token 与 Tunnel 运行 token 是不同的凭据。自动部署使用 API To
 npm run native:publish -- \
   --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token --prepare-only
 systemctl --user restart codex-cloud-panel.service
+npm run native:tunnel
 npm run native:publish -- \
   --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token --commit-only
-npm run native:tunnel
 ```
 
 此命令创建专用 Tunnel、配置私有 Unix socket 上游、添加代理 CNAME，并更新 `.env` 与登录信息中的入口地址。已有无关 DNS 记录或同名 Tunnel 会使脚本停止，不会覆盖它们。部署归属保存在 `data/cloudflare-deployment.json`；发布期间的原配置保存在私有 `data/cloudflare-publication.json`，成功提交或确认回退后清理，均被 Git 忽略。旧版留下的 `.env.before-cloudflare` 不会自动删除。
@@ -148,9 +148,11 @@ systemctl --user restart codex-cloud-panel.service codex-cloud-tunnel.service
 
 ```sh
 npm run native:publish -- --domain home-codex.x-wrt.dev --zone x-wrt.dev \
-  --api-token-file /path/to/cf_token --rename
+  --api-token-file /path/to/cf_token --rename --prepare-only
 systemctl --user restart codex-cloud-panel.service
 npm run native:tunnel
+npm run native:publish -- --domain home-codex.x-wrt.dev --zone x-wrt.dev \
+  --api-token-file /path/to/cf_token --commit-only
 ```
 
 只允许在原账户和区域内修改；目标域名有无关 DNS 记录、Tunnel 有无关域名路由时拒绝覆盖。成功后仅清理本项目状态记录且仍匹配原 Tunnel 的旧 CNAME，不保留旧入口兼容。中途失败可用同一目标域名重复执行以完成操作，不能在待完成状态再改第三个域名。
@@ -160,6 +162,8 @@ npm run native:tunnel
 ## 发布阶段与失败恢复
 
 `npm run deploy -- --domain ...` 先准备本机域名和Tunnel运行令牌，启动/更新服务并验证 `/readyz` 后，才提交远端路由和DNS。提交前再次通过0600 Unix socket验证目标Host、任务宿主与文件服务；服务启动或就绪失败不切公网入口。独立 `native:publish` 默认准备并尝试提交，首次更换本机域名时建议使用上面的显式两阶段命令。
+
+提交会在远端预检前后复核本机`.env`、登录信息和Tunnel运行令牌与准备结果一致；准备后被人工修改或删除时停止，不写远端路由/DNS、不覆盖修改，并保留prepared记录。请用私有编辑器核对恢复记录中的预期配置，再明确选择继续提交或回退；不要把含密码和令牌的恢复内容粘贴到日志或聊天。
 
 本机只保留一份 `data/cloudflare-publication.json` 恢复记录（0600、最多256 KiB），含前后本机配置、运行令牌、原Tunnel配置和DNS记录，不保存API token，不得提交Git或公开。API响应最多256 KiB、单次25秒；同一部署的发布阶段由独立系统文件锁串行化，无等待队列。进程中断后，prepared记录可以继续准备/提交，committing或rollback-needed记录需先回退；committed记录只继续清理旧别名，不回退有效入口。
 

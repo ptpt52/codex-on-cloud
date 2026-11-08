@@ -65,6 +65,13 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       await portalWrite(path, value.after);
     }
   }
+  async function verifyPreparedLocal(stage) {
+    for (const [key, [path, limit]] of Object.entries(local)) {
+      const value = stage.files[key]?.after;
+      if (typeof value !== 'string' || Buffer.byteLength(value) > limit) throw Error('本机发布恢复记录无效');
+      if (await optional(path, limit) !== value) throw Error('准备后本机配置已变化，未切换公网入口；请核对配置后重试');
+    }
+  }
   async function restoreLocal(stage) {
     let conflict = false;
     for (const [key, [path, limit]] of Object.entries(local)) {
@@ -172,11 +179,13 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     if (stage.phase === 'committed') { await cleanup(stage); return { published: true }; }
     if (stage.phase !== 'prepared') throw Error('发布曾被中断，请先 --rollback 后重新准备');
     await ready(socketPath, domain);
+    await verifyPreparedLocal(stage);
     const { tunnel, dns } = endpoints(stage);
     const current = (await api(tunnel + '/configurations')).config ?? null;
     if (!same(current, stage.observedConfig)) throw Error('准备后Tunnel配置已变化，未切换入口');
     const found = await records(stage);
     if (!same(found[0] || null, stage.beforeDNS)) throw Error('准备后DNS配置已变化，未切换入口');
+    await verifyPreparedLocal(stage);
     stage.phase = 'committing'; await save(stage);
     try {
       await api(tunnel + '/configurations', 'PUT', { config: stage.desiredConfig });
