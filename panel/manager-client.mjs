@@ -1,25 +1,28 @@
 import http from 'node:http';
 
 export function managerRequest(config, path, body, timeout = 6000) {
-  if (typeof config.managerSocket !== 'string' || Buffer.byteLength(config.managerSocket) > 100) return Promise.reject(Object.assign(new Error('桌面管理服务尚未配置'), { status: 503 }));
+  if (typeof config.managerSocket !== 'string' || Buffer.byteLength(config.managerSocket) > 100) return Promise.reject(Object.assign(new Error('桌面管理服务尚未配置'), { status: 503, outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
+    let connected = false;
+    const transportError = () => Object.assign(new Error(payload !== null && connected ? '桌面管理操作结果未知，请先核对状态；不会自动重试' : '桌面管理服务未就绪，请检查本机管理服务'), { status: 503, outcome: payload !== null && connected ? 'unknown' : 'rejected' });
     const request = http.request({ socketPath: config.managerSocket, path, method: payload === null ? 'GET' : 'POST',
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(payload === null ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) },
       signal: AbortSignal.timeout(timeout) }, response => {
       const chunks = []; let size = 0;
       const limit = path === '/clipboard' ? 200 * 1024 : 16 * 1024;
       response.on('data', chunk => { size += chunk.length; if (size > limit) response.destroy(new Error('管理响应过大')); else chunks.push(chunk); });
-      response.once('error', reject);
+      response.once('error', () => reject(transportError()));
       response.once('end', () => {
         try {
           const data = JSON.parse(Buffer.concat(chunks).toString());
           if (response.statusCode >= 400) { const error = new Error(data.error || '桌面管理操作失败'); error.status = response.statusCode; error.outcome = data.outcome; reject(error); }
           else resolve(data);
-        } catch (error) { reject(error); }
+        } catch { reject(transportError()); }
       });
     });
-    request.once('error', () => reject(Object.assign(new Error('桌面管理服务未就绪，请检查本机管理服务'), { status: 503 })));
+    request.once('socket', socket => { if (!socket.connecting) connected = true; else socket.once('connect', () => { connected = true; }); });
+    request.once('error', () => reject(transportError()));
     request.end(payload);
   });
 }
