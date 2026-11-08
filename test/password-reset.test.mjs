@@ -69,7 +69,7 @@ test('admin reset changes only private credentials, revokes old cookies on reloa
   assert.ok((await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8')).includes('用户名：operator\n密码：' + newPassword));
   for (const name of ['panel_password', 'credentials.txt']) { assert.equal((await lstat(join(h.root, 'secrets', name))).mode & 0o777, 0o600); await assert.rejects(lstat(join(h.root, 'secrets', name + '.reset.tmp')), { code: 'ENOENT' }); }
   assert.deepEqual(mutations(h), ['stop', 'start']); assert.equal(h.state.health, 1); assert.ok(!h.state.logs.join('\n').includes(newPassword));
-  await assert.rejects(lstat(join(h.dataDir, 'password-reset.lock')), { code: 'ENOENT' });
+  assert.equal((await lstat(join(h.dataDir, 'password-reset.lock'))).size, 0);
   const restored = await createAuth({ ...authConfig, password: newPassword }); assert.equal(restored.get(old.token), null); assert.equal(await restored.verify('operator', newPassword), true); await restored.close();
 });
 
@@ -144,7 +144,7 @@ test('symlink and FIFO reset targets are rejected without touching other files o
   const path = join(h.root, 'secrets', 'panel_password'); await rm(path); await symlink(victim, path);
   await assert.rejects(resetPassword({ target: 'admin' }, h.context), /重置目标/); assert.equal(await readFile(victim, 'utf8'), 'keep');
   await rm(path); execFileSync('mkfifo', [path]); await assert.rejects(resetPassword({ target: 'admin' }, h.context), /重置目标/);
-  assert.deepEqual(mutations(h), []); await assert.rejects(lstat(join(h.dataDir, 'password-reset.lock')), { code: 'ENOENT' });
+  assert.deepEqual(mutations(h), []); assert.equal((await lstat(join(h.dataDir, 'password-reset.lock'))).size, 0);
 });
 
 test('a failed stop or occupied manual panel never changes credentials, and the prior panel is restored', async t => {
@@ -157,7 +157,7 @@ test('a failed stop or occupied manual panel never changes credentials, and the 
 test('restoration failure reports the possible committed change without leaking the password', async t => {
   const h = await harness(t); h.state.startFailure = true;
   await assert.rejects(resetPassword({ target: 'admin' }, h.context), error => { assert.match(error.message, /可能已更新/); assert.ok(!error.message.includes(newPassword)); return true; });
-  assert.equal(await h.password(), newPassword + '\n'); await assert.rejects(lstat(join(h.dataDir, 'password-reset.lock')), { code: 'ENOENT' });
+  assert.equal(await h.password(), newPassword + '\n'); assert.equal((await lstat(join(h.dataDir, 'password-reset.lock'))).size, 0);
 });
 
 test('concurrent resets are refused and a dead process lock is recovered without signaling any process', async t => {
@@ -171,20 +171,26 @@ test('concurrent resets are refused and a dead process lock is recovered without
   await resetPassword({ target: 'unlock' }, h.context); assert.equal(JSON.parse(await h.policy()).screen.enabled, false);
 });
 
-test('failure while initializing the maintenance lock cleans up without interrupting the panel', async t => {
-  const h = await harness(t), probe = await open(join(h.root, '.env')), prototype = Object.getPrototypeOf(probe), stat = prototype.stat; await probe.close();
-  t.mock.method(prototype, 'stat', async function (...args) {
-    if ((await readlink('/proc/self/fd/' + this.fd)).endsWith('/password-reset.lock')) throw Error('test-only lock stat failure');
-    return stat.apply(this, args);
-  });
-  await assert.rejects(resetPassword({ target: 'unlock' }, h.context), /lock stat failure/);
-  await assert.rejects(lstat(join(h.dataDir, 'password-reset.lock')), { code: 'ENOENT' });
+test('unsafe maintenance locks fail without interrupting the panel', async t => {
+  const h = await harness(t), lock = join(h.dataDir, 'password-reset.lock');
+  await symlink(join(h.root, 'secrets/panel_password'), lock);
+  await assert.rejects(resetPassword({ target: 'unlock' }, h.context), /无法取得本机文件锁/);
   assert.deepEqual(mutations(h), []); assert.equal(await h.password(), oldPassword + '\n');
+});
+
+test('empty and partial crash locks recover without changing the panel lifetime', async t => {
+  const h = await harness(t, { active: false });
+  for (const content of ['', '{"pid":']) {
+    await writeFile(join(h.dataDir, 'password-reset.lock'), content, { mode: 0o600 });
+    await resetPassword({ target: 'unlock' }, h.context);
+    assert.equal((await lstat(join(h.dataDir, 'password-reset.lock'))).size, 0);
+  }
+  assert.deepEqual(mutations(h), []);
 });
 
 async function cli(t) {
   const h = await harness(t, { active: false });
-  for (const [folder, file] of [['scripts', 'reset-password.mjs'], ['native', 'password-reset.mjs'], ['panel', 'access-control.mjs']]) {
+  for (const [folder, file] of [['scripts', 'reset-password.mjs'], ['native', 'password-reset.mjs'], ['native', 'file-lock.mjs'], ['native', 'file_lock.py'], ['panel', 'access-control.mjs']]) {
     await mkdir(join(h.root, folder), { recursive: true }); await copyFile(resolve(folder, file), join(h.root, folder, file));
   }
   const bin = join(h.root, 'bin'); await mkdir(bin);

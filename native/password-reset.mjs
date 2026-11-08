@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, mkdir, chmod, lstat, unlink, rename, readFile, realpath } from 'node:fs/promises';
+import { open, mkdir, chmod, lstat, unlink, rename, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify, parseEnv } from 'node:util';
 import net from 'node:net';
 import http from 'node:http';
 import { createAccessControl } from '../panel/access-control.mjs';
+import { acquireFileLock } from './file-lock.mjs';
 
 const exec = promisify(execFile), UNIT = 'codex-cloud-panel.service';
 const FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -33,7 +34,8 @@ async function regularTarget(path, maximum = Infinity) {
   try { const info = await lstat(path); if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || info.size > maximum) throw Error('重置目标或临时文件无效，不会覆盖链接、特殊文件或其他用户文件'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
-async function atomicWrite(path, text, maximum) {
+async function atomicWrite(path, text, maximum, valid) {
+  valid();
   const bytes = Buffer.from(text), temporary = path + '.reset.tmp';
   if (bytes.length > maximum) throw Error('重置内容超过大小限制');
   await regularTarget(path); await regularTarget(temporary, maximum);
@@ -42,44 +44,13 @@ async function atomicWrite(path, text, maximum) {
   try {
     file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     await file.writeFile(bytes); await file.sync(); await file.close(); file = null;
-    await rename(temporary, path); committed = true;
+    valid(); await rename(temporary, path); committed = true;
     const directory = await open(join(path, '..'), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { await directory.sync(); } finally { await directory.close(); }
   } finally {
     await file?.close();
     if (!committed) await unlink(temporary).catch(() => {});
   }
-}
-async function processStart(pid) {
-  try { const text = await readFile(`/proc/${pid}/stat`, 'utf8'); return text.slice(text.lastIndexOf(')') + 2).split(' ')[19]; }
-  catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return null; throw error; }
-}
-async function lock(directory) {
-  const path = join(directory, 'password-reset.lock');
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let file;
-    try {
-      file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const previous = await boundedFile(path, 256); let record;
-      try { record = JSON.parse(previous.text); } catch { throw Error('重置锁文件无效，请由部署用户检查'); }
-      if (!Number.isSafeInteger(record.pid) || record.pid < 1 || !/^\d{1,24}$/.test(record.started)) throw Error('重置锁文件无效，请由部署用户检查');
-      if (await processStart(record.pid) === record.started) throw Error('已有密码重置正在执行，请稍后再试');
-      const current = await lstat(path);
-      if (current.ino !== previous.info.ino || current.dev !== previous.info.dev) throw Error('重置锁已变化，请稍后重试');
-      await unlink(path); continue;
-    }
-    let info;
-    try { info = await file.stat(); await file.writeFile(JSON.stringify({ pid: process.pid, started: await processStart(process.pid) })); await file.sync(); }
-    catch (error) { await file.close(); await unlink(path).catch(() => {}); throw error; }
-    await file.close();
-    return async () => {
-      try { const current = await lstat(path); if (current.ino === info.ino && current.dev === info.dev) await unlink(path); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-    };
-  }
-  throw Error('无法取得密码重置锁，请稍后重试');
 }
 async function execute(args) {
   try { const result = await exec('systemctl', ['--user', ...args], { timeout: 20000, maxBuffer: 4096 }); return { status: 0, stdout: result.stdout }; }
@@ -141,7 +112,10 @@ export async function resetPassword(options, { root, platform = process.platform
   cancelled(signal);
   const dataDir = join(root, 'data', 'panel'), secrets = join(root, 'secrets');
   await privateDirectory(dataDir);
-  const release = await lock(dataDir);
+  let lease;
+  try { lease = await acquireFileLock(join(dataDir, 'password-reset.lock'), { legacy: true }); }
+  catch (error) { if (error.status === 409) error.message = '已有密码重置正在执行，请稍后再试'; throw error; }
+  const valid = () => { cancelled(signal); lease.check(); };
   let stopped = false, attempted = false, failure;
   try {
     if (options.target === 'admin') {
@@ -150,30 +124,31 @@ export async function resetPassword(options, { root, platform = process.platform
     } else await createAccessControl({ dataDir, username }); // Validate before interrupting a live panel; reload after it stops.
     const current = await serviceState(run, root);
     if (current.active !== initial.active) throw Error('网页面板状态已变化，请重新执行重置');
-    cancelled(signal);
+    valid();
     if (initial.active) {
       stopped = true;
       if ((await run(['stop', UNIT])).status !== 0) throw Error('无法停止网页面板，本次不会写入密码');
       if ((await serviceState(run, root)).active) throw Error('网页面板仍在运行，本次不会写入密码');
     }
-    await ensureStopped(port); cancelled(signal); attempted = true;
+    await ensureStopped(port); valid(); attempted = true;
     if (options.target === 'admin') {
-      await atomicWrite(join(secrets, 'panel_password'), password + '\n', 2048);
-      await atomicWrite(join(secrets, 'credentials.txt'), `工作台：${origin.origin}\n用户名：${username}\n密码：${password}\n\n实际入口以 .env 为准。请妥善保管，不要提交到 Git。\n`, 4096);
+      await atomicWrite(join(secrets, 'panel_password'), password + '\n', 2048, valid);
+      await atomicWrite(join(secrets, 'credentials.txt'), `工作台：${origin.origin}\n用户名：${username}\n密码：${password}\n\n实际入口以 .env 为准。请妥善保管，不要提交到 Git。\n`, 4096, valid);
     } else {
       const access = await createAccessControl({ dataDir, username });
-      await access.saveScreen(options.target === 'unlock' ? { enabled: false } : { enabled: true, password }, () => cancelled(signal));
+      await access.saveScreen(options.target === 'unlock' ? { enabled: false } : { enabled: true, password }, valid);
     }
   } catch (error) {
     failure = attempted ? Error(options.target === 'admin' ? '重置未完成，密码可能已更新；请以 secrets/panel_password 为准，并检查凭据文件和磁盘状态。' : '重置未完成，请检查访问设置和磁盘状态后再确认结果。', { cause: error }) : error;
   } finally {
     try {
       if (stopped) {
+        lease.check();
         if ((await run(['start', UNIT])).status !== 0) throw Error('网页面板未能恢复，请运行 systemctl --user start codex-cloud-panel.service');
         await checkHealth({ port, origin: origin.origin });
       }
     } catch (error) { failure = Error(`${failure ? failure.message + '\n' : attempted ? '密码设置可能已更新；' : ''}${error.message}`, { cause: error }); }
-    finally { await release(); }
+    finally { await lease.release(); }
   }
   if (failure) throw failure;
   log(options.target === 'admin' ? '管理员密码已重置，登录信息已同步到 secrets/credentials.txt；旧登录失效。' : options.target === 'screen' ? '屏幕锁密码已重设并开启。使用新密码解锁。' : '屏幕锁已关闭。登录后可重新设置密码并开启。');

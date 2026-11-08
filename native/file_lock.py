@@ -42,12 +42,16 @@ try:
         current = os.lstat(path)
         if (current.st_ino, current.st_dev) != (info.st_ino, info.st_dev):
             raise ValueError('changed lock')
-        if len(sys.argv) > 2 and sys.argv[2] == 'legacy' and legacy_alive(os.read(fd, 257)):
+        if 'legacy' in sys.argv[2:] and legacy_alive(os.read(fd, 257)):
             raise BlockingIOError()
         os.fchmod(fd, 0o600)
         os.ftruncate(fd, 0)  # Content has no ownership meaning in the new protocol.
         print(json.dumps({'ready': True, 'dev': str(info.st_dev), 'ino': str(info.st_ino)}), flush=True)
-        sys.stdin.buffer.read(1)  # Parent release/crash closes this private pipe.
+        if 'commands' in sys.argv[2:]:
+            import runpy
+            runpy.run_path(os.path.join(os.path.dirname(__file__), 'build_commands.py'))['serve'](fd)
+        else:
+            sys.stdin.buffer.read(1)  # Parent release/crash closes this private pipe.
     finally:
         os.close(fd)
 except BlockingIOError:
