@@ -75,7 +75,21 @@ try {
   for (const next of [text, '下一份', '最后一份']) { await action('/clipboard', { text: next }); assert.equal(await run('xclip', ['-selection', 'clipboard', '-out']), next); }
   const ids = (await readFile(`/proc/${worker.pid}/task/${worker.pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean);
   const names = await Promise.all(ids.map(pid => readFile(`/proc/${pid}/comm`, 'utf8'))); assert.equal(names.filter(n => n.trim() === 'xclip').length, 1);
-  console.log('PASS: real isolated X11/xterm/tmux/clipboard survive killing the entire manager process group and restarting the actual manager; fixed-action authentication, socket mode and one selection owner verified. No Codex or production input.');
+  const original = (await managerRequest(clientConfig, '/terminals')).terminals[0];
+  const serverPid = await run('tmux', ['-S', socket, 'display-message', '-p', '-t', original.token.split(':')[0], '#{pid}']);
+  const closed = await managerRequest(clientConfig, '/terminals', { action: 'close', terminalId: original.id, terminalToken: original.token, confirm: true });
+  assert.equal(closed.closed, 'main'); assert.deepEqual(closed.terminals, []);
+  await eventually(async () => { try { await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']); return false; } catch { return true; } });
+  assert.equal(await run('tmux', ['-S', socket, 'display-message', '-p', '-t', 'codex-host:0.0', '#{pid}']), serverPid);
+  await assert.rejects(action('/terminal', { id: 'main' }));
+  const reopened = await managerRequest(clientConfig, '/terminals', { action: 'create', terminalId: 'main', name: '显式重开' });
+  assert.equal(reopened.opened, 'main'); assert.notEqual(reopened.terminals[0].token, original.token);
+  assert.equal(await run('tmux', ['-S', socket, 'display-message', '-p', '-t', 'codex-host:0.0', '#{pid}']), serverPid);
+  assert.equal(await run('xclip', ['-selection', 'clipboard', '-out']), '最后一份'); assert.equal(worker.exitCode, null);
+  console.log('PASS: real isolated X11/xterm/tmux/clipboard survive manager process-group replacement; confirmed close ends its window, empty slots preserve the server, attach cannot create a task, explicit reopen creates a fresh shell/window, fixed-action authentication and selection owner verified. No Codex or production input.');
+} catch (error) {
+  console.error(children.map(child => child.diagnostic).join('\n'));
+  throw error;
 } finally {
   await run('tmux', ['-S', socket, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }

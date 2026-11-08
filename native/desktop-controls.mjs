@@ -50,7 +50,7 @@ export function createDesktopControls(config, dependencies = {}) {
   const run = dependencies.run || (async (command, args, options = {}) => (await exec(command, args, { env, encoding: 'utf8', timeout: 2000, maxBuffer: 16 * 1024, ...options })).stdout.trim());
   const inspectSession = dependencies.sessionId || sessionId;
   const launch = dependencies.launch || (dependencies.actions ? (id = 'main') => dependencies.actions('/terminal', { id }).then(() => undefined) : (id = 'main') => {
-    const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), id === 'main' ? [] : [id], { env, stdio: 'ignore' });
+    const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), id === 'main' ? [] : [id], { env: { ...env, CODEX_CLOUD_ATTACH_ONLY: '1' }, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
   });
   const terminals = createTerminalManager(config, { run, launch, parentPid: dependencies.terminalParentPid });
@@ -87,7 +87,10 @@ export function createDesktopControls(config, dependencies = {}) {
   async function pane() {
     try {
       const text = await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}']);
-      const lines = text.split('\n');
+      // The fixed hidden sleep session has no user task. Retain the existing
+      // single-user-pane recovery checks when it is the only additional pane;
+      // any altered keeper layout or command still blocks desktop recovery.
+      const lines = text.split('\n').filter(line => !/^codex-host:0\.0\t[1-9]\d*\tsleep\t[^\r\n\0]+$/.test(line));
       if (lines.length !== 1) return null;
       const [target, pidText, command, cwd] = lines[0].split('\t');
       const pid = Number(pidText);
@@ -113,7 +116,7 @@ export function createDesktopControls(config, dependencies = {}) {
       return;
     }
     // An existing private tmux server belongs to the desktop, never create it here.
-    await bounded('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_pid}']);
+    await bounded('tmux', ['-S', env.TMUX_SOCKET, 'has-session', '-t', '=codex']);
     if (terminalChild && terminalChild.exitCode === null && terminalChild.signalCode === null) throw new Error('terminal opening');
     terminalChild = await launch();
     while (Date.now() < deadline) {

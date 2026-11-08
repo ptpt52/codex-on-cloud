@@ -11,6 +11,7 @@ import { once } from 'node:events';
 import net from 'node:net';
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
+import { createTerminalManager } from '../native/terminals.mjs';
 
 const exec = promisify(execFile), directory = await mkdtemp(join(tmpdir(), 'codex-terminal-only-'));
 const root = join(directory, 'app'), home = join(directory, 'home'), bin = join(directory, 'bin'), runtime = join(directory, 'run');
@@ -138,8 +139,20 @@ try {
     for (const terminal of resumed) assert.ok(await taskAlive(Number(terminal.token.split(':')[1])), 'panel/manager restart must preserve each task');
     const second = await attach(initial); second.ws.send(JSON.stringify({ type: 'input', id: 2, data: "printf '\\nLIFETIME-%s\\n' \"$TERMINAL_LIFETIME\"\r" }));
     await until(() => second.output.includes('LIFETIME-preserved'), 'original shell environment did not survive'); second.ws.terminate();
-    await tmux(['kill-session', '-t', '=codex']);
-    const reopened = await api('/api/terminals', { action: 'create', name: '重新打开主终端', view: 'terminal' }); assert.equal(reopened.created, 'main'); assert.notEqual(reopened.terminals.find(t => t.id === 'main').token, initial.token);
+    const destination = terminal => ({ terminalId: terminal.id, terminalToken: terminal.token });
+    await tmux(['send-keys', '-t', initial.token.split(':')[0], '-l', 'sleep 600']);
+    await tmux(['send-keys', '-t', initial.token.split(':')[0], 'Enter']);
+    await until(async () => (await tmux(['display-message', '-p', '-t', initial.token.split(':')[0], '#{pane_current_command}'])).stdout.trim() === 'sleep', 'foreground test task did not start');
+    const foreground = Number((await readFile('/proc/' + initial.token.split(':')[1] + '/task/' + initial.token.split(':')[1] + '/children', 'utf8')).trim());
+    assert.ok(Number.isInteger(foreground) && foreground > 1); await rememberTask(foreground);
+    await assert.rejects(api('/api/terminals', { action: 'close', ...destination(initial) }), /需要确认/);
+    const closed = await api('/api/terminals', { action: 'close', ...destination(initial), confirm: true, view: 'terminal' });
+    assert.equal(closed.closed, 'main'); assert.equal(closed.terminals.length, 7);
+    await until(async () => !await taskAlive(Number(initial.token.split(':')[1])), 'closing must end the selected shell');
+    await until(async () => !await taskAlive(foreground), 'closing must end its foreground task');
+    for (const terminal of closed.terminals) assert.ok(await taskAlive(Number(terminal.token.split(':')[1])), 'closing must preserve other shells');
+    const reopened = await api('/api/terminals', { action: 'create', terminalId: 'main', name: '重新打开主终端', view: 'terminal' }); assert.equal(reopened.created, 'main'); assert.notEqual(reopened.terminals.find(t => t.id === 'main').token, initial.token);
+    await assert.rejects(api('/api/terminals', { action: 'close', ...destination(initial), confirm: true, view: 'terminal' }), /终端已结束或布局已变化/);
     await rememberTask(Number(reopened.terminals.find(t => t.id === 'main').token.split(':')[1]));
     assert.equal((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
     const state = await api('/api/state'); assert.equal(state.desktop.ready, true); assert.equal(state.controls.terminalOnly, true);
@@ -162,6 +175,21 @@ try {
       const ignored = /^SigIgn:\s*([a-f0-9]+)$/im.exec(await readFile('/proc/' + pid + '/status', 'utf8'));
       assert.ok(ignored && (BigInt('0x' + ignored[1]) & 0x4001n) === 0x4001n, 'test task must ignore HUP and TERM');
     }
+    // Exercise migration of an older desktop server with no keeper, using the
+    // same real private tmux. No X11 or production service is involved.
+    const remaining = (await api('/api/terminals')).terminals;
+    for (const terminal of remaining.slice(0, -1)) await api('/api/terminals', { action: 'close', ...destination(terminal), confirm: true, view: 'terminal' });
+    const final = remaining.at(-1);
+    await tmux(['kill-session', '-t', '=codex-host']);
+    const desktopManager = createTerminalManager({ mode: 'desktop', root, runtime, workspace: join(root, 'workspaces'), maxTerminals: 8 }, {
+      run: async (command, args) => (await exec(command, args, { env, timeout: 3000, maxBuffer: 16384 })).stdout.trim(),
+    });
+    assert.deepEqual((await desktopManager.manage({ action: 'close', ...destination(final), confirm: true, view: 'terminal' })).terminals, []);
+    assert.equal((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
+    const afterEmpty = await api('/api/terminals', { action: 'create', terminalId: 'aux7', name: '全部关闭后新开', view: 'terminal' });
+    assert.equal(afterEmpty.created, 'aux7'); assert.equal(afterEmpty.terminals.length, 1);
+    await rememberTask(Number(afterEmpty.terminals[0].token.split(':')[1]));
+    assert.equal((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
     await stop(panel); await stop(manager); await stop(host);
     await until(async()=>{try{await tmux(['list-sessions']);return false;}catch{return true;}},'terminal host did not release its tmux server');
     if (systemd) {
@@ -180,7 +208,7 @@ try {
     const originalPath=env.PATH;env.PATH=bin;host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>host.exitCode!==null,'failed helper did not terminate its terminal host');assert.notEqual(host.exitCode,0);
     await assert.rejects(tmux(['list-sessions']));await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
-    console.log('✓ real terminal-only install without an executable Codex, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, closed browser and panel/manager restarts preserve shell identity/environment, explicit main reopening, fixed host lifetime and shutdown');
+    console.log('✓ real terminal-only install without an executable Codex, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, panel/manager restarts preserve tasks, confirmed close ends only its shell, stale close rejected, closing all slots and migrating a desktop keeper preserve the server, explicit reopening, fixed host lifetime and shutdown');
     if(systemd)console.log('✓ real transient systemd control groups: all tasks and the keeper remain in the host, user bus settings are preserved, panel/manager stops preserve tasks, host stop kills HUP/TERM-ignoring tasks, host SIGKILL cleans its group; only unique test units were created');
   })(), new Promise((_, reject) => { deadline = setTimeout(() => reject(Error('terminal-only native test exceeded four minutes')), 240000); })]);
 } catch (error) { for (const child of children) if (child.output) console.error(child.output.slice(-8192)); throw error; }

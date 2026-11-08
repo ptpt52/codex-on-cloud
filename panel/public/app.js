@@ -51,7 +51,7 @@ let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
 let confirmation = null, uiGeneration = 0;
-let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
+let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false;
 let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
@@ -118,16 +118,26 @@ function reconcileTerminalSelection(opened) {
   } else if (!selectedTerminal && !terminalMode()) {
     terminalSelectionState = 'ready'; terminalState.choose({ id: '', token: '' });
   } else {
-    const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
-    if (terminal && !selectedTerminalToken && selectedTerminal === 'main') activateTerminal({ id: terminal.id, token: terminal.token }, { adopt: adoptWindowDraft });
-    else terminalSelectionState = terminal?.token === selectedTerminalToken ? 'ready' : 'invalid';
+    const terminal = terminalCatalog.find(item => item.id === selectedTerminal);
+    if (terminal?.supported && !selectedTerminalToken && selectedTerminal === 'main') activateTerminal({ id: terminal.id, token: terminal.token }, { adopt: adoptWindowDraft });
+    else terminalSelectionState = terminal?.supported && terminal.token === selectedTerminalToken ? 'ready' : !terminal && terminalSlots.some(item => item.id === selectedTerminal) ? 'closed' : 'invalid';
   }
   adoptWindowDraft = false;
-  if (terminalMode() && terminalSelectionState === 'invalid' && frameLoaded) stopFrame();
+  if (terminalMode() && ['invalid', 'closed'].includes(terminalSelectionState) && frameLoaded) stopFrame();
+}
+function terminalEntries() {
+  return TERMINAL_IDS.map(id => terminalCatalog.find(item => item.id === id) || terminalSlots.find(item => item.id === id))
+    .filter(Boolean).map(item => item.supported === undefined ? { ...item, supported: terminalCatalog.length < maxTerminals, available: true } : item);
 }
 function selectTerminal(id) {
   if (confirmation) { closeConfirmation(); renderTerminalList(); return false; }
   if (!canManageTerminals() || inputComposing || frameComposing) { renderTerminalList(); return false; }
+  const slot = terminalSlots.find(item => item.id === id);
+  if (slot && !terminalCatalog.some(item => item.id === id)) {
+    if (terminalCatalog.length >= maxTerminals) return false;
+    if (!rememberDraft()) return false;
+    void manageTerminals({ action: 'create', terminalId: id, name: slot.name }); return true;
+  }
   const terminal = terminalCatalog.find(item => item.id === id && item.supported);
   if (id && !terminal || !id && terminalMode()) return false;
   const identity = id ? { id: terminal.id, token: terminal.token } : { id: '', token: '' };
@@ -145,7 +155,8 @@ function openTerminalManager() {
 function renderTerminalSelection() {
   const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error';
   const disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
-  terminalTabs.render(terminalCatalog, selectedTerminal, { visible: owned && terminalMode() && (terminalCatalog.length > 1 || invalid), disabled, invalid, loading: terminalSelectionState === 'loading' });
+  const entries = terminalEntries();
+  terminalTabs.render(entries, selectedTerminal, { visible: owned && terminalMode() && (entries.length > 1 || invalid || terminalSelectionState === 'closed'), disabled, invalid, loading: terminalSelectionState === 'loading' });
   const message = invalid ? '原终端未通过身份校验，草稿已保留；请刷新列表或手动选择目标。'
     : draftNotice || (terminalState.persistenceFailed ? '浏览器未能保存草稿，刷新前请复制重要文字。' : '');
   $('draft-status').textContent = message; $('draft-status').hidden = !message;
@@ -422,10 +433,11 @@ function renderConnection() {
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
   else if (terminalSwitching) label = '正在切换终端…';
+  else if (terminalMode() && terminalSelectionState === 'closed') label = '终端已关闭';
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) label = '终端目标待确认';
   else if (frameState === 'connected') label = terminalMode() ? '终端在线' : '桌面在线';
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
-  $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…'].includes(label));
+  $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…', '终端已关闭'].includes(label));
   $('connection-status').lastChild.textContent = label;
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? panelRoute === 'direct' ? '可访问（加密直连）' : '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
@@ -468,8 +480,15 @@ function renderConnection() {
   } else if (!owned && permissions.role === 'temporary') overlay('临时访问', '此账号仅可查看连接状态、配置服务器访问本地设备的映射，以及上传和下载共享中转文件。');
   else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '既有双向端口映射仍可连接；新增或管理本机 → 服务器映射需先解锁。连接状态、本地设备映射和文件中转仍可用。', true);
   else if (!owned) overlay('在这里继续工作', terminalOnly ? '终端已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启任务。' : '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
+  else if (terminalMode() && terminalSelectionState === 'closed') {
+    overlay('已关闭', '点击下方入口新开终端，或切换到其他终端。');
+    $('choose-terminal-button').textContent = '新开终端';
+    $('choose-terminal-button').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals || !!confirmation;
+    $('choose-terminal-button').hidden = false;
+  }
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) {
     overlay('请选择终端', '原终端未通过身份校验，草稿仍保留。请刷新列表或手动选择目标。');
+    $('choose-terminal-button').textContent = '选择终端'; $('choose-terminal-button').disabled = false;
     $('choose-terminal-button').hidden = false;
   }
   else if (desktopReady === false && frameState !== 'connected') overlay(terminalOnly ? '终端后台未就绪' : '桌面未就绪', terminalOnly ? '正在等待终端后台。网页不会自动重启后台或重新执行任务。' : '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
@@ -695,7 +714,7 @@ function showLogin(message = '') {
   maintenancePending = false;
   $('input-status').hidden = true;
   loggedIn = false; owned = false; csrf = '';
-  terminalController?.abort(); terminalController = null; terminalBusy = false; terminalLoadAttempted = false; terminalCatalog = []; selectedTerminal = ''; selectedTerminalToken = ''; terminalSelectionState = 'loading'; renderTerminalList();
+  terminalController?.abort(); terminalController = null; terminalBusy = false; terminalLoadAttempted = false; terminalCatalog = []; terminalSlots = []; selectedTerminal = ''; selectedTerminalToken = ''; terminalSelectionState = 'loading'; renderTerminalList();
   desktopReady = null; frameDimensions = null; panelState = 'auth';
   stopPolling();
   stopFrame();
@@ -817,7 +836,7 @@ async function showWorkspace(user) {
   renderDisplayControls();
   accessExpired = false; panelState = 'online'; desktopReady = null;
   if (permissions.canClaim && !permissions.requiresUnlock) initializeTerminalSelection();
-  else { selectedTerminal = ''; selectedTerminalToken = ''; terminalCatalog = []; $('mobile-input').value = ''; }
+  else { selectedTerminal = ''; selectedTerminalToken = ''; terminalCatalog = []; terminalSlots = []; $('mobile-input').value = ''; }
   $('user-label').textContent = user.username + (permissions.role === 'temporary' ? ' · 临时访问' : '');
   $('password').value = '';
   $('login-view').hidden = true;
@@ -848,8 +867,8 @@ function confirmationValid(pending) {
   if (pending.epoch !== frameEpoch || pending.frameState !== frameState || pending.owned !== owned) return false;
   if (pending.kind === 'mode') return !document.hidden && pending.body?.from === displayPreferences.mode && ['desktop', 'terminal'].includes(pending.body.mode) && pending.body.mode !== displayPreferences.mode && !modeChangeBusy();
   if (pending.destination && JSON.stringify(pending.destination) !== JSON.stringify(inputDestination(false))) return false;
-  if (pending.kind === 'terminal-open' && !terminalCatalog.some(item => item.id === pending.body?.terminalId && item.token === pending.body.terminalToken && item.supported)) return false;
-  if (['terminal-open', 'terminal-create'].includes(pending.kind)) return canManageTerminals();
+  if (['terminal-open', 'terminal-close'].includes(pending.kind) && !terminalCatalog.some(item => item.id === pending.body?.terminalId && item.token === pending.body.terminalToken && item.supported)) return false;
+  if (['terminal-open', 'terminal-create', 'terminal-close'].includes(pending.kind)) return canManageTerminals() && !inputComposing && !frameComposing;
   return pending.kind === 'reconnect' ? panelState === 'online' && navigator.onLine && !maintenancePending && !controlsState.maintenance : !inputBusy && canInput();
 }
 function closeConfirmation() {
@@ -873,6 +892,7 @@ function requestConfirmation(kind, key, body) {
     shortcut: shortcut ? [`发送 ${shortcut.key}？`, shortcut.description, `发送 ${shortcut.key}`] : null,
     'terminal-create': [terminalOnly ? '新建终端？' : '新建辅助终端？', `将创建并打开“${body?.name}”，原有任务继续运行。`, '确认新建'],
     'terminal-open': ['切换远程终端？', '将打开或切换到所选终端，并将输入助手的目标设为该终端。原有任务继续运行。', '确认切换'],
+    'terminal-close': ['结束这个终端？', `将结束“${terminalCatalog.find(item => item.id === body?.terminalId)?.name || '所选终端'}”会话及其前台任务，无法恢复。其他终端继续运行。原位置可新开 shell，旧草稿会保留。`, '确认结束终端'],
     'drafts-clear': ['清理已结束终端的旧草稿？', '仅清理身份已失效且当前未在编辑的终端草稿。当前草稿和仍可用终端的草稿会保留。', '确认清理草稿'],
     mode: [`切换到${body?.mode === 'terminal' ? '网页终端' : '桌面'}？`, '切换后会重新建立连接。当前任务继续运行，输入草稿会保留，已发送的输入不会重发。', '确认切换'],
   }[kind];
@@ -909,7 +929,7 @@ $('accept-confirmation').addEventListener('click', () => {
   if (pending.kind === 'drafts-clear') { terminalState.clearStale(terminalCatalog, draftIdentity); draftNotice = ''; renderTerminalSelection(); return; }
   if (pending.kind === 'terminal') return void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话');
   if (pending.kind === 'mode') return changeMode(pending.body.mode);
-  if (['terminal-create', 'terminal-open'].includes(pending.kind)) return void manageTerminals(pending.body);
+  if (['terminal-create', 'terminal-open', 'terminal-close'].includes(pending.kind)) return void manageTerminals(pending.kind === 'terminal-close' ? { ...pending.body, confirm: true } : pending.body);
   if (pending.kind === 'interrupt') void inputAction('/api/key', { key: 'Ctrl+C' }, '发送中断', 'Ctrl C 已发送', pending.destination);
   if (pending.kind === 'shortcut' && SHORTCUT_BY_KEY.get(pending.key)?.confirm) void inputAction('/api/key', { key: pending.key }, '发送按键', `${pending.key} 已发送`, pending.destination);
 });
@@ -962,9 +982,10 @@ function renderTerminalList() {
   select.replaceChildren(new Option('当前窗口（跟随桌面焦点）', ''));
   select.options[0].disabled = terminalMode();
   const viewSelect = $('terminal-view-select'); viewSelect.replaceChildren();
-  for (const terminal of terminalCatalog) {
-    const option = new Option(`${terminal.name}${terminal.supported ? '' : '（布局不支持）'}`, terminal.id); option.disabled = !terminal.supported; select.add(option);
-    const viewOption = new Option(terminal.name, terminal.id); viewOption.disabled = !terminal.supported; viewSelect.add(viewOption);
+  for (const terminal of terminalEntries()) {
+    const label = `${terminal.name}${terminal.available ? ' · 新开 ＋' : terminal.supported ? '' : '（布局不支持）'}`;
+    const option = new Option(label, terminal.id); option.disabled = !terminal.supported; select.add(option);
+    const viewOption = new Option(label, terminal.id); viewOption.disabled = !terminal.supported; viewSelect.add(viewOption);
   }
   const invalid = ['invalid', 'error'].includes(terminalSelectionState);
   if (selectedTerminal && invalid) {
@@ -973,12 +994,12 @@ function renderTerminalList() {
   }
   select.value = selectedTerminal && invalid ? 'stale' : selectedTerminal;
   viewSelect.value = selectedTerminal && invalid ? 'stale' : selectedTerminal;
-  $('terminal-target-note').textContent = terminalMode() ? '输入直接发送到当前网页终端；粘贴与 Enter 提交分开。' : selectedTerminal ? '按键和粘贴发送前会切换到所选终端；关闭的窗口需先重新打开。' : '发送到桌面当前获得焦点的位置。';
+  $('terminal-target-note').textContent = terminalSelectionState === 'closed' ? '终端已关闭，草稿保留；点击原位置可新开 shell。' : terminalMode() ? '输入直接发送到当前网页终端；粘贴与 Enter 提交分开。' : selectedTerminal ? '按键和粘贴发送前会切换到所选终端；关闭的窗口需先重新打开。' : '发送到桌面当前获得焦点的位置。';
   if (selectedTerminal) $('paste-target').value = 'terminal';
   const list = $('terminal-list'); list.replaceChildren();
   for (const terminal of terminalCatalog) {
     const row = document.createElement('div'); row.className = 'terminal-row'; row.dataset.terminal = terminal.id; row.dataset.supported = String(terminal.supported);
-    const title = document.createElement('strong'), detail = document.createElement('p'), input = document.createElement('input'), rename = document.createElement('button'), open = document.createElement('button');
+    const title = document.createElement('strong'), detail = document.createElement('p'), input = document.createElement('input'), rename = document.createElement('button'), open = document.createElement('button'), close = document.createElement('button');
     title.textContent = terminal.name; detail.className = 'muted'; detail.textContent = terminal.supported ? `${terminal.primary ? '主终端' : '辅助终端'} · ${terminal.command || '运行中'}` : '包含多个窗格或布局无法识别';
     input.value = terminal.name; input.maxLength = 24; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
     rename.type = open.type = 'button'; rename.textContent = '保存名称'; open.textContent = '打开 / 切换';
@@ -986,12 +1007,20 @@ function renderTerminalList() {
     const target = { terminalId: terminal.id, terminalToken: terminal.token };
     rename.addEventListener('click', () => { if (terminal.supported) void manageTerminals({ action: 'rename', ...target, name: input.value }); });
     open.addEventListener('click', () => { if (terminal.supported) requestConfirmation('terminal-open', null, { action: 'open', ...target }); });
-    row.append(title, detail, input, rename, open); list.append(row);
+    close.type = 'button'; close.className = 'secondary terminal-close'; close.textContent = '结束终端';
+    close.addEventListener('click', () => { if (terminal.supported) requestConfirmation('terminal-close', null, { action: 'close', ...target }); });
+    row.append(title, detail, input, rename, open, close); list.append(row);
   }
   renderInputControls();
 }
 async function terminalRequest(body) {
   if (!loggedIn || terminalBusy || (body && !canManageTerminals())) return;
+  const closingCurrent = body?.action === 'close' && body.terminalId === selectedTerminal && body.terminalToken === selectedTerminalToken;
+  if (closingCurrent) {
+    if (!rememberDraft()) return;
+    if (terminalMode()) stopFrame();
+    terminalSelectionState = 'loading';
+  }
   const controller = new AbortController(), generation = uiGeneration;
   if (body && terminalMode()) body = { ...body, view: 'terminal' };
   terminalController = controller; terminalBusy = true; shortcutMenu.close();
@@ -1004,7 +1033,9 @@ async function terminalRequest(body) {
       !TERMINAL_IDS.includes(item?.id) || typeof item.supported !== 'boolean' ||
       (item.supported ? !validTerminalIdentity(item) : item.token !== null) || typeof item.name !== 'string' || item.name.length > 96
     ) || new Set(result.terminals.map(item => item.id)).size !== result.terminals.length) throw new Error('终端列表格式无效，请手动刷新');
+    if (result.slots !== undefined && (!Array.isArray(result.slots) || result.slots.length !== result.limit || result.slots.some((item, i) => item?.id !== TERMINAL_IDS[i] || typeof item.name !== 'string' || !item.name || item.name.length > 96))) throw new Error('终端位置格式无效，请手动刷新');
     terminalCatalog = result.terminals;
+    terminalSlots = result.slots || [];
     maxTerminals = result.limit;
     terminalCatalogVerified = true;
     reconcileTerminalSelection(result.opened);
@@ -1014,7 +1045,11 @@ async function terminalRequest(body) {
   } catch (error) {
     if (terminalController === controller && generation === uiGeneration) {
       $('terminals-status').textContent = body && error.outcome !== 'rejected' ? '操作结果未知，请手动刷新列表确认；不会自动重试。' : error.message;
-      if (!body && terminalSelectionState === 'loading') terminalSelectionState = 'error';
+      if (closingCurrent) {
+        if (error.outcome === 'rejected') reconcileTerminalSelection();
+        else terminalSelectionState = 'error';
+      } else if (!body && terminalSelectionState === 'loading') terminalSelectionState = 'error';
+      if (body && !$('terminals-dialog').open) toast($('terminals-status').textContent, true);
     }
   } finally {
     clearTimeout(timeout);
@@ -1031,7 +1066,10 @@ $('refresh-terminals').addEventListener('click', () => void loadTerminals());
 $('terminal-switch-refresh').addEventListener('click', () => void loadTerminals());
 $('terminal-switch-dialog').addEventListener('close', () => { sendDisplayPreferences(); scheduleViewport(); });
 $('terminal-switch-dialog').addEventListener('toggle', () => sendDisplayPreferences());
-$('choose-terminal-button').addEventListener('click', () => { $('terminal-switch-dialog').showModal(); sendDisplayPreferences(); });
+$('choose-terminal-button').addEventListener('click', () => {
+  if (terminalSelectionState === 'closed') selectTerminal(selectedTerminal);
+  else { $('terminal-switch-dialog').showModal(); sendDisplayPreferences(); }
+});
 $('clear-stale-drafts').addEventListener('click', () => requestConfirmation('drafts-clear'));
 $('create-terminal-form').addEventListener('submit', event => { event.preventDefault(); if (canManageTerminals()) requestConfirmation('terminal-create', null, { action: 'create', name: $('new-terminal-name').value }); });
 $('input-terminal').addEventListener('change', () => selectTerminal($('input-terminal').value));

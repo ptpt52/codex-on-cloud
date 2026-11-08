@@ -43,7 +43,7 @@ test('terminal labels switch only the current stream, isolate drafts and restore
   } finally { await app.close(); }
 });
 test('single-terminal mode keeps the session bar hidden and preserves the focused phone layout', async ({ page }) => {
-  const app = await fixture({ rfb: true });
+  const app = await fixture({ rfb: true, maxTerminals: 1 });
   try {
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('桌面在线');

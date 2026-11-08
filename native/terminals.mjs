@@ -45,7 +45,7 @@ export function createTerminalManager(config, { run, launch, parentPid = process
       terminals.push({ id: definition.id, name: title, command: String(command || '').slice(0, 64), supported,
         token: supported ? `${paneId}:${pid}` : null, primary: session === 'codex' });
     }
-    return { terminals, limit };
+    return { terminals, limit, slots: TERMINALS.slice(0, limit).map(({ id, name }) => ({ id, name })) };
   }
   async function selected(body) {
     terminalTarget(body);
@@ -61,8 +61,10 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     return values;
   }
   async function windowClient(windowId) {
-    const windowPid = await run('xdotool', ['getwindowpid', windowId]);
-    if (!/^\d{1,10}$/.test(windowPid)) throw fail(409, '终端窗口进程无法识别，本次输入未发送');
+    let windowPid;
+    const starting = () => Object.assign(fail(409, '终端窗口进程无法识别，本次输入未发送'), { code: 'terminal_window_starting' });
+    try { windowPid = await run('xdotool', ['getwindowpid', windowId]); } catch { throw starting(); }
+    if (!/^\d{1,10}$/.test(windowPid)) throw starting();
     const clients = await tmux(['list-clients', '-F', '#{client_pid}\t#{client_tty}\t#{session_name}']);
     if (Buffer.byteLength(clients) > 8192 || clients.split('\n').length > 16) throw fail(409, '终端连接超出管理范围，本次输入未发送');
     const matches = [];
@@ -70,7 +72,7 @@ export function createTerminalManager(config, { run, launch, parentPid = process
       const [pid, tty, session] = line.split('\t');
       if (/^\d{1,10}$/.test(pid) && /^\/dev\/pts\/\d{1,10}$/.test(tty) && await parentPid(pid).catch(() => '') === windowPid) matches.push({ tty, session });
     }
-    if (matches.length !== 1) throw fail(409, '窗口的 tmux 连接无法识别，本次输入未发送');
+    if (matches.length !== 1) throw Object.assign(fail(409, '窗口的 tmux 连接无法识别，本次输入未发送'), { code: matches.length ? 'terminal_window_ambiguous' : 'terminal_window_starting' });
     return matches[0];
   }
   async function assertFocused(body) {
@@ -82,17 +84,33 @@ export function createTerminalManager(config, { run, launch, parentPid = process
   async function focus(body, reopen = false) {
     const terminal = await selected(body);
     let ids = await windows(terminal.id);
+    let opening = false;
+    const deadline = Date.now() + 3500;
     if (!ids.length && reopen) {
       const previous = children.get(terminal.id);
       if (previous && previous.exitCode === null && previous.signalCode === null) throw fail(409, '终端窗口正在打开，请稍后刷新');
       const child = await launch(terminal.id); if (child) children.set(terminal.id, child);
-      const deadline = Date.now() + 3500;
+      opening = true;
       while (!ids.length && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve, 100)); ids = await windows(terminal.id); }
     }
     if (ids.length !== 1) throw fail(409, '终端窗口已关闭，请先在终端管理中打开');
+    let client;
+    if (reopen) {
+      // A new xterm maps its X window before its tmux client has registered.
+      // Wait only for that new client's read-only identity check, within the
+      // same opening deadline. Launch, task creation and input are never retried.
+      while (true) {
+        try { client = await windowClient(ids[0]); break; }
+        catch (error) {
+          if (!opening || error.code !== 'terminal_window_starting' || Date.now() >= deadline) throw error;
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+      await selected(body);
+    }
     await run('xdotool', ['windowactivate', '--sync', ids[0]]);
     if (reopen) {
-      const client = await windowClient(ids[0]), session = definitions.get(terminal.id).session;
+      const session = definitions.get(terminal.id).session;
       if (client.session !== session) await tmux(['switch-client', '-c', client.tty, '-t', session]);
     }
     await assertFocused(body);
@@ -102,12 +120,13 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     if (body?.view !== undefined && body.view !== 'terminal') throw fail(400, '终端视图无效');
     if (body?.action === 'create') {
       const label = name(body.name);
+      if (body.terminalToken !== undefined || (body.terminalId !== undefined && !TERMINALS.slice(0, limit).some(item => item.id === body.terminalId))) throw fail(400, '新终端位置无效');
       const before = await list();
       if (before.terminals.length >= limit) throw fail(409, `最多保留 ${limit} 个终端，请先退出不用的终端`);
-      const mainMissing = config.mode === 'terminal' && !before.terminals.some(item => item.id === 'main');
-      if (!mainMissing && !before.terminals.some(item => item.id === 'main' && item.supported)) throw fail(409, '主终端布局无法识别，暂不创建辅助终端');
-      const slot = mainMissing ? TERMINALS[0] : TERMINALS.slice(1, limit).find(item => !before.terminals.some(terminal => terminal.id === item.id));
+      if (before.terminals.some(item => item.id === 'main' && !item.supported)) throw fail(409, '主终端布局无法识别，暂不创建辅助终端');
+      const slot = body.terminalId ? definitions.get(body.terminalId) : TERMINALS.slice(0, limit).find(item => !before.terminals.some(terminal => terminal.id === item.id));
       if (!slot) throw fail(409, `最多保留 ${limit} 个终端，请先退出不用的终端`);
+      if (before.terminals.some(item => item.id === slot.id)) throw fail(409, '该位置已有终端，请刷新列表后选择');
       // Share the primary shell's initialization, including the user bashrc and
       // selected tool PATH. Multiple argv entries avoid a shell-command string;
       // the script path and workspace stay literal, even with shell characters.
@@ -123,8 +142,34 @@ export function createTerminalManager(config, { run, launch, parentPid = process
         return { ...result, created: slot.id, opened: slot.id };
       } catch { throw Object.assign(new Error('终端可能已创建，请刷新列表确认，不要重复新建'), { status: 503, outcome: 'unknown' }); }
     }
-    if (!['rename', 'open'].includes(body?.action)) throw fail(400, '不支持的终端操作');
+    if (!['rename', 'open', 'close'].includes(body?.action)) throw fail(400, '不支持的终端操作');
+    if (body.action === 'close' && body.confirm !== true) throw fail(400, '结束终端需要确认');
     const terminal = await selected(body);
+    if (body.action === 'close') {
+      const session = definitions.get(terminal.id).session, [pane, pid] = terminal.token.split(':');
+      // tmux evaluates this format and executes the fixed command in its own
+      // command queue. No shell runs, and a reused slot or changed layout cannot
+      // be killed between the identity check and the mutation.
+      const guard = `#{==:#{session_name}:#{pane_id}:#{pane_pid}:#{session_windows}:#{window_panes}:#{window_index}:#{pane_index},${session}:${pane}:${pid}:1:1:0:0}`;
+      const guarded = async command => {
+        let result;
+        try { result = await tmux(['if-shell', '-F', '-t', pane, guard, command, 'display-message -p STALE_TARGET']); }
+        catch { throw Object.assign(new Error('结束结果未知，请刷新列表确认，不会自动重试'), { status: 503, outcome: 'unknown' }); }
+        if (result.includes('STALE_TARGET')) throw fail(409, '终端已变化，未执行结束；请刷新列表');
+      };
+      // Older desktop deployments have no hidden keeper. Create at most one on
+      // the *existing* server before closing, so even closing the final terminal
+      // preserves that server's desktop/host lifetime. if-shell cannot start a
+      // replacement tmux server owned by the panel or manager.
+      try { await tmux(['has-session', '-t', '=codex-host']); }
+      catch {
+        if (config.mode === 'terminal') throw fail(503, '终端后台保活会话缺失，请检查后台');
+        await guarded('new-session -d -s codex-host sleep infinity');
+      }
+      await guarded(`kill-session -t =${session}`);
+      try { return { ...(await list()), closed: terminal.id }; }
+      catch { throw Object.assign(new Error('结束结果未知，请刷新列表确认，不会自动重试'), { status: 503, outcome: 'unknown' }); }
+    }
     if (body.action === 'rename') await tmux(['set-option', '-t', definitions.get(terminal.id).session, '@codex_cloud_name', name(body.name)]);
     else if (body.view !== 'terminal') await focus(body, true);
     return { ...(await list()), opened: body.action === 'open' ? terminal.id : undefined };

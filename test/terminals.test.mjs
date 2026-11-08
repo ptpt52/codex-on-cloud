@@ -107,3 +107,62 @@ test('targeted inputs and terminal mutations share one lock and delayed writes c
   await app.claim('22222222-2222-4222-8222-222222222222'); request.end(body.slice(1));
   assert.equal(await response, 409); assert.equal((await app.request('/api/terminals')).status, 409); assert.equal((await app.controls.listTerminals()).terminals.length, 2);
 });
+
+test('closing requires confirmation and the exact live identity; fixed empty slots reopen with fresh identities', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  const main = (await listed(app)).terminals[0];
+  const created = await create(app, '结束后新开'), aux = created.terminals.find(item => item.id === 'aux1');
+  assert.deepEqual(created.slots.map(item => item.id), ['main', 'aux1', 'aux2', 'aux3']);
+  const close = { action: 'close', ...target(aux) };
+  assert.equal((await app.request('/api/terminals', { method: 'POST', body: close })).status, 400);
+  assert.equal((await app.request('/api/terminals', { method: 'POST', body: { ...close, confirm: true, terminalToken: '%999:9999' } })).status, 409);
+  for (const headers of [{ origin: 'https://invalid.test' }, { 'x-csrf-token': '' }]) assert.equal((await app.request('/api/terminals', { method: 'POST', body: { ...close, confirm: true }, headers })).status, 403);
+  const response = await app.request('/api/terminals', { method: 'POST', body: { ...close, confirm: true } });
+  assert.equal(response.status, 200); const closed = await response.json(); assert.equal(closed.closed, 'aux1'); assert.deepEqual(closed.terminals, [main]);
+  assert.equal((await (await app.request('/api/desktop/settings')).json()).session.pid, Number(main.token.split(':')[1]));
+  const recreated = await app.request('/api/terminals', { method: 'POST', body: { action: 'create', terminalId: 'aux1', name: '新 shell', view: 'terminal' } });
+  assert.equal(recreated.status, 200); const reopened = await recreated.json();
+  assert.equal(reopened.opened, 'aux1'); assert.notEqual(reopened.terminals[1].token, aux.token); assert.deepEqual(reopened.terminals[0], main);
+  assert.equal((await app.request('/api/terminals', { method: 'POST', body: { ...close, confirm: true } })).status, 409);
+  assert.equal((await app.request('/api/terminals', { method: 'POST', body: { action: 'create', terminalId: 'aux1', name: '占用位置' } })).status, 409);
+  for (const terminalId of ['aux7', 'invalid', 'codex-host', 'aux1; true']) assert.equal((await app.request('/api/terminals', { method: 'POST', body: { action: 'create', terminalId, name: '非法位置' } })).status, 400);
+  assert.equal((await app.request('/api/terminals', { method: 'POST', body: { action: 'close', ...target(main), confirm: true, view: 'terminal' } })).status, 200);
+  const withoutMain = await app.request('/api/terminals', { method: 'POST', body: { action: 'create', terminalId: 'aux3', name: '无主终端也能新开', view: 'terminal' } });
+  assert.equal(withoutMain.status, 200); assert.equal((await withoutMain.json()).created, 'aux3');
+  assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.inputCalls, []);
+});
+
+test('a terminal replaced between listing and the guarded close is rejected without killing its replacement', async () => {
+  const calls = [];
+  const manager = createTerminalManager({ runtime: '/isolated', workspace: '/workspace', maxTerminals: 8 }, { run: async (command, args) => {
+    calls.push({ command, args });
+    if (args.includes('list-panes')) return 'codex-aux1\t%3\t4100\tbash\t0\t0\t';
+    if (args.includes('has-session')) return '';
+    if (args.includes('if-shell')) return 'STALE_TARGET';
+    throw Error('unexpected operation');
+  } });
+  await assert.rejects(manager.manage({ action: 'close', terminalId: 'aux1', terminalToken: '%3:4100', confirm: true }), error => error.status === 409 && error.outcome === 'rejected');
+  const guarded = calls.find(item => item.args.includes('if-shell'));
+  assert.equal(guarded.command, 'tmux'); assert.ok(guarded.args.includes('-F'));
+  assert.ok(guarded.args.includes('kill-session -t =codex-aux1'));
+  assert.ok(guarded.args.some(item => item.includes('codex-aux1:%3:4100:1:1:0:0')));
+  assert.ok(calls.every(item => item.command !== 'sh' && item.command !== 'bash' && !item.args.includes('kill-session')));
+});
+
+test('a newly opened X window waits for its tmux client without launching or creating twice', async () => {
+  let launched = 0, clientReads = 0, pidReads = 0, activations = 0;
+  const manager = createTerminalManager({ runtime: '/isolated', workspace: '/workspace', maxTerminals: 8 }, {
+    launch: async () => { launched++; }, parentPid: async () => '999',
+    run: async (command, args) => {
+      if (command === 'tmux' && args.includes('list-panes')) return 'codex\t%0\t4000\tbash\t0\t0\t';
+      if (command === 'tmux' && args.includes('list-clients')) return ++clientReads > 2 ? '10999\t/dev/pts/0\tcodex' : '';
+      if (command === 'xdotool' && args[0] === 'search') return launched ? '999' : '';
+      if (command === 'xdotool' && args[0] === 'getwindowpid') { if (++pidReads === 1) throw Error('window PID not registered yet'); return '999'; }
+      if (command === 'xdotool' && args[0] === 'getactivewindow') return '999';
+      if (command === 'xdotool' && args[0] === 'windowactivate') { activations++; return ''; }
+      throw Error('unexpected operation: ' + command);
+    },
+  });
+  const result = await manager.manage({ action: 'open', terminalId: 'main', terminalToken: '%0:4000' });
+  assert.equal(result.opened, 'main'); assert.equal(launched, 1); assert.equal(activations, 1); assert.ok(clientReads >= 3);
+});

@@ -4,7 +4,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, dialog, list, choo
     bar.hidden = !visible;
     mobileButton.disabled = disabled;
     const current = catalog.find(item => item.id === selected && item.supported);
-    mobileButton.textContent = invalid ? '原终端已失效 · 选择终端 ▾' : loading ? '正在核对终端…' : `${current?.name || '选择终端'} ▾`;
+    mobileButton.textContent = invalid ? '原终端已失效 · 选择终端 ▾' : loading ? '正在核对终端…' : `${current?.available ? '已关闭 · 新开终端' : current?.name || '选择终端'} ▾`;
     mobileButton.title = current?.name || '选择终端';
     const next = JSON.stringify({ catalog, selected, disabled, invalid });
     if (signature === next) return;
@@ -15,13 +15,15 @@ export function createTerminalTabs({ bar, tabs, mobileButton, dialog, list, choo
       const active = terminal.id === selected && !invalid;
       for (const [parent, compact] of [[tabs, true], [list, false]]) {
         const button = document.createElement('button'); button.type = 'button'; button.className = compact ? 'terminal-tab view-button' : 'terminal-choice';
-        button.dataset.terminalChoice = terminal.id; button.title = terminal.name;
+        button.dataset.terminalChoice = terminal.id; button.dataset.available = String(!!terminal.available); button.title = terminal.available ? `新开 ${terminal.name}` : terminal.name;
         button.disabled = disabled || !terminal.supported;
-        button.textContent = terminal.name;
+        const slotLabel = terminal.id === 'main' ? '＋ 主终端' : `＋ 新开 ${terminal.id.slice(3)}`;
+        button.textContent = terminal.available ? (compact ? slotLabel : `${terminal.name} · 新开 ＋`) : terminal.name;
+        if (terminal.available) button.setAttribute('aria-label', `新开 ${terminal.name}`);
         if (compact) { button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
         else {
           button.setAttribute('aria-pressed', String(active));
-          const note = document.createElement('small'); note.textContent = !terminal.supported ? '当前布局不可用' : active ? '当前查看和输入目标' : terminal.command || '已有终端'; button.append(note);
+          const note = document.createElement('small'); note.textContent = terminal.available ? '空闲位置 · 点击新开 shell' : !terminal.supported ? '当前布局不可用' : active ? '当前查看和输入目标' : terminal.command || '已有终端'; button.append(note);
         }
         button.addEventListener('click', () => { if (choose(terminal.id)) dialog.close(); });
         parent.append(button);
