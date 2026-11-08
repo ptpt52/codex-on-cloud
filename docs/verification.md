@@ -855,3 +855,9 @@ home发布UI版本 `f141368fe371d7b648ea1ff1`。旧宿主的关键助手保留�
 新安装的桌面/纯终端宿主不再将 Python 文件助手作为关键子进程，正式独立 files unit 具备有界失败恢复、日志和父进程管道回收。manager 直接探测虚拟显示或私有 tmux keeper，面板 /readyz 和部署检查都要求宿主及文件协议就绪，并使用 FILE_AGENT_PORT。旧活动宿主端口冲突在写 unit 前拒绝；已部署的迁移 unit/drop-in 保留。重复部署只更新 files/manager/panel，原任务继续运行。
 
 真实隔离 terminal-only 验证无可执行 Codex/noVNC/X11，文件服务停止、恢复、启动失败均保留任务宿主与各终端；真实隔离 X11/xterm/tmux 生命周期验证继续通过。安装测试模拟 systemctl，验证端口冲突不写 unit、不停止任务，以及保留已有迁移服务。未更新生产服务或 Cloudflare。
+
+## Cloudflare 私有入口与分设备限流（2026-11-08）
+
+新增固定私有 tunnel.sock，目录0700/socket0600，最多256个HTTP连接、64个请求头、15秒头超时及310秒上传请求期限；有效边缘IP只在实际私有入口接受，普通TCP忽略所有转发地址头。登录与屏幕解锁共用原有全局验密槽与有界失败表，IPv6规范化，缺失/重复/带作用域等无效头进入固定桶。配置脚本的新默认使用 Cloudflare unix: 上游；已有TCP路由需显式迁移，未自动修改真实Cloudflare账户。
+
+真实Unix HTTP和WebSocket、模拟上游回归验证：客户端A登录或解锁耗尽限额后，B仍可登录或解锁；TCP伪造头不能绕过；私有入口Host/Origin/登录/CSRF保护及VNC桥接有效。文件/符号链接占位、公开目录、活动socket拒绝，崩溃残留回收和0600权限验证通过。测试不访问真实Cloudflare部署。

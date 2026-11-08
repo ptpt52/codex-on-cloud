@@ -47,7 +47,7 @@ export function readConfig(env = environment()) {
     agentSecret: secret({ AGENT_SECRET_FILE: join(native.root, 'secrets', 'agent_secret') }, 'AGENT_SECRET'),
     vncSocket: native.socket, agentUrl, fileAgentUrl: `http://127.0.0.1:${native.fileAgentPort}`, transferDir: native.transfer,
     tunnelDiagnosticsUrl: `http://127.0.0.1:${native.tunnelMetricsPort}/diag/tunnel`,
-    managerSocket: native.managerSocket,
+    managerSocket: native.managerSocket, tunnelSocket: native.tunnelSocket,
     terminalSocket: join(native.runtime, 'tmux.sock'), terminalEnv: native.mode === 'terminal' ? terminalEnvironment(native) : desktopEnvironment(native),
     sessionMs: 7 * 24 * 60 * 60 * 1000,
     webrtc: env.WEBRTC_ENABLED !== '0', fastConnect: true, streamProtocol: 1,

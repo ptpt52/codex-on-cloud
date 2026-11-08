@@ -66,7 +66,7 @@ const tunnelToken = await api(`${base}/${state.tunnelId}/token`);
 await writeFile(join(root, 'secrets', 'tunnel_token'), tunnelToken + '\n', { mode: 0o600 });
 await chmod(join(root, 'secrets', 'tunnel_token'), 0o600);
 await api(`${base}/${state.tunnelId}/configurations`, 'PUT', { config: { ingress: [
-  { hostname: domain, service: `http://127.0.0.1:${config.panelPort}`, originRequest: {} },
+  { hostname: domain, service: `unix:${config.tunnelSocket}`, originRequest: {} },
   { service: 'http_status:404' },
 ] } });
 // Prepare the authenticated origin before publishing DNS. Preserve credentials and other settings.

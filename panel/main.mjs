@@ -7,9 +7,12 @@ try {
   const config = readConfig();
   const panel = await createPanel(config);
   let stopReload;
-  try { stopReload = await serveUIReload(join(config.dataDir, 'ui-reload.sock'), panel.reloadUI); }
-  catch (error) { await panel.close(); throw error; }
-  panel.server.listen(config.port, config.host, () => console.log(`Codex on Cloud 已启动，监听 ${config.host}:${config.port}`));
+  try {
+    stopReload = await serveUIReload(join(config.dataDir, 'ui-reload.sock'), panel.reloadUI);
+    await new Promise((resolve, reject) => { panel.server.once('error', reject); panel.server.listen(config.port, config.host, resolve); });
+    await panel.startTunnel(config.tunnelSocket);
+  } catch (error) { await stopReload?.(); await panel.close(); throw error; }
+  console.log(`Codex on Cloud 已启动，监听 ${config.host}:${config.port}`);
   let stopping = false;
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, async () => {
     if (stopping) return;

@@ -31,6 +31,8 @@ import { attachServiceFiles } from './service-files.mjs';
 import { createUIAssets } from './ui-assets.mjs';
 import { createNodeDirectoryReader } from './node-directory.mjs';
 import { createPortalConnection } from './portal-connection.mjs';
+import { listenPrivateHTTP } from '../native/private-http.mjs';
+import { loginClient } from './login-client.mjs';
 
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -69,6 +71,9 @@ export async function createPanel(config) {
   const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics(undefined, config.mode);
   const failures = new Map();
   const unlockFailures = new Map();
+  const tunnelRequests = new WeakSet();
+  const clientKey = req => loginClient(req, tunnelRequests.has(req));
+  let stopTunnel, tunnelStarting = false;
   const sockets = new Map();
   const streamStates = new Map(); // At most one stream per mode for an opted-in owner, otherwise one total.
   let owner = null;
@@ -260,7 +265,7 @@ export async function createPanel(config) {
     }
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw new HttpError(403, '请求来源无效');
-      const key = req.socket.remoteAddress || 'unknown'; // Never trust client-supplied forwarding headers.
+      const key = clientKey(req);
       const body = await jsonBody(req, 4096);
       // No await between checking the current limits and reserving a verification slot.
       const failure = failures.get(key);
@@ -446,7 +451,7 @@ export async function createPanel(config) {
       if (ifFree && owner) return reply(res, 200, { ok: true });
       if (access.screenEnabled && !(owner?.viewer === viewer && owner.session === session.hash && owner.lockRevision === access.screenRevision)) {
         if (typeof lockPassword !== 'string' || !lockPassword) throw denied(req, session);
-        const key = req.socket.remoteAddress || 'unknown', before = owner, version = access.screenRevision;
+        const key = clientKey(req), before = owner, version = access.screenRevision;
         const record = unlockFailures.get(key);
         if (record?.until > Date.now() && record.count >= 20) throw new HttpError(429, '解锁尝试过多，请一分钟后再试');
         if (loginBusy >= 2) throw new HttpError(429, '正在验证密码，请稍后重试');
@@ -662,13 +667,14 @@ export async function createPanel(config) {
     throw new HttpError(404, '资源不存在');
   }
 
-  const server = http.createServer((req, res) => {
+  const handleRequest = (req, res) => {
     route(req, res).catch(error => {
       if (!error.status) console.error(`[panel] ${error.name}: request failed`); // No bodies, cookies or credentials.
       reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown'),
         ...(error.code && error.access ? { code: error.code, access: error.access } : {}) });
     });
-  });
+  };
+  const server = http.createServer(handleRequest);
   server.requestTimeout = 310_000;
   server.headersTimeout = 15_000;
   server.maxHeadersCount = 64;
@@ -773,6 +779,20 @@ export async function createPanel(config) {
     });
   }
   server.on('upgrade', (req, socket, head) => { void upgrade(req, socket, head).catch(() => socket.destroy()); });
+  async function startTunnel(path) {
+    if (stopTunnel || tunnelStarting || closing || !server.listening) throw Error('私有 Tunnel 接口无法启动');
+    tunnelStarting = true;
+    const ingress = http.createServer((req, res) => { tunnelRequests.add(req); handleRequest(req, res); });
+    ingress.requestTimeout = server.requestTimeout; ingress.headersTimeout = server.headersTimeout;
+    ingress.maxHeadersCount = server.maxHeadersCount; ingress.maxConnections = 256;
+    ingress.on('upgrade', (req, socket, head) => { void upgrade(req, socket, head).catch(() => socket.destroy()); });
+    try {
+      const stop = await listenPrivateHTTP(ingress, path);
+      if (closing) { await stop(); throw Error('面板正在关闭'); }
+      stopTunnel = stop;
+    }
+    finally { tunnelStarting = false; }
+  }
   const expiration = setInterval(() => {
     revalidatePortal();
     closeSockets(state => !auth.get(state.token));
@@ -790,8 +810,9 @@ export async function createPanel(config) {
     wss.close();
     for (const client of terminalWss.clients) client.terminate();
     terminalWss.close();
+    if (stopTunnel) { await stopTunnel(); stopTunnel = undefined; }
     await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
     await auth.close();
   }
-  return { server, close, reloadUI: assets.reload, get uiRevision() { return assets.revision; } };
+  return { server, startTunnel, close, reloadUI: assets.reload, get uiRevision() { return assets.revision; } };
 }

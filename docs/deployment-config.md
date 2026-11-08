@@ -32,7 +32,7 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | `PUBLIC_ORIGIN` | `http://localhost:36080`；HTTP(S) 根地址 | 重启 panel；公网入口还需同步 Cloudflare 路由/DNS，已有门户注册也需核对 |
 | `ALLOWED_HOSTS` | 空；额外 Host 列表，可带端口，逗号分隔 | 重启 panel；不支持通配符，主入口 Host 已自动允许 |
 | `ADMIN_USER` | `admin` | 重启 panel；密码另走密码管理流程 |
-| `PANEL_PORT` | 36080；1024–65535 | 重启 panel，并更新 Tunnel 本地目标及允许的入口；面板继续仅监听回环 |
+| `PANEL_PORT` | 36080；1024–65535 | 重启 panel，并更新本机允许入口；新 Tunnel 使用私有 Unix socket，无需随 TCP 端口修改；旧 TCP 上游需同步 |
 | `AGENT_PORT` | 36902；1024–65535 | 兼容旧助手端口；新安装文件服务默认使用此值，显式 FILE_AGENT_PORT 优先 |
 | `FILE_AGENT_PORT` | 默认跟随 `AGENT_PORT`；1024–65535 | 独立文件服务端口，重启 files 和 panel 生效；宿主健康由 manager 独立探测。旧活动宿主升级需选择空闲端口保留旧助手，失败不回退旧文件接口，两端口均禁止正向映射 |
 | `WORKSPACE_DIR` | `./workspaces`，相对项目根目录 | 任务工作目录和文件中转根目录；需维护宿主及相关服务，已有任务不自动迁移 |
