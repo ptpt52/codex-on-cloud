@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, copyFile, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, copyFile, stat, cp, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -207,4 +207,24 @@ test('readiness refuses an absent dedicated FILE_AGENT_PORT despite a healthy ho
   server.listen(0,'127.0.0.1'); await once(server,'listening'); t.after(() => new Promise(resolve => server.close(resolve)));
   const missing = http.createServer(); missing.listen(0,'127.0.0.1'); await once(missing,'listening'); const missingPort = missing.address().port; await new Promise(resolve => missing.close(resolve));
   await assert.rejects(checkHealth({port:server.address().port,agentPort:server.address().port,fileAgentPort:missingPort,origin:'http://example.test',agentSecret:'synthetic_test_secret'}, {attempts:1}), /独立文件服务/);
+});
+
+test('default deployment readiness uses the persisted origin and helper port despite stale task environment variables', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-health-env-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  for(const folder of ['native','panel','scripts'])await cp(resolve(folder),join(root,folder),{recursive:true,filter:path=>!path.includes('__pycache__')});
+  await symlink(resolve('node_modules'),join(root,'node_modules'));await mkdir(join(root,'secrets'));
+  for(const name of ['agent_secret','panel_password'])await writeFile(join(root,'secrets',name),'synthetic_health_secret',{mode:0o600});
+  const requests=[];
+  const server=http.createServer((req,res)=>{
+    requests.push(req.url);res.setHeader('content-type','application/json');
+    if(req.url==='/readyz') {res.statusCode=req.headers.host==='deployed.example.test'?200:400;res.end('{"ok":true,"host":true,"files":true}');}
+    else {assert.equal(req.headers.authorization,'Bearer synthetic_health_secret');res.end('{"ready":true,"uploadProtocol":1,"quotaProtocol":1}');}
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const port=server.address().port;
+  await writeFile(join(root,'.env'),`PUBLIC_ORIGIN=https://deployed.example.test\nPANEL_PORT=${port}\nAGENT_PORT=${port}\nFILE_AGENT_PORT=${port}\nWEBRTC_ENABLED=0\n`);
+  await promisify(execFile)(process.execPath,['--input-type=module','-e',"import {checkHealth} from './scripts/deploy.mjs'; await checkHealth(undefined,{attempts:1});"],{
+    cwd:root,env:{...process.env,PUBLIC_ORIGIN:'https://stale.example.test',PANEL_PORT:'1',PORT:'1',AGENT_PORT:'1',FILE_AGENT_PORT:'1'},timeout:10000,maxBuffer:2048,
+  });
+  assert.deepEqual(requests.sort(),['/health','/readyz']);
 });

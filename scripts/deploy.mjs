@@ -73,7 +73,12 @@ async function boundedFile(path, maximum) {
 }
 
 export async function checkHealth(config, { attempts = 20, interval = 400 } = {}) {
-  if (!config) { const { readConfig } = await import('../panel/config.mjs'); config = readConfig(); }
+  if (!config) {
+    const [{ readConfig }, { environment }] = await Promise.all([import('../panel/config.mjs'), import('../native/config.mjs')]);
+    // A shell inside an older task inherits the host's startup configuration.
+    // Generated systemd units load today's .env, not those inherited values.
+    config = readConfig(environment({}));
+  }
   const request = (port, path, headers) => new Promise(resolve => {
     const req = http.get({hostname:'127.0.0.1', port, path, headers, timeout:2500}, res => {
       const chunks = []; let size = 0;
