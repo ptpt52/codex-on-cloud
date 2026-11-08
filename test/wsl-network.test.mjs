@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, symlink, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, symlink, mkdir, readdir, open } from 'node:fs/promises';
+import { readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -89,6 +90,22 @@ test('an occupied temporary file refuses concurrent work without removing anothe
   assert.equal(await readFile(file + '.codex-cloud.tmp', 'utf8'), 'another writer');
   assert.equal(await readFile(file, 'utf8'), original);
   await assert.rejects(readFile(file + '.codex-cloud.before-loopback'), { code: 'ENOENT' });
+});
+
+test('an edit during the final asynchronous close is preserved for existing and newly created WSL configuration', async t => {
+  for (const present of [true, false]) await t.test(String(present), async t => {
+    const root=await directory(t),file=join(root,'.wslconfig'),edited='[wsl2]\nnetworkingMode=mirrored\nmemory=12GB\n# operator edit\n';
+    if(present)await writeFile(file,'[wsl2]\nnetworkingMode=mirrored\nmemory=4GB\n');
+    const probe=await open(join(root,'probe'),'w'),prototype=Object.getPrototypeOf(probe),write=prototype.writeFile;await probe.close();await rm(join(root,'probe'));let injected=false;
+    t.mock.method(prototype,'writeFile',async function(...args){
+      if(readlinkSync('/proc/self/fd/'+this.fd)===file+'.codex-cloud.tmp'){
+        const close=this.close;t.mock.method(this,'close',async function(...args){const result=await close.apply(this,args);if(!injected){injected=true;writeFileSync(file,edited);}return result;});
+      }
+      return write.apply(this,args);
+    });
+    await assert.rejects(updateWSLConfig(file),{status:409});assert.equal(injected,true);assert.equal(await readFile(file,'utf8'),edited);
+    await assert.rejects(readFile(file+'.codex-cloud.tmp'),{code:'ENOENT'});
+  });
 });
 
 test('normal Linux and WSL NAT do not inspect or mutate Windows user configuration', async () => {

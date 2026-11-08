@@ -1,5 +1,5 @@
-import { constants } from 'node:fs';
-import { open, rename, unlink } from 'node:fs/promises';
+import { constants, openSync, closeSync, readSync, fstatSync, lstatSync, renameSync, linkSync, unlinkSync } from 'node:fs';
+import { open, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { release } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -10,6 +10,31 @@ const READ = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const CREATE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 const profileCommand = '$ErrorActionPreference="Stop"; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Environment]::GetFolderPath("UserProfile")';
 const restartNotice = '配置需重启 WSL 后生效：保存任务后，在 Windows PowerShell 执行 wsl --shutdown，再启动原发行版。此操作会结束所有 WSL 终端和 Codex 任务；部署程序不会执行它。';
+const changed = () => Object.assign(Error('WSL 配置在部署期间发生变化，未覆盖；请核对后重新运行部署'), { status: 409, outcome: 'rejected' });
+
+// Raw bytes preserve UTF-16/BOMs. Re-read after every asynchronous close, then
+// compare and publish synchronously; an absent target uses an exclusive link.
+function commitConfig(file, temporary, original) {
+  let fd, current = null;
+  try {
+    try { fd = openSync(file, READ); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (fd !== undefined) {
+      const before = fstatSync(fd, { bigint: true });
+      if (!before.isFile() || before.size > BigInt(MAX_CONFIG)) throw Error('WSL 配置必须是最多 64 KiB 的普通文件');
+      const bytes = Buffer.alloc(Number(before.size) + 1); let count = 0;
+      while (count < bytes.length) { const size = readSync(fd, bytes, count, bytes.length - count, count); if (!size) break; count += size; }
+      const after = fstatSync(fd, { bigint: true }), path = lstatSync(file, { bigint: true });
+      if (count !== Number(before.size) || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || before.ino !== path.ino || before.dev !== path.dev) throw changed();
+      current = bytes.subarray(0, count);
+    }
+  } finally { if (fd !== undefined) closeSync(fd); }
+  if (original === null ? current !== null : current === null || !current.equals(original)) throw changed();
+  if (original !== null) renameSync(temporary, file);
+  else {
+    try { linkSync(temporary, file); } catch (error) { if (error.code === 'EEXIST') throw changed(); throw error; }
+    unlinkSync(temporary);
+  }
+}
 
 async function readConfig(file, optional = false) {
   let handle;
@@ -83,10 +108,8 @@ export async function updateWSLConfig(file, { check = false } = {}) {
       } finally { await saved?.close(); }
     }
     await handle.writeFile(plan.bytes); await handle.sync();
-    const current = await readConfig(file, true);
-    if (original === null ? current !== null : current === null || !current.equals(original)) throw Error('WSL 配置在部署期间发生变化，请重新运行部署');
     await handle.close();
-    await rename(temporary, file);
+    commitConfig(file, temporary, original);
     return { changed: true, needsConfiguration: false, backup: original === null ? null : backup };
   } finally { await handle.close().catch(() => {}); await unlink(temporary).catch(() => {}); }
 }
