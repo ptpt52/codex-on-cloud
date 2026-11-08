@@ -26,12 +26,15 @@ test('narrow toolbar preserves a usable terminal picker and quick close in one r
       for (const selector of ['#desktop-mode', '#toggle-controls-button', '#toggle-input-button']) {
         const box = await page.locator(selector).boundingBox(); expect(box.x + box.width).toBeLessThanOrEqual(width);
       }
-      await picker.click(); await expect(page.locator('#terminal-switch-dialog')).toBeVisible();
+      if (info.project.use.hasTouch) await picker.tap(); else await picker.click();
+      await expect(page.locator('#terminal-switch-dialog')).toBeVisible();
       await page.locator('#close-terminal-switch').click(); await expect(picker).toBeFocused();
     }
     await page.setViewportSize({ width: 320, height: 720 });
     await page.screenshot({ path: `test-results/${info.project.name}-compact-toolbar.png` });
-    await page.locator('#terminal-session-button').click(); await page.locator('#terminal-switch-list [data-terminal-choice=aux1]').click();
+    if (info.project.use.hasTouch) await page.locator('#terminal-session-button').tap(); else await page.locator('#terminal-session-button').click();
+    await expect(page.locator('#terminal-switch-dialog')).toBeVisible();
+    await page.locator('#terminal-switch-list [data-terminal-choice=aux1]').click();
     await expect(page.locator('#terminal-session-button')).toHaveAccessibleName('很长的网络诊断与设备分析终端 ▾');
     await page.setViewportSize({ width: 768, height: 1024 });
     await expect(page.locator('#terminal-session-button')).toHaveText('很长的网络诊断与设备分析终端 ▾');
@@ -54,4 +57,25 @@ test('compact mode action keeps cancellation, switching confirmation and the ter
     await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('只保留草稿，不提交');
     expect(await app.controls.listTerminals()).toEqual(original); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
+});
+
+test('offline viewing shows an explicit notice without taking a terminal row and clears it after recovery', async ({ page, context }, info) => {
+  const app = await fixture({ rfb: true, seamless: true });
+  try {
+    await page.setViewportSize({ width: 320, height: 720 }); await login(page, app);
+    await expect(page.locator('#connection-notice')).toBeHidden();
+    await openInput(page); await page.locator('#mobile-input').fill('网络恢复后再手动发送'); await closePanels(page);
+    const before = await page.locator('#desktop-frame').boundingBox(), toolbar = await page.locator('.desktop-toolbar').boundingBox();
+    await context.setOffline(true);
+    await expect(page.locator('#connection-notice')).toContainText('网络已断开，输入已暂停');
+    await expect(page.locator('#connection-status')).toContainText('等待网络');
+    expect((await page.locator('#desktop-frame').boundingBox()).height).toBe(before.height);
+    expect((await page.locator('.desktop-toolbar').boundingBox()).height).toBe(toolbar.height);
+    expect(await page.locator('#connection-notice').evaluate(el => getComputedStyle(el).pointerEvents)).toBe('none');
+    await page.screenshot({ path: `test-results/${info.project.name}-offline-notice.png` });
+    await context.setOffline(false); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect(page.locator('#connection-notice')).toBeHidden();
+    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('网络恢复后再手动发送');
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await context.setOffline(false); await app.close(); }
 });

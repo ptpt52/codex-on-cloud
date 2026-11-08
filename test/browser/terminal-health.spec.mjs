@@ -128,7 +128,9 @@ test('probes coexist with accepted input and a lost result stays unknown after r
     expect(app.terminalConnections).toBe(1); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'pending');
     await frame.evaluate(() => { const state = window.terminalHealthTest; state.dropSocket = state.socket; state.stallClose = true; window.dispatchEvent(new Event('online')); });
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown', { timeout: 3500 });
+    await expect(page.locator('#connection-notice')).toContainText('结果未知');
     release(); await expect.poll(() => app.terminalConnections).toBe(2); await online(page);
+    await expect(page.locator('#connection-notice')).toContainText('不会自动重发');
     expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: '\r' }]); expect(counts).toEqual({ login: 1, claim: 1, input: 0 }); expect(app.managementStats.restarts).toBe(0);
   } finally { release(); await app.close(); }
 });

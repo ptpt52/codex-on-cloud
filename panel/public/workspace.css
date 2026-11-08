@@ -12,6 +12,8 @@
 .desktop-header-actions > button { min-height: 44px; min-width: 44px; }
 .desktop-stage { min-height: 0; flex: 1 1 0; }
 .connection-status { white-space: nowrap; }
+.connection-notice { position: absolute; z-index: 6; inset: 8px 8px auto; margin: 0; padding: 8px 12px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-soft); color: var(--ink); font-size: 13px; line-height: 1.6; pointer-events: none; }
+.connection-notice[hidden] { display: none; }
 .terminal-session-bar { flex: 1; min-width: 0; max-width: 720px; }
 .terminal-session-bar:not([hidden]) ~ .monitor-icon,
 .terminal-session-bar:not([hidden]) ~ strong { display: none; }

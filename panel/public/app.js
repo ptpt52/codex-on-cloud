@@ -465,6 +465,22 @@ function syncRelayLatency() {
     }
   })();
 }
+function renderConnectionNotice() {
+  let message = '';
+  if (loggedIn && owned) {
+    const unknown = inputFeedback && $('input-status').dataset.outcome === 'unknown';
+    if (accessExpired) message = '访问验证已过期，输入已暂停；请刷新页面完成验证。';
+    else if (!navigator.onLine) message = unknown ? '网络已断开，部分输入结果未知；恢复后请先核对，不会自动重发。' : '网络已断开，输入已暂停；恢复后继续原会话，不会补发输入。';
+    else if (panelState === 'offline') message = '服务连接中断，输入已暂停；正在恢复，不会补发输入。';
+    else if (unknown) message = '部分输入结果未知，请先核对远程画面；不会自动重发。';
+    else if (transportSwitching) message = '正在复核或切换连接，输入暂时暂停；已发送内容不会重发。';
+    else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) message = '终端目标待确认，输入已暂停；请选择有效终端。';
+    else if (maintenancePending || controlsState.maintenance) message = '桌面操作进行中，输入已暂停；请等待操作完成。';
+    else if (!controlsState.available) message = '输入服务暂不可用，输入已暂停；当前任务继续运行。';
+    else if (frameState !== 'connected' && !(terminalMode() && terminalSelectionState === 'closed')) message = '正在恢复连接，输入已暂停；原任务继续运行。';
+  }
+  const notice = $('connection-notice'); notice.textContent = message; notice.hidden = !message;
+}
 function renderConnection() {
   if (workspaceInitialized && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
   syncRelayLatency();
@@ -488,6 +504,7 @@ function renderConnection() {
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
   $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…', '终端已关闭'].includes(label));
   $('connection-status').lastChild.textContent = label;
+  renderConnectionNotice();
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? panelRoute === 'direct' ? '可访问（加密直连）' : '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
@@ -1076,6 +1093,7 @@ function inputMessage(outcome, message) {
   $('input-status').hidden = false;
   $('input-status').dataset.outcome = outcome;
   $('input-status').textContent = message;
+  renderConnectionNotice();
 }
 async function inputAction(path, body, label, success, destination) {
   if (inputBusy || inputComposing || frameComposing || !canInput()) return;
