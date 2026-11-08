@@ -138,7 +138,7 @@ Ctrl+C 会立即停止本地恢复；通道仍可达时通知服务端关闭映�
 
     npm run build:forward
 
-默认服务器地址读取 PUBLIC_ORIGIN 并嵌入程序，之后双击仅需输入配对码。也可显式指定构建地址：
+默认服务器地址读取当前`.env`中的PUBLIC_ORIGIN并嵌入程序，不使用旧任务继承的部署变量，之后双击仅需输入配对码。也可显式指定构建地址：
 
     npm run build:forward -- https://example.com
 

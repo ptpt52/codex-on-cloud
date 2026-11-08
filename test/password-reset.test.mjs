@@ -40,6 +40,20 @@ async function harness(t, { active = true } = {}) {
 }
 const mutations = h => h.state.calls.filter(args => args[0] !== 'show').map(args => args[0]);
 
+test('password reset ignores inherited deployment variables for credentials, port checks and recovery', async t => {
+  const h = await harness(t), persisted = (await readFile(join(h.root, '.env'), 'utf8')).match(/PANEL_PORT=(\d+)/)[1];
+  const old = Object.fromEntries(['PUBLIC_ORIGIN', 'PORT', 'ADMIN_USER'].map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  Object.assign(process.env, { PUBLIC_ORIGIN: 'https://old.example.test', PORT: '1', ADMIN_USER: 'stale-user' });
+  const { env, ...context } = h.context;
+  await resetPassword({ target: 'admin' }, { ...context,
+    ensureStopped: async port => assert.equal(port, Number(persisted)),
+    checkHealth: async value => assert.deepEqual(value, { port: Number(persisted), origin: 'https://desktop.example.com' }),
+  });
+  const summary = await readFile(join(h.root, 'secrets/credentials.txt'), 'utf8');
+  assert.match(summary, /https:\/\/desktop.example.com/); assert.match(summary, /用户名：operator/); assert.ok(!summary.includes('stale-user'));
+});
+
 test('reset options reject password arguments, mixed targets and unsupported generation', () => {
   assert.equal(options(['--admin']).target, 'admin'); assert.equal(options(['--screen']).target, 'screen'); assert.equal(options(['--unlock']).target, 'unlock');
   assert.equal(options([]).target, undefined); assert.equal(options(['--admin', '--generate']).generate, true);

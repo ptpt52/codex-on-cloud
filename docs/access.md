@@ -109,6 +109,8 @@ npm run reset-password -- --admin --generate
 
 维护锁固定为 `data/panel/password-reset.lock`，最多 256 字节，只存进程标识；并发重置被拒绝，已结束进程留下的锁可恢复，不向其他进程发信号。管理员密码及摘要各使用一份固定 `.reset.tmp` 文件，内容上限分别为 2 KiB / 4 KiB，0600，成功后原子替换并同步目录。写入失败时尽力恢复原来运行的面板，命令会报告可能已提交的修改；以 `secrets/panel_password` 为实际管理员密码来源，勿在结果未知时盲目重复操作。
 
+重置命令以当前项目`.env`中的账号、入口和端口为准，不让旧Codex任务继承的部署变量覆盖配置；运行systemctl仍使用当前部署用户的正常进程环境。恢复检查不会因旧域名或旧端口误判。
+
 ## 验证边界
 
 `access-control`、`access-policy`、`file-transfers` 和 `reverse-forward` 的 Node 测试覆盖持久化、权限隔离、撤销、并发边界及锁定/接管时真实 TCP/WebSocket 字节流继续传输。浏览器 `access.spec.mjs` 使用实际 Chrome、noVNC 和模拟 RFB/管理后端验证手机/电脑布局及完整登录流程；它不代替手机真机、真实 X11 桌面和公网网络验收。

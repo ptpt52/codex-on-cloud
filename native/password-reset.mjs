@@ -127,11 +127,11 @@ export function validatePassword(value, target) {
 }
 
 // Host-user maintenance only. No HTTP route, password argument, or secret log.
-export async function resetPassword(options, { root, env = process.env, platform = process.platform, uid = process.getuid?.(),
+export async function resetPassword(options, { root, platform = process.platform, uid = process.getuid?.(),
   run = execute, ensureStopped = portFree, checkHealth = health, prompt, signal, log = console.log } = {}) {
   if (platform !== 'linux' || uid === 0 || uid === undefined) throw Error('请在 Linux 服务器上使用普通部署用户执行，不要 sudo');
   if (!['admin', 'screen', 'unlock'].includes(options.target) || options.generate && options.target !== 'admin') throw Error('重置目标无效；自动生成仅支持管理员密码');
-  const file = await boundedFile(join(root, '.env'), 16384), config = { ...parseEnv(file.text), ...env };
+  const file = await boundedFile(join(root, '.env'), 16384), config = parseEnv(file.text);
   const username = config.ADMIN_USER || 'admin', origin = new URL(config.PUBLIC_ORIGIN || 'http://localhost:36080'), port = Number(config.PORT ?? config.PANEL_PORT ?? 36080);
   if (username.length > 100 || /[\r\n\0]/.test(username) || !['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || origin.origin.length > 2048 || !Number.isInteger(port) || port < 1024 || port > 65535) throw Error('部署配置无效，请先检查 .env 的账号、入口和端口');
   const initial = await serviceState(run, root);
