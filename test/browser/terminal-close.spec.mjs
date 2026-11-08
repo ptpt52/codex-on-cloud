@@ -74,19 +74,26 @@ test('close confirmation leaves a reusable placeholder and preserves drafts with
   } finally { await app.close(); }
 });
 
-test('closing a background tab selects the single final placeholder without activating or stopping other tasks', async ({ page }) => {
+test('closing a background tab preserves the current terminal, viewer and draft', async ({ page }) => {
   const app = await setup(page);
   try {
     const original = (await app.controls.listTerminals()).terminals[0], connections = app.terminalConnections;
     await openInput(page); await page.locator('#mobile-input').fill('仍在运行的主终端草稿');
+    const frame = page.frameLocator('#desktop-frame').locator('html');
+    await frame.evaluate(element => { element.dataset.closeMarker = 'original-viewer'; });
+    const selection = await page.evaluate(() => JSON.parse(sessionStorage.getItem('codex-cloud.terminals.v1')).selection);
     await quickClose(page, 'aux1');
     await expect(page.locator('#input-terminal')).toHaveValue('main');
     await page.keyboard.press('Enter'); await expect(page.locator('#connection-status')).toContainText('终端在线');
     expect(app.terminalConnections).toBe(connections);
     await quickClose(page, 'aux1'); await page.locator('#accept-confirmation').click();
-    await expect(page.locator('#overlay-title')).toHaveText('已关闭'); await expect(page.locator('#input-terminal')).toHaveValue('new');
+    await expect(page.locator('#terminals-status')).toContainText('共 1');
+    await expect(page.locator('#input-terminal')).toHaveValue('main'); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect(page.locator('#desktop-overlay')).toBeHidden(); await expect(frame).toHaveAttribute('data-close-marker', 'original-viewer');
+    expect(app.terminalConnections).toBe(connections);
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('codex-cloud.terminals.v1')).selection)).toEqual(selection);
     await placeholder(page, ['main']); expect((await app.controls.listTerminals()).terminals).toEqual([original]);
-    await choose(page, 'main'); await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('仍在运行的主终端草稿');
+    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('仍在运行的主终端草稿');
     await choose(page, 'new', 'aux1');
     const result = await app.controls.listTerminals(); expect(result.terminals.map(item => item.id)).toEqual(['main', 'aux1']); expect(result.terminals[0]).toEqual(original);
     await placeholder(page, ['main', 'aux1']); expect(app.terminalInputs).toEqual([]);
@@ -152,6 +159,7 @@ test('a full terminal list retains one disabled final placeholder and closing a 
     const original = (await app.controls.listTerminals()).terminals;
     await placeholder(page, ids);
     await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toBeDisabled();
+    await choose(page, 'aux2');
     await quickClose(page, 'aux2'); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#input-terminal')).toHaveValue('new'); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
     await placeholder(page, ids.filter(id => id !== 'aux2'));

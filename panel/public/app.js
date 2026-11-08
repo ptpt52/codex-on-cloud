@@ -1047,7 +1047,6 @@ async function terminalRequest(body) {
     terminalSlots = result.slots || [];
     maxTerminals = result.limit;
     terminalCatalogVerified = true;
-    if (body?.action === 'close' && !closingCurrent) activateTerminal({ id: body.terminalId, token: body.terminalToken });
     reconcileTerminalSelection(result.opened);
     if (body?.action === 'create') $('new-terminal-name').value = '';
     $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
