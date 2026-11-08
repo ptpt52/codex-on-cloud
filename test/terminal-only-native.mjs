@@ -130,6 +130,15 @@ try {
     const upload=await fetch(origin+'/api/files/terminal-test.txt',{method:'PUT',headers:{origin,cookie,'x-viewer-id':viewer,'x-csrf-token':csrf,'content-type':'application/octet-stream'},body:fileText});
     assert.equal(upload.status,200);assert.equal(await(await fetch(origin+'/api/files/terminal-test.txt',{headers:{cookie}})).text(),fileText);
     assert.equal((await api('/api/forward')).limit, 4);
+    if (!systemd) {
+      const helper = Number((await readFile('/proc/' + files.pid + '/task/' + files.pid + '/children', 'utf8')).trim());
+      assert.ok(Number.isInteger(helper) && helper > 1);
+      const exited = once(files, 'exit'); files.kill('SIGKILL'); await exited;
+      await until(async () => { const state = await processState(helper); return !state || state.state === 'Z'; }, 'file wrapper crash must release its Python helper through EOF');
+      assert.equal(host.exitCode, null);
+      files = launch('native/file-agent.mjs');
+      await until(async () => { try { return (await fetch(origin + '/api/files', {headers:{cookie}})).ok; } catch { return false; } }, 'file service did not recover after wrapper crash');
+    }
     await stop(files);
     assert.equal(host.exitCode, null); assert.equal(host.signalCode, null);
     for (const terminal of full.terminals) assert.ok(await taskAlive(Number(terminal.token.split(':')[1])), 'file service stop must preserve tasks');
