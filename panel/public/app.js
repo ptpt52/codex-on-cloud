@@ -13,6 +13,7 @@ import { createRTCHints } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
 import { createUploadPrompt, uploadHeaders, uploadResult, UPLOAD_PROTOCOL } from './file-upload.js';
+import { createFileListReader } from './file-list.js';
 import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 
@@ -21,7 +22,7 @@ let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), b
 let forwardingUI;
 let accessUI;
 let nodeUI;
-let uploadPrompt, fileUploadController;
+let uploadPrompt, fileUploadController, fileListReader;
 let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canForward: true, canReverse: true, canManageDevices: true };
 let fastConnectEnabled = false;
 let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = null, frameSerial = 0;
@@ -484,6 +485,7 @@ function renderConnectionNotice() {
   const notice = $('connection-notice'); notice.textContent = message; notice.hidden = !message;
 }
 function renderConnection() {
+  fileListReader?.revalidate();
   uploadPrompt?.revalidate();
   if (!loggedIn || accessExpired || !navigator.onLine) fileUploadController?.abort();
   if (workspaceInitialized && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
@@ -1327,10 +1329,7 @@ function saveDirectFile(blob, name) {
   const link = document.createElement('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
 }
 window.addEventListener('pagehide', clearFileURLs);
-async function loadFiles(signal) {
-  const generation = uiGeneration;
-  const { files } = await api('/api/files', { signal });
-  if (generation !== uiGeneration || !loggedIn) return;
+function renderFiles(files) {
   $('file-list').replaceChildren();
   if (!files.length) {
     const empty = document.createElement('p'); empty.className = 'empty-files'; empty.textContent = '还没有中转文件。在桌面中把文件放进 transfer 文件夹，即可在这里下载。'; $('file-list').append(empty);
@@ -1349,8 +1348,14 @@ async function loadFiles(signal) {
     row.append(detail, link); $('file-list').append(row);
   }
 }
+fileListReader = createFileListReader({ request: signal => api('/api/files', { signal }),
+  valid: () => loggedIn && !accessExpired && navigator.onLine && $('files-dialog').open,
+  render: renderFiles, status: text => { $('file-list-status').textContent = text; },
+});
+const loadFiles = signal => fileListReader.read(signal);
 $('files-button').addEventListener('click', () => void action($('files-button'), async () => { if (serviceProtocol === 1) serviceLink.start(); $('files-dialog').showModal(); await loadFiles(); }));
 $('close-files').addEventListener('click', () => $('files-dialog').close());
+$('files-dialog').addEventListener('close', () => fileListReader.cancel());
 $('refresh-files').addEventListener('click', () => void action($('refresh-files'), loadFiles));
 uploadPrompt = createUploadPrompt({
   dialog: $('file-conflict-dialog'), filename: $('file-conflict-name'), detail: $('file-conflict-detail'),
