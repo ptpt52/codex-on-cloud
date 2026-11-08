@@ -10,6 +10,24 @@ import { createPortalConnection, readPortalConnection } from '../panel/portal-co
 import { createNodeDirectoryReader } from '../panel/node-directory.mjs';
 const node = (id = 'home') => ({ id, name: id, origin: `https://${id}-codex.example.com`, mode: 'desktop', enabled: true });
 
+test('takeover aborts pending registration and prevents a late reply committing local configuration', async t => {
+  for (const remoteCommitted of [false, true]) {
+    const portal = await portalFixture(), app = await fixture(); let release, entered;
+    const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+    try {
+      await portal.login(); const code = await portal.code(); await app.login(); await app.claim();
+      app.config.portalFetch = async (url, init) => { const response = remoteCommitted ? await portal.fetch(url, init) : null; entered(); await gate; init.signal.throwIfAborted(); return response || portal.fetch(url, init); };
+      const pending = app.request('/api/portal/register', { method: 'POST', body: { name: 'stale viewer', authorizationCode: code.code } }); await started;
+      const viewer = '22222222-2222-4222-8222-222222222222'; await app.claim(viewer); release();
+      const response = await pending; assert.equal(response.status, 409); assert.equal((await response.json()).outcome, 'unknown');
+      await assert.rejects(readFile(join(app.config.dataDir, 'portal.json')), { code: 'ENOENT' }); assert.equal(portal.storage.value.directory.nodes.length, remoteCommitted ? 1 : 0);
+      app.config.portalFetch = portal.fetch;
+      const retried = await app.request('/api/portal/register', { method: 'POST', body: { name: 'current viewer', authorizationCode: code.code }, headers: { 'x-viewer-id': viewer } });
+      assert.equal(retried.status, 200); assert.equal(portal.storage.value.directory.nodes.length, 1, 'manual retry reuses the staged identity');
+    } finally { release(); await app.close(); await portal.close(); }
+  }
+});
+
 test('node registration preserves its identity on a lost reply and keeps working when the portal is unavailable', async t => {
   const portal = await portalFixture(); t.after(portal.close); await portal.login(); const code = await portal.code();
   const directory = await mkdtemp(join(tmpdir(), 'codex-node-portal-')); t.after(() => rm(directory, { recursive: true, force: true }));

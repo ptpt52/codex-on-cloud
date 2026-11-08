@@ -77,6 +77,7 @@ export async function createPanel(config) {
   let maintenancePending = false;
   let closing = false;
   let rtcBusy = false;
+  let portalPending;
   let rtcClosing = Promise.resolve();
   const forwarding = createForwarding(config);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
@@ -155,7 +156,8 @@ export async function createPanel(config) {
     for (const state of [...streamStates.values()]) if (predicate(state)) state.stream.close();
     for (const [socket, state] of sockets) if (predicate(state)) socket.destroy();
   }
-  function lockDesktop() { owner = null; closeSockets(() => true); }
+  function revalidatePortal() { if (portalPending && (closing || owner !== portalPending.expected || !auth.get(portalPending.token))) portalPending.controller.abort(); }
+  function lockDesktop() { owner = null; revalidatePortal(); closeSockets(() => true); }
   function streamFor(id, mode, target, expected, token, standby = false) {
     if (config.streamProtocol !== 1 || !STREAM_ID.test(id || '')) throw new HttpError(400, '会话协议无效');
     const existing = streamStates.get(id);
@@ -276,15 +278,20 @@ export async function createPanel(config) {
     }
     if (path === '/api/portal/register' && req.method === 'POST') {
       const body = await ownedBody(req, 4096), expected = owner;
-      const result = await portalConnection.register(body); requireOwner(req);
-      if (owner !== expected) throw new HttpError(409, '控制权已变化，门户接入可能已保存，请重新读取');
-      return reply(res, 200, result);
+      if (portalPending) throw new HttpError(409, '已有门户注册正在处理');
+      const entry = portalPending = { expected, token: cookieToken(req.headers.cookie), controller: new AbortController() };
+      const valid = () => { requireOwner(req); if (owner !== expected || res.destroyed || closing) throw new HttpError(409, '控制权已变化，门户注册已取消'); };
+      const abandoned = () => { if (!res.writableFinished) entry.controller.abort(); };
+      res.once('close', abandoned);
+      try { return reply(res, 200, await portalConnection.register(body, { valid, signal: entry.controller.signal })); }
+      finally { res.removeListener('close', abandoned); if (portalPending === entry) portalPending = undefined; }
     }
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);
       const revoked = auth.revoke(cookieToken(req.headers.cookie));
       forwarding.revoke(session.hash);
       await revoked;
+      revalidatePortal();
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;
       forwarding.refresh();
@@ -434,6 +441,7 @@ export async function createPanel(config) {
       }
       if (owner?.viewer !== viewer || owner?.session !== session.hash) closeSockets(() => true);
       if (owner?.viewer !== viewer || owner?.session !== session.hash) owner = { viewer, session: session.hash, lockRevision: access.screenRevision };
+      revalidatePortal();
       return reply(res, 200, { ok: true, access: accessState(req, session) });
     }
     if (['/api/desktop/rtc', '/api/terminal/rtc'].includes(path) && req.method === 'POST') {
@@ -744,10 +752,12 @@ export async function createPanel(config) {
   }
   server.on('upgrade', (req, socket, head) => { void upgrade(req, socket, head).catch(() => socket.destroy()); });
   const expiration = setInterval(() => {
+    revalidatePortal();
     closeSockets(state => !auth.get(state.token));
   }, 10_000).unref();
   async function close() {
     closing = true;
+    revalidatePortal();
     await forwarding.close();
     await services.close();
     fileTransfers.close();
