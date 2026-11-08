@@ -31,7 +31,7 @@ test('network change expedites a failed candidate while preserving relay, withou
   try {
     await page.route('**/api/terminal/rtc', route => ++offers === 1 ? route.fulfill({ status: 503, json: { error: '暂不可达' } }) : route.continue());
     const frame = await login(page, app); await expect.poll(() => offers).toBe(1);
-    await page.locator('#connection-button').click(); await expect(page.locator('#diag-direct-status')).toContainText('等待后续探测'); await page.locator('#close-connection').click();
+    await page.locator('#connection-button').click(); await expect(page.locator('#diag-direct-status')).toContainText('暂不可达'); await page.locator('#close-connection').click();
     await frame.evaluate(() => { window.dispatchEvent(new Event('online')); window.networkStorm = setInterval(() => window.dispatchEvent(new Event('online')), 100); });
     try {
       await expect.poll(() => offers, { timeout: 4500, intervals: [100] }).toBe(2);

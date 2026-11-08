@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { disconnectGrace, routePolicy, ROUTE_COOLDOWN, NETWORK_PROBE_INTERVAL } from '../panel/public/transport-policy.js';
+import { disconnectGrace, routePolicy, ROUTE_COOLDOWN, NETWORK_PROBE_INTERVAL, rtcFailureStatus, directRetry } from '../panel/public/transport-policy.js';
 test('a transient disconnect recovers without retirement; hard failure cancels the one deadline', () => {
   let expire, failed = 0, cancelled = 0;
   const grace = disconnectGrace(() => failed++, { schedule: fn => { expire = fn; return 1; }, cancel: () => cancelled++ });
@@ -23,4 +23,14 @@ test('network probes have a separate bounded rate without weakening ordinary rou
   assert.equal(policy.remaining(), ROUTE_COOLDOWN - 1000);
   time += NETWORK_PROBE_INTERVAL; assert.equal(policy.networkWait(), 0);
   assert.ok(policy.remaining() > 0); policy.networkProbeStarted(); assert.equal(policy.networkWait(), NETWORK_PROBE_INTERVAL);
+});
+test('busy signaling retries promptly, network errors back off and invalid authorization or targets stop probing', () => {
+  assert.equal(rtcFailureStatus(429), 'busy'); assert.equal(rtcFailureStatus(503), 'signal-failed');
+  for (const status of [401, 403, 423, 409, 400, 404]) assert.equal(directRetry(rtcFailureStatus(status)).stop, true);
+  for (let i = 0; i < 100; i++) {
+    const busy = directRetry('busy', i, () => .5), network = directRetry('ice-timeout', i, () => .5);
+    assert.ok(busy.delay >= 500 && busy.delay <= 5000); assert.ok(network.delay >= 15000 && network.delay <= 60000);
+    assert.equal(busy.stop, false); assert.equal(network.stop, false);
+  }
+  assert.ok(directRetry('busy', 0, () => 0).delay < directRetry('ice-timeout', 0, () => 0).delay);
 });

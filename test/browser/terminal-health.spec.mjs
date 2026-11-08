@@ -168,7 +168,7 @@ test('an old echo after foreground recovery cannot satisfy a fresh probe', async
     await frame.evaluate(() => window.releaseTerminalHealth());
     await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.replies.length)).toBe(1);
     expect(app.terminalConnections).toBe(1);
-    await expect.poll(() => app.terminalConnections, { timeout: 3500 }).toBe(2); await online(page); expect(app.terminalInputs).toEqual([]);
+    await expect.poll(() => app.terminalConnections, { timeout: 5500 }).toBe(2); await online(page); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
 

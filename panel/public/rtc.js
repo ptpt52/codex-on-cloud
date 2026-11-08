@@ -1,7 +1,7 @@
 import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute } from './rtc-stats.js';
-import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT } from './transport-policy.js';
+import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureStatus } from './transport-policy.js';
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
 
 let enabled = true;
@@ -15,8 +15,8 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
-  let timedOut = false, failureReported = false, stage = 'signaling';
-  const failure = reason => { if (!failureReported && !signal?.aborted) { failureReported = true; trace('path-lost', { path: 'direct', reason }); failed(reason); } };
+  let timedOut = false, failureReported = false, lastFailure = '', stage = 'signaling';
+  const failure = reason => { if (!failureReported && !signal?.aborted) { failureReported = true; lastFailure = reason; trace('path-lost', { path: 'direct', reason }); failed(reason); } };
   let timeout;
   const deadline = (nextStage, ms) => {
     stage = nextStage; clearTimeout(timeout); timeout = setTimeout(() => {
@@ -36,8 +36,8 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     if (settings?.hints === undefined) { let storage; try { storage = localStorage; } catch {} storedHints = createRTCHints(storage).value; }
     const hints = rtcHints(settings?.hints ?? storedHints);
     if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256) {
-      const response = await fetch('/api/me', { signal: controller.signal });
-      if (!response.ok) throw new Error('无法验证连接');
+      const response = await fetch('/api/me', { redirect: 'manual', signal: controller.signal });
+      if (!response.ok) { failure(response.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(response.status)); throw new Error('无法验证连接'); }
       settings = await response.json();
     }
     const { csrf, webrtc, rtcStunUrl } = settings;
@@ -86,11 +86,11 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         trace('rtc-stage', { path: 'direct', stage: 'gathering', durationMs: Math.round(performance.now() - stageAt) });
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
-        const result = await fetch(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
+        const result = await fetch(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', redirect: 'manual', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
           body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
         });
-        if (!result.ok) throw new Error('直连暂不可用');
+        if (!result.ok) { const reason = result.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(result.status); failure(reason); throw Object.assign(new Error('直连暂不可用'), { reason, status: result.status }); }
         const answer = await result.json();
         trace('rtc-stage', { path: 'direct', stage: 'signaling', durationMs: Math.round(performance.now() - stageAt) });
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'connecting' });
@@ -100,7 +100,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         trace('rtc-stage', { path: 'direct', stage: 'connecting', durationMs: Math.round(performance.now() - stageAt) });
         if (service) features = await control.request('ping', {});
         else if (!probe) await control.request('activate', {});
-      } catch (error) { failure(timedOut ? 'timeout' : 'negotiation'); close(); throw error; }
+      } catch (error) { failure(timedOut ? 'timeout' : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
     } };
   } catch { failure(timedOut ? 'timeout' : 'signaling'); clearTimeout(timeout); signal?.removeEventListener('abort', cancel); controller.abort(); peer?.close(); return null; }
 }

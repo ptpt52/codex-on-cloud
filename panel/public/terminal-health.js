@@ -1,10 +1,13 @@
+import { createHeartbeatPolicy } from './health.js';
 // A single read-only probe and deadline, independent of terminal input IDs.
 export function createTerminalHealth(send, failed) {
   let active = false, ended = false, sequence = 0, pending = 0, timer, deadline, networkCheck = false, sentAt;
   let rttMs = null, measuredAt = 0;
+  const policy = createHeartbeatPolicy();
   function cancel() {
     clearTimeout(timer); clearTimeout(deadline);
     timer = deadline = sentAt = undefined; pending = 0; rttMs = null;
+    policy.cancel();
   }
   function fail() {
     if (ended || !active) return;
@@ -17,7 +20,10 @@ export function createTerminalHealth(send, failed) {
       if (!active || ended) return;
       if (sequence >= 2147483647) return fail();
       pending = ++sequence;
-      deadline = setTimeout(fail, 2000);
+      deadline = setTimeout(() => {
+        rttMs = null;
+        if (policy.miss() === 1) { pending = 0; schedule(0); } else fail();
+      }, policy.suspect ? policy.confirmationMs : policy.timeoutMs);
       sentAt = performance.now();
       try { if (send(pending) !== true) fail(); } catch { fail(); }
     }, delay);
@@ -39,6 +45,7 @@ export function createTerminalHealth(send, failed) {
       if (!Number.isSafeInteger(nonce) || nonce <= 0 || nonce > sequence) return fail();
       if (nonce !== pending) return; // Late echoes cannot acknowledge a fresh probe.
       measuredAt = performance.now(); rttMs = Math.round(measuredAt - sentAt); sentAt = undefined;
+      policy.sample(rttMs);
       clearTimeout(deadline); deadline = undefined; pending = 0; networkCheck = false; schedule(3000);
     },
   };

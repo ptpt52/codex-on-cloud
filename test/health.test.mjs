@@ -1,9 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHealthClient, createRoundTrip } from '../panel/public/health.js';
+import { createHealthClient, createRoundTrip, createHeartbeatPolicy } from '../panel/public/health.js';
 import { attachRTCHealth } from '../panel/rtc-health.mjs';
 
 const packet = id => { const bytes = Buffer.alloc(4); bytes.writeUInt32BE(id); return bytes; };
+test('heartbeat timing follows measured latency and variation with bounded confirmation and recovery', () => {
+  const policy = createHeartbeatPolicy(); assert.equal(policy.timeoutMs, 2000); assert.equal(policy.confirmationMs, 1000);
+  policy.sample(1400); assert.ok(policy.timeoutMs > 2000); assert.ok(policy.timeoutMs <= 6000);
+  policy.miss(); assert.equal(policy.suspect, true); assert.ok(policy.confirmationMs <= 2000);
+  policy.sample(250); assert.equal(policy.suspect, false);
+  for (let i = 0; i < 100; i++) policy.sample(i % 2 ? 600000 : 0);
+  assert.equal(policy.timeoutMs, 6000);
+  assert.equal(policy.sample(NaN), false); assert.equal(policy.sample(-1), false);
+  policy.miss(); policy.cancel(); assert.equal(policy.suspect, false);
+});
 function serverChannel() {
   const handlers = {};
   const event = name => ({ subscribe(fn) { handlers[name] = fn; } });

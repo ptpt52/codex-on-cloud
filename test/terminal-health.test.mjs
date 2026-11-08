@@ -9,11 +9,12 @@ function fixture(t, send = () => true) {
   return { health, packets, get failures() { return failures; }, tick: duration => t.mock.timers.tick(duration) };
 }
 
-test('terminal health sends one probe after three seconds and fails once two seconds later', t => {
+test('terminal health confirms one missing heartbeat and retires once after the bounded second deadline', t => {
   const f = fixture(t); f.health.start(); f.tick(2999); assert.deepEqual(f.packets, []);
   f.tick(1); assert.deepEqual(f.packets, [1]); f.tick(1999); assert.equal(f.failures, 0);
-  f.tick(1); assert.equal(f.failures, 1); f.tick(10000); f.health.wake(); f.tick(5000);
-  assert.deepEqual(f.packets, [1]); assert.equal(f.failures, 1);
+  f.tick(1); f.tick(0); assert.equal(f.failures, 0); assert.deepEqual(f.packets, [1, 2]);
+  f.tick(999); assert.equal(f.failures, 0); f.tick(1); assert.equal(f.failures, 1); f.tick(10000); f.health.wake(); f.tick(5000);
+  assert.deepEqual(f.packets, [1, 2]); assert.equal(f.failures, 1);
 });
 
 test('healthy terminal probes schedule the next check without overlapping a pending probe', t => {
@@ -33,7 +34,7 @@ test('terminal latency measures matching echoes and clears on suspend, timeout a
   f.health.wake(); f.tick(250); now += 19; f.health.receive(1); assert.equal(f.health.rttMs, null);
   f.health.receive(2); assert.equal(f.health.rttMs, 19);
   now += 10001; assert.equal(f.health.rttMs, null);
-  f.tick(3000); f.tick(2000); assert.equal(f.failures, 1); assert.equal(f.health.rttMs, null);
+  f.tick(3000); f.tick(2000); assert.equal(f.failures, 0); f.tick(1000); assert.equal(f.failures, 1); assert.equal(f.health.rttMs, null);
   f.health.close(); assert.equal(f.health.rttMs, null);
 });
 
@@ -42,15 +43,15 @@ test('wake replaces a regular pending probe and repeated network events cannot p
   f.tick(100); f.health.wake(); f.tick(100); f.health.wake(); f.tick(50);
   assert.deepEqual(f.packets, [1, 2]);
   for (let i = 0; i < 19; i++) { f.health.wake(); f.health.receive(1); f.tick(100); }
-  assert.equal(f.failures, 0); f.health.wake(); f.tick(100); assert.equal(f.failures, 1);
-  assert.deepEqual(f.packets, [1, 2]);
+  assert.equal(f.failures, 0); f.health.wake(); f.tick(100); assert.equal(f.failures, 0); f.tick(1000); assert.equal(f.failures, 1);
+  assert.deepEqual(f.packets, [1, 2, 3]);
 });
 
 test('suspending cancels deadlines, ignores late echoes and resumes with a new nonce', t => {
   const f = fixture(t); f.health.start(); f.tick(3000); f.health.suspend(); f.tick(10000); f.health.receive(1);
   assert.equal(f.failures, 0); assert.deepEqual(f.packets, [1]);
   f.health.wake(); f.tick(250); assert.deepEqual(f.packets, [1, 2]); f.health.receive(1); f.tick(2000);
-  assert.equal(f.failures, 1);
+  assert.equal(f.failures, 0); f.tick(1000); assert.equal(f.failures, 1);
 });
 
 test('send failure and malformed or future replies fail closed while disposal cancels every callback', t => {
@@ -61,4 +62,11 @@ test('send failure and malformed or future replies fail closed while disposal ca
   }
   let failures = 0; const health = createTerminalHealth(() => true, () => failures++);
   health.wake(); f.tick(250); health.close(); health.wake(); health.start(); health.receive(1); f.tick(10000); assert.equal(failures, 0);
+});
+
+test('one delayed heartbeat does not detach a responsive terminal and old echoes cannot satisfy confirmation', t => {
+  const f = fixture(t); f.health.start(); f.tick(3000); f.tick(2000); f.tick(0);
+  assert.deepEqual(f.packets, [1, 2]); f.health.receive(1); f.tick(999); assert.equal(f.failures, 0);
+  f.health.receive(2); f.tick(3000); assert.deepEqual(f.packets, [1, 2, 3]); assert.equal(f.failures, 0);
+  f.health.close();
 });

@@ -51,6 +51,7 @@ export const ASSETS = new Map([
   ['/terminal/index.html', ['terminal.html', 'text/html; charset=utf-8']],
   ['/terminal/terminal.js', ['terminal.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal-health.js', ['terminal-health.js', 'text/javascript; charset=utf-8']],
+  ['/terminal/health.js', ['health.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal-rtc.js', ['terminal-rtc.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal-history.js', ['terminal-history.js', 'text/javascript; charset=utf-8']],
   ['/terminal/terminal-history-style.js', ['terminal-history-style.js', 'text/javascript; charset=utf-8']],

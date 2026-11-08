@@ -81,7 +81,7 @@ test('failed direct negotiation retains authenticated WSS and reports the fallba
   try {
     await prepare(page); await page.route('**/api/terminal/rtc', route => route.fulfill({ status: 503, json: { error: '模拟直连暂不可达' } }));
     await login(page, app); await diagnostics(page, RELAY);
-    await expect(page.locator('#diag-direct-status')).toHaveText('直连未建立，等待后续探测');
+    await expect(page.locator('#diag-direct-status')).toHaveText('协商服务暂不可达，稍后重试');
     await expect(page.locator('#diag-latency')).toHaveText(/^\d+ ms$/);
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 1, rtc: 1 }); expect(app.terminalConnections).toBe(1);
     expect(app.terminalInputs).toEqual([]); expect(app.vncConnections).toBe(0);

@@ -8,7 +8,7 @@ export const TRACE_LABELS = Object.freeze({
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', signaling: '交换连接信息', connecting: '建立加密通道' });
 const reasons = ['unsupported', 'disabled', 'signaling', 'negotiation', 'timeout', 'signaling-timeout', 'gathering-timeout', 'ice-timeout', 'channel-timeout',
-  'connection', 'heartbeat', 'offline', 'hidden', 'online', 'visible', 'changed', 'busy', 'auth', 'target', 'protocol', 'closed', 'input-unknown', 'input-pressure', 'target-unknown', 'resume-timeout', 'session-expired', 'signal-failed'];
+  'connection', 'heartbeat', 'heartbeat-suspect', 'offline', 'hidden', 'online', 'visible', 'changed', 'busy', 'auth', 'target', 'protocol', 'closed', 'input-unknown', 'input-pressure', 'target-unknown', 'resume-timeout', 'session-expired', 'signal-failed'];
 const number = value => Number.isInteger(value) && value >= 0 && value <= 2 ** 40;
 function clean(value) {
   if (!value || !Object.hasOwn(TRACE_LABELS, value.type)) return null;
