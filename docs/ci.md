@@ -10,7 +10,7 @@
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
 | terminal | 只安装 tmux/Python 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
 | browsers | Chromium、Firefox、WebKit 三个独立环境的 140 项兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
-| native | 真实隔离 Xvfb、XFCE、xterm、tmux、剪贴板、noVNC 与端口映射协议检查 | 25 分钟 |
+| native | 真实隔离 Xvfb、XFCE、xterm、tmux、剪贴板、noVNC、端口映射协议及四架构助手发布检查 | 25 分钟 |
 
 Actions 使用完整 commit SHA；Node 固定 24.22.2、Go 固定项目已有的 1.26.4，Playwright 和应用依赖继续由现有锁文件固定。检查运行在 Ubuntu 24.04，浏览器矩阵最多同时三个作业。失败浏览器产物保留七天，内容来自临时测试实例。
 
@@ -34,6 +34,7 @@ npm run test:display
 npm run test:viewport
 CHROME_PATH=/usr/bin/google-chrome npm run test:pointer
 npm run test:forward
+npm run test:forward:publication
 npm run test:serial
 npm run test:terminal-only
 ```
@@ -45,6 +46,8 @@ CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对�
 自动化使用临时目录、测试凭据和隔离显示；浏览器中的 RFB/管理上游与真实 X11、TCP/DTLS、systemd 验证分别记录。真实手机和其他设备的系统输入法、选区菜单及剪贴板仍通过人工验收。
 
 串口的 `test:serial` 和 Go Linux PTY 测试使用隔离进程及伪终端，不打开宿主机物理串口。Windows/Mac 交叉构建和 Linux 测试不代表对应系统的 USB 串口真机验收。
+
+backend还覆盖维护故障：旧任务部署变量、后续平台构建失败、提交确认丢失、空锁/半截锁、父进程SIGKILL及编译后代回收、文件租约前后发生配置修改。Cloudflare发布使用模拟API，不能当作真实账户发布验收；native的`test:forward:publication`另行执行四平台实际编译、Mac打包和版本固定下载哈希检查，全部产物留在临时目录。
 
 ## 原生 RFB 客户端的请求顺序
 

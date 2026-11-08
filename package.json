@@ -40,6 +40,7 @@
     "test:serial": "node test/serial-native.mjs",
     "test:forward": "node test/forward-native.mjs",
     "test:forward:package": "node test/forward-package-native.mjs",
+    "test:forward:publication": "node test/forward-publication-native.mjs",
     "demo": "node scripts/demo.mjs"
   },
   "dependencies": {

@@ -182,6 +182,7 @@ Mac包检查Mach-O架构、可执行类型、macOS 12目标及ARM64签名结构�
     npm run test:desktop
     npm run test:forward
     npm run test:forward:package
+    npm run test:forward:publication
     CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/forward.spec.mjs test/browser/web-terminal.spec.mjs
 
 Node 单元测试使用真实 WebSocket 和隔离 TCP 服务，另有基于模拟通道的背压/重组资源上限测试；桌面与管理执行器为 fixture。浏览器测试使用真实 Chrome 和模拟 RFB，覆盖刷新和接管保留映射、不同页面管理、固定故障提示和丢失响应不重试；通道统计界面用例使用模拟诊断数据，不将其当成真实网络通道验证。
@@ -189,6 +190,8 @@ Node 单元测试使用真实 WebSocket 和隔离 TCP 服务，另有基于模�
 test:forward 使用带 race 检测的 Linux 同源助手、临时证书、真实 TLS/WSS 代理、真实 Pion/werift UDP/DTLS/SCTP 和 TCP 服务。覆盖 8 MiB 数据、双向半关闭、心跳、探测不连接目标、旧中转流保留、不同通道并存、直连失效/恢复、peer 实际关闭后的后台重建、目标就绪丢失不回退重连、明确停止撤销两种通道，以及原有端口占用、目标不可达、输出上限和证书拒绝。实际关闭管理连接并暂时返回 503 后，正反向已有中转/直连 TCP 继续传输，同一映射/监听/peer 恢复且目标未被重新连接；新连接暂停、配对码/字节不重放、恢复中明确停止和持续故障的真实 30 秒预算耗尽也在覆盖范围内。健康失效、就绪丢失和故障代理使用受控故障注入，数据仍经真实协议栈；IPv6 在主机实际分配的公网 IPv6 上验证，无地址时明确跳过。所有检查均不连接工作中的 Codex 或真实 SSH 服务。
 
 `test:forward:package` 交叉编译两种真实 Mach-O 并核对 ZIP CRC、程序字节、固定内容、执行权限、最低系统目标、ARM64 签名结构和 Go 构建元数据；另用隔离的脚本替身验证启动器对空格、中文和字面参数的保留，不声称在 Linux 上执行了 Mac 程序。Windows PE/Mac Mach-O 结构检查不代替各平台真机验收，本机公网 IPv6 也不能代替跨运营商验收。
+
+`test:forward:publication` 在临时部署目录运行完整构建器，使用真实Go编译器、持锁子进程监督器和Python打包器，生成两个Windows PE与两个Mac ZIP；核对嵌入的持久入口、版本/架构、ZIP结构/权限以及版本固定下载流的尺寸和SHA256。测试只使用合成配置及临时Git身份，退出后清理；不会覆盖正式下载、重启服务或在本机执行Windows/Mac程序。该检查已加入CI的native作业。
 
 Mac/Windows 真机可依次检查：初次打开和版本正确、配对后 SSH 登录、SFTP 上传/下载同一文件并核对 SHA256、保持一条 SSH 后切换直连状态确认旧连接保留，再只中断管理链路测试已有健康通道继续工作、恢复期间新连接暂停；完整断网导致的数据连接失败仍由原客户端重连。最后明确停止并确认不再恢复。面板重启后重新配对；需要实际目标服务的账号，项目不代为保存该密码。
 
