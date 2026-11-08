@@ -33,7 +33,7 @@ export const FORWARD_ERRORS = Object.freeze({
   authorization_expired: '创建此映射的登录已过期，请重新登录并配对。',
   authorization_revoked: '映射授权已失效，请重新登录并配对。',
   helper_disconnected: '助手已关闭或网络连接已中断，请检查助手后重新配对。',
-  helper_reconnecting: '助手连接中断，正在等待自动恢复；已有 TCP 连接已关闭。',
+  helper_reconnecting: '助手管理连接中断，正在等待自动恢复；新连接暂不可用，已有连接请查看各自通道状态。',
   helper_stopped: '助手已停止，映射已关闭。',
   resume_busy: '恢复握手正在进行，稍后重试。',
   resume_expired: '映射未在恢复窗口内重新连接，请重新生成配对码。',

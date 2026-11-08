@@ -122,6 +122,7 @@ type directPeer struct {
 	ready, available bool
 	healthy          bool
 	updated          time.Time
+	healthAt         time.Time
 	streams          map[*directChannel]struct{}
 	channels         int
 	draining         bool
@@ -131,6 +132,7 @@ type directManager struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	write        func(any) error
+	online       func() bool
 	report       func(string)
 	token        string
 	peer         *directPeer
@@ -144,9 +146,9 @@ type directManager struct {
 	lastStatus   string
 }
 
-func newDirectManager(ctx context.Context, token string, write func(any) error, report func(string)) *directManager {
+func newDirectManager(ctx context.Context, token string, write func(any) error, online func() bool, report func(string)) *directManager {
 	ctx, cancel := context.WithCancel(ctx)
-	m := &directManager{ctx: ctx, cancel: cancel, token: token, write: write, report: report, answers: make(chan directSignal, 1), wake: make(chan struct{}, 1), done: make(chan struct{})}
+	m := &directManager{ctx: ctx, cancel: cancel, token: token, write: write, online: online, report: report, answers: make(chan directSignal, 1), wake: make(chan struct{}, 1), done: make(chan struct{})}
 	go m.run()
 	return m
 }
@@ -245,12 +247,13 @@ func (m *directManager) run() {
 	delay := 15 * time.Second
 	signature := networkSignature()
 	for {
+		online := m.online == nil || m.online()
 		m.mu.Lock()
 		enabled := m.configured && m.config.Enabled
 		p := m.peer
 		healthy := p != nil && p.ready && p.available && time.Since(p.updated) < 10*time.Second
 		busy := p != nil && len(p.streams) > 0
-		probe := enabled && !busy && (m.hintsChanged || !healthy && !time.Now().Before(next))
+		probe := online && enabled && !busy && (m.hintsChanged || !healthy && !time.Now().Before(next))
 		if probe {
 			m.hintsChanged = false
 		}
@@ -290,7 +293,23 @@ func (m *directManager) destroy() {
 }
 func (m *directManager) Close() { m.cancel(); <-m.done }
 func (m *directManager) negotiate() {
-	m.destroy()
+	if m.online != nil && !m.online() {
+		return
+	}
+	// Recheck while detaching: Open may have admitted a stream after the run
+	// loop inspected it. Never replace a peer carrying that stream.
+	m.mu.Lock()
+	if m.peer != nil && len(m.peer.streams) > 0 {
+		m.hintsChanged = true
+		m.mu.Unlock()
+		return
+	}
+	previous := m.peer
+	m.peer = nil
+	m.mu.Unlock()
+	if previous != nil {
+		previous.pc.Close()
+	}
 	select {
 	case <-m.answers:
 	default:
@@ -359,6 +378,12 @@ func (m *directManager) negotiate() {
 		if !message.IsString && len(message.Data) == 4 {
 			if health.BufferedAmount() > 4096 || health.Send(message.Data) != nil {
 				pc.Close()
+			} else {
+				m.mu.Lock()
+				if m.peer == p {
+					p.healthAt = time.Now()
+				}
+				m.mu.Unlock()
 			}
 			return
 		}
@@ -500,5 +525,5 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 func (m *directManager) peerAlive(p *directPeer) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.peer == p && p.ready && p.healthy && time.Since(p.updated) < 10*time.Second
+	return m.peer == p && p.ready && time.Since(p.healthAt) < 10*time.Second
 }

@@ -77,7 +77,7 @@ func TestDirectReceiveWindowRejectsExcessDataAndForgedAcknowledgments(t *testing
 }
 
 func TestDrainingPeerKeepsIdleExistingConnectionsHealthy(t *testing.T) {
-	p := &directPeer{id: 1, ready: true, available: true, healthy: true, draining: true, updated: time.Now()}
+	p := &directPeer{id: 1, ready: true, available: true, healthy: true, draining: true, updated: time.Now(), healthAt: time.Now()}
 	m := &directManager{peer: p, report: func(string) {}}
 	m.accept(directSignal{Type: "rtc_status", ID: 1, Healthy: true, Available: false, Reason: "rtc_draining"})
 	if p.available || !m.peerAlive(p) {
@@ -114,6 +114,36 @@ func TestDrainingPeerKeepsIdleExistingConnectionsHealthy(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Idle draining connection did not resume")
+	}
+}
+
+func TestExistingPeerHealthDoesNotDependOnManagementStatus(t *testing.T) {
+	p := &directPeer{ready: true, healthy: true, updated: time.Now().Add(-20 * time.Second), healthAt: time.Now()}
+	m := &directManager{peer: p}
+	if !m.peerAlive(p) {
+		t.Fatal("Fresh data-channel health was lost with stale management status")
+	}
+	p.healthAt = time.Now().Add(-11 * time.Second)
+	p.updated = time.Now()
+	if m.peerAlive(p) {
+		t.Fatal("Management status kept a silent direct peer alive")
+	}
+	if m.peerAlive(&directPeer{ready: true, healthAt: time.Now()}) {
+		t.Fatal("A different peer authorized an old stream")
+	}
+}
+
+func TestRenegotiationCannotReplaceAnAdmittedStreamOrAnOfflinePeer(t *testing.T) {
+	for _, offline := range []bool{false, true} {
+		p := &directPeer{streams: make(map[*directChannel]struct{})}
+		if !offline {
+			p.streams[&directChannel{}] = struct{}{}
+		}
+		m := &directManager{peer: p, online: func() bool { return !offline }}
+		m.negotiate()
+		if m.peer != p {
+			t.Fatal("Peer was detached after stream admission or management loss")
+		}
 	}
 }
 

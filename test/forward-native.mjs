@@ -151,22 +151,25 @@ try {
   assert.equal((bad.output.match(/TCP 连接失败：/g)||[]).length,20);assert.match(bad.output,/目标端口无法连接/);
   assert.equal((await request('/api/forward')).mappings[0].errorCode,'target_unavailable');
   await request('/api/forward/stop',{id:bad.mapping.id});await bad.finished;
-  // A real control disconnect drops old TCP, releases the local listener, and
-  // restores the same mapping after failed attempts without pairing or replay.
+  // Cut only real control TLS/WSS. A healthy data WSS and the local listener
+  // survive, but new clients cannot open targets until management resumes.
   const droppedPort=await freePort(),dropped=await helper(droppedPort);
   const lost=net.createConnection({host:'127.0.0.1',port:droppedPort});connections.add(lost);lost.on('error',()=>{});lost.once('close',()=>connections.delete(lost));
   await once(lost,'connect');lost.write('only once before disconnect');await once(lost,'data');
-  const beforeRecovery={...managementRequests},beforeReceived=receivedBytes,beforeAccepted=accepted,lostClosed=new Promise(resolve=>lost.once('close',resolve));
-  blockResume=true;for(const socket of controlLinks)socket.destroy();await lostClosed;
+  const beforeRecovery={...managementRequests},beforeReceived=receivedBytes,beforeAccepted=accepted;
+  blockResume=true;for(const socket of controlLinks)socket.destroy();
   await waitFor(()=>dropped.output.includes('正在自动恢复'),'Missing management recovery notice');
   await waitFor(async()=>(await request('/api/forward')).mappings[0]?.state==='recovering','Mapping did not enter recovery');
   await waitFor(()=>managementRequests.resume>beforeRecovery.resume,'Helper did not retry transient management failure');
-  const refused=net.createConnection({host:'127.0.0.1',port:droppedPort});let refusedError;refused.on('error',error=>{refusedError=error;});await new Promise(resolve=>refused.once('close',resolve));assert.equal(refusedError?.code,'ECONNREFUSED');
+  const refused=net.createConnection({host:'127.0.0.1',port:droppedPort});refused.on('error',()=>{});await new Promise(resolve=>refused.once('close',resolve));
   assert.equal(accepted,beforeAccepted);assert.equal(receivedBytes,beforeReceived);
+  assert.equal(lost.destroyed,false);const offlineReply=once(lost,'data');lost.write('healthy WSS while control offline');assert.equal((await offlineReply)[0].toString(),'healthy WSS while control offline');
+  const afterOffline=receivedBytes;
   blockResume=false;await waitFor(()=>dropped.output.includes('映射已恢复'),'Native listener did not recover',500);
   assert.equal(managementRequests.pair,beforeRecovery.pair,'One-time pairing must never be replayed');
   assert.equal((await request('/api/forward')).mappings[0].id,dropped.mapping.id);
-  assert.equal(accepted,beforeAccepted,'Recovery must not reopen a target TCP connection');assert.equal(receivedBytes,beforeReceived);
+  assert.equal(accepted,beforeAccepted,'Recovery must not reopen a target TCP connection');assert.equal(receivedBytes,afterOffline);
+  const retainedReply=once(lost,'data');lost.write('same TCP after recovery');assert.equal((await retainedReply)[0].toString(),'same TCP after recovery');
   assert.deepEqual(await roundtrip(droppedPort,Buffer.from('explicit new client')),Buffer.from('explicit new client'));
   await request('/api/forward/stop',{id:dropped.mapping.id});await dropped.finished;assert.match(dropped.output,/映射已由网页明确停止/);
   // Stop while offline must be final when the helper next checks authorization.
@@ -232,11 +235,17 @@ try {
   route=(await request('/api/forward')).mappings[0];assert.equal(route.directConnections,0);assert.equal(route.connections,2);
   const finalDirect=net.createConnection({host:'127.0.0.1',port:directPort});connections.add(finalDirect);finalDirect.on('error',()=>{});finalDirect.once('close',()=>connections.delete(finalDirect));
   await once(finalDirect,'connect');finalDirect.write('revoke both transports');await once(finalDirect,'data');
-  const allEnded=[finalDirect,pinned,fallback].map(socket=>new Promise(resolve=>socket.once('close',resolve)));
   const beforeDirectRecovery=accepted,pairsBeforeDirectRecovery=managementRequests.pair;
-  for(const socket of controlLinks)socket.destroy();await Promise.all(allEnded);
+  const retainedPeer=directPeers.at(-1);blockResume=true;for(const socket of controlLinks)socket.destroy();
+  await waitFor(async()=>(await request('/api/forward')).mappings[0]?.state==='recovering','Expected direct control recovery');
+  // Longer than the old ten-second WSS-status freshness check: only the
+  // peer's own authenticated health traffic should keep existing TCP alive.
+  await new Promise(resolve=>setTimeout(resolve,12000));
+  for(const [peer,text] of [[pinned,'relay through control outage'],[finalDirect,'direct through control outage'],[fallback,'fallback through control outage']]){const reply=once(peer,'data');peer.write(text);assert.equal((await reply)[0].toString(),text);}
+  blockResume=false;
   await waitFor(()=>direct.output.includes('映射已恢复'),'Direct-capable helper did not restore management',500);
-  await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Direct peer did not rebuild after management recovery',1000);
+  await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Direct peer did not remain ready after management recovery',1000);
+  assert.equal(directPeers.at(-1),retainedPeer,'Management recovery replaced an existing healthy peer');
   assert.equal(accepted,beforeDirectRecovery);assert.equal(managementRequests.pair,pairsBeforeDirectRecovery);
   assert.deepEqual(await roundtrip(directPort,Buffer.from('new direct client after management recovery')),Buffer.from('new direct client after management recovery'));
   const finalRestored=net.createConnection({host:'127.0.0.1',port:directPort});connections.add(finalRestored);finalRestored.on('error',()=>{});finalRestored.once('close',()=>connections.delete(finalRestored));
@@ -279,10 +288,11 @@ try {
   await new Promise(resolve=>setTimeout(resolve,31000));assert.equal(reverseUpload.destroyed,false,'Reverse target FIN must retain upload and heartbeats');reverseUpload.end('after reverse heartbeat');
   await waitFor(()=>receivedAfterServerFin,'Reverse upload did not survive target FIN');assert.equal(receivedAfterServerFin.toString(),'~reverse uploadafter reverse heartbeat');reverseUpload.destroy();
   const reverseLive=net.createConnection({host:'127.0.0.1',port:reversePort});connections.add(reverseLive);reverseLive.on('error',()=>{});reverseLive.once('close',()=>connections.delete(reverseLive));await once(reverseLive,'connect');reverseLive.write('reverse once');await once(reverseLive,'data');
-  const reverseAccepted=accepted,reverseBytes=receivedBytes,reverseClosed=new Promise(resolve=>reverseLive.once('close',resolve));blockResume=true;for(const socket of controlLinks)socket.destroy();await reverseClosed;
+  const reverseAccepted=accepted,reverseBytes=receivedBytes;blockResume=true;for(const socket of controlLinks)socket.destroy();
   await waitFor(async()=>(await request('/api/forward')).mappings[0].state==='recovering','Reverse recovery state missing');
   const reverseRefused=net.createConnection({host:'127.0.0.1',port:reversePort});reverseRefused.on('error',()=>{});await new Promise(resolve=>reverseRefused.once('close',resolve));assert.equal(accepted,reverseAccepted);
   blockResume=false;await waitFor(()=>reverse.output.includes('映射已恢复'),'Reverse listener did not recover',500);assert.equal(accepted,reverseAccepted);assert.equal(receivedBytes,reverseBytes);
+  const reverseRetained=once(reverseLive,'data');reverseLive.write('same reverse connection after recovery');assert.equal((await reverseRetained)[0].toString(),'same reverse connection after recovery');
   assert.equal((reverse.output.match(/反向设备授权：/g)||[]).length,1,'Recovery must retain the original consent scope');
   assert.deepEqual(await roundtrip(reversePort,Buffer.from('new reverse client')),Buffer.from('new reverse client'));
   await request('/api/forward/stop',{id:reverse.mapping.id});await reverse.finished;assert.equal(reverse.output.includes('DATA RACE'),false);
@@ -299,6 +309,11 @@ try {
   directPeers.at(-1).unhealthy('rtc_health_timeout');await waitFor(()=>reverseDirect.output.includes('直连心跳超时'),'Reverse fallback status missing');
   const reverseFallback=net.createConnection({host:'127.0.0.1',port:reverseDirectPort});connections.add(reverseFallback);reverseFallback.on('error',()=>{});reverseFallback.once('close',()=>connections.delete(reverseFallback));await once(reverseFallback,'connect');reverseFallback.write('reverse WSS fallback');await once(reverseFallback,'data');
   const mixed=(await request('/api/forward')).mappings[0];assert.equal(mixed.directConnections,1);assert.equal(mixed.connections,2);
+  const reversePeer=directPeers.at(-1),beforeReverseRecovery=accepted;blockResume=true;for(const socket of controlLinks)socket.destroy();
+  await waitFor(async()=>(await request('/api/forward')).mappings[0]?.state==='recovering','Reverse direct management not recovering');
+  for(const [peer,text] of [[reversePinned,'reverse direct during management outage'],[reverseFallback,'reverse relay during management outage']]){const reply=once(peer,'data');peer.write(text);assert.equal((await reply)[0].toString(),text);}
+  blockResume=false;await waitFor(()=>reverseDirect.output.includes('映射已恢复'),'Reverse direct management not recovered',500);
+  assert.equal(directPeers.at(-1),reversePeer);assert.equal(accepted,beforeReverseRecovery);
   await waitFor(async()=>(await request('/api/forward')).mappings[0].direct.available,'Reverse direct health did not recover',500);
   console.log('Reverse DTLS: intentional readiness loss must not dial or retry target');
   const beforeReverseLost=accepted;dropDirectReady=true;const reverseUncertain=net.createConnection({host:'127.0.0.1',port:reverseDirectPort});connections.add(reverseUncertain);reverseUncertain.on('error',()=>{});reverseUncertain.once('close',()=>connections.delete(reverseUncertain));const reverseUncertainClosed=new Promise(resolve=>reverseUncertain.once('close',resolve));reverseUncertain.write('do not retry target');await reverseUncertainClosed;assert.equal(accepted,beforeReverseLost,'Unconfirmed reverse stream must not dial or retry a device');

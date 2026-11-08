@@ -82,6 +82,7 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 		headers.Set("X-Codex-Forward-Resume", "1")
 		headers.Set("X-Codex-Forward-Reverse", "1")
 		headers.Set("X-Codex-Forward-Serial", "1")
+		headers.Set("X-Codex-Forward-Keep-Streams", "1")
 	}
 	for key, values := range extra {
 		for _, value := range values {
@@ -116,24 +117,25 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 }
 
 type readyMessage struct {
-	Serial          *serialConfig `json:"serial"`
-	SerialProtocol  int           `json:"serialProtocol"`
-	Protocol        string        `json:"protocol"`
-	Type            string        `json:"type"`
-	Version         int           `json:"version"`
-	ID              string        `json:"id"`
-	StreamToken     string        `json:"streamToken"`
-	LocalPort       int           `json:"localPort"`
-	TargetHost      string        `json:"targetHost"`
-	TargetPort      int           `json:"targetPort"`
-	MaxConnections  int           `json:"maxConnections"`
-	DirectProtocol  int           `json:"directProtocol"`
-	ResumeProtocol  int           `json:"resumeProtocol"`
-	ResumeToken     string        `json:"resumeToken"`
-	ResumeMs        int           `json:"resumeMs"`
-	Direction       string        `json:"direction"`
-	ReverseProtocol int           `json:"reverseProtocol"`
-	DeviceName      string        `json:"deviceName"`
+	Serial              *serialConfig `json:"serial"`
+	SerialProtocol      int           `json:"serialProtocol"`
+	Protocol            string        `json:"protocol"`
+	Type                string        `json:"type"`
+	Version             int           `json:"version"`
+	ID                  string        `json:"id"`
+	StreamToken         string        `json:"streamToken"`
+	LocalPort           int           `json:"localPort"`
+	TargetHost          string        `json:"targetHost"`
+	TargetPort          int           `json:"targetPort"`
+	MaxConnections      int           `json:"maxConnections"`
+	DirectProtocol      int           `json:"directProtocol"`
+	ResumeProtocol      int           `json:"resumeProtocol"`
+	ResumeToken         string        `json:"resumeToken"`
+	ResumeMs            int           `json:"resumeMs"`
+	KeepStreamsProtocol int           `json:"keepStreamsProtocol"`
+	Direction           string        `json:"direction"`
+	ReverseProtocol     int           `json:"reverseProtocol"`
+	DeviceName          string        `json:"deviceName"`
 }
 
 func (r readyMessage) targetIP() string {
@@ -348,40 +350,26 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		return err
 	}
 	watchDone := make(chan struct{})
+	link := &managementLink{ctx: ctx, conn: control}
 	defer close(watchDone)
 	go func() {
 		select {
 		case <-parentCtx.Done():
-			control.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "client_stopping"), time.Now().Add(time.Second))
-			control.Close()
+			link.close(true)
 		case <-watchDone:
 		}
 	}()
 	defer func() {
-		if parentCtx.Err() != nil || result == nil || !canResume(result) {
-			control.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "client_stopping"), time.Now().Add(time.Second))
-		}
-		control.Close()
+		link.close(parentCtx.Err() != nil || result == nil || !canResume(result))
 	}()
 	handshakeDeadline := time.Now().Add(5 * time.Second)
 	if !state.deadline.IsZero() && state.deadline.Before(handshakeDeadline) {
 		handshakeDeadline = state.deadline
 	}
 	control.SetReadDeadline(handshakeDeadline)
-	kind, data, err := control.ReadMessage()
-	var ready readyMessage
+	ready, err := readForwardReady(control)
 	if err != nil {
-		return connectionFailure(err)
-	}
-	if kind != websocket.TextMessage || len(data) > 2048 || json.Unmarshal(data, &ready) != nil || ready.Type != "ready" || ready.Version != 1 ||
-		!tokenPattern.MatchString(ready.StreamToken) || ready.LocalPort < 1024 || ready.LocalPort > 65535 || !ready.validTarget() {
-		return errors.New("服务器未返回有效映射授权")
-	}
-	if ready.Serial == nil {
-		ready.TargetHost = ready.targetIP()
-	}
-	if ready.Direction != "" && ready.Direction != "reverse" || ready.Direction == "reverse" && (ready.ReverseProtocol != 1 || !validDeviceName(ready.DeviceName)) {
-		return failure("protocol_error")
+		return err
 	}
 	if err := state.accept(ready); err != nil {
 		return err
@@ -426,39 +414,18 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	if listener != nil {
 		defer listener.Close()
 	}
-	control.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	control.SetReadDeadline(time.Now().Add(5 * time.Second))
-	listening := "{\"type\":\"listening\"}"
-	if ready.DirectProtocol == 1 {
-		listening = "{\"type\":\"listening\",\"direct\":1}"
+	if err := confirmListening(control, ready, state.deadline); err != nil {
+		return err
 	}
-	if err := control.WriteMessage(websocket.TextMessage, []byte(listening)); err != nil {
-		return connectionFailure(err)
+	if err := link.install(control); err != nil {
+		return err
 	}
-	kind, data, err = control.ReadMessage()
-	if err != nil {
-		return connectionFailure(err)
-	}
-	if kind != websocket.TextMessage || string(data) != "{\"type\":\"listening\"}" {
-		return errors.New("服务器未确认映射启用")
-	}
-	control.SetReadDeadline(time.Now().Add(45 * time.Second))
 	state.active = true
 	active := &connections{items: make(map[*net.TCPConn]messageSocket)}
 	var workers sync.WaitGroup
-	var signalMu sync.Mutex
 	var direct *directManager
 	if ready.DirectProtocol == 1 {
-		direct = newDirectManager(ctx, ready.StreamToken, func(value any) error {
-			bytes, err := json.Marshal(value)
-			if err != nil || len(bytes) > 48*1024 {
-				return failure("protocol_error")
-			}
-			signalMu.Lock()
-			defer signalMu.Unlock()
-			control.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			return control.WriteMessage(websocket.TextMessage, bytes)
-		}, func(text string) {
+		direct = newDirectManager(ctx, ready.StreamToken, link.write, link.available, func(text string) {
 			output.print(1, "%s", text)
 		})
 	}
@@ -473,7 +440,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 				if err != nil {
 					return
 				}
-				if !active.add(tcp) {
+				if !link.available() || !active.add(tcp) {
 					tcp.Close()
 					continue
 				}
@@ -523,6 +490,18 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			if ready.KeepStreamsProtocol == 1 && state.token != "" && canResume(connectionFailure(err)) {
+				link.offline(control)
+				next, recoveryError := resumeManagement(ctx, server, state, ready, link, output)
+				if recoveryError != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return recoveryError
+				}
+				control = next
+				continue
 			}
 			return connectionFailure(err)
 		}

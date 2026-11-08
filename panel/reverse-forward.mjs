@@ -8,7 +8,7 @@ export const REVERSE_READY_MS = 40000;
 
 // At most eight paused TCP sockets per mapping, each with a fixed deadline.
 // A stream identifier is single-use and never authorizes another destination.
-export function createReverseForwarding({ limits, active, authorized, invalidReason, remove, retire, send, reserve, now }) {
+export function createReverseForwarding({ limits, active, authorized, streamLive, invalidReason, remove, retire, send, reserve, now }) {
   function disconnect(item) {
     const listener = item.listener; item.listener = null;
     if (listener) item.listenerClosing = new Promise(resolve => listener.close(resolve));
@@ -16,6 +16,7 @@ export function createReverseForwarding({ limits, active, authorized, invalidRea
     item.streams.clear();
   }
   async function start(item, current) {
+    if (item.keepStreams && item.listener?.listening) return;
     await item.listenerClosing;
     if (!current()) return;
     const listener = net.createServer({ allowHalfOpen: true, pauseOnConnect: true, highWaterMark: 32768 }, tcp => {
@@ -48,8 +49,8 @@ export function createReverseForwarding({ limits, active, authorized, invalidRea
     const stream = waiting(item, id);
     if (!active(item) || !stream) { ws.close(4000, 'stream_authorization_invalid'); return; }
     stream.ws = ws;
-    const { tcp, generation } = stream;
-    const live = () => active(item) && generation === item.generation && item.streams.has(stream);
+    const { tcp } = stream;
+    const live = () => streamLive(item, stream);
     let ready = false, clientFin = false, pending = 0;
     const abort = (code = 'protocol_error') => {
       if (live()) item.errorCode = code;
@@ -67,7 +68,7 @@ export function createReverseForwarding({ limits, active, authorized, invalidRea
       }
       if (!ready) {
         if (!binary && data.toString() === '{"type":"target_ready"}') {
-          ready = true; clearTimeout(stream.timer); item.errorCode = ''; item.targetStatus = { state: 'reachable', at: now() };
+          ready = stream.established = true; clearTimeout(stream.timer); item.errorCode = ''; item.targetStatus = { state: 'reachable', at: now() };
           tcp.setNoDelay(true); tcp.setKeepAlive(true, 30000); tcp.resume(); return;
         }
         let record; try { record = binary ? null : JSON.parse(data.toString()); } catch {}
