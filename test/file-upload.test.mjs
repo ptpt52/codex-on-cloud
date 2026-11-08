@@ -4,6 +4,26 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { fixture } from './fixture.mjs';
 import { uploadOptions, uploadHeaders, readUploadHeaders } from '../panel/public/file-upload.js';
+import { settings } from '../native/config.mjs';
+
+test('independent file helper port defaults to the desktop helper and rejects invalid ports', () => {
+  assert.equal(settings({ AGENT_PORT: '31001' }).fileAgentPort, 31001);
+  assert.equal(settings({ FILE_AGENT_PORT: '31002' }).fileAgentPort, 31002);
+  for (const value of ['-1', '22', '65536', '1.5', 'url']) assert.throws(() => settings({ FILE_AGENT_PORT: value }), /FILE_AGENT_PORT/);
+});
+
+test('an independent file helper serves every file route while desktop health retains its original helper', async t => {
+  const app = await fixture(); t.after(() => app.close()); const files = await fixture(); t.after(() => files.close());
+  await app.login(); app.config.fileAgentUrl = files.config.agentUrl;
+  const result = await app.request('/api/files/independent.txt', { method: 'PUT', raw: 'independent files' });
+  assert.equal(result.status, 200); assert.equal(files.files.get('independent.txt').toString(), 'independent files'); assert.equal(app.files.size, 0);
+  assert.equal((await (await app.request('/api/files')).json()).files[0].name, 'independent.txt');
+  assert.equal(await (await app.request('/api/files/independent.txt')).text(), 'independent files');
+  assert.equal((await (await app.request('/api/state')).json()).desktop.ready, true);
+  assert.equal(app.received.some(r => r.url === '/health'), true); assert.equal(files.received.some(r => r.url === '/health'), false);
+  await files.close(); app.files.set('must-not-read', Buffer.from('old helper'));
+  assert.equal((await app.request('/api/files')).status, 502); assert.equal(app.received.some(r => r.url === '/files'), false, 'unavailable file helper cannot fall back to the old helper');
+});
 
 test('upload conditions default to create and require an exact version for replacement', () => {
   const version = 'a'.repeat(64);

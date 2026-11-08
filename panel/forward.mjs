@@ -51,7 +51,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   let negotiating = false;
   const controls = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 48 * 1024 });
   const streams = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: FORWARD_LIMITS.chunk });
-  const blockedPort = port => [config.port, config.agentPort, config.tunnelMetricsPort].includes(port);
+  const blockedPort = port => [config.port, config.agentPort, config.fileAgentPort, config.tunnelMetricsPort].includes(port);
   const allPorts = () => (config.forwardPorts ?? '*') === '*';
   const ports = () => (allPorts() ? [22] : config.forwardPorts).filter(port => !blockedPort(port));
   const invalidReason = item => item.authorizationError() || (item.state === 'pending' && item.expires <= now() ? 'pair_expired' : '') ||

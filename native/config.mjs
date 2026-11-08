@@ -37,6 +37,7 @@ export function settings(env = environment()) {
     display: `:${number('DISPLAY_NUMBER', 93, 10, 199)}`,
     panelPort: number('PANEL_PORT', 36080, 1024, 65535),
     agentPort: number('AGENT_PORT', 36902, 1024, 65535),
+    fileAgentPort: number('FILE_AGENT_PORT', env.AGENT_PORT || 36902, 1024, 65535),
     tunnelMetricsPort: number('TUNNEL_METRICS_PORT', 36903, 1024, 65535),
     managerSocket: join(runtime, 'manager.sock'), desktopActionsSocket: join(runtime, 'actions.sock'), preferencesFile, preferences, defaultPreferences,
     size, env,

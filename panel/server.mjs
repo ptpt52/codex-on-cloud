@@ -193,7 +193,7 @@ export async function createPanel(config) {
     return state.stream;
   }
   async function agent(path, { method = 'GET', body, signal } = {}) {
-    const response = await fetch(`${config.agentUrl}${path}`, {
+    const response = await fetch(`${path === '/files' ? config.fileAgentUrl || config.agentUrl : config.agentUrl}${path}`, {
       method, signal: signal || AbortSignal.timeout(6000),
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
@@ -587,13 +587,13 @@ export async function createPanel(config) {
           if (total - replaced + length > 1024 * 1024 * 1024) throw new HttpError(413, '共享目录已达到临时上传的 1 GiB 容量上限');
         }
         const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; callback(this.total > MAX_UPLOAD ? new Error('文件过大') : null, chunk); } });
-        const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, {
+        const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
         const result = await response.json(); transfer.check(); return reply(res, response.status, result);
       }
-      const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: transfer.signal });
+      const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: transfer.signal });
       transfer.check();
       if (!response.ok) return reply(res, response.status, await response.json());
       const etag = response.headers.get('etag');

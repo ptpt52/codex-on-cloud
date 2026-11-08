@@ -34,6 +34,7 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | `ADMIN_USER` | `admin` | 重启 panel；密码另走密码管理流程 |
 | `PANEL_PORT` | 36080；1024–65535 | 重启 panel，并更新 Tunnel 本地目标及允许的入口；面板继续仅监听回环 |
 | `AGENT_PORT` | 36902；1024–65535 | helper 与 panel 配对端口；需维护宿主及 panel，不要仅改一端 |
+| `FILE_AGENT_PORT` | 默认跟随 `AGENT_PORT`；1024–65535 | 可选的独立文件助手，仅切换文件列表、上传和下载；桌面健康仍使用原助手。需先部署独立助手再重启 panel，失败不回退旧文件接口，两端口均禁止正向映射 |
 | `WORKSPACE_DIR` | `./workspaces`，相对项目根目录 | 任务工作目录和文件中转根目录；需维护宿主及相关服务，已有任务不自动迁移 |
 | `RUNTIME_DIR` | `$XDG_RUNTIME_DIR/codex-on-cloud`，无此变量时用 `data/runtime/codex-on-cloud` | 私有 socket、锁、Xauthority 所在目录；需维护宿主和全部关联服务，不能在线搬移 |
 | `TZ` | 安装器写入 `Asia/Shanghai` | 重启需要使用新时区的服务；已有 shell 自身环境保持 |
