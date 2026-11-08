@@ -959,3 +959,19 @@ home入口重载panel及随其关联的迁移files服务，公开UI版本为`1fa
 最终295项脚本语法、398项Node及24项Python通过。相关Chromium手机/电脑回归38项通过，涵盖助手下载/配对/恢复与门户配置、权限和取消；补审下载改动后另跑两种布局的下载流程2项通过，执行器与RFB为fixture。真实隔离workerd/SQLite验证登录、动态注册、授权码撤销及运行时重启后持久化通过。固定actionlint结构检查通过，本机旧ShellCheck不兼容，未把结构检查记为完整ShellCheck验收。
 
 Cloudflare故障注入全部使用模拟API，文件锁与构建进程监督为真实本机测试。未执行真实Cloudflare发布、生产密码重置、面板重载或桌面操作；既有部署保持。本机条件核对依赖协作文件锁，不承诺抵御任意外部编辑器恰好在同步系统调用之间修改文件，发布窗口仍应避免外部编辑。
+
+## 推送重载后的全仓库复核（2026-11-09）
+
+实现提交`6830fa29e211`及其前置整改提交已推送到origin/master。重启panel及按既有PartOf关系关联的迁移files服务，未重新安装unit或变更宿主生命周期；四平台真实助手构建完成并通过新版本入口提供`0.7.2+6830fa29e211`。实际home HTTPS与回环的healthz、readyz及UI版本`8414a5452c10d66d6fecb312`正确，匿名诊断和下载返回401。新建验证登录只读取诊断、文件列表和映射下载清单，四份真实公网下载的长度与SHA256均匹配，随后退出；没有接管或向终端发送输入。
+
+panel PID从12328变为12030，迁移files从12327变为12025；desktop 17107、actions 6622、manager 17005、Tunnel 20613及启动时间保持。主终端`%0:17375`、aux1 `%2:14961`、keeper `%201:15228`均保持；观看专用窗格不计入任务保持断言。`.env`、管理员密码、内部密钥、Tunnel令牌和屏幕锁配置摘要不变。现有映射仍遵循面板重启后需重新配对的规格。
+
+295项语法、398项Node和24项Python通过；Go race命中同源缓存，vet和mod verify通过，生产npm依赖审计为0项已知漏洞。真实隔离lifecycle、supervision、terminal-only、forward、serial、workerd/SQLite均通过；另跑真实X11/PTY显示、私有RFB尺寸和noVNC指针/换路检查通过。覆盖真实TCP/TLS/WSS、UDP/DTLS/SCTP、8 MiB、半关闭、管理恢复和撤权；串口是Linux助手及模拟设备，不代表USB硬件或Windows/Mac真机运行。
+
+本地完整Chromium手机/电脑638项全部通过（18.3分钟、两个worker），覆盖鉴权/临时账号、连接探测与换路、文件与映射、历史复制、终端生命周期、输入保护及窄屏/短窗口布局。RFB/管理上游使用fixture，浏览器验收不能替代真实设备。兼容测试当前每配置79项，CI说明改为七种配置而不再保留过期的140项计数。
+
+实现提交`6830fa2`的[GitHub Actions](https://github.com/ptpt52/codex-on-cloud/actions/runs/42532668590)七个作业均成功，包含Chromium/Firefox/WebKit七种兼容配置、完整Chromium及真实native四平台助手发布。Chromium作业内兼容阶段约14分钟，再串行执行完整回归，整项接近35分钟上限；后续适合拆分作业以留出余量。本次只记录审核结论，未调整工作流编排；此运行结果对应实现提交，后续审核报告为单独的文档提交。
+
+真实systemd恢复检查首次未找到临时unit：此任务继承虚拟桌面的XDG_CONFIG_HOME，与systemd用户管理器的搜索位置不同。只对测试子进程采用管理器实际HOME/XDG配置后通过，验证SIGKILL恢复、原登录与草稿、已接受输入不重发、60秒三次启动上限和手动停止；只有唯一命名的测试unit被杀/停止，生产服务未参与。测试入口本身仍依赖正确OS配置环境，未将首轮失败当成产品服务失败。
+
+本轮新复现四项P2，详见[审核报告](code-review.md#2026-11-09重载后全仓库复核6830fa2)：失败的部署回退了另一项prepared发布、WSL最终读写竞态丢失人工配置、纯终端空PID锁阻塞恢复、WSL被SIGKILL后残留临时文件阻塞更新。Cloudflare仅模拟API；WSL使用临时Linux文件模拟配置及真实Node崩溃，不是Windows/DrvFS验收；纯终端拒绝路径使用独立运行目录，没有启动新任务。四项保持待修复状态，未在本轮以未经验证的修改覆盖上线版本。

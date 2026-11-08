@@ -9,7 +9,7 @@
 | portal | 固定 Wrangler/workerd，真实 SQLite Durable Object 注册、撤销与重启持久化 | 15 分钟 |
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
 | terminal | 只安装 tmux/Python 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
-| browsers | Chromium、Firefox、WebKit 三个独立环境的 140 项兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
+| browsers | Chromium、Firefox、WebKit 三个独立环境、七种配置的兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
 | native | 真实隔离 Xvfb、XFCE、xterm、tmux、剪贴板、noVNC、端口映射协议及四架构助手发布检查 | 25 分钟 |
 
 Actions 使用完整 commit SHA；Node 固定 24.22.2、Go 固定项目已有的 1.26.4，Playwright 和应用依赖继续由现有锁文件固定。检查运行在 Ubuntu 24.04，浏览器矩阵最多同时三个作业。失败浏览器产物保留七天，内容来自临时测试实例。
@@ -48,6 +48,8 @@ CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对�
 串口的 `test:serial` 和 Go Linux PTY 测试使用隔离进程及伪终端，不打开宿主机物理串口。Windows/Mac 交叉构建和 Linux 测试不代表对应系统的 USB 串口真机验收。
 
 backend还覆盖维护故障：旧任务部署变量、后续平台构建失败、提交确认丢失、空锁/半截锁、父进程SIGKILL及编译后代回收、文件租约前后发生配置修改。Cloudflare发布使用模拟API，不能当作真实账户发布验收；native的`test:forward:publication`另行执行四平台实际编译、Mac打包和版本固定下载哈希检查，全部产物留在临时目录。
+
+2026-11-09实现提交`6830fa2`的七个作业均成功。该轮Chromium兼容检查约14分钟，随后串行执行完整回归，接近当前35分钟期限；后续建议将完整回归拆成独立作业，兼容配置与断言保持，避免耗时增长导致超时。本轮仅更新记录，工作流编排未变。
 
 ## 原生 RFB 客户端的请求顺序
 
