@@ -1,8 +1,8 @@
 import http from 'node:http';
-import { unlink, lstat, mkdir } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
-import { portalRead, portalWrite } from './portal-files.mjs';
+import { portalRead, portalWrite, portalRemove } from './portal-files.mjs';
 import { cloudflareDomainPlan, assertManagedIngress, renamedDNSRecord } from '../native/cloudflare-domain.mjs';
 import { acquireFileLock } from '../native/file-lock.mjs';
 
@@ -38,14 +38,16 @@ export async function privateIngressReady(socketPath, hostname) {
 // One private <=256 KiB recovery record per deployment; no API token is stored.
 // A failed/ambiguous write is reconciled by reading state, never blindly replayed.
 export function createCloudflarePublication({ root, socketPath, api: request, ready = privateIngressReady }) {
-  let lease;
-  const api = async (...args) => { lease?.check(); const result = await request(...args); lease?.check(); return result; };
+  let lease, pendingText;
+  const valid = () => { if (!lease) throw Error('公网发布锁已释放'); lease.check(); };
+  const api = async (...args) => { valid(); const result = await request(...args); valid(); return result; };
   const statePath = join(root, 'data/cloudflare-deployment.json'), pendingPath = join(root, 'data/cloudflare-publication.json');
   const local = { env: [join(root, '.env'), 65536], credentials: [join(root, 'secrets/credentials.txt'), 4096], token: [join(root, 'secrets/tunnel_token'), 4096] };
   const optional = async (path, limit) => { try { return await portalRead(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
-  const write = (path, value) => portalWrite(path, JSON.stringify(value, null, 2) + '\n');
+  const encode = value => JSON.stringify(value, null, 2) + '\n';
+  const write = (path, value, expected) => portalWrite(path, encode(value), { expected, valid });
   async function pending() {
-    const text = await optional(pendingPath, LIMIT); if (text === null) return null;
+    const text = await optional(pendingPath, LIMIT); pendingText = text; if (text === null) return null;
     const value = parse(text, '公网发布恢复记录');
     if (value.version !== 1 || !['prepared', 'committing', 'committed', 'rollback-needed'].includes(value.phase) || typeof value.domain !== 'string' || !/^[a-z0-9.-]+$/.test(value.domain) || !value.plan?.tunnelId || !value.plan.accountId || !value.plan.zoneId || !value.files || !value.desiredConfig || !value.beforeConfig) throw Error('公网发布恢复记录损坏，请检查');
     return value;
@@ -56,13 +58,15 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     if (!Array.isArray(value) || value.length > 1) throw Error('公网域名出现多个记录，不会覆盖');
     return value;
   };
-  async function save(stage) { await write(pendingPath, stage); }
+  async function save(stage) { await write(pendingPath, stage, pendingText); pendingText = encode(stage); }
+  async function removePending() { await portalRemove(pendingPath, { expected: pendingText, valid }); pendingText = null; }
   async function prepareLocal(stage) {
     for (const [key, [path, limit]] of Object.entries(local)) {
       const value = stage.files[key], current = await optional(path, limit);
+      if (!value || ![value.before, value.after].every(text => text === null || typeof text === 'string' && Buffer.byteLength(text) <= limit) || value.after === null) throw Error('本机发布恢复记录无效');
       if (current === value.after) continue;
       if (current !== value.before) throw Error('准备期间本机配置已被修改，未覆盖');
-      await portalWrite(path, value.after);
+      await portalWrite(path, value.after, { expected: value.before, valid });
     }
   }
   async function verifyPreparedLocal(stage) {
@@ -80,8 +84,10 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       const current = await optional(path, limit);
       if (current === value.before) continue;
       if (current !== value.after) { conflict = true; continue; }
-      if (value.before === null) await unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
-      else await portalWrite(path, value.before);
+      try {
+        if (value.before === null) await portalRemove(path, { expected: value.after, valid });
+        else await portalWrite(path, value.before, { expected: value.after, valid });
+      } catch (error) { if (error.status !== 409) throw error; conflict = true; }
     }
     if (conflict) throw Error('本机配置已被其他操作修改，未覆盖；保留发布恢复记录');
   }
@@ -112,11 +118,11 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
         if (stage.beforeDNS ? !restored || restored.id !== stage.beforeDNS.id || !same(dnsBody(restored), dnsBody(stage.beforeDNS)) : restored) throw Error('DNS回退未确认');
       }
       if (stage.beforeState || stage.nextState) {
-        const currentState = parse(await optional(statePath, 65536), '本机部署记录');
+        const stateText = await optional(statePath, 65536), currentState = parse(stateText, '本机部署记录');
         if (!same(currentState, stage.beforeState) && !same(currentState, stage.nextState) && !same(currentState, stage.plan)) throw Error('本机部署归属已变化');
-        await write(statePath, stage.beforeState || stage.plan);
+        await write(statePath, stage.beforeState || stage.plan, stateText);
       }
-      await restoreLocal(stage); await unlink(pendingPath);
+      await restoreLocal(stage); await removePending();
       return { rolledBack: true };
     } catch {
       stage.phase = 'rollback-needed'; await save(stage);
@@ -141,7 +147,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       const created = await api(base, 'POST', { name, config_src: 'cloudflare' });
       plan = { hostname: domain, accountId: selected.account.id, zoneId: selected.id, tunnelId: created.id };
       // Keep ownership if preparation is interrupted; reruns reuse this tunnel.
-      await write(statePath, plan);
+      await write(statePath, plan, text);
     }
     const stage = { version: 1, phase: 'prepared', domain, zone, plan, beforeState, files: {} };
     const { tunnel } = endpoints(stage), configuration = await api(tunnel + '/configurations'); assertManagedIngress(plan, configuration);
@@ -172,13 +178,13 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       const old = renamedDNSRecord(stage.plan, await api(dns + '?name=' + encodeURIComponent(stage.plan.previousHostname)));
       if (old) await api(`${dns}/${old.id}`, 'DELETE');
     }
-    await unlink(pendingPath);
+    await removePending();
   }
   async function commit({ domain, zone }) {
     const stage = await pending(); if (!stage || stage.domain !== domain || stage.zone !== zone) throw Error('没有匹配的公网准备记录');
     if (stage.phase === 'committed') { await cleanup(stage); return { published: true }; }
     if (stage.phase !== 'prepared') throw Error('发布曾被中断，请先 --rollback 后重新准备');
-    await ready(socketPath, domain);
+    await ready(socketPath, domain); valid();
     await verifyPreparedLocal(stage);
     const { tunnel, dns } = endpoints(stage);
     const current = (await api(tunnel + '/configurations')).config ?? null;
@@ -195,7 +201,9 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       const verified = (await records(stage))[0]; if (!verified || verified.id !== record.id || !ownedDNS(verified, stage) || !verified.proxied) throw Error('DNS提交未确认');
       const next = { ...stage.plan, dnsRecordId: verified.id }; delete next.previousHostname; delete next.previousDnsRecordId;
       stage.nextState = next; await save(stage);
-      await write(statePath, next); stage.phase = 'committed'; await save(stage);
+      const stateText = await optional(statePath, 65536), currentState = parse(stateText, '本机部署记录');
+      if (!same(currentState, stage.beforeState) && !same(currentState, stage.plan)) throw Error('本机部署归属已变化');
+      await write(statePath, next, stateText); stage.phase = 'committed'; await save(stage);
     } catch (error) { await rollback(); throw error; }
     // Failure removing an obsolete alias never rolls back a working new entry.
     await cleanup(stage); return { published: true };

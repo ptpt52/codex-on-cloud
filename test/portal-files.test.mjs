@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, symlink, lstat, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { portalWrite } from '../scripts/portal-files.mjs';
+import { portalWrite, portalRemove } from '../scripts/portal-files.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 test('portal configuration recovers dead writers and legacy partial files without deleting unrelated data', async t => {
  const dir = await mkdtemp(join(tmpdir(), 'portal-writer-')); t.after(() => rm(dir, { recursive: true, force: true })); const path = join(dir, 'portal.json');
  await portalWrite(path, 'original'); await writeFile(path + '.portal-next', 'legacy partial');
@@ -64,4 +64,33 @@ test('portal writers reject active locks and special temporaries and recheck per
  await symlink(path, path + '.portal-next-v2'); await assert.rejects(portalWrite(path, 'blocked'), /普通文件/); await rm(path + '.portal-next-v2');
  let checks = 0; await assert.rejects(portalWrite(path, 'revoked', { valid() { if (++checks === 3) throw Error('permission revoked'); } }), /permission revoked/);
  assert.equal(await readFile(path, 'utf8'), 'original'); await assert.rejects(lstat(path + '.portal-next-v2'), { code: 'ENOENT' }); assert.equal((await lstat(path + '.portal-lock')).size, 0);
+});
+
+test('conditional configuration writes compare after lease acquisition and immediately before commit', async t => {
+ const dir=await mkdtemp(join(tmpdir(),'portal-cas-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'config');
+ for(const phase of [2,3]){
+  await writeFile(path,'before',{mode:0o600});let checks=0;
+  await assert.rejects(portalWrite(path,'after',{expected:'before',valid(){if(++checks===phase)writeFileSync(path,'operator edit');}}),{status:409});
+  assert.equal(checks,phase);assert.equal(await readFile(path,'utf8'),'operator edit');
+  await assert.rejects(lstat(path+'.portal-next-v2'),{code:'ENOENT'});
+ }
+ await portalWrite(path,'after',{expected:'operator edit'});assert.equal(await readFile(path,'utf8'),'after');
+ await assert.rejects(portalWrite(path,'stale',{expected:'before'}),{status:409});
+ await rm(path);await assert.rejects(portalWrite(path,'stale',{expected:'before'}),{status:409});
+ await portalWrite(path,'created',{expected:null});await assert.rejects(portalWrite(path,'replaced',{expected:null}),{status:409});
+ assert.equal(await readFile(path,'utf8'),'created');
+});
+
+test('conditional rollback deletion preserves intervening edits and requires an explicit expectation', async t => {
+ const dir=await mkdtemp(join(tmpdir(),'portal-remove-cas-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'config');
+ await assert.rejects(portalRemove(path),/预期内容/);assert.equal(await portalRemove(path,{expected:null}),false);
+ for(const phase of [2,3]){
+  await writeFile(path,'prepared',{mode:0o600});let checks=0;
+  await assert.rejects(portalRemove(path,{expected:'prepared',valid(){if(++checks===phase)writeFileSync(path,'operator edit');}}),{status:409});
+  assert.equal(await readFile(path,'utf8'),'operator edit');
+ }
+ await assert.rejects(portalRemove(path,{expected:null}),{status:409});
+ await portalRemove(path,{expected:'operator edit'});await assert.rejects(lstat(path),{code:'ENOENT'});
+ const other=join(dir,'other');await writeFile(other,'prepared');await symlink(other,path);
+ await assert.rejects(portalRemove(path,{expected:'prepared'}));assert.equal(await readFile(other,'utf8'),'prepared');
 });

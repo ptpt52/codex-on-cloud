@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCloudflarePublication } from '../scripts/cloudflare-publication.mjs';
@@ -8,7 +8,7 @@ import { privateIngressReady } from '../scripts/cloudflare-publication.mjs';
 import http from 'node:http';
 import { once } from 'node:events';
 import { chmod } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readlinkSync } from 'node:fs';
 
 async function fixture(t, { fresh = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'cloudflare-publication-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -119,4 +119,32 @@ test('a recovery record resumes incomplete local preparation and protects subseq
   await writeFile(join(h.root,'.env'),h.env);await h.make().prepare(h.options);assert.match(await readFile(join(h.root,'.env'),'utf8'),/home.example.test/);
   await writeFile(join(h.root,'.env'),'PUBLIC_ORIGIN=https://operator.example.test\n');await assert.rejects(p.rollback(),/回退未能确认/);
   assert.match(await readFile(join(h.root,'.env'),'utf8'),/operator.example.test/);
+});
+
+// Return the old snapshot, then edit the real target before the async writer
+// acquires its lease. The previous read/compare/await-write sequence lost it.
+async function editAfterRead(t,path,occurrence,edited){
+ const handle=await open(path),prototype=Object.getPrototypeOf(handle),read=prototype.read;await handle.close();let seen=0,injected=false;
+ t.mock.method(prototype,'read',async function(...args){
+  const target=readlinkSync('/proc/self/fd/'+this.fd),result=await read.apply(this,args);
+  if(target===path&&++seen===occurrence){writeFileSync(path,edited,{mode:0o600});injected=true;}
+  return result;
+ });
+ return ()=>injected;
+}
+test('preparation preserves an operator edit between snapshot comparison and file lease acquisition',async t=>{
+ const h=await fixture(t),p=h.make(),path=join(h.root,'.env'),edited='PUBLIC_ORIGIN=https://operator.example.test\n';
+ const injected=await editAfterRead(t,path,2,edited);
+ await assert.rejects(p.prepare(h.options),/回退未能确认/);assert.equal(injected(),true);
+ assert.equal(await readFile(path,'utf8'),edited);assert.ok(h.calls.every(c=>c.method==='GET'));
+ assert.equal(JSON.parse(await readFile(join(h.root,'data/cloudflare-publication.json'),'utf8')).phase,'rollback-needed');
+});
+test('rollback rechecks both replacement and deletion after a stale local snapshot',async t=>{
+ for(const file of ['.env','secrets/tunnel_token'])await t.test(file,async t=>{
+  const h=await fixture(t),p=h.make();await p.prepare(h.options);const path=join(h.root,file),edited='operator-edit-to-preserve\n';
+  const injected=await editAfterRead(t,path,1,edited);
+  await assert.rejects(p.rollback(),/回退未能确认/);assert.equal(injected(),true);
+  assert.equal(await readFile(path,'utf8'),edited);assert.ok(h.calls.every(c=>c.method==='GET'));
+  assert.equal(JSON.parse(await readFile(join(h.root,'data/cloudflare-publication.json'),'utf8')).phase,'rollback-needed');
+ });
 });

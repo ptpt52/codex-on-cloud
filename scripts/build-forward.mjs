@@ -33,6 +33,7 @@ export async function buildForward({ root = projectRoot, origin: explicit, signa
     if (!/^[a-f0-9]{12}$/.test(revision)) throw Error('构建版本身份无效');
     const build = '0.7.2+' + revision;
     const previous = await prepareReleaseDirectory(directory);
+    const previousPointer = previous ? (await artifactRead(join(directory, 'current.json'), ARTIFACT_LIMITS.pointer)).toString('utf8') : null;
     await mkdir(release, { mode: 0o700 }); created = true;
     for (const [arch, name] of Object.entries(FORWARD_FILES)) {
       const [platform, cpu] = arch.split('-');
@@ -55,9 +56,9 @@ export async function buildForward({ root = projectRoot, origin: explicit, signa
       files.push({ arch, name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), build });
       valid(); await rename(artifact, join(release, name));
     }
-    await publish(join(release, 'manifest.json'), JSON.stringify({ version: 2, generation, files }) + '\n', { valid });
+    await publish(join(release, 'manifest.json'), JSON.stringify({ version: 2, generation, files }) + '\n', { valid, expected: null });
     if (await currentGeneration(directory) !== previous) throw Error('助手发布入口已被其他操作修改，未覆盖');
-    await publish(join(directory, 'current.json'), JSON.stringify({ version: 1, generation }) + '\n', { valid });
+    await publish(join(directory, 'current.json'), JSON.stringify({ version: 1, generation }) + '\n', { valid, expected: previousPointer });
     published = true;
     for (const file of files) console.log(file.name + ' · ' + file.size + ' bytes · SHA256 ' + file.sha256);
     return { generation, files };
