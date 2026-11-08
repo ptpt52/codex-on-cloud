@@ -156,3 +156,5 @@ PORTAL_WORKER_TOOLS=/tmp/codex-portal-tools npm run test:portal:worker
 ```
 
 需要 workerd 支持的系统。CI 使用 Ubuntu 24.04；旧系统可在隔离的兼容运行环境执行。本地 workerd 验证不代表已完成 Cloudflare 账户、自定义域名、实际外网或真实手机验收。
+
+门户配置写入每个固定目标最多使用一份256 KiB的`.portal-next-v2`暂存文件及一份256字节`.portal-lock`（PID与启动身份）。当前进程仍存活的写入锁会拒绝并发，已结束进程留下的锁可恢复；符号链接、特殊文件和过大残留均拒绝。旧`.portal-next`保持原样且不再阻塞新版写入，不自动清理其他配置。提交前复查调用方权限，原子改名后同步目录；不记录授权码或节点密钥日志。
