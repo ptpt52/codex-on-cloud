@@ -776,7 +776,7 @@ function syncModeStandby() {
   element.id = 'standby-frame'; element.inert = true; element.setAttribute('aria-hidden', 'true'); element.tabIndex = -1;
   element.referrerPolicy = 'same-origin'; element.allow = $('desktop-frame').allow;
   element.title = mode === 'terminal' ? '待命网页终端' : '待命开发桌面';
-  standbyFrame = { element, epoch: ++frameSerial, mode, key, state: 'connecting', transport: '', dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false };
+  standbyFrame = { element, epoch: ++frameSerial, mode, key, state: 'connecting', transport: '', paused: false, inputUnknown: false, dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false };
   element.src = frameUrl(mode, standbyFrame.epoch, target);
   $('desktop-stage').insertBefore(element, $('desktop-overlay'));
 }
@@ -786,6 +786,10 @@ function receiveStandby(value) {
     if (value.state === 'ready') { sendStandbyPreferences(); return; }
     if (value.state === 'connected') { entry.state = 'connected'; entry.transport = value.transport === 'direct' ? 'direct' : entry.mode === 'terminal' ? 'terminal' : 'relay'; sendStandbyPreferences(); }
     else if (['disconnected', 'connecting'].includes(value.state)) entry.state = value.state === 'disconnected' ? 'reconnecting' : 'connecting';
+  } else if (value.type === 'codex-stream-state' && typeof value.paused === 'boolean') entry.paused = value.paused;
+  else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
+    if (!entry.inputUnknown) toast('待命界面的部分输入结果未知，请先核对原画面；不会自动重发。', true);
+    entry.inputUnknown = true;
   } else if (value.type === 'codex-terminal-size' && Number.isInteger(value.cols) && value.cols >= 2 && value.cols <= 500 && Number.isInteger(value.rows) && value.rows >= 1 && value.rows <= 200) {
     entry.geometry = { cols: value.cols, rows: value.rows, fontSize: displayPreferences.terminalFontSize };
   } else if (value.type === 'codex-desktop-view' && value.revision === displayRevision) {
@@ -802,7 +806,7 @@ function swapStandby(mode) {
     mode === 'terminal' && next.key !== `${selectedTerminal}:${selectedTerminalToken}`) return false;
   historyToolsPortal.reset();
   const previous = { element: $('desktop-frame'), epoch: frameEpoch, mode: displayPreferences.mode, key: frameTerminalKey,
-    state: frameState, transport: frameTransport, dimensions: frameDimensions, geometry: terminalGeometry,
+    state: frameState, transport: frameTransport, paused: transportSwitching, inputUnknown: false, dimensions: frameDimensions, geometry: terminalGeometry,
     scale: displayScale, scaleRevision, reviewing: terminalReviewing };
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = '';
   clearTimeout(switchTimer); transportSwitching = false; resetDirectControl(); resetPanelRequests();
@@ -814,6 +818,8 @@ function swapStandby(mode) {
   frameEpoch = next.epoch; frameState = next.state; frameTransport = next.transport; frameTerminalKey = next.key;
   frameDimensions = next.dimensions; terminalGeometry = next.geometry; displayScale = next.scale; scaleRevision = next.scaleRevision;
   terminalReviewing = next.reviewing; frameComposing = false; nativeIdle = frameResizeReady = false;
+  transportSwitching = next.paused === true;
+  if (next.inputUnknown) inputMessage('unknown', '待命期间的部分输入结果未知，请先核对原画面；不会自动重发提示词、Enter 或审批。');
   frameNetwork = null; frameLatency.clear(); directIssue = '';
   return true;
 }
