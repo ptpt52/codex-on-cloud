@@ -59,10 +59,15 @@
       <aside id="workspace-tools" class="workspace-panel tools-panel" role="dialog" aria-labelledby="tools-title" tabindex="-1" hidden>
         <div class="panel-heading"><h2 id="tools-title">桌面工具</h2><button id="close-controls-button" class="quiet" type="button" aria-label="关闭工具面板">✕</button></div>
         <p id="browser-preferences-note" class="muted settings-help" role="status">显示偏好仅保存到当前浏览器，所有终端共用。</p>
-        <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
+        <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" data-tools-mode="desktop" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
       <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
-        <div id="terminal-view-controls" class="terminal-view-controls" hidden><label for="terminal-view-select">终端<select id="terminal-view-select" aria-label="网页终端目标"></select></label><button id="terminal-view-manage" class="view-button" type="button">管理</button><select id="terminal-width-mode" aria-label="终端宽度适配"><option value="viewport">界面适应宽度</option><option value="scale">内容放大适宽</option><option value="manual">手动字号</option></select><button id="terminal-font-down" class="view-button" type="button" aria-label="缩小终端字号">A−</button><output id="terminal-font-label">15</output><button id="terminal-font-up" class="view-button" type="button" aria-label="放大终端字号">A＋</button><label for="terminal-history-rows">网页历史<select id="terminal-history-rows" title="仅调整当前浏览器的滚动历史；调小会丢弃最早的行"><option value="2000">2000 行</option><option value="5000">5000 行</option><option value="10000" selected>10000 行</option><option value="20000">20000 行</option></select></label></div>
-        <div class="zoom-controls">
+        <div id="terminal-view-controls" class="terminal-view-controls" data-tools-mode="terminal" hidden>
+          <div class="terminal-target-controls"><label for="terminal-view-select">终端<select id="terminal-view-select" aria-label="网页终端目标"></select></label><button id="terminal-view-manage" class="view-button" type="button">管理</button></div>
+          <label for="terminal-width-mode">宽度适配<select id="terminal-width-mode" aria-label="终端宽度适配"><option value="viewport">界面适应宽度</option><option value="scale">内容放大适宽</option><option value="manual">手动字号</option></select></label>
+          <div class="terminal-font-controls" role="group" aria-label="终端字号"><span>字号</span><button id="terminal-font-down" class="view-button" type="button" aria-label="缩小终端字号">A−</button><output id="terminal-font-label">15</output><button id="terminal-font-up" class="view-button" type="button" aria-label="放大终端字号">A＋</button></div>
+          <label for="terminal-history-rows">网页历史<select id="terminal-history-rows" title="仅调整当前浏览器的滚动历史；调小会丢弃最早的行"><option value="2000">2000 行</option><option value="5000">5000 行</option><option value="10000" selected>10000 行</option><option value="20000">20000 行</option></select></label>
+        </div>
+        <div class="zoom-controls" data-tools-mode="desktop">
           <button id="width-button" class="view-button" aria-pressed="true">适应宽度</button>
           <button id="fit-button" class="view-button" aria-pressed="false">适应窗口</button>
           <button id="actual-size-button" class="view-button" aria-pressed="false">原始比例</button>
@@ -70,17 +75,17 @@
           <output id="zoom-label" class="zoom-label" aria-label="当前显示比例">—</output>
           <button id="zoom-in-button" class="view-button zoom-step" aria-label="放大画面" disabled>＋</button></span>
         </div>
-        <div id="pointer-options" class="pointer-options">
+        <div id="pointer-options" class="pointer-options" data-tools-mode="desktop">
           <label for="pointer-mode">触控方式<select id="pointer-mode"><option value="touch">触屏：点按位置</option><option value="trackpad">触控板：滑动指针</option></select></label>
           <label for="scroll-target">滚动目标<select id="scroll-target"><option value="viewport">整张桌面画面</option><option value="remote">远程程序内容</option></select></label>
           <p class="muted">触控板单指移动，点一下左键，双指点按右键、上下滑动滚动。需要移动窗口或选择文字时，开启画面下方的“拖动”。</p>
         </div>
         <div class="view-actions">
-          <button id="desktop-settings-button" class="view-button">服务器桌面设置</button>
+          <button id="desktop-settings-button" class="view-button" data-tools-mode="desktop">服务器桌面设置</button>
           <button id="awake-button" class="view-button" type="button" aria-pressed="false" aria-describedby="awake-description">保持亮屏</button>
           <span id="awake-description" class="sr-only">仅当前浏览器的亮屏偏好，保持当前设备屏幕亮起。切到后台或系统省电时可能暂停。</span>
-          <button id="pan-button" class="view-button" aria-pressed="false" aria-describedby="pan-description">拖动画面</button>
-          <span id="pan-description" class="sr-only">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
+          <button id="pan-button" class="view-button" data-tools-mode="desktop" aria-pressed="false" aria-describedby="pan-description">拖动画面</button>
+          <span id="pan-description" class="sr-only" data-tools-mode="desktop">开启后，拖动、点击和按键仅用于查看画面，不会发送到远程桌面。</span>
         </div>
       </div>
       <div id="access-actions" class="desktop-actions"><button id="portal-settings-button" class="view-button" type="button">门户接入</button><button id="access-settings-button" class="view-button" type="button">访问与屏幕锁</button><button id="screen-lock-button" class="view-button" type="button" hidden>立即锁定</button></div>

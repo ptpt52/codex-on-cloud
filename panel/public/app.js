@@ -200,11 +200,16 @@ function sendDisplayPreferences() {
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
+  const toolsMode = terminalMode() ? 'terminal' : 'desktop';
+  // Use hidden attributes so later panel layout rules cannot expose controls
+  // for the other mode. Switching visibility never resets stored preferences.
+  for (const control of $('workspace-tools').querySelectorAll('[data-tools-mode]')) control.hidden = control.dataset.toolsMode !== toolsMode;
+  $('display-controls').setAttribute('aria-label', terminalMode() ? '网页终端显示控制' : '桌面显示控制');
   $('browser-preferences-note').textContent = browserPreferences.persisted ? '显示偏好仅保存到当前浏览器，所有终端共用。' : '浏览器未能保存偏好；当前页面仍可使用，刷新后可能恢复默认。';
   for (const id of ['toggle-controls-button', 'toggle-input-button', 'fullscreen-button']) $(id).hidden = loggedIn && !owned;
   $('desktop-mode').hidden = $('terminal-mode').hidden = terminalOnly || loggedIn && !owned;
   $('desktop-mode').parentElement.hidden = terminalOnly || loggedIn && !owned;
-  $('desktop-settings-button').hidden = $('clipboard-button').hidden = terminalOnly;
+  $('clipboard-button').hidden = terminalOnly;
   $('create-terminal').textContent = terminalOnly ? '新建终端' : '新建辅助终端';
   $('diag-desktop').previousElementSibling.textContent = terminalOnly ? '终端服务' : '远程桌面';
   $('diag-frame').previousElementSibling.textContent = terminalMode() ? '终端界面' : '桌面画面';
@@ -213,7 +218,6 @@ function renderDisplayControls() {
   $('desktop-mode').setAttribute('aria-pressed', String(!terminalMode())); $('terminal-mode').setAttribute('aria-pressed', String(terminalMode()));
   $('view-title').textContent = terminalMode() ? '网页终端' : '开发桌面';
   $('fullscreen-button').setAttribute('aria-label', terminalMode() ? '全屏终端' : '全屏桌面');
-  $('terminal-view-controls').hidden = !terminalMode();
   $('terminal-font-label').textContent = String(displayPreferences.terminalFontSize);
   const fittedFont = terminalGeometry?.fontSize;
   $('terminal-font-label').title = displayPreferences.terminalWidthMode === 'scale' && fittedFont > displayPreferences.terminalFontSize
@@ -235,12 +239,10 @@ function renderDisplayControls() {
   $('pan-button').setAttribute('aria-pressed', String(displayPreferences.pan));
   $('pointer-mode').value = displayPreferences.pointerMode;
   $('scroll-target').value = displayPreferences.scrollTarget;
-  $('pointer-options').hidden = terminalMode();
   // Older saved preferences could have both inline sections expanded.
   // Input takes the shared panel slot until the user chooses another tool.
   workspacePanels.render(!inputCollapsed() ? 'input' : !displayPreferences.controlsCollapsed ? 'tools' : '');
   $('tools-title').textContent = terminalMode() ? '终端工具' : '桌面工具';
-  $('terminal-button').hidden = terminalMode();
   $('desktop-card').classList.toggle('controls-collapsed', displayPreferences.controlsCollapsed);
   const base = zoomBase(), ready = frameLoaded && frameState === 'connected';
   $('zoom-label').textContent = base ? `${Math.round(base * 100)}%` : '—';
