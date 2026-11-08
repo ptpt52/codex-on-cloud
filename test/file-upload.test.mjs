@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { fixture } from './fixture.mjs';
-import { uploadOptions, uploadHeaders, readUploadHeaders } from '../panel/public/file-upload.js';
+import { uploadOptions, uploadHeaders, readUploadHeaders, uploadResult } from '../panel/public/file-upload.js';
 import { settings } from '../native/config.mjs';
 
 test('independent file helper port defaults to the desktop helper and rejects invalid ports', () => {
@@ -33,6 +33,11 @@ test('upload conditions default to create and require an exact version for repla
   assert.deepEqual(readUploadHeaders({}), { mode: 'create' });
   for (const value of [null, {}, { mode: 'replace' }, { mode: 'replace', version: '*' }, { mode: 'create', version }, { mode: 'rename', extra: true }]) assert.throws(() => uploadOptions(value), { status: 400 });
   for (const headers of [{ 'if-match': '"' + version + '"' }, { 'x-codex-upload-mode': 'replace', 'if-match': '*' }, { 'x-codex-upload-mode': 'rename', 'if-none-match': '*' }, { 'if-none-match': 'anything' }, { 'x-codex-upload-mode': 'replace', 'if-match': '"' + version + '"', 'if-none-match': '*' }]) assert.throws(() => readUploadHeaders(headers), { status: 400 });
+});
+
+test('upload completion requires a valid actual filename and reports incomplete replies as unknown', () => {
+  assert.equal(uploadResult({ ok: true, name: '资料 (2).txt' }).name, '资料 (2).txt');
+  for (const value of [null, {}, { ok: true }, { name: 'missing-ok' }, { ok: true, name: '' }, { ok: true, name: '../outside' }, { ok: true, name: '.upload-private' }, { ok: true, name: '资'.repeat(81) }]) assert.throws(() => uploadResult(value), { status: 502, outcome: 'unknown' });
 });
 
 test('HTTP uploads preserve same-name content, enforce versions, rename and retain write authentication', async t => {

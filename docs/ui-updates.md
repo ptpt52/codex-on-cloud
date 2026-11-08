@@ -20,7 +20,7 @@ HTML 用带 CSP 哈希的 import map 锁定模块版本；CSS、普通 script �
 
 旧桌面/终端宿主将 Python 助手作为关键子进程，不能直接结束它来加载文件上传保护。可在同一用户下另建 `codex-cloud-files.service`，运行当前项目的 `desktop/agent.py`，仅监听新的回环端口（例如36904），并在面板的 systemd drop-in 中设置 `FILE_AGENT_PORT=36904`。文件接口使用新版助手，桌面健康继续使用原 `AGENT_PORT`，原宿主和 tmux 任务保留；独立文件服务失效时拒绝文件请求，不自动退回旧版覆盖逻辑。
 
-独立服务使用固定 Python 路径、项目绝对路径、原 `secrets/agent_secret` 文件和原 `TRANSFER_DIR`；桌面模式沿用原 DISPLAY/XAUTHORITY，纯终端模式沿用 DEPLOY_MODE/TMUX_SOCKET。仅传文件路径与非秘密设置，不把密钥内容写入 unit。每部署至多一个此类助手、一个 unit（上限8 KiB）和一个面板 drop-in（上限1 KiB）；日志沿用 journald 并限制速率，不新增文件日志。助手继续使用12个并发线程、单上传互斥与50 MiB限制。
+独立服务使用固定 Python 路径、项目绝对路径、原 `secrets/agent_secret` 文件和原 `TRANSFER_DIR`；桌面模式沿用原 DISPLAY/XAUTHORITY，纯终端模式沿用 DEPLOY_MODE/TMUX_SOCKET。仅传文件路径与非秘密设置，不把密钥内容写入 unit。每部署至多一个此类助手、一个 unit（上限8 KiB）和一个面板 drop-in（上限1 KiB）；日志沿用 journald，启动失败每60秒最多重试3次，不新增文件日志。助手继续使用12个并发线程、单上传互斥与50 MiB限制。
 
 依赖方向为面板 `Wants=` / `After=codex-cloud-files.service`，独立服务 `PartOf=codex-cloud-panel.service` / `Before=codex-cloud-panel.service`，自身不依赖桌面宿主。这样随面板停止、重启和开机运行，不需要单独启用。仅维护已有独立助手时可重启 files 服务；面板重启仍需重新配对端口映射。`native:install` 不创建这个可选的迁移服务，管理员需保留或按此说明维护 unit 和 drop-in。
 

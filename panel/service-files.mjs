@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js';
-import { uploadOptions, uploadHeaders } from './public/file-upload.js';
+import { uploadOptions, uploadHeaders, uploadResult } from './public/file-upload.js';
 const fault=(status,message)=>Object.assign(Error(message),{status});
 function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!=='..'&&!name.startsWith('.upload-')&&!/[/\\\x00-\x1f\x7f]/.test(name)&&Buffer.byteLength(name)<=240;}
 // This adapter can only address the existing authenticated file API on loopback.
@@ -30,7 +30,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
     const chunks=[];let total=0;res.on('data',bytes=>{total+=bytes.length;if(total>4096)res.destroy(fault(502,'文件响应过大'));else chunks.push(bytes);});
     res.once('error',err=>reject(entry,err));res.once('end',()=>{
      if(active!==entry)return;
-     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw fault(res.statusCode,result.error||'上传失败');if(!fileName(result.name))throw fault(502,'上传响应缺少有效文件名');entry.result={name:result.name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
+     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw fault(res.statusCode,result.error||'上传失败');entry.result={name:uploadResult(result).name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
     });
    });
    req.once('error',err=>reject(entry,err));

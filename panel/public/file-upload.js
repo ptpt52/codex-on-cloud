@@ -1,5 +1,11 @@
 export const UPLOAD_PROTOCOL = 1;
 export const UPLOAD_CONFIRM_MS = 120000;
+export function uploadResult(value) {
+  if (!value || value.ok !== true || typeof value.name !== 'string' || !value.name || value.name === '.' || value.name === '..' || value.name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(value.name) || new TextEncoder().encode(value.name).length > 240) {
+    throw Object.assign(Error('上传完成信息不完整，结果未知；请刷新文件列表确认'), { status: 502, outcome: 'unknown' });
+  }
+  return value;
+}
 const invalid = message => Object.assign(Error(message || '上传处理方式无效'), { status: 400, outcome: 'rejected' });
 export function uploadOptions(value = { mode: 'create' }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();

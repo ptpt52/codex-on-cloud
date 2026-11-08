@@ -88,6 +88,17 @@ test('expired confirmation cancels without sending file bytes', async ({ page })
   } finally { await app.close(); }
 });
 
+test('incomplete successful upload completion remains unknown and never retries', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    await open(page, app);
+    await page.evaluate(() => { const original = window.fetch; window.fetch = async (...args) => { const response = await original(...args); if (args[1]?.method === 'PUT' && String(args[0]).startsWith('/api/files/')) { await response.arrayBuffer(); return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }); } return response; }; });
+    await select(page); await expect(page.locator('#upload-status')).toContainText('完成信息不完整，结果未知'); await expect(page.locator('#upload-status')).not.toContainText('上传完成：');
+    await expect(page.locator('#upload-input')).toBeEnabled(); await page.waitForTimeout(500);
+    expect(writes(app)).toHaveLength(1); expect(app.files.get('资料.txt').toString()).toBe('new content');
+  } finally { await app.close(); }
+});
+
 test('a successful upload with a failed list refresh still reports completion', async ({ page }) => {
   const app = await fixture({ mode: 'terminal' });
   try {

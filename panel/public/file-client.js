@@ -1,5 +1,5 @@
 import { createFileWire, sendFileChunks, FILE_CHUNK, FILE_MAX } from './file-wire.js';
-import { uploadOptions } from './file-upload.js';
+import { uploadOptions, uploadResult } from './file-upload.js';
 export function createFileClient(channel, failed = () => {}) {
  let active,id=0;
  const unknown=()=>Object.assign(Error('文件直连已断开，结果未知；请检查文件状态后手动重试'),{outcome:'unknown'});
@@ -22,8 +22,7 @@ export function createFileClient(channel, failed = () => {}) {
    return;
   }
   if(value.type!=='done'||!entry.started||entry.direction==='download'&&(entry.received!==entry.size||value.size!==entry.size))throw unknown();
-  if(entry.direction==='upload'&&(typeof value.name!=='string'||!value.name||value.name==='.'||value.name==='..'||/[/\\\x00-\x1f\x7f]/.test(value.name)||new TextEncoder().encode(value.name).length>240))throw unknown();
-  settle(null,entry.direction==='download'?new Blob(entry.chunks,{type:'application/octet-stream'}):{ok:true,name:value.name});
+  settle(null,entry.direction==='download'?new Blob(entry.chunks,{type:'application/octet-stream'}):uploadResult({ok:true,name:value.name}));
  }});
  function transfer(direction,name,size,file,upload,signal){
   if(signal?.aborted)return Promise.reject(signal.reason||unknown());

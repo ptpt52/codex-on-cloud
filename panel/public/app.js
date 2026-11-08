@@ -12,7 +12,7 @@ import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
-import { createUploadPrompt, uploadHeaders, UPLOAD_PROTOCOL } from './file-upload.js';
+import { createUploadPrompt, uploadHeaders, uploadResult, UPLOAD_PROTOCOL } from './file-upload.js';
 import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 
@@ -1380,8 +1380,9 @@ $('upload-input').addEventListener('change', async () => {
     const result = client ? await client.upload(file, upload, controller.signal)
       : await api(`/api/files/${encodeURIComponent(file.name)}`, { method: 'PUT', raw: file, upload, signal: controller.signal });
     if (!current()) return;
-    $('upload-status').textContent = `上传完成：${result.name || file.name}`;
-    try { await loadFiles(controller.signal); } catch { if (current()) $('upload-status').textContent = `上传完成：${result.name || file.name}；列表刷新失败，请手动刷新，不要重复上传。`; }
+    const { name } = uploadResult(result);
+    $('upload-status').textContent = `上传完成：${name}`;
+    try { await loadFiles(controller.signal); } catch { if (current()) $('upload-status').textContent = `上传完成：${name}；列表刷新失败，请手动刷新，不要重复上传。`; }
   } catch (error) {
     if (current()) $('upload-status').textContent = controller.signal.aborted
       ? sending ? '上传已中断，结果未知；请检查文件状态后手动重试。' : '检查已取消，未上传文件。'
