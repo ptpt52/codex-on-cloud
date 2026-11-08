@@ -25,7 +25,11 @@ export function createForwardDownloads(directory) {
       catch (error) { if (error.status) throw error; throw Object.assign(Error(generation ? '助手版本已更新，请刷新列表重新下载' : '助手尚未构建或下载项不存在'), { status: generation ? 410 : 404 }); }
       const item = snapshot.files.find(item => item.arch === arch);
       if (!item) throw Object.assign(new Error('助手尚未构建或下载项不存在'), { status: 404 });
-      fd = await open(join(snapshot.location, FORWARD_FILES[arch]), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try { fd = await open(join(snapshot.location, FORWARD_FILES[arch]), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+      catch (error) {
+        if (snapshot.generation && error.code === 'ENOENT') throw Object.assign(Error('助手版本已更新，请刷新列表重新下载'), { status: 410 });
+        throw error;
+      }
       const stat = await fd.stat();
       if (!stat.isFile() || stat.size !== item.size || stat.size > ARTIFACT_LIMITS.file) throw new Error('Invalid helper binary');
       res.writeHead(200, { 'content-type': FORWARD_CLIENTS[arch].format === 'zip' ? 'application/zip' : 'application/octet-stream', 'content-length': stat.size, 'content-disposition': 'attachment; filename="' + item.name + '"', 'cache-control': 'no-store' });

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, mkdir, readdir, rm, open } from 'node:fs/promises';
+import { readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildForward } from '../scripts/build-forward.mjs';
@@ -8,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { Writable } from 'node:stream';
 import { createForwardDownloads, FORWARD_FILES } from '../panel/forward-downloads.mjs';
 import { portalWrite } from '../scripts/portal-files.mjs';
+import { removeRelease } from '../native/forward-artifacts.mjs';
 import { fixture as panelFixture } from './fixture.mjs';
 
 test('forward builds use persisted configuration instead of the task environment and keep explicit origins', async t => {
@@ -89,6 +91,17 @@ test('publication rechecks the exact pointer inside its write lease', async t =>
   }}),{status:409});
   assert.equal(await readFile(pointer,'utf8'),edited);assert.equal((await h.downloads.list()).length,4);
   assert.equal((await readdir(join(h.directory,'releases'))).length,1);
+});
+
+test('expiry after reading a pinned manifest reports refresh instead of an internal download failure', async t => {
+  const h=await fixture(t),first=await buildForward({root:h.root},{run:h.run});await buildForward({root:h.root},{run:h.run});
+  const manifest=join(h.directory,'releases',first.generation,'manifest.json'),probe=await open(manifest),prototype=Object.getPrototypeOf(probe),stat=prototype.stat;await probe.close();
+  let expired=false;t.mock.method(prototype,'stat',async function(...args){
+    const path=readlinkSync('/proc/self/fd/'+this.fd),info=await stat.apply(this,args);
+    if(path===manifest&&!expired){expired=true;await removeRelease(h.directory,first.generation);}return info;
+  });
+  await assert.rejects(download(h.downloads,first.generation),{status:410});assert.equal(expired,true);
+  assert.ok((await download(h.downloads)).length>0);
 });
 
 test('published downloads pin their generation through authenticated HTTP and reject arbitrary paths', async t => {
