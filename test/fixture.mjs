@@ -19,7 +19,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const inputCalls = [];
   const clipboardReads = [];
   const clipboardText = { clipboard: '', primary: '' };
-  const terminalInputs = [], terminalSizes = [], terminalHistoryReads = [], terminalChildren = new Set(); let terminalConnections = 0;
+  const terminalInputs = [], terminalSizes = [], terminalViews = [], terminalHistoryReads = [], terminalChildren = new Set(); let terminalConnections = 0;
   const terminalGeometry = { maxCols: terminalMaxCols };
   const files = new Map();
   const screenGeometry = { width: rfbSize?.width ?? 1600, height: rfbSize?.height ?? 1600 };
@@ -217,6 +217,10 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
               emit({ type: 'history', id: value.id, offset: value.offset, next: value.offset + data.length, data: data.toString('base64'), done: value.offset + data.length === bytes.length,
                 alternate: terminalHistoryAlternate, truncated: source.length > limit, styled: value.styled === true, ok: true }); return;
             }
+            if (value.action === 'view') {
+              terminalViews.push({ terminalId: target.terminalId, standby: value.standby }); if (terminalViews.length > 128) terminalViews.shift();
+              emit({ type: 'result', id: value.id, ok: true }); return;
+            }
             if (value.action === 'resize') { terminalSizes.push({ terminalId: target.terminalId, cols: value.cols, rows: value.rows }); emit({ type: 'geometry', maxCols: value.viewport ? 500 : terminalGeometry.maxCols }); }
             else { const data = Buffer.from(value.data, 'base64'), text = data.toString(); terminalInputs.push({ terminalId: target.terminalId, text }); await terminalHook?.(text); for (let offset = 0; offset < data.length; offset += 8192) emit({ type: 'output', data: data.subarray(offset, offset + 8192).toString('base64') }); }
             emit({ type: 'result', id: value.id, ok: true });
@@ -247,7 +251,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalHistoryReads, terminalGeometry,
+    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalViews, terminalHistoryReads, terminalGeometry,
     get terminalConnections() { return terminalConnections; },
     get terminalChildren() { return [...terminalChildren]; },
     disconnectTerminals() { for (const child of [...terminalChildren]) child.kill(); },

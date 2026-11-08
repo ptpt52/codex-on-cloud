@@ -47,6 +47,7 @@ test('prepared modes reuse their iframe and connections, hidden terminal input a
     await login(page, app); await openTools(page); await page.locator('#mode-standby').check();
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     const desktopSource = await page.locator('#desktop-frame').getAttribute('src'), terminal = await prepared(page, 'terminal');
+    await expect.poll(() => app.terminalViews.at(-1)?.standby).toBe(true);
     await expect(page.locator('#standby-frame')).toHaveAttribute('inert', '');
     const sizes = app.terminalSizes.length, connections = { vnc: app.vncConnections, terminal: app.terminalConnections };
     await terminal.frame.evaluate(() => {
@@ -62,9 +63,11 @@ test('prepared modes reuse their iframe and connections, hidden terminal input a
     expect(app.terminalSizes.length).toBe(sizes); expect(app.terminalInputs).toEqual([]);
     for (let count = 0; count < 2; count++) {
       await switchMode(page, 'terminal'); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(terminal.source);
+      await expect.poll(() => app.terminalViews.at(-1)?.standby).toBe(false);
       await expect.poll(() => terminal.frame.evaluate(() => window.testTerminal.options.disableStdin)).toBe(false);
       await openInput(page); await page.locator('#mobile-input').fill('keep this draft'); await closePanels(page);
       await switchMode(page, 'desktop'); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(desktopSource);
+      await expect.poll(() => app.terminalViews.at(-1)?.standby).toBe(true);
     }
     expect(app.vncConnections).toBe(connections.vnc); expect(app.terminalConnections).toBe(connections.terminal);
     await switchMode(page, 'terminal'); await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('keep this draft');

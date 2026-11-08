@@ -16,7 +16,7 @@ let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
 let terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken'), rtcConfig;
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
-let blocked = true, busy = false, standby = false, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
+let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
@@ -85,6 +85,9 @@ async function readHistory(signal) {
 function size() {
   cancelAnimationFrame(layout);
   if (stopped) return;
+  if (ready && query.get('standby') === '1' && sentStandby !== standby && send({ type: 'view', standby })) {
+    sentStandby = standby; if (!standby) lastSize = '';
+  }
   layout = requestAnimationFrame(() => {
     if (stopped || !term || !fit || !host.clientWidth || !host.clientHeight) return;
     const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${devicePixelRatio}`;
@@ -166,7 +169,7 @@ function retire(current, delay = retryDelay) {
   if (!current || socket !== current) return;
   // Clear the logical connection before close(): a blackholed TCP connection
   // may never deliver a close event, and late events must not touch its successor.
-  socket = null; ready = false; health?.close(); health = undefined;
+  socket = null; ready = false; sentStandby = undefined; health?.close(); health = undefined;
   if (current.session) { streamClient?.close(); streamClient = undefined; streamPaused = false; }
   pendingOutputAck = 0;
   if (current.direct) { directFailed = true; routes.changed(); if (!directIssue) directFailure('connection'); }

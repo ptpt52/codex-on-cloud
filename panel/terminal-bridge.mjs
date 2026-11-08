@@ -112,6 +112,10 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
         if (value.offset === 0) historyAt = Date.now();
         historyBusy = true; command('history', { offset: value.offset, limit, styled: value.styled === true }, value.id, true); return;
       }
+      if (value.type === 'view') {
+        if (bytes.length > 96 || Object.keys(value).some(key => !['type', 'id', 'standby'].includes(key)) || typeof value.standby !== 'boolean') return close();
+        command('view', { standby: value.standby }); return;
+      }
       if (value.type === 'resize') {
         if (!Number.isInteger(value.cols) || !Number.isInteger(value.rows) || value.cols < 2 || value.cols > 500 || value.rows < 1 || value.rows > 200 || (value.geometry !== undefined && value.geometry !== true) || (value.viewport !== undefined && typeof value.viewport !== 'boolean')) return close();
         // Existing pages never receive an unsolicited record they cannot parse.

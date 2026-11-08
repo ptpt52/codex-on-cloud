@@ -68,11 +68,11 @@ def history_snapshot(socket, pane, styled=False, limit=HISTORY_BYTES):
             child.wait(timeout=0.5)
 
 
-def client_list(socket, session):
+def client_list(socket, session, heights=False):
     # tmux 2.6 sizes a shared window to its smallest attached client. Read the
     # other clients, so the browser can fit that width without detaching Xterm.
     child = subprocess.Popen(['tmux', '-S', socket, 'list-clients', '-t', '=' + session,
-                              '-F', '#{client_tty}\t#{client_width}\t#{client_pid}\t#{pane_id}:#{pane_pid}'],
+                              '-F', '#{client_tty}\t#{client_width}\t#{client_pid}\t#{pane_id}:#{pane_pid}' + ('\t#{client_height}' if heights else '')],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     data = bytearray()
     deadline = time.monotonic() + 1
@@ -92,10 +92,12 @@ def client_list(socket, session):
             raise ValueError('client sizes unavailable')
         clients = []
         for line in data.decode().splitlines():
-            client_tty, cols, pid, target = line.split('\t')
+            fields = line.split('\t')
+            rows = int(fields.pop()) if heights else None
+            client_tty, cols, pid, target = fields
             if not re.fullmatch(r'/dev/pts/\d{1,10}', client_tty) or not pid.isdecimal() or int(pid) <= 1:
                 raise ValueError('invalid client')
-            clients.append((client_tty, int(cols), int(pid), target))
+            clients.append((client_tty, int(cols), int(pid), target) + ((rows,) if heights else ()))
         return clients
     finally:
         child.stdout.close()
@@ -152,6 +154,16 @@ def restore_view(socket, slot):
         return
     with viewer_lock(socket, slot):
         restore_view_unlocked(socket, slot)
+
+
+def standby_size(socket, slot, tty, master):
+    # tmux 2.6 has no ignore-size client flag. A waiting PTY must be at least as
+    # large as the other clients, including the restored desktop Xterm.
+    peers = [client for client in client_list(socket, SESSIONS[slot], heights=True) if client[0] != tty]
+    if peers:
+        cols = max(2, min(4096, max(client[1] for client in peers)))
+        rows = max(1, min(4096, max(client[4] for client in peers)))
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
 
 
 def yield_desktop(socket, slot, own_tty):
@@ -225,7 +237,18 @@ def main():
         raise ValueError('invalid socket')
     master, slave = os.openpty()
     tty = os.ttyname(slave)
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+    dimensions = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', session,
+                                 '#{pane_width} #{pane_height} #{status}'], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, check=True, timeout=1).stdout
+    if len(dimensions) > 64:
+        raise ValueError('invalid initial geometry')
+    cols_text, rows_text, status_lines = dimensions.decode().split()
+    cols, rows = int(cols_text), int(rows_text)
+    rows += 1 if status_lines == 'on' else int(status_lines) if status_lines.isdecimal() else 0
+    if not (2 <= cols <= 4096 and 1 <= rows <= 4096):
+        raise ValueError('invalid initial geometry')
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+    standby_size(socket, slot, tty, slave)
     env = dict(os.environ, TERM='xterm-256color', COLORTERM='truecolor')
     def controlling_terminal():
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
@@ -245,6 +268,7 @@ def main():
     history_styled = False
     history_limit = HISTORY_BYTES
     viewport_layout = False
+    standby = False
 
     def emit(value):
         sys.stdout.write(json.dumps(value, separators=(',', ':')) + '\n')
@@ -269,6 +293,8 @@ def main():
                     return
                 if viewport_layout:
                     yield_desktop(socket, slot, tty)
+                elif standby:
+                    standby_size(socket, slot, tty, master)
                 limit = min([500] + [max(2, cols) for client_tty, cols, _, _ in client_list(socket, session) if client_tty != tty])
                 if not verify():
                     return
@@ -300,10 +326,24 @@ def main():
                     if not verify():
                         emit({'type': 'result', 'id': ident, 'ok': False, 'outcome': 'rejected'})
                         return
-                    if value['action'] == 'resize':
+                    if value['action'] == 'view':
+                        if type(value.get('standby')) is not bool:
+                            raise ValueError('invalid view state')
+                        standby = value['standby']
+                        if standby:
+                            viewport_layout = False
+                            restore_view(socket, slot)
+                            standby_size(socket, slot, tty, master)
+                        width_at = 0
+                        emit({'type': 'result', 'id': ident, 'ok': True})
+                    elif value['action'] == 'resize':
                         cols, rows = value['cols'], value['rows']
                         if not isinstance(cols, int) or not isinstance(rows, int) or not (2 <= cols <= 500 and 1 <= rows <= 200):
                             raise ValueError('invalid size')
+                        if standby:
+                            standby_size(socket, slot, tty, master)
+                            emit({'type': 'result', 'id': ident, 'ok': True})
+                            continue
                         viewport_layout = value.get('viewport') is True
                         if viewport_layout:
                             yield_desktop(socket, slot, tty)

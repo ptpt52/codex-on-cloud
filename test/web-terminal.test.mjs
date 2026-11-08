@@ -97,6 +97,20 @@ test('read-only geometry forwards bounded client limits, rejects malformed value
   assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.terminalSizes, [{ terminalId: 'main', cols: 233, rows: 44 }]); assert.equal(app.managementStats.restarts, 0);
 });
 
+test('standby view actions pass only a boolean without input or viewport changes', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  let active = await connected(app); await until(() => active.records.some(value => value.type === 'ready'));
+  for (const [index, standby] of [true, false, true].entries()) active.ws.send(JSON.stringify({ type: 'view', id: index + 1, standby }));
+  await until(() => app.terminalViews.length === 3);
+  assert.deepEqual(app.terminalViews, [true, false, true].map(standby => ({ terminalId: 'main', standby })));
+  assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.terminalSizes, []);
+  for (const value of [{ standby: 'true' }, { standby: 1 }, {}, { standby: true, command: 'no' }]) {
+    const closed = once(active.ws, 'close'); active.ws.send(JSON.stringify({ type: 'view', id: 9, ...value })); await closed;
+    active = await connected(app); await until(() => active.records.some(record => record.type === 'ready'));
+  }
+  assert.equal(app.terminalViews.length, 3); active.ws.terminate();
+});
+
 test('malformed, oversized and invalid output acknowledgments close the terminal without executing input', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
   for (const value of ['not-json', JSON.stringify({ type: 'resize', id: 1, cols: 501, rows: 20 }), JSON.stringify({ type: 'resize', id: 1, cols: 233, rows: 40, viewport: 'true' }), JSON.stringify({ type: 'ack', bytes: 999999 }), JSON.stringify({ type: 'input', id: 1, data: 'x'.repeat(8193) })]) {
