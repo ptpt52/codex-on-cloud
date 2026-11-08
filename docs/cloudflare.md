@@ -16,12 +16,14 @@ API Token 与 Tunnel 运行 token 是不同的凭据。自动部署使用 API To
 
 ```bash
 npm run native:publish -- \
-  --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
+  --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token --prepare-only
 systemctl --user restart codex-cloud-panel.service
+npm run native:publish -- \
+  --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token --commit-only
 npm run native:tunnel
 ```
 
-此命令创建专用 Tunnel、配置私有 Unix socket 上游、添加代理 CNAME，并更新 `.env` 与登录信息中的入口地址。已有无关 DNS 记录或同名 Tunnel 会使脚本停止，不会覆盖它们。部署状态保存在 `data/cloudflare-deployment.json`，原 `.env` 备份在 `data/.env.before-cloudflare`，均被 Git 忽略。
+此命令创建专用 Tunnel、配置私有 Unix socket 上游、添加代理 CNAME，并更新 `.env` 与登录信息中的入口地址。已有无关 DNS 记录或同名 Tunnel 会使脚本停止，不会覆盖它们。部署归属保存在 `data/cloudflare-deployment.json`；发布期间的原配置保存在私有 `data/cloudflare-publication.json`，成功提交或确认回退后清理，均被 Git 忽略。旧版留下的 `.env.before-cloudflare` 不会自动删除。
 
 当前工作台使用独立账号和随机强密码保护 HTTP、桌面资源与 WebSocket。Cloudflare Access 可以作为额外的外层身份验证；它不是项目密码登录的替代。以下是手动创建 Tunnel 或添加 Access 的步骤。
 
@@ -154,3 +156,18 @@ npm run native:tunnel
 只允许在原账户和区域内修改；目标域名有无关 DNS 记录、Tunnel 有无关域名路由时拒绝覆盖。成功后仅清理本项目状态记录且仍匹配原 Tunnel 的旧 CNAME，不保留旧入口兼容。中途失败可用同一目标域名重复执行以完成操作，不能在待完成状态再改第三个域名。
 
 修改后需要通过新域名登录，助手使用新地址重新配对。面板重启会结束内存中的映射，桌面和 Codex 任务继续。完成域名设置后，可在“工具 → 门户接入”注册到[统一门户](portal.md)。
+
+## 发布阶段与失败恢复
+
+`npm run deploy -- --domain ...` 先准备本机域名和Tunnel运行令牌，启动/更新服务并验证 `/readyz` 后，才提交远端路由和DNS。提交前再次通过0600 Unix socket验证目标Host、任务宿主与文件服务；服务启动或就绪失败不切公网入口。独立 `native:publish` 默认准备并尝试提交，首次更换本机域名时建议使用上面的显式两阶段命令。
+
+本机只保留一份 `data/cloudflare-publication.json` 恢复记录（0600、最多256 KiB），含前后本机配置、运行令牌、原Tunnel配置和DNS记录，不保存API token，不得提交Git或公开。API响应最多256 KiB、单次25秒；同一部署的发布阶段由独立系统文件锁串行化，无等待队列。进程中断后，prepared记录可以继续准备/提交，committing或rollback-needed记录需先回退；committed记录只继续清理旧别名，不回退有效入口。
+
+写入成功但确认丢失时先读取远端核对；失败会恢复本次已修改的路由、DNS及本机配置。检测到他人修改或无法确认回退时保留恢复记录并停止，不盲目覆盖、不报告恢复成功。修复连接后可运行：
+
+```sh
+npm run native:publish -- \
+  --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token --rollback
+```
+
+新建的专用Tunnel归属记录保留供重试，避免重复创建；回退不会删除原有Tunnel或停止桌面任务。恢复本机域名后，已加载新域名的panel需要重载，自动部署会处理该步骤；映射按原规则需重新配对。Cloudflare配置API为整份配置更新，提交和回退前均复核最新快照；API没有提供本项目可用的原子比较交换，因此外部管理操作应避开发布窗口。

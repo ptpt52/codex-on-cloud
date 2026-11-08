@@ -907,3 +907,9 @@ home发布UI版本 `f141368fe371d7b648ea1ff1`。旧宿主的关键助手保留�
 3. **P3，诊断可见性**：panel/service-diagnostics.mjs仍只读panel、manager及actions/terminal，未包含独立files服务；/readyz可识别文件服务失效，但界面系统服务摘要缺少该项。后续补充固定字段诊断，继续保持有界读取。
 
 验证已完成：285项脚本语法、356项Node、24项Python、35项新增跨浏览器用例；真实隔离X11生命周期、完整纯终端安装、双向TCP/TLS/WSS/UDP/DTLS/SCTP及8MiB/半关闭/恢复/撤权、串口辅助进程、门户workerd/SQLite持久化均通过。Go race、vet、模块校验通过，npm生产依赖审计为0已知漏洞。本机ShellCheck过旧不支持--norc，actionlint关闭外部ShellCheck后的结构检查通过；没有改动CI的ShellCheck策略或升级项目依赖。Chromium手机/电脑完整626项浏览器回归全部通过（66个用例文件，两个worker）。另外按锁文件校验了werift 0.26.0官方tarball的SHA512，安装目录828份文件全部与发行包一致，没有依赖本机未提交的node_modules修改。
+
+## 公网入口分阶段发布整改
+
+自动部署拆为本机准备、服务启动/就绪、远端提交；准备或就绪失败不调用公开入口提交，并回退本次本机变更。单一有界恢复记录跟踪prepared/committing/committed/rollback-needed；路由和DNS确认丢失读取核对，无法确认回退保留记录，外部配置变化拒绝覆盖。真实Unix HTTP就绪检查验证Host和组件布尔值。系统文件锁辅助进程沿用Python标准库，最多8个租约/Node进程，不排队；固定锁inode最多256字节，父管道关闭释放。
+
+合成Cloudflare API用例覆盖先就绪后提交、准备回退、路由和DNS丢失确认、回退中断后恢复、已有Tunnel复用、并发修改保护和本机配置被用户修改。部署命令测试使用替身，未操作真实Cloudflare或重载生产服务。

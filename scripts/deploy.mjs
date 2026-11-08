@@ -149,29 +149,46 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   if (values['enable-linger']) await step('启用开机自启（无需用户登录）', 'sudo', ['loginctl', 'enable-linger', username]);
   if (values.domain) {
     await step('安装固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);
-    await step('配置 Cloudflare 公网入口', process.execPath, ['scripts/provision-cloudflare.mjs', '--domain', values.domain.toLowerCase(), '--zone', values.zone.toLowerCase(), '--api-token-file', resolve(values['api-token-file'])]);
   }
-  if (values['build-forward']) await step('构建端口映射助手', process.execPath, ['scripts/build-forward.mjs']);
-  await native('start');
-  for (const service of ['codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']) {
-    if (active[selectedServices.indexOf(service)].status === 0) await step('更新后台：' + service + '（原任务保留；面板重启后映射需重新配对）', 'systemctl', ['--user', 'restart', service]);
+  const publicationArgs = values.domain ? ['scripts/provision-cloudflare.mjs', '--domain', values.domain.toLowerCase(), '--zone', values.zone.toLowerCase(), '--api-token-file', resolve(values['api-token-file'])] : null;
+  let prepared = false, panelTouched = false;
+  try {
+    if (publicationArgs) { prepared = true; await step('准备 Cloudflare 本机配置（保留当前公网入口）', process.execPath, [...publicationArgs, '--prepare-only']); }
+    if (values['build-forward']) await step('构建端口映射助手', process.execPath, ['scripts/build-forward.mjs']);
+    await native('start');
+    for (const service of ['codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']) {
+      if (active[selectedServices.indexOf(service)].status === 0) {
+        if (service === 'codex-cloud-panel.service') panelTouched = true;
+        await step('更新后台：' + service + '（原任务保留；面板重启后映射需重新配对）', 'systemctl', ['--user', 'restart', service]);
+      }
+    }
+    const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
+    let tunnel = false;
+    try { tunnel = env.PUBLIC_ORIGIN?.startsWith('https://') && (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096)).trim().length > 0; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (tunnel) {
+      if (!values.domain) await step('检查固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);
+      await native('tunnel');
+    }
+    for (const service of [...selectedServices, ...(tunnel ? ['codex-cloud-tunnel.service'] : [])]) {
+      if ((await call('systemctl', ['--user', 'is-active', '--quiet', service], true)).status !== 0) throw new Error(service + ' 未运行，请执行 npm run native:status 检查');
+    }
+    await health();
+    if (publicationArgs) await step('服务已就绪：提交 Cloudflare 公网入口', process.execPath, [...publicationArgs, '--commit-only']);
+  } catch (error) {
+    if (prepared) {
+      try {
+        await step('发布失败：回退本次配置', process.execPath, [...publicationArgs, '--rollback']);
+        if (panelTouched) await step('恢复原入口配置的面板（保留任务）', 'systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
+      } catch { throw new Error(error.message + '；回退未能确认，请检查 data/cloudflare-publication.json 并执行 --rollback'); }
+    }
+    throw error;
   }
   const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
-  let tunnel = false;
-  try { tunnel = env.PUBLIC_ORIGIN?.startsWith('https://') && (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096)).trim().length > 0; }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (tunnel) {
-    if (!values.domain) await step('检查固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);
-    await native('tunnel');
-  }
-  for (const service of [...selectedServices, ...(tunnel ? ['codex-cloud-tunnel.service'] : [])]) {
-    if ((await call('systemctl', ['--user', 'is-active', '--quiet', service], true)).status !== 0) throw new Error(service + ' 未运行，请执行 npm run native:status 检查');
-  }
-  await health();
   log(`部署完成，面板和${mode === 'terminal' ? '终端后台' : '桌面'}已就绪。入口：` + (env.PUBLIC_ORIGIN || 'http://localhost:36080'));
   log('登录信息：' + join(root, 'secrets', 'credentials.txt') + '（密码不打印到日志）');
   if (wsl?.restartRequired) log('WSL 网络配置待生效：保存任务后重启 WSL，再刷新网页验证直连；wsl --shutdown 会结束所有 WSL 任务。');
-  if (!tunnel) log('本机访问使用 localhost；远程服务器可通过 SSH 本地端口转发访问，或按 README 配置 Cloudflare 公网入口。');
+  if (!env.PUBLIC_ORIGIN?.startsWith('https://')) log('本机访问使用 localhost；远程服务器可通过 SSH 本地端口转发访问，或按 README 配置 Cloudflare 公网入口。');
   if (!values['enable-linger']) log('如需开机且无需登录时运行，可加 --enable-linger，或执行 sudo loginctl enable-linger ' + username);
 }
 

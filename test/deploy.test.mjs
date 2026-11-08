@@ -13,13 +13,14 @@ import { serviceUnits } from '../native/service-units.mjs';
 async function harness(t, { active = [], installed = true, failure = '', bus = 'degraded\n', healthError } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'codex deploy 中文 '));
   t.after(() => rm(root,{recursive:true,force:true}));
-  const calls = [], logs = [], wslCalls = []; let healthy = false;
+  const calls = [], logs = [], wslCalls = [], events = []; let healthy = false;
   const config = 'PUBLIC_ORIGIN=http://localhost:36080\nPANEL_PORT=36080\n';
   const context = {root, platform:'linux',uid:1000,username:'test-user',nodeVersion:'24.0.0',log:text=>logs.push(text),
     wslNetwork:async options=>{wslCalls.push(options);return{};},
-    health:async()=>{if(healthError)throw new Error(healthError);healthy=true;},
+    health:async()=>{events.push('health');if(healthError)throw new Error(healthError);healthy=true;},
     run:async(command,args,flags)=>{
       calls.push({command,args:[...args],capture:flags.capture});assert.ok(calls.length<=40);
+      if(args[0]==='scripts/provision-cloudflare.mjs')events.push(args.at(-1));
       if(args.includes('is-system-running'))return{status:bus?'degraded'===bus.trim()?1:0:1,stdout:bus};
       if(args.includes('is-active'))return{status:active.includes(args.at(-1))||calls.some(c=>c.args.includes('start'))?0:3};
       if(command==='npm'&&args[0]==='ls')return{status:installed?0:1};
@@ -35,7 +36,7 @@ async function harness(t, { active = [], installed = true, failure = '', bus = '
       }
       return{status:0,stdout:''};
     }};
-  return {root,calls,logs,wslCalls,context,get healthy(){return healthy;}};
+  return {root,calls,logs,wslCalls,events,context,get healthy(){return healthy;}};
 }
 
 test('deploy options validate public configuration before work and do not accept unknown flags',()=>{
@@ -164,6 +165,18 @@ test('explicit public deployment passes token file as an argument, builds after 
   assert.deepEqual(actions.filter(c=>c.args.includes('restart')).map(c=>c.args),[['--user','restart','codex-cloud-panel.service']]);
   assert.ok(actions.some(c=>c.args[0]==='scripts/native.mjs'&&c.args[1]==='tunnel'));
   assert.equal(JSON.stringify([h.calls,h.logs]).includes(secret),false);assert.equal(h.healthy,true);
+  assert.deepEqual(h.events,['--prepare-only','health','--commit-only']);
+});
+
+test('public deployment failures keep the public commit uninvoked and request bounded rollback without restarting tasks',async t=>{
+  for(const failure of ['start','health'])await t.test(failure,async t=>{
+    const h=await harness(t,{active:['codex-cloud-desktop.service','codex-cloud-panel.service'],failure:failure==='start'?'start':'',healthError:failure==='health'?'not ready':undefined});
+    const token=join(h.root,'token');await writeFile(token,'synthetic-api-token');
+    await assert.rejects(deploy({domain:'desktop.example.com',zone:'example.com','api-token-file':token},h.context));
+    assert.ok(h.events.includes('--prepare-only'));assert.ok(h.events.includes('--rollback'));assert.ok(!h.events.includes('--commit-only'));
+    assert.ok(h.calls.every(call=>!['stop','restart'].some(action=>call.args.includes(action)&&call.args.some(arg=>/^codex-cloud-(desktop|terminal|actions)\.service$/.test(arg)))));
+    assert.ok(h.logs.every(line=>!line.includes('部署完成')));
+  });
 });
 
 test('oversized token files and failed health do not produce a success message or repeat service operations',async t=>{
