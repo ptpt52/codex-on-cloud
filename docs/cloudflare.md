@@ -40,7 +40,7 @@ ingress:
 
 不要照抄示例 UID；默认 socket 为 `$XDG_RUNTIME_DIR/codex-on-cloud/tunnel.sock`，没有该环境变量时使用项目 `data/runtime/codex-on-cloud/tunnel.sock`。面板启动时创建0700目录下的0600 socket，只允许相同部署用户访问；重复启动拒绝接管活动 socket，崩溃残留会安全回收。普通回环 TCP 接口继续提供本机访问、内部服务和直连通道，所有 HTTP/WebSocket 的 Host、Origin、登录与 CSRF 检查保持一致。
 
-Cloudflare 私有入口按有效的 `CF-Connecting-IP`（有 Pseudo IPv4 时优先真实 `CF-Connecting-IPv6`）分别限制登录和解锁尝试。普通 TCP 入口始终忽略这些头及 `X-Forwarded-For`，防止任意客户端换一个请求头绕过限制。缺失或无效边缘地址共用固定限流桶；并发验密仍全局最多2条，失败记录最多1024条。
+Cloudflare 私有入口按有效的 `CF-Connecting-IP`（仅当该地址为 Class E Pseudo IPv4 时使用真实 `CF-Connecting-IPv6`）分别限制登录和解锁尝试。普通 TCP 入口始终忽略这些头及 `X-Forwarded-For`，防止任意客户端换一个请求头绕过限制。缺失或无效边缘地址共用固定限流桶；并发验密仍全局最多2条，失败记录最多1024条。
 
 已有 Tunnel 的 `http://127.0.0.1:36080` 上游继续兼容，但所有公网设备仍共用回环来源限流桶。更新面板后，重新执行原 `native:publish` 命令，或在 Tunnel 配置中改为上述 `unix:` 上游，才会启用独立来源计数。无需改 DNS、重建 Tunnel 或重启任务宿主。保持面板先就绪再切换；不要把用户可控的代理接到可信私有接口。
 

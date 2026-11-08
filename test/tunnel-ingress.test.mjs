@@ -30,6 +30,7 @@ test('only the private Tunnel ingress separates edge client login limits; TCP sp
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   for (let n = 0; n < 10; n++) assert.equal((await request('/api/login', { username: 'admin', password: 'wrong' })).status, 401);
   assert.equal((await request('/api/login', { username: 'admin', password: app.config.password })).status, 429);
+  assert.equal((await request('/api/login', { username: 'admin', password: app.config.password }, { 'cf-connecting-ipv6': '2001:db8::97' })).status, 429);
   const other = await request('/api/login', { username: 'admin', password: app.config.password }, { 'cf-connecting-ip': '192.0.2.2' });
   assert.equal(other.status, 200);
   for (let n = 0; n < 10; n++) assert.equal((await app.request('/api/login', { method: 'POST', body: { username: 'admin', password: 'wrong' }, headers: { 'cf-connecting-ip': '198.51.100.' + (n + 1), 'x-forwarded-for': '198.51.100.' + (n + 1) } })).status, 401);
@@ -65,7 +66,8 @@ test('private HTTP and WebSocket ingress retain Host, Origin, authentication, CS
 test('trusted client keys canonicalize IPv6 and reject malformed or scoped edge headers with a bounded fallback', () => {
   const req={socket:{remoteAddress:'127.0.0.1'},headers:{'cf-connecting-ip':'2001:0db8:0:0:0:0:0:1'}};
   assert.equal(loginClient(req,true),'tunnel:2001:db8::1');assert.equal(loginClient(req,false),'socket:127.0.0.1');
-  req.headers['cf-connecting-ip']='192.0.2.1';req.headers['cf-connecting-ipv6']='2001:db8::5';assert.equal(loginClient(req,true),'tunnel:2001:db8::5');
+  req.headers['cf-connecting-ip']='192.0.2.1';req.headers['cf-connecting-ipv6']='2001:db8::5';assert.equal(loginClient(req,true),'tunnel:192.0.2.1');
+  req.headers['cf-connecting-ip']='240.16.0.1';assert.equal(loginClient(req,true),'tunnel:2001:db8::5');
   for(const value of [undefined, ['192.0.2.1'], '192.0.2.1, 192.0.2.2', 'fe80::1%eth0', 'x'.repeat(128)]) {req.headers['cf-connecting-ip']=value;assert.equal(loginClient(req,true),'tunnel:unknown');}
 });
 
