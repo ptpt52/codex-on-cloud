@@ -29,6 +29,20 @@ class ClientChannel extends EventTarget {
   reply(id) { this.dispatchEvent(new MessageEvent('message', { data: Uint8Array.from(packet(id)).buffer })); }
 }
 
+test('health confirmation uses a shorter bounded deadline without allowing a late old echo to satisfy it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const channel = new ClientChannel(), health = createHealthClient(channel);
+  const first = assert.rejects(health.ping(), error => error.code === 'heartbeat_timeout');
+  t.mock.timers.tick(2000); await first;
+  let code;
+  const confirmation = health.ping({ confirmation: true }).catch(error => { code = error.code; });
+  channel.reply(1); t.mock.timers.tick(1000); await Promise.resolve();
+  const confirmedOnTime = code === 'heartbeat_timeout';
+  t.mock.timers.tick(1000); await confirmation;
+  assert.equal(confirmedOnTime, true, 'Confirmation must expire at the shorter deadline');
+  const recovered = health.ping(); channel.reply(3); await recovered; health.close();
+});
+
 test('round trips expire, reject invalid samples and retain a real zero millisecond result', () => {
   let now = 100;
   const latency = createRoundTrip(() => now);

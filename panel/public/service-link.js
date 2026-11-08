@@ -21,10 +21,10 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
     if (!running || epoch !== version || current !== peer || checking) return;
     if (!document.hidden) {
       checking = true;
-      try { await peer.health.ping(); const route = await peer.stats(); if (current === peer && epoch === version) { healthMisses = 0; state.issue = ''; state.route = route; publish(); } }
+      try { await peer.health.ping({ confirmation: healthMisses > 0 }); const route = await peer.stats(); if (current === peer && epoch === version) { healthMisses = 0; state.issue = ''; state.route = route; publish(); } }
       catch (error) {
         if (current === peer) {
-          if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 1000); }
+          if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 0); }
           else { retire('connection'); schedule(1000); }
         }
         return;

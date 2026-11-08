@@ -1,5 +1,6 @@
 import { test,expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
+test.use({ serviceWorkers: 'block' });
 async function setup(app,page){
  await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});
  await page.goto(app.config.origin);await page.locator('#username').fill('visitor');await page.locator('#password').fill('temporary-test-password');await page.locator('#login-button').click();await expect(page.locator('#user-label')).toContainText('临时访问');
@@ -23,4 +24,35 @@ test('failed service probes preserve HTTPS and saving new hints retries without 
   await page.locator('#connection-button').click();await page.locator('.direct-hints summary').click();await page.locator('#direct-server-ip').fill('10.123.254.253');await page.locator('#save-direct-hints').click();
   await expect(page.locator('#diag-transport')).toContainText('WebRTC',{timeout:15000});expect(offers.at(-1).hints.server).toBe('10.123.254.253');expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
  }finally{await app.close();}
+});
+
+test('temporary service confirms a missing heartbeat promptly and falls back without replaying an operation', async ({ page }) => {
+ const app = await fixture({ webrtc: true }); const offers = [], claims = [];
+ try {
+  await page.addInitScript(() => {
+   window.serviceHealthPings = [];
+   const create = RTCPeerConnection.prototype.createDataChannel;
+   RTCPeerConnection.prototype.createDataChannel = function(label, options) {
+    const channel = create.call(this, label, options);
+    if (label === 'codex-health') {
+     const send = channel.send.bind(channel);
+     channel.send = bytes => { window.serviceHealthPings.push(performance.now()); send(bytes); };
+     channel.addEventListener('message', event => {
+      if (event.data instanceof ArrayBuffer && new DataView(event.data).getUint32(0) >= 2) event.stopImmediatePropagation();
+     });
+    }
+    return channel;
+   };
+  });
+  page.on('request', request => {
+   if (request.url().endsWith('/api/service/rtc')) offers.push(request.url());
+   if (/\/api\/(desktop\/claim|desktop\/rtc|terminal\/rtc)$/.test(request.url())) claims.push(request.url());
+  });
+  await setup(app, page); await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+  await expect.poll(() => page.evaluate(() => window.serviceHealthPings.length), { timeout: 10000 }).toBe(3);
+  const [,, confirmationAt] = await page.evaluate(() => window.serviceHealthPings);
+  await expect(page.locator('#diag-transport')).toContainText('HTTPS', { timeout: 1500 });
+  expect(await page.evaluate(() => performance.now()) - confirmationAt).toBeLessThan(1800);
+  expect(offers).toHaveLength(1); expect(claims).toEqual([]); expect(app.vncConnections).toBe(0); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+ } finally { await app.close(); }
 });

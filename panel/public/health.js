@@ -70,10 +70,10 @@ export function createHealthClient(channel) {
     close,
     get rttMs() { return latency.value; },
     cancel() { reject('直连心跳已取消'); },
-    ping() {
+    ping({ confirmation = false } = {}) {
       if (ended || pending || channel.readyState === 'closed' || channel.readyState === 'closing' || sequence >= 2147483647) return Promise.reject(new Error('直连心跳不可用'));
       return new Promise((resolve, rejectProbe) => {
-        pending = { id: ++sequence, resolve, reject: rejectProbe, timer: setTimeout(() => reject('直连心跳超时', 'heartbeat_timeout'), policy.timeoutMs) };
+        pending = { id: ++sequence, resolve, reject: rejectProbe, timer: setTimeout(() => reject('直连心跳超时', 'heartbeat_timeout'), confirmation ? policy.confirmationMs : policy.timeoutMs) };
         send();
       });
     },
