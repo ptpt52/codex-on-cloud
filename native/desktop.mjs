@@ -41,7 +41,11 @@ function start(command, args, env, critical = true, socket) {
   if (child.stdout) child.stdout.on('data', output);
   child.stderr.on('data', output);
   children.add(child);
-  child.once('error', error => { console.error(`无法启动 ${command}: ${error.message}`); void stop(1); });
+  child.once('error', error => {
+    console.error(`无法启动 ${command}: ${error.message}`);
+    if (critical) void stop(1);
+    else children.delete(child);
+  });
   child.once('exit', (code, signal) => {
     // Closed viewers and replaced terminal windows must not leave old PIDs in
     // the supervisor's child set; a later stop must never signal a reused PID.

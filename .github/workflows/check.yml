@@ -138,6 +138,7 @@ jobs:
       - name: Select the pinned Playwright browser
         run: node --input-type=module -e 'import {chromium} from "@playwright/test"; console.log("CHROME_PATH=" + chromium.executablePath())' >> "$GITHUB_ENV"
       - run: npm run test:lifecycle
+      - run: npm run test:supervision
       - run: npm run test:display
       - run: npm run test:viewport
       - name: Delay the initial framebuffer before resizing
