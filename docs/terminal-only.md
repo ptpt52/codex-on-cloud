@@ -32,16 +32,16 @@ WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `host
 | 桌面字体与 D-Bus 图形会话 | fontconfig、中文字体、独立图形 D-Bus 会话 | 不安装、不启动 |
 | 网页桌面库 | noVNC | 跳过安装 |
 | 开发测试依赖 | 默认 npm ci 安装 | 跳过安装 |
-| 常驻项目服务 | desktop、actions、manager、panel | terminal、manager、panel |
+| 常驻项目服务 | desktop、actions、files、manager、panel | terminal、files、manager、panel |
 | 公网入口 | 可选 Tunnel | 相同 |
 
-轻量模式按锁文件执行 `npm ci --omit=dev --omit=optional`；noVNC 固定版本改为可选依赖，完整桌面安装仍包含它。网页终端所需的 xterm.js、WebSocket、WebRTC 和认证模块保留。系统包安装列表仅为 `tmux python3`，Node 和系统基础组件需预先具备，Codex 可选。未安装 Codex、不可执行或版本查询超时时，文件助手仍正常启动，版本信息为空；桌面模式仍要求 Codex 可用。主要节省来自整套图形系统、字体与常驻图形进程；没有给出未经量测的内存或安装体积百分比。
+轻量模式按锁文件执行 `npm ci --omit=dev --omit=optional`；noVNC 固定版本改为可选依赖，完整桌面安装仍包含它。网页终端所需的 xterm.js、WebSocket、WebRTC 和认证模块保留。系统包安装列表仅为 `tmux python3`，Node 和系统基础组件需预先具备，Codex 可选。独立文件助手不调用 Codex；manager 查询版本失败时仅显示空版本，纯终端任务继续可用；桌面安装检查仍要求 Codex 可用。主要节省来自整套图形系统、字体与常驻图形进程；没有给出未经量测的内存或安装体积百分比。
 
 ## 功能与生命周期
 
 登录后直接进入网页终端，忽略浏览器以前保存的桌面模式；隐藏桌面切换、分辨率设置和系统远程剪贴板入口。终端选字/历史复制、本机粘贴、独立 Enter、组合键、字号和宽度适配、由 `MAX_TERMINALS` 配置的终端名额、文件传输、WSS/WebRTC 及双向 TCP 映射继续可用。
 
-`codex-cloud-terminal.service` 持有私有 tmux 服务和回环文件助手，manager 只管理固定终端名额，panel 只负责认证与浏览器连接。关闭网页、刷新、重连、重启 panel 或 manager 不结束原 shell。主终端和辅助终端都可通过“结束终端”二次确认后结束；仅关闭当前查看的目标后切到末尾唯一的“新开终端”占位，显示“已关闭”；关闭其他目标时保持当前终端、观看连接与草稿。点击占位复用第一个空闲名额新建 shell，也可切换到其他运行中的终端；不保留多份关闭标签。电脑标签、手机当前终端按钮及会话列表提供“×”快捷关闭，均先二次确认。新 shell 使用新身份和空草稿，不自动恢复原任务或发送旧草稿。全部终端关闭后后台仍保留，只有明确新开才创建用户 shell。
+`codex-cloud-terminal.service` 只持有私有 tmux 服务；回环文件助手由独立 `codex-cloud-files.service` 持有，失败或重启不会终止 shell。manager 管理固定终端名额并独立探测宿主健康，panel 负责认证与浏览器连接。关闭网页、刷新、重连、重启 panel 或 manager 不结束原 shell。主终端和辅助终端都可通过“结束终端”二次确认后结束；仅关闭当前查看的目标后切到末尾唯一的“新开终端”占位，显示“已关闭”；关闭其他目标时保持当前终端、观看连接与草稿。点击占位复用第一个空闲名额新建 shell，也可切换到其他运行中的终端；不保留多份关闭标签。电脑标签、手机当前终端按钮及会话列表提供“×”快捷关闭，均先二次确认。新 shell 使用新身份和空草稿，不自动恢复原任务或发送旧草稿。全部终端关闭后后台仍保留，只有明确新开才创建用户 shell。
 
 任务数量在 `.env` 通过 `MAX_TERMINALS` 配置，默认 4、范围 1–8，包含主终端。修改后重启 manager 和 panel；降低上限保留已有终端，禁止超额新建。配置清单与生效范围见[部署配置](deployment-config.md)。额外只有一个固定、不接收网页输入的 `codex-host` 保活会话，防止所有用户终端退出后 tmux 由管理器重新创建而改变服务归属。私有运行目录为 0700，新增 `terminal.pid` 最多 32 字节、0600；tmux socket 与物理桌面分开。现有历史、消息、缓冲、上传和映射上限保持，未新增任务队列、录制或输入日志。
 

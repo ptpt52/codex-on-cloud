@@ -40,3 +40,7 @@ cat /var/lib/codex-cloud/app/secrets/credentials.txt
 模板没有发布公网端口，也没有“全部放通”的安全组开关。本次 HTTPS 入口走出站 Tunnel，不代表所有 TCP/UDP 端口已公开；WebRTC 是否直连取决于实际 ICE 协商，不能仅凭域名可访问判断。
 
 免费档的资源和每月用量限制、闲置暂停规则以 [Cloady 免费规则](https://cloady.com/docs/free-tier) 为准；容器/端口发布方式见 [平台概念](https://cloady.com/docs/concepts)。
+
+## 升级到独立文件服务
+
+上面的四项 runit 服务记录的是既有部署。新版 terminal 宿主不再自行启动 Python 助手；容器不能只更新代码再重启 terminal。先增加一项独立 files 服务，以同一普通用户、同一项目工作目录和原环境运行固定命令 `node native/file-agent.mjs`；按现有 manager 的策略限制每分钟最多三次恢复，日志继续使用128 KiB两份轮转。为 files 配置独立空闲的 `FILE_AGENT_PORT`（例如36904），panel 使用同一值；保留旧 terminal 及其关键助手，再更新 manager/panel，检查 `/readyz` 的 host/files 均为 true。files 必须加入本机启动、状态与停止脚本。该容器专用脚本尚需管理员在实际部署中同步维护，本轮代码修复没有操作远端实例。新 Tunnel 可改用同一用户私有 runtime 下的 `tunnel.sock`，具体见 [Cloudflare 部署](cloudflare.md)。
