@@ -21,7 +21,7 @@ let accessUI;
 let nodeUI;
 let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canForward: true, canReverse: true, canManageDevices: true };
 let fastConnectEnabled = false;
-let streamProtocolEnabled = false;
+let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = null, frameSerial = 0;
 let draftStorage;
 try { draftStorage = sessionStorage; } catch {}
 const terminalState = createTerminalState(draftStorage);
@@ -149,7 +149,7 @@ function selectTerminal(id) {
     void switchTerminalStream(identity); return true;
   }
   if (!activateTerminal(identity)) { renderTerminalSelection(); return false; }
-  shortcutMenu.close(); renderTerminalList(); if (terminalMode()) syncTerminalView();
+  shortcutMenu.close(); renderTerminalList(); if (terminalMode()) syncTerminalView(); else syncModeStandby();
   return true;
 }
 function requestCloseTerminal(terminal) {
@@ -191,8 +191,9 @@ function toggleWorkspacePanel(name) {
   if (opening) { workspacePanels.focus(); if (name === 'input') $('mobile-input').focus({ preventScroll: true }); }
 }
 function sendDisplayPreferences() {
+  if (standbyFrame) sendStandbyPreferences();
   if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), standby: false, rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows } : {}),
@@ -204,6 +205,9 @@ function renderDisplayControls() {
   // Use hidden attributes so later panel layout rules cannot expose controls
   // for the other mode. Switching visibility never resets stored preferences.
   for (const control of $('workspace-tools').querySelectorAll('[data-tools-mode]')) control.hidden = control.dataset.toolsMode !== toolsMode;
+  $('mode-standby-option').hidden = terminalOnly;
+  $('mode-standby').checked = displayPreferences.modeStandby;
+  $('mode-standby').disabled = !modeStandbyEnabled || modeChangeBusy() || !!confirmation;
   $('display-controls').setAttribute('aria-label', terminalMode() ? '网页终端显示控制' : '桌面显示控制');
   $('browser-preferences-note').textContent = browserPreferences.persisted ? '显示偏好仅保存到当前浏览器，所有终端共用。' : '浏览器未能保存偏好；当前页面仍可使用，刷新后可能恢复默认。';
   for (const id of ['toggle-controls-button', 'toggle-input-button', 'fullscreen-button']) $(id).hidden = loggedIn && !owned;
@@ -479,6 +483,7 @@ function renderConnection() {
   renderDisplayControls();
   renderDesktopSettings();
   renderClipboard();
+  syncModeStandby();
   sendDisplayPreferences();
   if (!loggedIn) return;
   if (accessExpired) {
@@ -642,6 +647,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame({ keepLogout = false } = {}) {
+  discardStandby();
   historyToolsPortal.reset();
   terminalController?.abort();
   terminalSwitching = false;
@@ -657,7 +663,7 @@ function stopFrame({ keepLogout = false } = {}) {
   frameTerminalKey = ''; terminalGeometry = null; terminalReviewing = false;
   frameComposing = false;
   frameNetwork = null; frameLatency.clear(); directIssue = '';
-  frameEpoch++;
+  frameEpoch = ++frameSerial;
   displayScale = 0;
   scaleRevision = -1;
   renderDisplayControls();
@@ -669,7 +675,7 @@ function restrictWorkspace() {
   inputController?.abort(); terminalController?.abort(); settingsController?.abort(); clipboardController?.abort();
   for (const id of ['desktop-settings-dialog', 'terminals-dialog', 'terminal-switch-dialog', 'clipboard-dialog']) if ($(id).open) $(id).close();
   if (confirmation && confirmation.kind !== 'logout') closeConfirmation();
-  if (frameLoaded) stopFrame({ keepLogout: true });
+  if (frameLoaded || standbyFrame) stopFrame({ keepLogout: true });
 }
 function updateAccess(value) {
   if (!value) return;
@@ -741,13 +747,83 @@ function showLogin(message = '') {
   if ($('terminal-switch-dialog').open) $('terminal-switch-dialog').close();
   renderConnection();
 }
-function frameUrl() {
-  const query = new URLSearchParams({ viewer, frame: String(frameEpoch) });
+function standbyEnabled() { return modeStandbyEnabled && displayPreferences.modeStandby && !terminalOnly; }
+function discardStandby() {
+  if (!standbyFrame) return;
+  const previous = standbyFrame; standbyFrame = null;
+  previous.element.src = 'about:blank'; previous.element.remove();
+}
+function standbyTarget() {
+  // Preparing the main terminal must not change the input target or adopt a draft.
+  return terminalCatalog.find(item => item.supported && (selectedTerminal
+    ? item.id === selectedTerminal && item.token === selectedTerminalToken && terminalSelectionState === 'ready'
+    : item.id === 'main'));
+}
+function sendStandbyPreferences() {
+  const entry = standbyFrame; if (!entry || !owned) return;
+  entry.element.contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(entry.epoch), standby: true,
+    rtc: { ...rtcConfig, hints: directHints.value }, csrf, zoom: displayPreferences.zoom, pan: displayPreferences.pan,
+    blocked: true, busy: true, revision: displayRevision, pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
+    terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows }, location.origin);
+}
+function syncModeStandby() {
+  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || !frameLoaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
+  const mode = terminalMode() ? 'desktop' : 'terminal', target = mode === 'terminal' ? standbyTarget() : null;
+  const key = target ? `${target.id}:${target.token}` : '';
+  if (standbyFrame && (standbyFrame.mode !== mode || standbyFrame.key !== key)) discardStandby();
+  if (standbyFrame || mode === 'terminal' && !target || frameState !== 'connected' || terminalBusy) return;
+  const element = document.createElement('iframe');
+  element.id = 'standby-frame'; element.inert = true; element.setAttribute('aria-hidden', 'true'); element.tabIndex = -1;
+  element.referrerPolicy = 'same-origin'; element.allow = $('desktop-frame').allow;
+  element.title = mode === 'terminal' ? '待命网页终端' : '待命开发桌面';
+  standbyFrame = { element, epoch: ++frameSerial, mode, key, state: 'connecting', transport: '', dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false };
+  element.src = frameUrl(mode, standbyFrame.epoch, target);
+  $('desktop-stage').insertBefore(element, $('desktop-overlay'));
+}
+function receiveStandby(value) {
+  const entry = standbyFrame;
+  if (value.type === 'codex-desktop') {
+    if (value.state === 'ready') { sendStandbyPreferences(); return; }
+    if (value.state === 'connected') { entry.state = 'connected'; entry.transport = value.transport === 'direct' ? 'direct' : entry.mode === 'terminal' ? 'terminal' : 'relay'; sendStandbyPreferences(); }
+    else if (['disconnected', 'connecting'].includes(value.state)) entry.state = value.state === 'disconnected' ? 'reconnecting' : 'connecting';
+  } else if (value.type === 'codex-terminal-size' && Number.isInteger(value.cols) && value.cols >= 2 && value.cols <= 500 && Number.isInteger(value.rows) && value.rows >= 1 && value.rows <= 200) {
+    entry.geometry = { cols: value.cols, rows: value.rows, fontSize: displayPreferences.terminalFontSize };
+  } else if (value.type === 'codex-desktop-view' && value.revision === displayRevision) {
+    if (Number.isFinite(value.scale) && value.scale > 0 && value.scale <= 16) { entry.scale = value.scale; entry.scaleRevision = value.revision; }
+    if (Number.isInteger(value.width) && Number.isInteger(value.height) && value.width > 0 && value.height > 0 && value.width <= 16384 && value.height <= 16384) entry.dimensions = { width: value.width, height: value.height };
+  } else if (value.type === 'codex-terminal-history' && typeof value.reviewing === 'boolean') entry.reviewing = value.reviewing;
+  else if (value.type === 'codex-direct-prepare') entry.element.contentWindow.postMessage({ type: 'codex-direct-approved', frame: String(entry.epoch), id: value.id, allowed: false }, location.origin);
+  // No hidden frame may change the active target, send controls, open tools,
+  // approve a route handoff, or turn an old input result into a new action.
+}
+function swapStandby(mode) {
+  const next = standbyFrame;
+  if (!standbyEnabled() || !next || next.mode !== mode || !frameLoaded || document.hidden ||
+    mode === 'terminal' && next.key !== `${selectedTerminal}:${selectedTerminalToken}`) return false;
+  historyToolsPortal.reset();
+  const previous = { element: $('desktop-frame'), epoch: frameEpoch, mode: displayPreferences.mode, key: frameTerminalKey,
+    state: frameState, transport: frameTransport, dimensions: frameDimensions, geometry: terminalGeometry,
+    scale: displayScale, scaleRevision, reviewing: terminalReviewing };
+  clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = '';
+  clearTimeout(switchTimer); transportSwitching = false; resetDirectControl(); resetPanelRequests();
+  previous.element.id = 'standby-frame'; previous.element.inert = true; previous.element.tabIndex = -1; previous.element.setAttribute('aria-hidden', 'true');
+  standbyFrame = previous; sendStandbyPreferences();
+  next.element.id = 'desktop-frame'; next.element.inert = false; next.element.removeAttribute('aria-hidden'); next.element.removeAttribute('tabindex');
+  next.element.title = mode === 'terminal' ? 'Codex 网页终端' : 'Ubuntu 开发桌面';
+  historyToolsPortal.setFrame(next.element);
+  frameEpoch = next.epoch; frameState = next.state; frameTransport = next.transport; frameTerminalKey = next.key;
+  frameDimensions = next.dimensions; terminalGeometry = next.geometry; displayScale = next.scale; scaleRevision = next.scaleRevision;
+  terminalReviewing = next.reviewing; frameComposing = false; nativeIdle = frameResizeReady = false;
+  frameNetwork = null; frameLatency.clear(); directIssue = '';
+  return true;
+}
+function frameUrl(mode = displayPreferences.mode, epoch = frameEpoch, terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported)) {
+  const query = new URLSearchParams({ viewer, frame: String(epoch) });
   const ui = document.querySelector('meta[name="ui-revision"]')?.content; if (ui) query.set('ui', ui);
   if (fastConnectEnabled) query.set('fast', '1');
   if (streamProtocolEnabled) query.set('stream', '1');
-  if (terminalMode()) {
-    const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
+  if (standbyEnabled()) query.set('standby', '1');
+  if (mode === 'terminal') {
     query.set('terminalId', terminal.id); query.set('terminalToken', terminal.token);
     return `/terminal/index.html?${query}`;
   }
@@ -838,7 +914,7 @@ async function showWorkspace(user) {
   workspaceInitialized = false; serviceProtocol = user.serviceProtocol === 1 ? 1 : 0;
   uiGeneration++; closeConfirmation();
   maxTerminals = DEFAULT_TERMINAL_LIMIT;
-  loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1;
+  loggedIn = true; csrf = user.csrf; fastConnectEnabled = user.fastConnect === true; streamProtocolEnabled = user.streamProtocol === 1; modeStandbyEnabled = user.modeStandby === 1;
   rtcConfig = undefined; cacheRTC(user);
   if (user.access) permissions = { ...permissions, ...user.access };
   terminalOnly = user.mode === 'terminal';
@@ -1118,16 +1194,24 @@ function modeChangeBusy() {
 function changeMode(mode) {
   if (terminalOnly && mode !== 'terminal') return;
   if (!['desktop', 'terminal'].includes(mode) || mode === displayPreferences.mode || modeChangeBusy() || confirmation) return;
-  shortcutMenu.close(); closeConfirmation(); stopFrame();
+  shortcutMenu.close(); closeConfirmation();
   if (mode === 'terminal' && !selectedTerminal) {
     const main = terminalCatalog.find(item => item.id === 'main' && item.supported);
     if (main) { if (!activateTerminal({ id: main.id, token: main.token }, { adopt: true })) return; }
     else { selectedTerminal = 'main'; selectedTerminalToken = ''; terminalSelectionState = 'loading'; adoptWindowDraft = true; }
   }
+  const reused = swapStandby(mode);
+  if (!reused) stopFrame();
   updateDisplayPreferences({ mode }); renderTerminalList(); openFrame();
   if (mode === 'terminal' && !frameLoaded) void loadTerminals();
   renderConnection();
 }
+$('mode-standby').addEventListener('change', () => {
+  if (!modeStandbyEnabled || modeChangeBusy() || confirmation) { renderDisplayControls(); return; }
+  const enabled = $('mode-standby').checked;
+  // Opt in on both network paths together; changing the preference never restarts a terminal.
+  stopFrame(); updateDisplayPreferences({ modeStandby: enabled }); openFrame(); renderConnection();
+});
 for (const mode of ['desktop', 'terminal']) $(`${mode}-mode`).addEventListener('click', () => {
   if (mode !== displayPreferences.mode) requestConfirmation('mode', null, { from: displayPreferences.mode, mode });
 });
@@ -1464,7 +1548,9 @@ for (const [id, action] of [['maximize-terminal', 'maximize'], ['restore-termina
   if (!$(id).disabled) void settingsAction('/api/desktop/terminal-display', { action, revision: desktopSettings.revision });
 });
 window.addEventListener('message', event => {
-  if (event.origin !== location.origin || event.source !== $('desktop-frame').contentWindow || !owned) return;
+  if (event.origin !== location.origin || !owned) return;
+  if (standbyFrame && event.source === standbyFrame.element.contentWindow && event.data?.frame === String(standbyFrame.epoch)) { receiveStandby(event.data); return; }
+  if (event.source !== $('desktop-frame').contentWindow) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
   if (event.data?.type === 'codex-panel-state') {
     const wasReady = panelReady;
@@ -1568,8 +1654,8 @@ window.addEventListener('message', event => {
   renderConnection();
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
-document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { frameLatency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
-window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); syncRelayLatency(); frameLatency.clear(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
+document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { discardStandby(); frameLatency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
+window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); syncRelayLatency(); frameLatency.clear(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; discardStandby(); shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; if (loggedIn) workspaceInitialized = true; syncScreenLock(); renderConnection(); });
 
 accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,

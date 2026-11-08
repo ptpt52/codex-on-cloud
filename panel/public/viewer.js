@@ -19,7 +19,7 @@ const remoteKeys = new Map();
 let lastMouse = { x: 0, y: 0, buttons: 0 }, releaseMouse = false;
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
-const preferences = { zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
+const preferences = { standby: false, zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
 let rfb, retry, stopping = false, resizeReady = false, frameReadiness;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
@@ -153,16 +153,22 @@ window.addEventListener('message', event => {
   }
   if (!(['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
+  const wasStandby = preferences.standby; preferences.standby = value.standby === true;
+  if (preferences.standby && !wasStandby && rfb) {
+    for (const [code, keysym] of [...remoteKeys]) rfb.sendKey(keysym, code, false);
+    remoteKeys.clear(); pressedKeys.clear(); pressedPointers.clear();
+  }
   preferences.zoom = value.zoom;
   preferences.pan = value.pan;
   if (['touch', 'trackpad'].includes(value.pointerMode)) preferences.pointerMode = value.pointerMode;
   if (['viewport', 'remote'].includes(value.scrollTarget)) preferences.scrollTarget = value.scrollTarget;
   // Let an already held key/pointer release on the old stream. A handoff is
   // refused below if native input raced with the parent's idle confirmation.
-  preferences.blocked = value.handoff === true && (pressedKeys.size || pressedPointers.size || pointerControls.busy) ? false : value.blocked;
+  preferences.blocked = preferences.standby || (value.handoff === true && (pressedKeys.size || pressedPointers.size || pointerControls.busy) ? false : value.blocked);
   preferences.busy = value.busy === true;
   preferences.revision = value.revision ?? 0;
   if (streamEnabled && typeof value.csrf === 'string' && value.csrf.length <= 256 && value.csrf && !streamCsrf) { streamCsrf = value.csrf; void connect(); }
+  if (wasStandby !== preferences.standby) { lastReport = ''; reportControl(); reportNetwork(); }
   applyView();
 });
 
@@ -419,7 +425,7 @@ async function connect() {
   status.hidden = false; status.textContent = '正在连接独立桌面…';
   if (streamEnabled) {
     streamClient?.close();
-    streamClient = createStreamClient({ viewer, csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
+    streamClient = createStreamClient({ viewer, standby: new URLSearchParams(location.search).get('standby') === '1', csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
       settled: () => !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800,
       prepare: prepareSwitch,
       paused: value => {

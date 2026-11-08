@@ -16,7 +16,7 @@ let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
 let terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken'), rtcConfig;
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
-let blocked = true, busy = false, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
+let blocked = true, busy = false, standby = false, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
@@ -107,16 +107,15 @@ function size() {
     const screenHeight = host.querySelector('.xterm-screen')?.getBoundingClientRect().height;
     if (screenHeight > 0) host.style.setProperty('--terminal-line-height', `${screenHeight / rows}px`);
     const sizeKey = `${cols}:${rows}:${widthMode}`;
-    if (ready && lastSize !== sizeKey && send({ type: 'resize', cols, rows, geometry: true, viewport: widthMode === 'viewport' })) lastSize = sizeKey;
+    if (ready && !standby && lastSize !== sizeKey && send({ type: 'resize', cols, rows, geometry: true, viewport: widthMode === 'viewport' })) lastSize = sizeKey;
     const reportKey = `${cols}:${rows}:${fittedSize.fontSize}`;
     if (lastReport !== reportKey) { lastReport = reportKey; parent.postMessage({ type: 'codex-terminal-size', frame, ...fittedSize }, location.origin); }
   });
 }
 function raw(data) {
   if (!ready || switching || !data) return;
-  if (streamPaused && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
-  // Keep terminal query replies alive while reviewing, without accepting edits.
-  if (history?.reviewing && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
+  // Keep query replies alive during standby, handoffs and review, without edits.
+  if ((standby || streamPaused || history?.reviewing) && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
   lastInteraction = performance.now();
   if (data.length > 32768 || new TextEncoder().encode(data).length > 32768) { message('一次输入不能超过 32 KiB，请分段发送。'); return; }
   let chunk = '', bytes = 0;
@@ -184,7 +183,7 @@ async function connect() {
   if (stopped || socket || candidateController || !csrf || !navigator.onLine || document.hidden) return;
   message('正在连接原有终端…'); report('connecting');
   if (streamEnabled) {
-    streamClient = createStreamClient({ viewer, csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
+    streamClient = createStreamClient({ viewer, standby: new URLSearchParams(location.search).get('standby') === '1', csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
       canSwitchTarget: () => ready && !blocked && !switching && targetInputIdle(), idle: idleForSwitch,
       settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
       prepare: prepareSwitch,
@@ -363,7 +362,9 @@ window.addEventListener('message', event => {
     if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
       try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, hints: rtcHints(value.rtc.hints) }; } catch {}
     }
-    blocked = value.blocked !== false; busy = value.busy === true;
+    const wasStandby = standby; standby = value.standby === true;
+    blocked = standby || value.blocked !== false; busy = standby || value.busy === true;
+    if (wasStandby !== standby) { lastReport = ''; controlState(); reportNetwork(); }
     if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) fontSize = value.terminalFontSize;
     if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;
     if (HISTORY_ROWS.includes(value.terminalHistoryRows)) {

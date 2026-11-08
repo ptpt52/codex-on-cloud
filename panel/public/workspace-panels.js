@@ -100,7 +100,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
       }
     } else if (entry.focus) schedule();
   }
-  frame.addEventListener('codex-history-tools', event => {
+  const onTools = event => {
     const detail = event.detail;
     if (moving || event.target !== frame || !detail || typeof detail.open !== 'boolean' || typeof detail.composing !== 'boolean' || !valid(detail.frame)) return;
     if (!detail.open) return reset();
@@ -111,11 +111,16 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
       entry = { panel, marker, frame: detail.frame, floating: false }; opened();
     }
     composing(detail.composing); layout();
-  });
+  };
+  frame.addEventListener('codex-history-tools', onTools);
   const schedule = () => { cancelAnimationFrame(layoutFrame); layoutFrame = requestAnimationFrame(() => { layoutFrame = 0; layout(true); }); };
   window.addEventListener('resize', schedule);
   window.visualViewport?.addEventListener('resize', schedule); window.visualViewport?.addEventListener('scroll', schedule);
   document.addEventListener('fullscreenchange', schedule);
-  new ResizeObserver(schedule).observe(frame);
-  return { reset, dismiss() { entry?.panel.querySelector('#history-tools-close').click(); }, get composing() { return entry?.panel.dataset.composing === 'true'; } };
+  const observer = new ResizeObserver(schedule); observer.observe(frame);
+  return { reset, setFrame(next) {
+    if (next === frame) return;
+    reset(); frame.removeEventListener('codex-history-tools', onTools); observer.disconnect();
+    frame = next; frame.addEventListener('codex-history-tools', onTools); observer.observe(frame);
+  }, dismiss() { entry?.panel.querySelector('#history-tools-close').click(); }, get composing() { return entry?.panel.dataset.composing === 'true'; } };
 }

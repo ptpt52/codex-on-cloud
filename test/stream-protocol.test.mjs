@@ -40,6 +40,43 @@ test('a waiting relay uses no upstream; pending authentication is bounded and ca
   first.ws.send(JSON.stringify({ type: 'ping', id: 1 })); await until(() => first.records.some(x => x.type === 'pong'));
   assert.equal(app.vncConnections, 0); assert.equal(app.terminalConnections, 0);
 });
+test('standby opt-in retains at most one stream per mode and takeover revokes both', async t => {
+  const app = await fixture({ seamless: true }); t.after(() => app.close()); await app.login(); await app.claim();
+  assert.equal((await (await app.request('/api/me')).json()).modeStandby, 1);
+  const terminal = (await app.controls.listTerminals()).terminals[0];
+  const target = { terminalId: terminal.id, terminalToken: terminal.token };
+  async function open(streamId, target) {
+    const url = path(app, '&standby=1', target).replace(id, streamId);
+    const ws = new WebSocket(url, { origin: app.config.origin, headers: { cookie: app.cookie } }), records = [];
+    ws.on('message', bytes => records.push(JSON.parse(bytes.toString()))); ws.on('error', () => {}); t.after(() => ws.terminate());
+    await once(ws, 'open'); ws.send(JSON.stringify({ type: 'auth', csrf: app.csrf })); await until(() => records.some(x => x.type === 'welcome'));
+    return { ws, records };
+  }
+  const desktop = await open('a'.repeat(32)), oldTerminal = await open('b'.repeat(32), target);
+  const replaced = once(oldTerminal.ws, 'close'), terminalPeer = await open('d'.repeat(32), target); await replaced;
+  for (const peer of [desktop, terminalPeer]) {
+    peer.ws.send(JSON.stringify({ type: 'activate', epoch: 0, out: 0, input: 0 }));
+    await until(() => peer.records.some(x => x.type === 'active'));
+    peer.ws.send(JSON.stringify({ type: 'ping', id: 2 })); await until(() => peer.records.some(x => x.type === 'pong'));
+  }
+  assert.equal(app.vncConnections, 1); assert.equal(app.terminalConnections, 1);
+  const closed = [desktop, terminalPeer].map(peer => once(peer.ws, 'close'));
+  await app.claim('e'.repeat(32)); await Promise.all(closed);
+  assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.terminalInputs, []);
+});
+test('a normal stream releases both standby modes instead of expanding the stream bound', async t => {
+  const app = await fixture({ seamless: true }); t.after(() => app.close()); await app.login(); await app.claim();
+  const terminal = (await app.controls.listTerminals()).terminals[0];
+  const target = { terminalId: terminal.id, terminalToken: terminal.token };
+  const peers = [];
+  for (const [streamId, value] of [['a'.repeat(32)], ['b'.repeat(32), target]]) {
+    const ws = new WebSocket(path(app, '&standby=1', value).replace(id, streamId), { origin: app.config.origin, headers: { cookie: app.cookie } });
+    ws.on('error', () => {}); t.after(() => ws.terminate()); await once(ws, 'open');
+    const welcome = once(ws, 'message'); ws.send(JSON.stringify({ type: 'auth', csrf: app.csrf })); await welcome; peers.push(ws);
+  }
+  const closed = peers.map(ws => once(ws, 'close')), normal = await connected(app); t.after(() => normal.ws.terminate()); await Promise.all(closed);
+  normal.ws.send(JSON.stringify({ type: 'ping', id: 1 })); await until(() => normal.records.some(x => x.type === 'pong'));
+});
 test('a lost relay resumes one upstream, only output is replayed, and takeover revokes both the lease and paths', async t => {
   const app = await fixture({ seamless: true }); t.after(() => app.close()); await app.login(); await app.claim();
   let peer = await connected(app); peer.ws.send(JSON.stringify({ type: 'activate', epoch: 0, out: 0, input: 0 })); await until(() => peer.records.some(x => x.type === 'active'));

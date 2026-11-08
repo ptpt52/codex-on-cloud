@@ -9,7 +9,7 @@ export function canTryDirect() { return enabled && window.isSecureContext && !!w
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, bootstrap, service = false } = {}) {
+export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, standby = false, bootstrap, service = false } = {}) {
   if (signal?.aborted) return null;
   if (!canTryDirect()) { failed('unsupported'); return null; }
   const controller = new AbortController();
@@ -85,7 +85,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const result = await fetch(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
-          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
+          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
         });
         if (!result.ok) throw new Error('直连暂不可用');
         const answer = await result.json();

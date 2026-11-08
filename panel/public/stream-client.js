@@ -10,7 +10,7 @@ const decode = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
 
 // One browser-visible channel. Network paths may change; the consumer and its
 // parser stay attached. Only downstream bytes can be replayed, never inputs.
-export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = () => true, settled = idle, targetIdle = settled, canSwitchTarget = targetIdle, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {} }) {
+export function createStreamClient({ viewer, csrf, terminal, standby = false, bootstrap, idle = () => true, settled = idle, targetIdle = settled, canSwitchTarget = targetIdle, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {} }) {
   const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
   let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
@@ -267,7 +267,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       relayTimer = undefined;
       if (ended || peers.has('relay') || document.hidden || !navigator.onLine) return;
       const url = new URL('/session/connect', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      for (const [key, value] of Object.entries({ viewer, streamId: id, mode: terminal ? 'terminal' : 'desktop', ...(terminal || {}) })) url.searchParams.set(key, value);
+      for (const [key, value] of Object.entries({ viewer, streamId: id, mode: terminal ? 'terminal' : 'desktop', ...(standby ? { standby: '1' } : {}), ...(terminal || {}) })) url.searchParams.set(key, value);
       const ws = new WebSocket(url), peer = peerFor('relay', value => ws.send(JSON.stringify(value)), () => ws.close(), () => ws.bufferedAmount, false, () => ws.readyState === WebSocket.OPEN);
       ws.addEventListener('open', () => { if (!ended && !peer.gone) ws.send(JSON.stringify({ type: 'auth', csrf })); });
       ws.addEventListener('message', event => { try { if (typeof event.data !== 'string' || event.data.length > 24576) throw new Error(); receive(peer, JSON.parse(event.data)); } catch { lost(peer); } });
@@ -291,7 +291,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     if (ended || targetPending || directController || peers.has('direct') || document.hidden || !navigator.onLine || !canTryDirect()) return;
     const controller = directController = new AbortController(); let transport, peer;
     try {
-      transport = await desktopTransport(viewer, live => { if (!live && peer) lost(peer); }, { probe: true, signal: controller.signal, terminal, streamId: id, bootstrap, failed: issue });
+      transport = await desktopTransport(viewer, live => { if (!live && peer) lost(peer); }, { probe: true, signal: controller.signal, terminal, streamId: id, standby, bootstrap, failed: issue });
       if (!transport) throw new Error();
       const channel = transport.video(); channel.binaryType = 'arraybuffer';
       peer = peerFor('direct', value => sendControl(channel, value), () => transport.close(), () => channel.bufferedAmount, true, () => channel.readyState === 'open'); peer.transport = transport;

@@ -69,7 +69,7 @@ export async function createPanel(config) {
   const failures = new Map();
   const unlockFailures = new Map();
   const sockets = new Map();
-  let streamState;
+  const streamStates = new Map(); // At most one stream per mode for an opted-in owner, otherwise one total.
   let owner = null;
   let loginBusy = 0;
   let healthCache = null;
@@ -151,19 +151,20 @@ export async function createPanel(config) {
     readClipboard: async () => { const result = await managerRequest(config, '/clipboard', { source: 'clipboard' }); if (!valid()) throw new Error('控制权已变化'); return result.text; },
     launch: config.terminalLaunch ? () => config.terminalLaunch(target) : undefined });
   function closeSockets(predicate) {
-    if (streamState && predicate(streamState)) streamState.stream.close();
+    for (const state of [...streamStates.values()]) if (predicate(state)) state.stream.close();
     for (const [socket, state] of sockets) if (predicate(state)) socket.destroy();
   }
   function lockDesktop() { owner = null; closeSockets(() => true); }
-  function streamFor(id, mode, target, expected, token) {
+  function streamFor(id, mode, target, expected, token, standby = false) {
     if (config.streamProtocol !== 1 || !STREAM_ID.test(id || '')) throw new HttpError(400, '会话协议无效');
-    if (streamState?.id === id) {
-      if (streamState.expected !== expected || streamState.mode !== mode || JSON.stringify(streamState.target) !== JSON.stringify(target)) throw new HttpError(409, '会话目标已变化');
-      return streamState.stream;
+    const existing = streamStates.get(id);
+    if (existing) {
+      if (existing.expected !== expected || existing.mode !== mode || existing.standby !== standby || JSON.stringify(existing.target) !== JSON.stringify(target)) throw new HttpError(409, '会话目标已变化');
+      return existing.stream;
     }
-    closeSockets(state => state.streamId !== id);
-    const state = { id, streamId: id, mode, target, expected, token, session: expected.session, socket: null };
-    const valid = () => streamState === state && owner === expected && !!auth.get(token) && !closing && !maintenancePending;
+    closeSockets(state => state.streamId !== id && !(standby && state.standby && state.mode !== mode));
+    const state = { id, streamId: id, mode, standby, target, expected, token, session: expected.session, socket: null };
+    const valid = () => streamStates.get(id) === state && owner === expected && !!auth.get(token) && !closing && !maintenancePending;
     const request = { headers: { cookie: 'coc_session=' + token, 'x-viewer-id': expected.viewer } };
     state.stream = createStreamSession({ id, valid,
       canActivate: async planned => {
@@ -185,9 +186,9 @@ export async function createPanel(config) {
         return { target: next, commit() { if (!valid() || !live()) throw new HttpError(409, '控制权已变化'); state.target = next; } };
       } }),
       connect: callbacks => mode === 'terminal' ? terminalUpstream(terminalOptions(state.target, valid), callbacks) : vncUpstream(config.vncSocket, callbacks),
-      closed: () => { if (streamState === state) streamState = undefined; },
+      closed: () => { if (streamStates.get(id) === state) streamStates.delete(id); },
     });
-    streamState = state;
+    streamStates.set(id, state);
     return state.stream;
   }
   async function agent(path, { method = 'GET', body, signal } = {}) {
@@ -256,11 +257,11 @@ export async function createPanel(config) {
       if (previous && owner?.session === previous.hash) lockDesktop();
       const { token, session } = await auth.create(identity);
       if (!auth.get(token)) throw new HttpError(401, '登录授权已改变，请重新登录');
-      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, ...rtcConfig() }, { 'set-cookie': sessionCookie(token, config) });
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, modeStandby: config.streamProtocol === 1 && config.mode !== 'terminal' ? 1 : 0, ...rtcConfig() }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, serviceProtocol: 1, webrtc: config.webrtc === true,
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, modeStandby: config.streamProtocol === 1 && config.mode !== 'terminal' ? 1 : 0, serviceProtocol: 1, webrtc: config.webrtc === true,
         rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
     }
     if (path === '/api/nodes' && req.method === 'GET') {
@@ -439,6 +440,7 @@ export async function createPanel(config) {
       const expected = owner;
       const body = await ownedBody(req, 48 * 1024);
       const resumable = body.streamId !== undefined;
+      const mode = terminalMode ? 'terminal' : 'desktop', standby = resumable && body.standby === true && config.mode !== 'terminal';
       if (resumable && (config.streamProtocol !== 1 || !STREAM_ID.test(body.streamId))) throw new HttpError(400, '会话协议无效');
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
       let offer, hints;
@@ -464,18 +466,18 @@ export async function createPanel(config) {
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         // A candidate may negotiate while the current stream stays usable.
-        closeSockets(state => state.rtcPending === true);
+        closeSockets(state => state.rtcPending === true && !(standby && state.standby && state.mode !== mode));
         await rtcClosing;
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         const token = cookieToken(req.headers.cookie);
-        const stream = resumable ? streamFor(body.streamId, terminalMode ? 'terminal' : 'desktop', target, expected, token) : null;
-        const state = { session: expected.session, token, socket: null, rtcPending: true, ...(resumable ? { streamId: body.streamId } : {}) };
+        const stream = resumable ? streamFor(body.streamId, mode, target, expected, token, standby) : null;
+        const state = { session: expected.session, token, mode, standby, socket: null, rtcPending: true, ...(resumable ? { streamId: body.streamId } : {}) };
         let streamEntry;
         let terminalSession;
         if (terminalMode) state.inputIdle = () => terminalSession?.idle === true;
         const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state &&
-          (!resumable || streamState?.stream === stream && (!!streamEntry || JSON.stringify(streamState.target) === JSON.stringify(target)));
+          (!resumable || streamStates.get(body.streamId)?.stream === stream && (!!streamEntry || JSON.stringify(streamStates.get(body.streamId).target) === JSON.stringify(target)));
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
         bridge = createRTCBridge({ address, ipv6Address, vncSocket: config.vncSocket, valid,
@@ -663,9 +665,10 @@ export async function createPanel(config) {
         if (!await terminalAvailable(target)) return deny(409);
       }
       if (owner !== expected || !sessionOf(req) || closing || maintenancePending || socket.destroyed) return deny(409);
-      const token = cookieToken(req.headers.cookie), stream = streamFor(id, mode, target, expected, token);
+      const standby = url.searchParams.get('standby') === '1' && config.mode !== 'terminal';
+      const token = cookieToken(req.headers.cookie), stream = streamFor(id, mode, target, expected, token, standby);
       if ([...sockets.values()].some(state => state.streamId === id && state.relayPending && !state.socket.destroyed)) return deny(429);
-      const state = { session: session.hash, token, socket, streamId: id, relayPending: true };
+      const state = { session: session.hash, token, socket, mode, standby, streamId: id, relayPending: true };
       sockets.set(socket, state); socket.once('close', () => sockets.delete(socket));
       const valid = () => owner === expected && sockets.get(socket) === state && !!auth.get(token) && !closing && !maintenancePending;
       terminalWss.handleUpgrade(req, socket, head, ws => {
@@ -675,7 +678,7 @@ export async function createPanel(config) {
         ws.once('message', (bytes, binary) => {
           clearTimeout(timer); let first;
           try { if (binary || bytes.length > 1024) throw new Error(); first = JSON.parse(bytes.toString()); } catch { return ws.terminate(); }
-          if (!valid() || streamState?.stream !== stream || JSON.stringify(streamState.target) !== JSON.stringify(target) || first?.type !== 'auth' || !equal(first.csrf, session.csrf)) return ws.terminate();
+          if (!valid() || streamStates.get(id)?.stream !== stream || JSON.stringify(streamStates.get(id).target) !== JSON.stringify(target) || first?.type !== 'auth' || !equal(first.csrf, session.csrf)) return ws.terminate();
           state.relayPending = false;
           entry = stream.attach('relay', { send: value => ws.send(JSON.stringify(value)), buffered: () => ws.bufferedAmount, close: () => ws.terminate() });
           ws.on('message', (data, bin) => {

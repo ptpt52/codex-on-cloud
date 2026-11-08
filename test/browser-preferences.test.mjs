@@ -44,3 +44,12 @@ test('unavailable browser storage keeps in-page preferences and never persists u
   assert.equal(preferences.value.terminalFontSize, 15); assert.equal(preferences.value.mode, 'terminal');
   assert.equal(Object.hasOwn(JSON.parse(source.text), 'csrf'), false); assert.equal(Object.hasOwn(JSON.parse(source.text), 'width'), false);
 });
+
+test('mode standby is off by default, validates a boolean and stays within browser storage', () => {
+  assert.equal(decodeBrowserPreferences(null).modeStandby, false);
+  assert.equal(decodeBrowserPreferences(JSON.stringify({ layout: 2, modeStandby: 1 })).modeStandby, false);
+  const source = storage(), preferences = createBrowserPreferences(source);
+  preferences.update({ modeStandby: true });
+  assert.equal(createBrowserPreferences(source).value.modeStandby, true);
+  assert.equal(createBrowserPreferences(storage()).value.modeStandby, false);
+});
