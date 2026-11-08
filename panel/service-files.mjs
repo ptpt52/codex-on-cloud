@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js';
+import { uploadOptions, uploadHeaders } from './public/file-upload.js';
 const fault=(status,message)=>Object.assign(Error(message),{status});
-function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!=='..'&&!/[/\\\x00-\x1f\x7f]/.test(name)&&Buffer.byteLength(name)<=240;}
+function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!=='..'&&!name.startsWith('.upload-')&&!/[/\\\x00-\x1f\x7f]/.test(name)&&Buffer.byteLength(name)<=240;}
 // This adapter can only address the existing authenticated file API on loopback.
 // Its request participates in the same global four-stream and guest upload quota.
 export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
@@ -15,19 +16,21 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
  function reject(entry,err){if(active!==entry)return;try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试'});}catch{}cleanup();}
  async function control(value){
   if(value.type==='start'){
-   if(active||Object.keys(value).sort().join(',')!=='direction,id,name,size,type'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!fileName(value.name)||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
+   const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload');
+   if(active||fields!==(hasUpload?'direction,id,name,size,type,upload':'direction,id,name,size,type')||hasUpload&&value.direction!=='upload'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!fileName(value.name)||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
+   const upload=value.direction==='upload'?uploadOptions(value.upload):undefined;
    if(!valid())throw fault(401,'文件授权已失效');lastId=value.id;
    const entry=active={id:value.id,direction:value.direction,size:value.size,received:0,ended:false,controller:new AbortController()};
    entry.timer=setTimeout(()=>reject(entry,fault(408,'文件传输超过五分钟')),300000);entry.timer.unref();
    const requestSignal=AbortSignal.any([signal,entry.controller.signal]);
    const req=entry.req=http.request({host:'127.0.0.1',port:port(),method:value.direction==='upload'?'PUT':'GET',path:'/api/files/'+encodeURIComponent(value.name),signal:requestSignal,
-    headers:{...headers,...(value.direction==='upload'?{'content-type':'application/octet-stream','content-length':value.size}:{})}},res=>{
+    headers:{...headers,...(value.direction==='upload'?{'content-type':'application/octet-stream','content-length':value.size,...uploadHeaders(upload)}:{})}},res=>{
     entry.res=res;
     if(value.direction==='download'){void download(entry,res).catch(err=>reject(entry,err));return;}
     const chunks=[];let total=0;res.on('data',bytes=>{total+=bytes.length;if(total>4096)res.destroy(fault(502,'文件响应过大'));else chunks.push(bytes);});
     res.once('error',err=>reject(entry,err));res.once('end',()=>{
      if(active!==entry)return;
-     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw fault(res.statusCode,result.error||'上传失败');entry.response=true;if(entry.ended)finish(entry,{});}catch(err){reject(entry,err);}
+     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw fault(res.statusCode,result.error||'上传失败');if(!fileName(result.name))throw fault(502,'上传响应缺少有效文件名');entry.result={name:result.name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
     });
    });
    req.once('error',err=>reject(entry,err));
@@ -36,7 +39,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
   }
   const entry=active;check(entry);
   if(Object.keys(value).sort().join(',')!=='id,type'||value.id!==entry.id||value.type!=='end'||entry.direction!=='upload'||entry.ended||entry.received!==entry.size)throw fault(400,'文件结束标记或长度无效');
-  entry.ended=true;entry.req.end();if(entry.response)finish(entry,{});
+  entry.ended=true;entry.req.end();if(entry.response)finish(entry,entry.result);
  }
  async function receive(bytes){const entry=active;check(entry);if(entry.direction!=='upload'||entry.ended||entry.received+bytes.length>entry.size)throw fault(400,'文件数据长度无效');entry.received+=bytes.length;await new Promise((resolve,reject)=>entry.req.write(bytes,err=>err?reject(err):resolve()));check(entry);}
  async function download(entry,res){

@@ -12,6 +12,7 @@ import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
+import { createUploadPrompt, uploadHeaders, UPLOAD_PROTOCOL } from './file-upload.js';
 import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 
@@ -20,6 +21,7 @@ let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), b
 let forwardingUI;
 let accessUI;
 let nodeUI;
+let uploadPrompt, fileUploadController;
 let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canForward: true, canReverse: true, canManageDevices: true };
 let fastConnectEnabled = false;
 let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = null, frameSerial = 0;
@@ -482,6 +484,8 @@ function renderConnectionNotice() {
   const notice = $('connection-notice'); notice.textContent = message; notice.hidden = !message;
 }
 function renderConnection() {
+  uploadPrompt?.revalidate();
+  if (!loggedIn || accessExpired || !navigator.onLine) fileUploadController?.abort();
   if (workspaceInitialized && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
   syncRelayLatency();
   nodeUI?.update();
@@ -618,7 +622,7 @@ function toast(message, failure = false) {
   $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
-async function api(path, { method = 'GET', body, raw, signal } = {}) {
+async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
   const service = serviceAction(path, method);
   if (service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
     try { return await serviceLink.request(service, body || {}, signal); }
@@ -628,6 +632,7 @@ async function api(path, { method = 'GET', body, raw, signal } = {}) {
   const headers = { 'x-viewer-id': viewer };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
+  if (upload !== undefined) Object.assign(headers, uploadHeaders(upload));
   const response = await fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual', signal });
   if (response.type === 'opaqueredirect') {
     if (!signal?.aborted) expireAccess();
@@ -1322,8 +1327,10 @@ function saveDirectFile(blob, name) {
   const link = document.createElement('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
 }
 window.addEventListener('pagehide', clearFileURLs);
-async function loadFiles() {
-  const { files } = await api('/api/files');
+async function loadFiles(signal) {
+  const generation = uiGeneration;
+  const { files } = await api('/api/files', { signal });
+  if (generation !== uiGeneration || !loggedIn) return;
   $('file-list').replaceChildren();
   if (!files.length) {
     const empty = document.createElement('p'); empty.className = 'empty-files'; empty.textContent = '还没有中转文件。在桌面中把文件放进 transfer 文件夹，即可在这里下载。'; $('file-list').append(empty);
@@ -1345,20 +1352,44 @@ async function loadFiles() {
 $('files-button').addEventListener('click', () => void action($('files-button'), async () => { if (serviceProtocol === 1) serviceLink.start(); $('files-dialog').showModal(); await loadFiles(); }));
 $('close-files').addEventListener('click', () => $('files-dialog').close());
 $('refresh-files').addEventListener('click', () => void action($('refresh-files'), loadFiles));
+uploadPrompt = createUploadPrompt({
+  dialog: $('file-conflict-dialog'), filename: $('file-conflict-name'), detail: $('file-conflict-detail'),
+  cancel: $('file-conflict-cancel'), rename: $('file-conflict-rename'), replace: $('file-conflict-replace'),
+}, () => loggedIn && !accessExpired && navigator.onLine, sizeLabel);
 $('upload-input').addEventListener('change', async () => {
   const file = $('upload-input').files[0];
-  if (!file) return;
+  if (!file || fileUploadController) return;
   if (file.size > 50 * 1024 * 1024) { toast('文件不能超过 50 MiB', true); $('upload-input').value = ''; return; }
+  const generation = uiGeneration, controller = fileUploadController = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 300000);
+  const current = () => generation === uiGeneration && loggedIn && !accessExpired;
+  let sending = false;
   $('upload-input').disabled = true;
-  $('upload-status').textContent = `正在上传 ${file.name}…`;
+  $('upload-status').textContent = `正在检查 ${file.name}…`;
   try {
+    const listing = await api('/api/files', { signal: controller.signal });
+    if (!current()) return;
+    if (listing.uploadProtocol !== UPLOAD_PROTOCOL || !Array.isArray(listing.files)) throw Error('文件服务需要更新后才能安全上传；未发送文件内容');
+    const existing = listing.files.find(entry => entry.name === file.name);
+    const upload = existing ? await uploadPrompt.ask(file, existing, controller.signal) : { mode: 'create' };
+    if (!current()) return;
+    if (!upload || controller.signal.aborted) { $('upload-status').textContent = '已取消上传，原文件保留。'; return; }
+    $('upload-status').textContent = `正在上传 ${file.name}…`;
+    sending = true;
     const client = serviceLink.files;
-    if (client) await client.upload(file);
-    else await api(`/api/files/${encodeURIComponent(file.name)}`, { method: 'PUT', raw: file });
-    $('upload-status').textContent = '上传完成，文件已放进桌面中转目录。';
-    await loadFiles();
-  } catch (error) { $('upload-status').textContent = error.message; }
-  finally { $('upload-input').disabled = false; $('upload-input').value = ''; }
+    const result = client ? await client.upload(file, upload, controller.signal)
+      : await api(`/api/files/${encodeURIComponent(file.name)}`, { method: 'PUT', raw: file, upload, signal: controller.signal });
+    if (!current()) return;
+    $('upload-status').textContent = `上传完成：${result.name || file.name}`;
+    try { await loadFiles(controller.signal); } catch { if (current()) $('upload-status').textContent = `上传完成：${result.name || file.name}；列表刷新失败，请手动刷新，不要重复上传。`; }
+  } catch (error) {
+    if (current()) $('upload-status').textContent = controller.signal.aborted
+      ? sending ? '上传已中断，结果未知；请检查文件状态后手动重试。' : '检查已取消，未上传文件。'
+      : `${sending && (!error.status || error.outcome === 'unknown') ? '上传结果未确认：' : ''}${error.message}；不会自动重试，请刷新文件列表后重新选择。`;
+  } finally {
+    clearTimeout(timer); if (fileUploadController === controller) fileUploadController = undefined;
+    $('upload-input').disabled = false; $('upload-input').value = '';
+  }
 });
 window.addEventListener('online', () => void poll());
 window.addEventListener('offline', () => {

@@ -96,3 +96,5 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 .connection-trace-list{max-height:280px;overflow:auto;padding-left:24px;font-size:12px;line-height:1.7;overflow-wrap:anywhere}.connection-trace-list li{padding:4px 0}#connection-trace-copy{width:100%;max-height:240px;box-sizing:border-box;margin-top:12px;resize:vertical}
 
 .connection-trace{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}.connection-trace summary{cursor:pointer;font-size:13px;font-weight:600}
+
+.file-conflict-name{overflow-wrap:anywhere;font-size:14px;font-weight:600}#file-conflict-dialog .confirmation-actions{flex-wrap:wrap}#file-conflict-dialog button{min-height:44px}

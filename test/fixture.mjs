@@ -6,6 +6,8 @@ import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readUploadHeaders } from '../panel/public/file-upload.js';
 import { createPanel } from '../panel/server.mjs';
 import { createDesktopControls } from '../native/desktop-controls.mjs';
 import { createManagerServer } from '../native/manager-server.mjs';
@@ -22,6 +24,8 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const terminalInputs = [], terminalSizes = [], terminalViews = [], terminalHistoryReads = [], terminalChildren = new Set(); let terminalConnections = 0;
   const terminalGeometry = { maxCols: terminalMaxCols };
   const files = new Map();
+  const fileVersions = new WeakMap(); let fileGeneration = 0;
+  const fileVersion = bytes => { if (!fileVersions.has(bytes)) fileVersions.set(bytes, createHash('sha256').update(String(++fileGeneration)).digest('hex')); return fileVersions.get(bytes); };
   const screenGeometry = { width: rfbSize?.width ?? 1600, height: rfbSize?.height ?? 1600 };
   const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0, viewportResizes: 0 };
   const tunnel = { tunnelID: 'private-tunnel-id', connectorID: 'private-connector-id', connections: [
@@ -34,12 +38,25 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     const body = Buffer.concat(chunks);
     if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
     if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试' })); }
-    if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ files: [...files].map(([name, content]) => ({ name, size: content.length, modified: 1 })) })); }
+    if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, files: [...files].map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
     if (req.url.startsWith('/files/')) {
       const name = decodeURIComponent(req.url.slice('/files/'.length));
-      if (req.method === 'PUT') { files.set(name, body); res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ok: true, name })); }
+      if (req.method === 'PUT') {
+        res.setHeader('content-type', 'application/json');
+        let options; try { options = readUploadHeaders(req.headers); } catch (error) { res.writeHead(400); return res.end(JSON.stringify({ error: error.message })); }
+        const existing = files.get(name);
+        if (options.mode === 'create' && existing) { res.writeHead(409); return res.end(JSON.stringify({ error: '已有同名文件，未覆盖' })); }
+        if (options.mode === 'replace' && (!existing || fileVersion(existing) !== options.version)) { res.writeHead(412); return res.end(JSON.stringify({ error: '原文件已变化，未替换' })); }
+        let actual = name;
+        if (options.mode === 'rename') {
+          const dot = name.lastIndexOf('.'), stem = dot > 0 ? name.slice(0, dot) : name, extension = dot > 0 ? name.slice(dot) : '';
+          for (let index = 2; files.has(actual) && index <= 100; index++) actual = stem + ' (' + index + ')' + extension;
+          if (files.has(actual)) { res.writeHead(409); return res.end(JSON.stringify({ error: '自动改名达到上限' })); }
+        }
+        files.set(actual, body); return res.end(JSON.stringify({ ok: true, name: actual, size: body.length }));
+      }
       if (!files.has(name)) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: '文件不存在' })); }
-      res.setHeader('content-length', files.get(name).length); return res.end(files.get(name));
+      res.setHeader('content-length', files.get(name).length); res.setHeader('etag', '"' + fileVersion(files.get(name)) + '"'); return res.end(files.get(name));
     }
     if (['/paste', '/key', '/terminal'].includes(req.url)) {
       received.at(-1).body = JSON.parse(body);

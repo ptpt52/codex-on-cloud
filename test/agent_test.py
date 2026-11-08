@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
+from urllib.parse import quote
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('desktop_agent', Path(__file__).parents[1] / 'desktop' / 'agent.py')
@@ -97,11 +99,79 @@ class AgentTests(unittest.TestCase):
         external.write_text('do not change')
         (self.desktop.transfer_dir / 'link').symlink_to(external)
         self.assertEqual(self.request('GET', '/files/link')[0], 404)
-        self.assertEqual(self.request('PUT', '/files/link', b'new file')[0], 200)
+        self.assertEqual(self.request('PUT', '/files/link', b'new file')[0], 409)
         self.assertEqual(external.read_text(), 'do not change')
-        self.assertFalse((self.desktop.transfer_dir / 'link').is_symlink())
-        self.assertEqual(self.request('GET', '/files/link')[1], b'new file')
+        self.assertTrue((self.desktop.transfer_dir / 'link').is_symlink())
+        self.assertEqual(self.request('PUT', '/files/link', b'new', headers={'X-Codex-Upload-Mode': 'replace', 'If-Match': '"' + 'a' * 64 + '"'})[0], 412)
         self.assertEqual(list(self.desktop.transfer_dir.glob('.upload-*')), [])
+
+    def version(self, name):
+        listing = json.loads(self.request('GET', '/files')[1])
+        self.assertEqual(listing['uploadProtocol'], 1)
+        return next(file['version'] for file in listing['files'] if file['name'] == name)
+
+    def test_default_create_and_versioned_replace(self):
+        self.assertEqual(self.request('PUT', '/files/keep', b'original')[0], 200)
+        version = self.version('keep')
+        self.assertRegex(version, r'^[a-f0-9]{64}$')
+        self.assertEqual(self.request('PUT', '/files/keep', b'unconfirmed')[0], 409)
+        self.assertEqual(self.request('GET', '/files/keep')[1], b'original')
+        headers = {'X-Codex-Upload-Mode': 'replace', 'If-Match': '"' + version + '"'}
+        self.assertEqual(self.request('PUT', '/files/keep', b'confirmed', headers=headers)[0], 200)
+        self.assertNotEqual(self.version('keep'), version)
+        self.assertEqual(self.request('PUT', '/files/keep', b'stale', headers=headers)[0], 412)
+        self.assertEqual(self.request('GET', '/files/keep')[1], b'confirmed')
+        self.assertEqual(self.request('PUT', '/files/missing', b'new', headers=headers)[0], 412)
+
+    def test_rename_is_bounded_and_preserves_extension_and_utf8(self):
+        name = '资' * 78 + '.txt'  # 238 UTF-8 bytes; suffix must truncate safely.
+        path = '/files/' + quote(name)
+        self.assertEqual(self.request('PUT', path, b'original')[0], 200)
+        renamed = json.loads(self.request('PUT', path, b'new', headers={'X-Codex-Upload-Mode': 'rename'})[1])['name']
+        self.assertTrue(renamed.endswith(' (2).txt'))
+        self.assertLessEqual(len(renamed.encode()), 240)
+        self.assertEqual((self.desktop.transfer_dir / name).read_bytes(), b'original')
+        self.assertEqual((self.desktop.transfer_dir / renamed).read_bytes(), b'new')
+        for index in range(1, 101):
+            (self.desktop.transfer_dir / agent.rename_candidate('full.txt', index)).write_bytes(b'keep')
+        self.assertEqual(self.request('PUT', '/files/full.txt', b'new', headers={'X-Codex-Upload-Mode': 'rename'})[0], 409)
+        self.assertEqual(list(self.desktop.transfer_dir.glob('.upload-*')), [])
+
+    def test_upload_rechecks_target_after_receiving_body(self):
+        for replacing in (False, True):
+            name = 'replacement' if replacing else 'created-during-upload'
+            target = self.desktop.transfer_dir / name
+            headers = {'Authorization': 'Bearer ' + self.desktop.secret, 'Content-Length': '4'}
+            if replacing:
+                target.write_bytes(b'original')
+                headers.update({'X-Codex-Upload-Mode': 'replace', 'If-Match': '"' + self.version(name) + '"'})
+            connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+            connection.putrequest('PUT', '/files/' + name)
+            for key, value in headers.items():
+                connection.putheader(key, value)
+            connection.endheaders()
+            try:
+                for _ in range(100):
+                    if list(self.desktop.transfer_dir.glob('.upload-*')):
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(list(self.desktop.transfer_dir.glob('.upload-*')))
+                # Another API writer cannot pass the upload lock.
+                self.assertEqual(self.request('PUT', '/files/busy', b'x')[0], 409)
+                target.write_bytes(b'newer external content')
+                connection.send(b'data')
+                response = connection.getresponse()
+                self.assertEqual(response.status, 412 if replacing else 409)
+                response.read()
+                self.assertEqual(target.read_bytes(), b'newer external content')
+                self.assertEqual(list(self.desktop.transfer_dir.glob('.upload-*')), [])
+            finally:
+                connection.close()
+
+    def test_invalid_upload_conditions_do_not_change_files(self):
+        for headers in ({'X-Codex-Upload-Mode': 'replace'}, {'X-Codex-Upload-Mode': 'replace', 'If-Match': '*'}, {'If-Match': '"' + 'a' * 64 + '"'}, {'X-Codex-Upload-Mode': 'rename', 'If-None-Match': '*'}):
+            self.assertEqual(self.request('PUT', '/files/invalid', b'bad', headers=headers)[0], 400)
+        self.assertFalse((self.desktop.transfer_dir / 'invalid').exists())
 
     def test_rejects_traversal_and_symlink_directory(self):
         for path in ['/files/..%2Foutside', '/files/%2Fetc%2Fpasswd', '/files/a%5Cb', '/files/.upload-secret']:

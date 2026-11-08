@@ -1,8 +1,9 @@
 import { createFileWire, sendFileChunks, FILE_CHUNK, FILE_MAX } from './file-wire.js';
+import { uploadOptions } from './file-upload.js';
 export function createFileClient(channel, failed = () => {}) {
  let active,id=0;
  const unknown=()=>Object.assign(Error('文件直连已断开，结果未知；请检查文件状态后手动重试'),{outcome:'unknown'});
- const settle=(err,result)=>{if(!active)return;const entry=active;active=null;clearTimeout(entry.timer);err?entry.reject(err):entry.resolve(result);};
+ const settle=(err,result)=>{if(!active)return;const entry=active;active=null;clearTimeout(entry.timer);entry.signal?.removeEventListener('abort',entry.abort);err?entry.reject(err):entry.resolve(result);};
  const wire=createFileWire(channel,{failed(err){settle(err);failed();},chunk(bytes){
   if(!active||active.direction!=='download'||!active.started||active.received+bytes.length>active.size||active.received+bytes.length>FILE_MAX)throw unknown();
   active.received+=bytes.length;active.chunks.push(bytes.slice());
@@ -21,14 +22,18 @@ export function createFileClient(channel, failed = () => {}) {
    return;
   }
   if(value.type!=='done'||!entry.started||entry.direction==='download'&&(entry.received!==entry.size||value.size!==entry.size))throw unknown();
-  settle(null,entry.direction==='download'?new Blob(entry.chunks,{type:'application/octet-stream'}):{ok:true});
+  if(entry.direction==='upload'&&(typeof value.name!=='string'||!value.name||value.name==='.'||value.name==='..'||/[/\\\x00-\x1f\x7f]/.test(value.name)||new TextEncoder().encode(value.name).length>240))throw unknown();
+  settle(null,entry.direction==='download'?new Blob(entry.chunks,{type:'application/octet-stream'}):{ok:true,name:value.name});
  }});
- function transfer(direction,name,size,file){
+ function transfer(direction,name,size,file,upload,signal){
+  if(signal?.aborted)return Promise.reject(signal.reason||unknown());
   if(!wire.ready||active||id>=2147483647||!Number.isSafeInteger(size)||size<0||size>FILE_MAX)return Promise.reject(Object.assign(Error('文件直连繁忙、未就绪或文件超过 50 MiB'),{outcome:'rejected'}));
   return new Promise((resolve,reject)=>{
-   const entry=active={id:++id,direction,size,file,received:0,chunks:[],started:false,resolve,reject,timer:setTimeout(()=>{settle(unknown());wire.close();},300000)};
-   try{wire.send({type:'start',id:entry.id,direction,name,size});}catch(err){settle(err);wire.close();}
+   const abort=()=>{settle(unknown());wire.close();};
+   const entry=active={id:++id,direction,size,file,received:0,chunks:[],started:false,signal,abort,resolve,reject,timer:setTimeout(abort,300000)};
+   signal?.addEventListener('abort',abort,{once:true});
+   try{wire.send({type:'start',id:entry.id,direction,name,size,...(direction==='upload'?{upload:uploadOptions(upload)}:{})});}catch(err){settle(err);wire.close();}
   });
  }
- return{get ready(){return wire.ready;},get busy(){return !!active;},upload(file){return transfer('upload',file.name,file.size,file);},download(name,size){return transfer('download',name,size);},close(){wire.close();}};
+ return{get ready(){return wire.ready;},get busy(){return !!active;},upload(file,options,signal){return transfer('upload',file.name,file.size,file,options,signal);},download(name,size){return transfer('download',name,size);},close(){wire.close();}};
 }

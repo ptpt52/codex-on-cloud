@@ -20,6 +20,7 @@ import { attachTerminal } from './terminal-bridge.mjs';
 import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
+import { readUploadHeaders, uploadHeaders, UPLOAD_PROTOCOL } from './public/file-upload.js';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
 import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
@@ -563,25 +564,31 @@ export async function createPanel(config) {
       const encoded = path.slice('/api/files/'.length);
       let name;
       try { name = decodeURIComponent(encoded); } catch { throw new HttpError(400, '文件名无效'); }
-      if (!name || name === '.' || name === '..' || /[/\\\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 240) throw new HttpError(400, '文件名无效');
+      if (!name || name === '.' || name === '..' || name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 240) throw new HttpError(400, '文件名无效');
       const token = cookieToken(req.headers.cookie), transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT');
       try {
       if (req.method === 'PUT') {
         const length = Number(req.headers['content-length']);
         if (!Number.isSafeInteger(length) || length < 0 || length > MAX_UPLOAD) throw new HttpError(413, '文件大小必须明确，且不能超过 50 MiB');
+        const upload = readUploadHeaders(req.headers);
+        const listed = await agent('/files'); transfer.check(); requireWrite(req);
+        if (listed.uploadProtocol !== UPLOAD_PROTOCOL) throw new HttpError(503, '文件服务需要更新后才能安全上传；未发送文件内容');
+        if (!Array.isArray(listed.files)) throw new HttpError(503, '共享目录状态暂不可用');
+        const existing = listed.files.find(file => file.name === name);
+        if (upload.mode === 'create' && existing) throw new HttpError(409, '已有同名文件，未覆盖；请选择替换或自动改名');
+        if (upload.mode === 'replace' && (!existing || existing.version !== upload.version)) throw new HttpError(412, '原文件已变化，未替换；请刷新后重新选择');
         if (session.role === 'temporary') {
-          const listed = await agent('/files'); transfer.check(); requireWrite(req);
-          if (!Array.isArray(listed.files) || listed.files.length >= 1000) throw new HttpError(413, '共享目录已达到临时上传文件数量上限');
+          if (listed.files.length >= 1000 && !(upload.mode === 'replace' && existing)) throw new HttpError(413, '共享目录已达到临时上传文件数量上限');
           let total = 0, replaced = 0;
           for (const file of listed.files) {
             if (!Number.isSafeInteger(file.size) || file.size < 0) throw new HttpError(503, '共享目录状态暂不可用');
-            total += file.size; if (file.name === name) replaced = file.size;
+            total += file.size; if (upload.mode === 'replace' && file.name === name) replaced = file.size;
           }
           if (total - replaced + length > 1024 * 1024 * 1024) throw new HttpError(413, '共享目录已达到临时上传的 1 GiB 容量上限');
         }
         const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; callback(this.total > MAX_UPLOAD ? new Error('文件过大') : null, chunk); } });
         const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, {
-          method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream' },
+          method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
         const result = await response.json(); transfer.check(); return reply(res, response.status, result);
@@ -589,7 +596,8 @@ export async function createPanel(config) {
       const response = await fetch(`${config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: transfer.signal });
       transfer.check();
       if (!response.ok) return reply(res, response.status, await response.json());
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}) });
+      const etag = response.headers.get('etag');
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}), ...(/^"[a-f0-9]{64}"$/.test(etag || '') ? { etag } : {}) });
       await pipeline(response.body, res);
       return;
       } finally { transfer.finish(); }

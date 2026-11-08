@@ -4,8 +4,10 @@
 Runs as the desktop user, on loopback, and accepts no shell commands.
 """
 import hmac
+import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -16,6 +18,37 @@ from urllib.parse import unquote, urlsplit
 
 MAX_FILE = 50 * 1024 * 1024
 MAX_TEXT = 32 * 1024
+UPLOAD_PROTOCOL = 1
+MAX_RENAME = 100
+
+
+def file_version(info):
+    value = ':'.join(str(item) for item in (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def upload_policy(headers):
+    mode = headers.get('X-Codex-Upload-Mode', 'create')
+    match, absent = headers.get('If-Match'), headers.get('If-None-Match')
+    if mode == 'replace':
+        if absent is not None or not match or not re.fullmatch(r'"[a-f0-9]{64}"', match):
+            raise AgentError(400, '替换文件需要有效的原文件版本')
+        return mode, match[1:-1]
+    if mode not in ('create', 'rename') or match is not None or absent is not None and (mode != 'create' or absent != '*'):
+        raise AgentError(400, '上传处理方式无效')
+    return mode, None
+
+
+def rename_candidate(name, index):
+    if index == 1:
+        return name
+    stem, extension = os.path.splitext(name)
+    if len(extension.encode()) > 64:
+        stem, extension = name, ''
+    suffix = ' (' + str(index) + ')'
+    budget = 240 - len((suffix + extension).encode())
+    stem = stem.encode()[:budget].decode('utf-8', errors='ignore')
+    return stem + suffix + extension
 KEYS = {
     'Enter': 'Return', 'Tab': 'Tab', 'Escape': 'Escape', 'Backspace': 'BackSpace',
     'Ctrl+C': 'ctrl+c', 'Ctrl+D': 'ctrl+d', 'Ctrl+L': 'ctrl+l',
@@ -143,8 +176,8 @@ class Handler(BaseHTTPRequestHandler):
                             break
                         if item.is_file(follow_symlinks=False) and not item.name.startswith('.upload-'):
                             info = item.stat(follow_symlinks=False)
-                            entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime})
-                return self.json(200, {'files': sorted(entries, key=lambda item: item['modified'], reverse=True)})
+                            entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime, 'version': file_version(info)})
+                return self.json(200, {'files': sorted(entries, key=lambda item: item['modified'], reverse=True), 'uploadProtocol': UPLOAD_PROTOCOL})
             finally:
                 os.close(directory)
         if path.startswith('/files/') and self.command in ('GET', 'PUT'):
@@ -163,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/octet-stream')
                         self.send_header('Content-Length', str(info.st_size))
+                        self.send_header('ETag', '"' + file_version(info) + '"')
                         self.send_header('Connection', 'close')
                         self.end_headers()
                         shutil.copyfileobj(source, self.wfile, 64 * 1024)
@@ -174,10 +208,24 @@ class Handler(BaseHTTPRequestHandler):
                     length = -1
                 if length < 0 or length > MAX_FILE:
                     raise AgentError(413, '文件不能超过 50 MiB')
+                mode, expected = upload_policy(self.headers)
                 if not desktop.upload_lock.acquire(blocking=False):
                     raise AgentError(409, '正在上传其他文件，请稍后重试')
                 temp = '.upload-' + os.urandom(12).hex()
                 try:
+                    def check_target():
+                        try:
+                            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                        except FileNotFoundError:
+                            if mode == 'replace':
+                                raise AgentError(412, '原文件已不存在，未替换；请刷新后重新选择')
+                            return
+                        if mode == 'create':
+                            raise AgentError(409, '已有同名文件，未覆盖；请选择替换或自动改名')
+                        if mode == 'replace' and (not stat.S_ISREG(info.st_mode) or file_version(info) != expected):
+                            raise AgentError(412, '原文件已变化，未替换；请刷新后重新选择')
+
+                    check_target()
                     if shutil.disk_usage(desktop.transfer_dir).free < length + 64 * 1024 * 1024:
                         raise AgentError(507, '文件中转目录的剩余空间不足')
                     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
@@ -191,7 +239,25 @@ class Handler(BaseHTTPRequestHandler):
                             remaining -= len(chunk)
                         target.flush()
                         os.fsync(target.fileno())
-                    os.replace(temp, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    if mode == 'replace':
+                        # Serialize API writers and recheck after receiving the
+                        # body. Shell writes do not share this advisory lock.
+                        check_target()
+                        os.replace(temp, name, src_dir_fd=directory, dst_dir_fd=directory)
+                    else:
+                        # link is atomic and never replaces an existing entry,
+                        # including a symlink or a file created after the check.
+                        for index in range(1, MAX_RENAME + 1 if mode == 'rename' else 2):
+                            candidate = rename_candidate(name, index)
+                            try:
+                                os.link(temp, candidate, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+                                name = candidate
+                                break
+                            except FileExistsError:
+                                if mode == 'create':
+                                    raise AgentError(409, '已有同名文件，未覆盖；请选择替换或自动改名')
+                        else:
+                            raise AgentError(409, '自动改名已尝试100个名称，请修改文件名后重试')
                 finally:
                     try:
                         os.unlink(temp, dir_fd=directory)

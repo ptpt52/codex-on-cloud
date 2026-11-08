@@ -19,6 +19,11 @@ test('dedicated file channel transfers 8 MiB and empty files over real DTLS, has
  await files.upload(new File([bytes],'中文.bin'));const blob=await files.download('中文.bin',bytes.length);assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));
  await files.upload(new File([],'empty'));assert.equal((await files.download('empty',0)).size,0);
  assert.equal((await c.rpc('files')).value.files.length,2);assert.equal((await(await app.request('/api/state')).json()).mine,true);assert.equal(app.vncConnections,0);assert.deepEqual(app.inputCalls,[]);
+ const original=(await c.rpc('files')).value.files.find(f=>f.name==='中文.bin');
+ assert.equal((await files.upload(new File(['another'],'中文.bin'),{mode:'rename'})).name,'中文 (2).bin');assert.equal(hash(app.files.get('中文.bin')),hash(bytes));
+ assert.equal((await files.upload(new File(['replaced'],'中文.bin'),{mode:'replace',version:original.version})).name,'中文.bin');
+ await assert.rejects(files.upload(new File(['stale'],'中文.bin'),{mode:'replace',version:original.version}),/原文件已变化/);assert.equal(app.files.get('中文.bin').toString(),'replaced');
+ assert.equal(app.received.filter(r=>r.method==='PUT'&&r.url==='/files/%E4%B8%AD%E6%96%87.bin').length,3);
 });
 test('file direct shares guest quotas and rejects oversized input without replay',async t=>{
  const {app,c}=await setup(t);const files=await fileClient(c);
@@ -30,7 +35,8 @@ test('file direct shares guest quotas and rejects oversized input without replay
 test('revoking a guest during a stalled direct upload aborts its transfer and sends no retry',async t=>{
  const {app,c}=await setup(t),files=await fileClient(c);let release,started;const waiting=new Promise(r=>release=r),entered=new Promise(r=>started=r);
  app.files.set('interrupted',Buffer.from('original'));
- const upload=files.upload({name:'interrupted',size:32760,slice(offset){return{async arrayBuffer(){if(offset){started();await waiting;}return new Uint8Array(16380).buffer;}};}});void upload.catch(()=>{});await entered;
+ const version=(await c.rpc('files')).value.files.find(f=>f.name==='interrupted').version;
+ const upload=files.upload({name:'interrupted',size:32760,slice(offset){return{async arrayBuffer(){if(offset){started();await waiting;}return new Uint8Array(16380).buffer;}};}},{mode:'replace',version});void upload.catch(()=>{});await entered;
  for(let n=0;n<100&&!app.received.some(r=>r.method==='PUT'&&r.url==='/files/interrupted');n++)await new Promise(r=>setTimeout(r,10));
  const quota=await fetch(app.config.origin+'/api/files/second',{method:'PUT',headers:{...c.headers,'content-type':'application/octet-stream'},body:'second'});assert.equal(quota.status,503);
  await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:false}});await assert.rejects(upload);release();
@@ -45,7 +51,8 @@ test('real Python file helper preserves disk bytes and atomic replacement when d
  t.after(async()=>{if(helper.exitCode===null){helper.kill();await once(helper,'exit');}});await once(helper.stdout,'data');app.config.agentUrl='http://127.0.0.1:'+port;
  const files=await fileClient(c),bytes=Buffer.alloc(128*1024,173);await files.upload(new File([bytes],'disk.bin'));assert.equal(hash(await readFile(directory+'/disk.bin')),hash(bytes));assert.equal(hash(Buffer.from(await(await files.download('disk.bin',bytes.length)).arrayBuffer())),hash(bytes));
  await writeFile(directory+'/keep','original');let release,entered;const gate=new Promise(r=>release=r),started=new Promise(r=>entered=r);
- const uploading=files.upload({name:'keep',size:32760,slice(offset){return{async arrayBuffer(){if(offset){entered();await gate;}return new Uint8Array(16380).buffer;}};}});void uploading.catch(()=>{});await started;
+ const version=(await c.rpc('files')).value.files.find(f=>f.name==='keep').version;
+ const uploading=files.upload({name:'keep',size:32760,slice(offset){return{async arrayBuffer(){if(offset){entered();await gate;}return new Uint8Array(16380).buffer;}};}},{mode:'replace',version});void uploading.catch(()=>{});await started;
  for(let n=0;n<100&&!(await readdir(directory)).some(f=>f.startsWith('.upload-'));n++)await new Promise(r=>setTimeout(r,10));
  await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:false}});await assert.rejects(uploading);release();
  for(let n=0;n<100&&(await readdir(directory)).some(f=>f.startsWith('.upload-'));n++)await new Promise(r=>setTimeout(r,10));

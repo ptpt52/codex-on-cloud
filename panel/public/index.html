@@ -300,10 +300,14 @@
   <dialog id="files-dialog" class="files-dialog">
     <div class="dialog-heading"><div><span class="eyebrow">WORKSPACE TRANSFER</span><h2>文件中转</h2></div><button id="close-files" class="quiet" aria-label="关闭文件中转">✕</button></div>
     <p id="file-transport" class="muted" role="status">文件内容：HTTPS</p>
-    <p class="muted">文件位于本机的 <code id="transfer-path">工作目录/transfer</code>。每个文件最大 50 MiB，同名上传会覆盖。</p>
+    <p class="muted">文件位于本机的 <code id="transfer-path">工作目录/transfer</code>。每个文件最大 50 MiB，同名上传需确认，可自动改名保留原文件。</p>
     <label class="upload-zone" for="upload-input"><span aria-hidden="true">↑</span><strong>选择文件上传</strong><small>从手机传到开发桌面</small></label><input id="upload-input" type="file" hidden>
     <p id="upload-status" class="muted" role="status"></p><div id="file-list" class="file-list"></div>
     <button id="refresh-files" class="secondary">刷新文件列表</button>
+  </dialog>
+  <dialog id="file-conflict-dialog" class="files-dialog action-confirmation" aria-labelledby="file-conflict-title" aria-describedby="file-conflict-name file-conflict-detail">
+    <h2 id="file-conflict-title">已存在同名文件</h2><p id="file-conflict-name" class="file-conflict-name"></p><p id="file-conflict-detail" class="muted"></p>
+    <div class="confirmation-actions"><button id="file-conflict-cancel" class="secondary" type="button" autofocus>取消</button><button id="file-conflict-rename" class="primary" type="button">自动改名上传</button><button id="file-conflict-replace" class="secondary interrupt-key" type="button">替换文件</button></div>
   </dialog>
   <dialog id="servers-dialog" class="files-dialog servers-dialog" aria-labelledby="servers-title">
     <div class="dialog-heading"><h2 id="servers-title">切换服务器</h2><button id="servers-close" class="quiet" type="button" aria-label="关闭服务器列表">✕</button></div>
