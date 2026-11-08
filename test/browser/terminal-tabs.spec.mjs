@@ -42,13 +42,15 @@ test('terminal labels switch only the current stream, isolate drafts and restore
     expect(await app.controls.listTerminals()).toEqual(original); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
-test('single-terminal mode keeps the session bar hidden and preserves the focused phone layout', async ({ page }) => {
+test('single-terminal mode keeps quick close and one final disabled create entry in the header', async ({ page }) => {
   const app = await fixture({ rfb: true, maxTerminals: 1 });
   try {
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click();
-    await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#terminal-session-bar')).toBeHidden();
+    await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#terminal-session-bar')).toBeVisible();
+    await expect(page.locator('#terminal-tabs [data-terminal-close=main]')).toHaveCount(1);
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toBeDisabled();
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });

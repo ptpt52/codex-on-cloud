@@ -45,6 +45,7 @@
           <div id="terminal-session-bar" class="terminal-session-bar" hidden>
             <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端会话"></div>
             <button id="terminal-session-button" class="view-button terminal-session-button" type="button" aria-haspopup="dialog" aria-controls="terminal-switch-dialog">选择终端 ▾</button>
+            <button id="terminal-session-close" class="terminal-tab-close terminal-session-close" type="button" aria-label="结束当前终端" title="结束当前终端" hidden>×</button>
           </div>
           <span class="monitor-icon" aria-hidden="true">▣</span><strong id="view-title">开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span>
         </div>
@@ -134,7 +135,7 @@
 
   <dialog id="terminal-switch-dialog" class="files-dialog terminal-switch-dialog" aria-labelledby="terminal-switch-title">
     <div class="dialog-heading"><h2 id="terminal-switch-title">选择终端</h2><button id="close-terminal-switch" class="quiet" type="button" aria-label="关闭会话列表">✕</button></div>
-    <p class="muted">运行中的终端点击切换，空闲位置点击新开。其他任务继续运行，草稿分别保留。</p>
+    <p class="muted">点击终端切换，“×”确认后结束；末尾“新开终端”创建 shell。其他任务继续运行，草稿分别保留。</p>
     <div id="terminal-switch-list" class="terminal-switch-list"></div>
     <p id="terminal-switch-status" class="muted" role="status"></p>
     <div class="clipboard-actions"><button id="terminal-switch-refresh" class="secondary" type="button">刷新列表</button><button id="terminal-switch-manage" class="secondary" type="button">管理终端</button></div>

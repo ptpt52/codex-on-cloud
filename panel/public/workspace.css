@@ -18,11 +18,20 @@
 .terminal-session-bar:not([hidden]) ~ .connection-status { flex: none; }
 .terminal-tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .terminal-tabs::-webkit-scrollbar { display: none; }
-.terminal-tabs .terminal-tab { flex: 0 1 200px; min-width: 80px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.terminal-tab-item { display: flex; flex: 0 1 200px; min-width: 120px; }
+.terminal-tabs .terminal-tab { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.terminal-tab-item[data-available=true] { flex: 0 0 auto; min-width: 112px; }
+.terminal-tab-item[data-available=false] .terminal-tab { border-right: 0; border-radius: 6px 0 0 6px; }
+.terminal-tab-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; min-height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 0 6px 6px 0; background: var(--surface); color: var(--muted); font-size: 20px; }
+.terminal-tab-close:hover { background: var(--danger-soft); color: var(--danger); }
+.terminal-session-close { display: none; }
 .terminal-tab[aria-selected=true] { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); }
 .terminal-session-button { display: none; }
 .terminal-switch-dialog { max-height: 85dvh; overflow: auto; }
 .terminal-switch-list { display: grid; gap: 8px; margin: 14px 0; }
+.terminal-choice-row { display: flex; gap: 6px; min-width: 0; }
+.terminal-choice-row .terminal-choice { flex: 1; min-width: 0; }
+.terminal-choice-row .terminal-tab-close { width: 44px; border-radius: 9px; }
 .terminal-choice { min-height: 64px; width: 100%; padding: 10px 12px; text-align: left; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
 .terminal-choice small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .terminal-choice[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); }
@@ -85,7 +94,10 @@
 .workspace-keyboard-open .input-dock #terminal-target-note, .workspace-keyboard-open .input-dock .dock-note { display: none; }
 @media (max-width: 1000px) {
   .terminal-tabs { display: none; }
-  .terminal-session-button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .terminal-session-bar { display: flex; }
+  .terminal-session-button { display: block; flex: 1; min-width: 0; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+  .terminal-session-bar[data-closable=true] .terminal-session-button { border-radius: 6px 0 0 6px; border-right: 0; }
+  .terminal-session-close:not([hidden]) { display: inline-flex; width: 44px; }
 }
 @media (max-width: 700px) {
   .terminal-session-bar:not([hidden]) ~ .connection-status { width: 14px; height: 14px; padding: 0; margin-left: 4px; gap: 0; font-size: 0; justify-content: center; }

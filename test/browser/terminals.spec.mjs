@@ -41,7 +41,7 @@ test('create, rename and switch independent terminals, route paste and Enter sep
     app.disconnectViewers(); await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 10000 });
     await expect(page.locator('#mobile-input')).toHaveValue('中文草稿保留');
     await page.reload(); await expect(page.locator('#terminals-button')).toBeEnabled();
-    await expect(page.locator('#input-terminal option')).toHaveCount(5); await expect(page.locator('#input-terminal')).toHaveValue('');
+    await expect(page.locator('#input-terminal option')).toHaveCount(4); await expect(page.locator('#input-terminal')).toHaveValue('');
     expect((await app.controls.listTerminals()).terminals).toHaveLength(2); expect(app.inputCalls.length).toBe(3); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
