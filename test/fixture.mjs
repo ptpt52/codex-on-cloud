@@ -38,13 +38,14 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     const body = Buffer.concat(chunks);
     if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
     if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试' })); }
-    if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, files: [...files].map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
+    if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, quotaProtocol: 1, truncated: files.size > 1000, files: [...files].slice(0, 1000).map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
     if (req.url.startsWith('/files/')) {
       const name = decodeURIComponent(req.url.slice('/files/'.length));
       if (req.method === 'PUT') {
         res.setHeader('content-type', 'application/json');
         let options; try { options = readUploadHeaders(req.headers); } catch (error) { res.writeHead(400); return res.end(JSON.stringify({ error: error.message })); }
         const existing = files.get(name);
+        if (req.headers['x-codex-upload-quota'] === 'temporary-v1' && (files.size > 1000 || files.size >= 1000 && !(options.mode === 'replace' && existing) || [...files.values()].reduce((sum, content) => sum + content.length, 0) - (options.mode === 'replace' ? existing?.length || 0 : 0) + body.length > 1024 * 1024 * 1024)) { res.writeHead(413); return res.end(JSON.stringify({ error: '共享目录已达到临时上传配额上限' })); }
         if (options.mode === 'create' && existing) { res.writeHead(409); return res.end(JSON.stringify({ error: '已有同名文件，未覆盖' })); }
         if (options.mode === 'replace' && (!existing || fileVersion(existing) !== options.version)) { res.writeHead(412); return res.end(JSON.stringify({ error: '原文件已变化，未替换' })); }
         let actual = name;

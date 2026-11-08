@@ -578,6 +578,8 @@ export async function createPanel(config) {
         if (upload.mode === 'create' && existing) throw new HttpError(409, '已有同名文件，未覆盖；请选择替换或自动改名');
         if (upload.mode === 'replace' && (!existing || existing.version !== upload.version)) throw new HttpError(412, '原文件已变化，未替换；请刷新后重新选择');
         if (session.role === 'temporary') {
+          if (listed.quotaProtocol !== 1) throw new HttpError(503, '文件助手需要更新后才能核算临时上传配额');
+          if (listed.truncated !== false) throw new HttpError(413, '目录超过核算范围，临时上传已暂停；请管理员整理文件');
           if (listed.files.length >= 1000 && !(upload.mode === 'replace' && existing)) throw new HttpError(413, '共享目录已达到临时上传文件数量上限');
           let total = 0, replaced = 0;
           for (const file of listed.files) {
@@ -588,7 +590,7 @@ export async function createPanel(config) {
         }
         const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; callback(this.total > MAX_UPLOAD ? new Error('文件过大') : null, chunk); } });
         const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
-          method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload) },
+          method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
         const result = await response.json(); transfer.check(); return reply(res, response.status, result);

@@ -20,6 +20,26 @@ MAX_FILE = 50 * 1024 * 1024
 MAX_TEXT = 32 * 1024
 UPLOAD_PROTOCOL = 1
 MAX_RENAME = 100
+MAX_DIRECTORY_ENTRIES = 4096
+MAX_SHARED_FILES = 1000
+MAX_SHARED_BYTES = 1024 * 1024 * 1024
+
+
+def scan_files(directory):
+    entries, truncated, scanned = [], False, 0
+    with os.scandir(directory) as files:
+        for item in files:
+            scanned += 1
+            if scanned > MAX_DIRECTORY_ENTRIES:
+                truncated = True
+                break
+            if not item.name.startswith('.upload-') and item.is_file(follow_symlinks=False):
+                if len(entries) >= MAX_SHARED_FILES:
+                    truncated = True
+                    break
+                info = item.stat(follow_symlinks=False)
+                entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime, 'version': file_version(info)})
+    return entries, truncated
 
 
 def file_version(info):
@@ -169,15 +189,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == 'GET' and path == '/files':
             directory = desktop.directory()
             try:
-                entries = []
-                with os.scandir(directory) as files:
-                    for item in files:
-                        if len(entries) >= 1000:
-                            break
-                        if item.is_file(follow_symlinks=False) and not item.name.startswith('.upload-'):
-                            info = item.stat(follow_symlinks=False)
-                            entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime, 'version': file_version(info)})
-                return self.json(200, {'files': sorted(entries, key=lambda item: item['modified'], reverse=True), 'uploadProtocol': UPLOAD_PROTOCOL})
+                entries, truncated = scan_files(directory)
+                return self.json(200, {'files': sorted(entries, key=lambda item: item['modified'], reverse=True), 'uploadProtocol': UPLOAD_PROTOCOL, 'quotaProtocol': 1, 'truncated': truncated})
             finally:
                 os.close(directory)
         if path.startswith('/files/') and self.command in ('GET', 'PUT'):
@@ -209,6 +222,9 @@ class Handler(BaseHTTPRequestHandler):
                 if length < 0 or length > MAX_FILE:
                     raise AgentError(413, '文件不能超过 50 MiB')
                 mode, expected = upload_policy(self.headers)
+                quota = self.headers.get('X-Codex-Upload-Quota')
+                if quota not in (None, 'temporary-v1'):
+                    raise AgentError(400, '上传配额参数无效')
                 if not desktop.upload_lock.acquire(blocking=False):
                     raise AgentError(409, '正在上传其他文件，请稍后重试')
                 temp = '.upload-' + os.urandom(12).hex()
@@ -225,7 +241,22 @@ class Handler(BaseHTTPRequestHandler):
                         if mode == 'replace' and (not stat.S_ISREG(info.st_mode) or file_version(info) != expected):
                             raise AgentError(412, '原文件已变化，未替换；请刷新后重新选择')
 
+                    def check_quota():
+                        if quota is None:
+                            return
+                        entries, truncated = scan_files(directory)
+                        if truncated:
+                            raise AgentError(413, '目录超过核算范围，临时上传已暂停；请管理员整理文件')
+                        existing = next((entry for entry in entries if entry['name'] == name), None)
+                        replacing = mode == 'replace' and existing is not None
+                        if len(entries) >= MAX_SHARED_FILES and not replacing:
+                            raise AgentError(413, '共享目录已达到临时上传文件数量上限')
+                        total = sum(entry['size'] for entry in entries)
+                        if total - (existing['size'] if replacing else 0) + length > MAX_SHARED_BYTES:
+                            raise AgentError(413, '共享目录已达到临时上传的 1 GiB 容量上限')
+
                     check_target()
+                    check_quota()
                     if shutil.disk_usage(desktop.transfer_dir).free < length + 64 * 1024 * 1024:
                         raise AgentError(507, '文件中转目录的剩余空间不足')
                     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
@@ -239,6 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                             remaining -= len(chunk)
                         target.flush()
                         os.fsync(target.fileno())
+                    check_quota()
                     if mode == 'replace':
                         # Serialize API writers and recheck after receiving the
                         # body. Shell writes do not share this advisory lock.

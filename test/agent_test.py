@@ -123,6 +123,46 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/files/keep')[1], b'confirmed')
         self.assertEqual(self.request('PUT', '/files/missing', b'new', headers=headers)[0], 412)
 
+    def test_guest_quota_rejects_truncated_directories_and_rescans_before_commit(self):
+        target = self.desktop.transfer_dir / 'keep'
+        target.write_bytes(b'original')
+        for number in range(1000):
+            (self.desktop.transfer_dir / ('item-' + str(number))).touch()
+        listing = json.loads(self.request('GET', '/files')[1])
+        self.assertTrue(listing['truncated'])
+        self.assertEqual(listing['quotaProtocol'], 1)
+        self.assertEqual(len(listing['files']), 1000)
+        headers = {'X-Codex-Upload-Mode': 'replace', 'If-Match': '"' + agent.file_version(target.stat()) + '"', 'X-Codex-Upload-Quota': 'temporary-v1'}
+        self.assertEqual(self.request('PUT', '/files/keep', b'new', headers=headers)[0], 413)
+        (self.desktop.transfer_dir / 'item-999').unlink()
+        self.assertEqual(self.request('PUT', '/files/keep', b'new', headers=headers)[0], 200)
+        self.assertEqual(self.request('PUT', '/files/new', b'new', headers={'X-Codex-Upload-Quota': 'temporary-v1'})[0], 413)
+
+    def test_guest_quota_rechecks_external_growth_during_upload(self):
+        target = self.desktop.transfer_dir / 'keep'
+        target.write_bytes(b'original')
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+        connection.putrequest('PUT', '/files/keep')
+        for key, value in {'Authorization': 'Bearer ' + self.desktop.secret, 'Content-Length': '4', 'X-Codex-Upload-Mode': 'replace', 'If-Match': '"' + self.version('keep') + '"', 'X-Codex-Upload-Quota': 'temporary-v1'}.items():
+            connection.putheader(key, value)
+        connection.endheaders()
+        try:
+            for _ in range(100):
+                if list(self.desktop.transfer_dir.glob('.upload-*')):
+                    break
+                time.sleep(0.01)
+            self.assertTrue(list(self.desktop.transfer_dir.glob('.upload-*')))
+            with (self.desktop.transfer_dir / 'large').open('wb') as sparse:
+                sparse.truncate(agent.MAX_SHARED_BYTES)
+            connection.send(b'data')
+            response = connection.getresponse()
+            self.assertEqual(response.status, 413)
+            response.read()
+            self.assertEqual(target.read_bytes(), b'original')
+            self.assertEqual(list(self.desktop.transfer_dir.glob('.upload-*')), [])
+        finally:
+            connection.close()
+
     def test_rename_is_bounded_and_preserves_extension_and_utf8(self):
         name = '资' * 78 + '.txt'  # 238 UTF-8 bytes; suffix must truncate safely.
         path = '/files/' + quote(name)

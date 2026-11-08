@@ -84,4 +84,12 @@ test('guest rename consumes a new file quota while versioned replacement credits
   version = (await (await app.request('/api/files')).json()).files[0].version;
   assert.equal((await put({ mode: 'rename' })).status, 413);
   assert.equal((await put({ mode: 'replace', version })).status, 200); assert.equal(app.files.get('keep').toString(), 'new');
+  app.files.clear(); app.files.set('keep', Buffer.from('original'));
+  for (let index = 1; index < 1001; index++) app.files.set('item' + index, Buffer.alloc(0));
+  const listing = (await (await app.request('/api/files')).json());
+  assert.equal(listing.files.length, 1000); assert.equal(listing.truncated, true);
+  version = listing.files[0].version;
+  assert.equal((await put({ mode: 'replace', version })).status, 413);
+  assert.equal(app.files.get('keep').toString(), 'original');
+  assert.equal(app.received.filter(req => req.method === 'PUT').every(req => req.headers['x-codex-upload-quota'] === 'temporary-v1'), true);
 });
