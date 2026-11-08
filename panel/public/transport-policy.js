@@ -1,6 +1,7 @@
 export const DISCONNECT_GRACE = 1500;
 export const STABLE_ROUTE = 1500;
 export const ROUTE_COOLDOWN = 30000;
+export const NETWORK_PROBE_INTERVAL = 5000;
 export const RTC_SIGNAL_TIMEOUT = 12000;
 export const RTC_CONNECT_TIMEOUT = 12000;
 
@@ -17,6 +18,7 @@ export function disconnectGrace(failed, { delay = DISCONNECT_GRACE, schedule = s
   };
 }
 export function routePolicy(now = () => performance.now()) {
-  let until = 0;
-  return { remaining: () => Math.max(0, until - now()), changed: () => { until = now() + ROUTE_COOLDOWN; } };
+  let until = 0, nextNetworkProbe = 0;
+  return { remaining: () => Math.max(0, until - now()), changed: () => { until = now() + ROUTE_COOLDOWN; },
+    networkWait: () => Math.max(0, nextNetworkProbe - now()), networkProbeStarted: () => { nextNetworkProbe = now() + NETWORK_PROBE_INTERVAL; } };
 }
