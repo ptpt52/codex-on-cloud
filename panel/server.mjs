@@ -330,9 +330,9 @@ export async function createPanel(config) {
     }
     if (path === '/api/diagnostics' && req.method === 'GET') {
       requireSession(req);
-      const [tunnel, services] = await Promise.all([tunnelDiagnostics(), serviceDiagnostics()]);
+      const [tunnel, services, filesReady] = await Promise.all([tunnelDiagnostics(), serviceDiagnostics(), fileHealth()]);
       requireSession(req);
-      return reply(res, 200, { tunnel, services });
+      return reply(res, 200, { tunnel, services, files: { ready: filesReady } });
     }
     if (path === '/api/service/rtc' && req.method === 'POST') {
       requireWrite(req);

@@ -207,7 +207,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
     tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
-    serviceDiagnostics: serviceDiagnostics || (async () => ({ available: true, panel: { state: 'active', restarts: 0, limited: false }, manager: { state: 'active', restarts: 0, limited: false }, actions: { state: 'active', restarts: 0, limited: false } })),
+    serviceDiagnostics: serviceDiagnostics || (async () => ({ available: true, panel: { state: 'active', restarts: 0, limited: false }, manager: { state: 'active', restarts: 0, limited: false }, actions: { state: 'active', restarts: 0, limited: false }, terminal: { state: 'active', restarts: 0, limited: false }, files: { state: 'active', restarts: 0, limited: false } })),
     managerSocket,
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
     webrtc, webrtcAddress: '127.0.0.1', fastConnect, streamProtocol: seamless ? 1 : 0,

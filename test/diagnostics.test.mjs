@@ -16,10 +16,12 @@ test('diagnostics require login and expose only active connection counts', async
   const app = await fixture(); t.after(() => app.close());
   assert.equal((await app.request('/api/diagnostics')).status, 401);
   assert.equal(app.received.filter(item => item.url === '/diag/tunnel').length, 0);
+  assert.equal(app.received.filter(item => item.url === '/health').length, 0);
   await app.login();
   const response = await app.request('/api/diagnostics');
   assert.equal(response.status, 200);
-  const { tunnel } = await response.json();
+  const { tunnel, files, services } = await response.json();
+  assert.deepEqual(files, { ready: true }); assert.equal(services.files.state, 'active');
   assert.deepEqual({ ...tunnel, checkedAt: 0 }, { available: true, connections: 3, ipv4: 1, ipv6: 2, checkedAt: 0 });
   assert.ok(tunnel.checkedAt > 0);
   const serialized = JSON.stringify(tunnel);
@@ -27,6 +29,31 @@ test('diagnostics require login and expose only active connection counts', async
   const upstream = app.received.find(item => item.url === '/diag/tunnel');
   assert.equal(upstream.headers.cookie, undefined);
   assert.equal(upstream.headers.authorization, undefined);
+});
+
+test('file readiness stays independent of unit availability and an active unit does not guarantee a working interface', async t => {
+  const app = await fixture(); t.after(() => app.close());
+  app.config.fileAgentUrl = 'http://127.0.0.1:1';
+  await app.login();
+  const { services, files } = await (await app.request('/api/diagnostics')).json();
+  assert.equal(services.files.state, 'active'); assert.equal(services.manager.state, 'active');
+  assert.deepEqual(files, { ready: false });
+  assert.equal((await app.request('/healthz')).status, 200);
+  const standalone = await fixture({ serviceDiagnostics: async () => ({ available: false }) }); t.after(() => standalone.close());
+  await standalone.login();
+  const value = await (await standalone.request('/api/diagnostics')).json();
+  assert.deepEqual(value.services, { available: false }); assert.deepEqual(value.files, { ready: true });
+});
+
+test('a diagnostic reply cannot outlive the login that requested it', async t => {
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; }), called = new Promise(resolve => { started = resolve; });
+  const app = await fixture({ serviceDiagnostics: async () => { started(); await gate; return { available: false }; } }); t.after(() => app.close());
+  await app.login();
+  const pending = app.request('/api/diagnostics'); await called;
+  try { assert.equal((await app.request('/api/logout', { method: 'POST' })).status, 200); }
+  finally { release(); }
+  assert.equal((await pending).status, 401);
 });
 
 test('concurrent diagnostic reads share a bounded single request and cache', async t => {
