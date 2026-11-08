@@ -1,5 +1,7 @@
 /* Workspace controls use the existing X-Wrt tokens. Panels never reserve
    framebuffer space, so opening tools cannot resize or clip the desktop. */
+.workspace { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.workspace-footer { padding: 3px 4px; line-height: 1.2; }
 .desktop-toolbar,
 .desktop-card.controls-collapsed .desktop-toolbar {
   min-height: 52px;
@@ -10,7 +12,7 @@
 .desktop-title { flex: 1; min-width: 0; }
 .desktop-header-actions { width: auto; flex-wrap: nowrap; gap: 6px; }
 .desktop-header-actions > button { min-height: 44px; min-width: 44px; }
-.desktop-stage { min-height: 0; flex: 1 1 0; }
+.desktop-stage, .terminal-mode .desktop-stage { min-height: 0; flex: 1 1 0; }
 .connection-status { white-space: nowrap; }
 .connection-notice { position: absolute; z-index: 6; inset: 8px 8px auto; margin: 0; padding: 6px 6px 6px 12px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-soft); color: var(--ink); font-size: 13px; line-height: 1.6; pointer-events: none; display: flex; align-items: flex-start; gap: 4px; }
 .connection-notice > span { flex: 1; min-width: 0; align-self: center; overflow-wrap: anywhere; }
@@ -112,6 +114,11 @@
   .terminal-session-close:not([hidden]) { display: inline-flex; width: 44px; }
 }
 @media (max-width: 700px) {
+  /* Use the phone width while keeping the notch out of the viewing area. */
+  .workspace { padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+  .desktop-card { border-left: 0; border-right: 0; border-radius: 0; }
+  .topbar .brand { min-width: 0; flex-shrink: 1; }
+  .topbar .node-entry { min-width: 44px; }
   .terminal-session-bar:not([hidden]) ~ .connection-status { width: 14px; height: 14px; padding: 0; margin-left: 4px; gap: 0; font-size: 0; justify-content: center; }
   .terminal-switch-dialog { position: fixed; inset: auto 8px max(8px, env(safe-area-inset-bottom)); width: auto; max-width: none; margin: 0; padding: 16px; border-radius: 16px; max-height: 75dvh; }
   .desktop-toolbar,
