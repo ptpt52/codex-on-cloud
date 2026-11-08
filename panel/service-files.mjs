@@ -15,7 +15,10 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
  function reject(entry,err){if(active!==entry)return;recoverable=[404,409,412,413,429,507].includes(err.status);try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
  async function control(value){
-  if(recoverable)throw fault(409,'文件通道正在结束');
+  // A ready frame may already have released upload chunks when HTTP rejects
+  // the request. Drain that ordered tail during the fixed retirement window;
+  // closing immediately could discard the rejection before the browser sees it.
+  if(recoverable)return;
   if(value.type==='start'){
    const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload');
    if(active||fields!==(hasUpload?'direction,id,name,size,type,upload':'direction,id,name,size,type')||hasUpload&&value.direction!=='upload'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!fileName(value.name)||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
@@ -42,7 +45,12 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
   if(Object.keys(value).sort().join(',')!=='id,type'||value.id!==entry.id||value.type!=='end'||entry.direction!=='upload'||entry.ended||entry.received!==entry.size)throw fault(400,'文件结束标记或长度无效');
   entry.ended=true;entry.req.end();if(entry.response)finish(entry,entry.result);
  }
- async function receive(bytes){const entry=active;check(entry);if(entry.direction!=='upload'||entry.ended||entry.received+bytes.length>entry.size)throw fault(400,'文件数据长度无效');entry.received+=bytes.length;await new Promise((resolve,reject)=>entry.req.write(bytes,err=>err?reject(err):resolve()));check(entry);}
+ async function receive(bytes){
+  if(recoverable)return;
+  const entry=active;
+  try{check(entry);if(entry.direction!=='upload'||entry.ended||entry.received+bytes.length>entry.size)throw fault(400,'文件数据长度无效');entry.received+=bytes.length;await new Promise((resolve,reject)=>entry.req.write(bytes,err=>err?reject(err):resolve()));check(entry);}
+  catch(err){if(!recoverable)throw err;}
+ }
  async function download(entry,res){
   check(entry);if(res.statusCode!==200){res.resume();throw fault(res.statusCode,'下载失败，文件可能已不存在');}
   const length=Number(res.headers['content-length']);if(!Number.isSafeInteger(length)||length<0||length>FILE_MAX)throw fault(413,'此文件请使用 HTTPS 下载');

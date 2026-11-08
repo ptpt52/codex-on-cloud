@@ -4,13 +4,29 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
+import http from 'node:http';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { fixture } from './fixture.mjs';
 import { serviceClient } from './support/service-client.mjs';
 import { createFileClient } from '../panel/public/file-client.js';
 import { FILE_MAX } from '../panel/public/file-wire.js';
+import { attachServiceFiles } from '../panel/service-files.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
+test('an early HTTP rejection drains already-sent file frames until the rejection can reach the browser',async t=>{
+ const upstream=http.createServer((_req,res)=>{res.writeHead(412,{'content-type':'application/json'});res.end('{"error":"原文件已变化"}');});
+ upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));
+ const callbacks={},sent=[],failed=[];let closed=0;
+ const channel={readyState:'open',bufferedAmount:0,send:bytes=>sent.push(bytes),close(){closed++;},onMessage:{subscribe:fn=>{callbacks.message=fn;}},stateChange:{subscribe:fn=>{callbacks.state=fn;}},error:{subscribe:fn=>{callbacks.error=fn;}}};
+ const controller=new AbortController(),files=attachServiceFiles(channel,{valid:()=>true,headers:{},port:()=>upstream.address().port,signal:controller.signal,fail:recoverable=>failed.push(recoverable)});t.after(()=>files.close());
+ callbacks.message(JSON.stringify({type:'start',id:1,direction:'upload',name:'conflict.txt',size:1}));
+ for(let n=0;n<100&&!sent.some(value=>typeof value==='string'&&JSON.parse(value).type==='error');n++)await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal(sent.some(value=>typeof value==='string'&&JSON.parse(value).recoverable===true),true);
+ // The browser sent these after receiving ready and before seeing the HTTP rejection.
+ const frame=Buffer.alloc(5);frame.writeUInt32BE(1);frame[4]=42;callbacks.message(frame);callbacks.message(JSON.stringify({type:'end',id:1}));
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(closed,0);assert.deepEqual(failed,[]);
+ files.close();assert.deepEqual(failed,[true]);
+});
 async function setup(t){const app=await fixture({webrtc:true});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
 async function fileClient(c){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter);for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
 test('dedicated file channel transfers 8 MiB and empty files over real DTLS, hashes match and desktop remains untouched',async t=>{
