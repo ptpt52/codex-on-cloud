@@ -16,6 +16,7 @@ import { createUploadPrompt, uploadHeaders, uploadResult, UPLOAD_PROTOCOL } from
 import { createFileListReader } from './file-list.js';
 import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
+import { createInputNotices } from './input-notices.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -41,6 +42,37 @@ let frameTransport = '';
 let frameNetwork = null, directIssue = '';
 const frameLatency = createRoundTrip(), relayLatency = createRoundTrip();
 const connectionTrace = createConnectionTrace();
+const inputNotices = createInputNotices();
+let inputNoticeSequence = 0, frameInputNoticeKey = '', statusNoticeCode = '', statusNoticeDismissed = false, inputHistoryChecked = false;
+function renderInputNoticeHistory() {
+  const list = $('input-notice-list'); list.replaceChildren();
+  for (const record of inputNotices.snapshot().reverse()) {
+    const item = document.createElement('li'), detail = document.createElement('p');
+    item.textContent = `${new Date(record.at).toLocaleTimeString()} · ${record.dismissed ? '已收起' : '待核对'} · ${record.message}`;
+    detail.className = 'muted'; detail.textContent = record.detail; item.append(detail); list.append(item);
+  }
+}
+function addInputNotice(value, options) {
+  const record = inputNotices.add(value, options); renderInputNoticeHistory(); return record;
+}
+function clearInputNotices() {
+  inputNotices.clear(); frameInputNoticeKey = ''; statusNoticeCode = ''; statusNoticeDismissed = false; inputHistoryChecked = false; renderInputNoticeHistory();
+}
+function noticeTarget(id = selectedTerminal, token = selectedTerminalToken) {
+  return terminalCatalog.find(item => item.id === id && item.token === token)?.name || (id === 'main' ? '主终端' : id || '当前窗口');
+}
+function streamInputNotice(value, { mode = displayPreferences.mode, epoch = frameEpoch, standby = false, target = mode === 'terminal' ? noticeTarget() : '' } = {}) {
+  const eventId = typeof value.eventId === 'string' && /^[a-f0-9]{32}$/.test(value.eventId) ? value.eventId : `legacy${++inputNoticeSequence}`;
+  return addInputNotice({ key: `stream:${epoch}:${eventId}`, source: 'stream', mode, standby, target, reason: value.reason, path: value.path }, { activate: !standby });
+}
+$('close-connection-notice').addEventListener('click', event => {
+  event.stopPropagation();
+  const key = $('connection-notice').dataset.noticeKey;
+  if (key) inputNotices.dismiss(key); else statusNoticeDismissed = true;
+  renderInputNoticeHistory(); renderConnectionNotice();
+  $('connection-button').focus({ preventScroll: true });
+});
+for (const name of ['keydown', 'keyup']) $('close-connection-notice').addEventListener(name, event => event.stopPropagation());
 function recordConnection(type, detail, mode, standby = false) {
   if (connectionTrace.add({ ...detail, type }, { mode, standby })) renderConnectionTrace();
 }
@@ -469,20 +501,25 @@ function syncRelayLatency() {
   })();
 }
 function renderConnectionNotice() {
-  let message = '';
+  let message = '', code = '', record;
   if (loggedIn && owned) {
-    const unknown = inputFeedback && $('input-status').dataset.outcome === 'unknown';
-    if (accessExpired) message = '访问验证已过期，输入已暂停；请刷新页面完成验证。';
-    else if (!navigator.onLine) message = unknown ? '网络已断开，部分输入结果未知；恢复后请先核对，不会自动重发。' : '网络已断开，输入已暂停；恢复后继续原会话，不会补发输入。';
-    else if (panelState === 'offline') message = '服务连接中断，输入已暂停；正在恢复，不会补发输入。';
-    else if (unknown) message = '部分输入结果未知，请先核对远程画面；不会自动重发。';
-    else if (transportSwitching) message = '正在复核或切换连接，输入暂时暂停；已发送内容不会重发。';
-    else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) message = '终端目标待确认，输入已暂停；请选择有效终端。';
-    else if (maintenancePending || controlsState.maintenance) message = '桌面操作进行中，输入已暂停；请等待操作完成。';
-    else if (!controlsState.available) message = '输入服务暂不可用，输入已暂停；当前任务继续运行。';
-    else if (frameState !== 'connected' && !(terminalMode() && terminalSelectionState === 'closed')) message = '正在恢复连接，输入已暂停；原任务继续运行。';
+    if (accessExpired) { code = 'access'; message = '访问验证已过期，输入已暂停；请刷新页面完成验证。'; }
+    else if (!navigator.onLine) { code = 'offline'; message = '网络已断开，输入已暂停；恢复后继续原会话，不会补发输入。'; }
+    else if (panelState === 'offline') { code = 'service'; message = '服务连接中断，输入已暂停；正在恢复，不会补发输入。'; }
+    else if ((record = inputNotices.current)) message = record.message;
+    else if (transportSwitching) { code = 'switch'; message = '正在复核或切换连接，输入暂时暂停；已发送内容不会重发。'; }
+    else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) { code = 'target'; message = '终端目标待确认，输入已暂停；请选择有效终端。'; }
+    else if (maintenancePending || controlsState.maintenance) { code = 'maintenance'; message = '桌面操作进行中，输入已暂停；请等待操作完成。'; }
+    else if (!controlsState.available) { code = 'input-service'; message = '输入服务暂不可用，输入已暂停；当前任务继续运行。'; }
+    else if (frameState !== 'connected' && !(terminalMode() && terminalSelectionState === 'closed')) { code = 'reconnect'; message = '正在恢复连接，输入已暂停；原任务继续运行。'; }
   }
-  const notice = $('connection-notice'); notice.textContent = message; notice.hidden = !message;
+  if (statusNoticeCode !== code) { statusNoticeCode = code; statusNoticeDismissed = false; }
+  // Dismissing a network episode must not also silence a new input event.
+  if (!record && statusNoticeDismissed && loggedIn && owned && (record = inputNotices.current)) message = record.message;
+  const notice = $('connection-notice');
+  $('connection-notice-text').textContent = message; notice.dataset.noticeKey = record?.key || '';
+  $('close-connection-notice').title = record ? '收起提示，可在连接状态中查看详情' : '收起提示，连接状态和输入限制保持';
+  notice.hidden = !message || (!record && statusNoticeDismissed);
 }
 function renderConnection() {
   fileListReader?.revalidate();
@@ -719,6 +756,7 @@ function stopFrame({ keepLogout = false } = {}) {
   frameLoaded = false;
   frameState = 'idle';
   frameTransport = '';
+  frameInputNoticeKey = '';
   frameTerminalKey = ''; terminalGeometry = null; terminalReviewing = false;
   frameComposing = false;
   frameNetwork = null; frameLatency.clear(); directIssue = '';
@@ -751,7 +789,7 @@ function finishDirectControl(error, value) {
 }
 function resetDirectControl() {
   controlReady = false;
-  finishDirectControl(Object.assign(new Error('连接已变化，操作结果未知，请先查看桌面确认'), { outcome: 'unknown' }));
+  finishDirectControl(Object.assign(new Error('连接已变化，操作结果未知，请先查看桌面确认'), { outcome: 'unknown', code: 'input_connection_changed' }));
 }
 function assistantRequest(path, body, signal) {
   const action = { '/api/paste': 'paste', '/api/key': 'key', '/api/clipboard/read': 'clipboard' }[path];
@@ -776,6 +814,7 @@ function stopPolling() {
 }
 function showLogin(message = '') {
   clearConnectionTrace();
+  clearInputNotices();
   clearFileURLs();
   workspaceInitialized = false; serviceProtocol = 0; serviceLink.stop();
   rtcConfig = undefined; panelRoute = 'https';
@@ -836,7 +875,7 @@ function syncModeStandby() {
   element.id = 'standby-frame'; element.inert = true; element.setAttribute('aria-hidden', 'true'); element.tabIndex = -1;
   element.referrerPolicy = 'same-origin'; element.allow = $('desktop-frame').allow;
   element.title = mode === 'terminal' ? '待命网页终端' : '待命开发桌面';
-  standbyFrame = { element, epoch: ++frameSerial, mode, key, state: 'connecting', transport: '', paused: false, inputUnknown: false, dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false };
+  standbyFrame = { element, epoch: ++frameSerial, mode, key, state: 'connecting', transport: '', paused: false, inputNoticeKey: '', noticeTarget: mode === 'terminal' ? noticeTarget(target.id, target.token) : '', dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false };
   element.src = frameUrl(mode, standbyFrame.epoch, target);
   $('desktop-stage').insertBefore(element, $('desktop-overlay'));
 }
@@ -849,8 +888,9 @@ function receiveStandby(value) {
     else if (['disconnected', 'connecting'].includes(value.state)) entry.state = value.state === 'disconnected' ? 'reconnecting' : 'connecting';
   } else if (value.type === 'codex-stream-state' && typeof value.paused === 'boolean') entry.paused = value.paused;
   else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
-    if (!entry.inputUnknown) toast('待命界面的部分输入结果未知，请先核对原画面；不会自动重发。', true);
-    entry.inputUnknown = true;
+    const record = streamInputNotice(value, { mode: entry.mode, epoch: entry.epoch, standby: true, target: entry.noticeTarget });
+    if (record && record.key !== entry.inputNoticeKey) toast(record.message, true);
+    entry.inputNoticeKey = record?.key || '';
   } else if (value.type === 'codex-terminal-size' && Number.isInteger(value.cols) && value.cols >= 2 && value.cols <= 500 && Number.isInteger(value.rows) && value.rows >= 1 && value.rows <= 200) {
     entry.geometry = { cols: value.cols, rows: value.rows, fontSize: displayPreferences.terminalFontSize };
   } else if (value.type === 'codex-desktop-view' && value.revision === displayRevision) {
@@ -867,7 +907,7 @@ function swapStandby(mode) {
     mode === 'terminal' && next.key !== `${selectedTerminal}:${selectedTerminalToken}`) return false;
   historyToolsPortal.reset();
   const previous = { element: $('desktop-frame'), epoch: frameEpoch, mode: displayPreferences.mode, key: frameTerminalKey,
-    state: frameState, transport: frameTransport, paused: transportSwitching, inputUnknown: false, dimensions: frameDimensions, geometry: terminalGeometry,
+    state: frameState, transport: frameTransport, paused: transportSwitching, inputNoticeKey: frameInputNoticeKey, noticeTarget: terminalMode() ? noticeTarget() : '', dimensions: frameDimensions, geometry: terminalGeometry,
     scale: displayScale, scaleRevision, reviewing: terminalReviewing };
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = '';
   clearTimeout(switchTimer); transportSwitching = false; resetDirectControl(); resetPanelRequests();
@@ -880,7 +920,9 @@ function swapStandby(mode) {
   frameDimensions = next.dimensions; terminalGeometry = next.geometry; displayScale = next.scale; scaleRevision = next.scaleRevision;
   terminalReviewing = next.reviewing; frameComposing = false; nativeIdle = frameResizeReady = false;
   transportSwitching = next.paused === true;
-  if (next.inputUnknown) inputMessage('unknown', '待命期间的部分输入结果未知，请先核对原画面；不会自动重发提示词、Enter 或审批。');
+  frameInputNoticeKey = next.inputNoticeKey;
+  const notice = inputNotices.snapshot().find(record => record.key === next.inputNoticeKey);
+  if (notice) { inputNotices.activate(notice.key); inputMessage('unknown', notice.message); }
   frameNetwork = null; frameLatency.clear(); directIssue = '';
   return true;
 }
@@ -938,7 +980,14 @@ async function poll() {
     desktopReady = state.desktop.ready === true;
     controlsState = state.controls || { available: false, maintenance: false, inputBusy: false };
     scheduleViewport();
-    if (!inputBusy && !inputFeedback && controlsState.input?.status === 'unknown') inputMessage('unknown', '上一项输入结果未知，请先查看桌面确认，避免重复执行。');
+    // Restore pre-existing helper feedback once. Later local attempts report
+    // their own results; a mode change must not reclassify them as new history.
+    // If an inherited operation is running, wait for its final status first.
+    if (!inputHistoryChecked && !inputBusy && controlsState.available && controlsState.input?.status !== 'running') {
+      inputHistoryChecked = true;
+      if (!inputFeedback && controlsState.input?.status === 'unknown') inputMessage('unknown', '上一项输入结果未知，请先查看桌面确认，避免重复执行。',
+        { key: `history:${controlsState.input.id}`, source: 'history', action: controlsState.input.action, reason: 'previous' });
+    }
     $('version-label').textContent = state.desktop.version;
     if (state.desktop.transferDir) $('transfer-path').textContent = state.desktop.transferDir;
     if (!mine) {
@@ -979,6 +1028,7 @@ async function claim(lockPassword, signal) {
 }
 async function showWorkspace(user) {
   clearConnectionTrace();
+  clearInputNotices();
   workspaceInitialized = false; serviceProtocol = user.serviceProtocol === 1 ? 1 : 0;
   uiGeneration++; closeConfirmation();
   maxTerminals = DEFAULT_TERMINAL_LIMIT;
@@ -1095,7 +1145,8 @@ function sendShortcut(key) {
   if (shortcut.confirm) return requestConfirmation('shortcut', key);
   void inputAction('/api/key', { key }, '发送按键', `${key} 已发送`);
 }
-function inputMessage(outcome, message) {
+function inputMessage(outcome, message, notice) {
+  if (outcome === 'unknown' && notice) addInputNotice(notice);
   inputFeedback = true;
   $('input-status').hidden = false;
   $('input-status').dataset.outcome = outcome;
@@ -1109,6 +1160,9 @@ async function inputAction(path, body, label, success, destination) {
     catch (error) { return inputMessage('rejected', error.message); }
   }
   const controller = new AbortController(); inputController = controller;
+  const notice = { key: `assistant:${++inputNoticeSequence}`, source: 'assistant', mode: displayPreferences.mode, target: noticeTarget(),
+    action: path === '/api/paste' ? 'paste' : path === '/api/key' ? 'key' : 'terminal', keyName: body.key,
+    path: controlReady && ['/api/paste', '/api/key'].includes(path) ? frameTransport === 'direct' ? 'direct' : 'terminal' : 'https' };
   const timeout = setTimeout(() => controller.abort(), 8000);
   inputBusy = true;
   inputMessage('pending', `正在${label}…`);
@@ -1120,7 +1174,8 @@ async function inputAction(path, body, label, success, destination) {
     if (result.outcome !== 'success') throw new Error('missing input result');
     inputMessage('success', success);
   } catch (error) {
-    if (inputController === controller) inputMessage(error.outcome === 'rejected' ? 'rejected' : 'unknown', error.outcome === 'rejected' ? `未发送：${error.message}` : `${label}结果未知，请先查看桌面确认，避免重复执行。`);
+    if (inputController === controller) inputMessage(error.outcome === 'rejected' ? 'rejected' : 'unknown', error.outcome === 'rejected' ? `未发送：${error.message}` : `${label}结果未知，请先查看桌面确认，避免重复执行。`,
+      { ...notice, reason: controller.signal.aborted ? 'timeout' : error.code === 'invalid_response' ? 'invalid_response' : error.code === 'input_connection_changed' ? 'connection' : 'result' });
   } finally {
     clearTimeout(timeout);
     if (inputController === controller) { inputController = null; inputBusy = false; renderInputControls(); renderDesktopSettings(); }
@@ -1705,8 +1760,8 @@ window.addEventListener('message', event => {
     terminalSelectionState = 'error'; stopFrame(); renderConnection(); toast('终端切换结果未知，草稿已保留；请重新选择目标，不会重发输入。', true); return;
   }
   if (event.data?.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(event.data.reason)) {
-    inputMessage('unknown', '部分输入结果未知，请先查看远程画面；不会自动重发提示词、Enter 或审批。');
-    toast('部分输入结果未知，请先核对远程画面，避免重复执行。', true); return;
+    const record = streamInputNotice(event.data); frameInputNoticeKey = record.key;
+    inputMessage('unknown', record.message); return;
   }
   if (event.data?.type === 'codex-control-state') {
     controlReady = event.data.ready === true && frameState === 'connected' && ['direct', 'terminal'].includes(frameTransport);

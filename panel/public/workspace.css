@@ -12,7 +12,12 @@
 .desktop-header-actions > button { min-height: 44px; min-width: 44px; }
 .desktop-stage { min-height: 0; flex: 1 1 0; }
 .connection-status { white-space: nowrap; }
-.connection-notice { position: absolute; z-index: 6; inset: 8px 8px auto; margin: 0; padding: 8px 12px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-soft); color: var(--ink); font-size: 13px; line-height: 1.6; pointer-events: none; }
+.connection-notice { position: absolute; z-index: 6; inset: 8px 8px auto; margin: 0; padding: 6px 6px 6px 12px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-soft); color: var(--ink); font-size: 13px; line-height: 1.6; pointer-events: none; display: flex; align-items: flex-start; gap: 4px; }
+.connection-notice > span { flex: 1; min-width: 0; align-self: center; overflow-wrap: anywhere; }
+.connection-notice > button { pointer-events: auto; flex: 0 0 44px; min-width: 44px; min-height: 44px; padding: 0; }
+.input-notice-list { padding-inline-start: 24px; font-size: 13px; overflow-wrap: anywhere; }
+.input-notice-list li + li { margin-top: 12px; }
+.input-notice-list p { margin: 4px 0 0; }
 .connection-notice[hidden] { display: none; }
 .terminal-session-bar { flex: 1; min-width: 0; max-width: 720px; }
 .terminal-session-bar:not([hidden]) ~ .monitor-icon,

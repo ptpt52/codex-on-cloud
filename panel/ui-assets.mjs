@@ -36,6 +36,7 @@ export const ASSETS = new Map([
   ['/shortcut-menu.js', ['shortcut-menu.js', 'text/javascript; charset=utf-8']],
   ['/health.js', ['health.js', 'text/javascript; charset=utf-8']],
   ['/connection-trace.js', ['connection-trace.js', 'text/javascript; charset=utf-8']],
+  ['/input-notices.js', ['input-notices.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/icon.svg', ['icon.svg', 'image/svg+xml']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],

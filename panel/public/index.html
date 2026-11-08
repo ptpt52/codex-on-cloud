@@ -93,7 +93,7 @@
       </aside>
       <div id="desktop-stage" class="desktop-stage">
         <iframe id="desktop-frame" title="Ubuntu 开发桌面" allow="fullscreen; clipboard-read; clipboard-write" referrerpolicy="same-origin" hidden></iframe>
-        <p id="connection-notice" class="connection-notice" role="note" aria-label="连接提示" hidden></p>
+        <div id="connection-notice" class="connection-notice" role="note" aria-label="连接提示" hidden><span id="connection-notice-text"></span><button id="close-connection-notice" class="quiet" type="button" aria-label="关闭此提示" title="收起提示，结果记录仍保留在连接状态中">✕</button></div>
         <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button><button id="access-refresh-button" class="primary" hidden>刷新页面验证</button><button id="choose-terminal-button" class="primary" hidden>选择终端</button></div>
       </div>
     <section id="input-dock" class="input-dock workspace-panel" role="dialog" aria-label="输入助手" tabindex="-1" hidden>
@@ -224,6 +224,11 @@
     </dl>
     <p id="diag-note" class="muted" role="status">仅查看连接信息，不会重启桌面。</p>
     <button id="refresh-connection" class="secondary">刷新状态</button>
+    <details id="input-notice-history" class="connection-trace">
+      <summary>操作与通道提示</summary>
+      <p class="muted">仅本页最近 32 条，退出后清空。收起提示不代表操作成功，不会重发输入。</p>
+      <ol id="input-notice-list" class="input-notice-list" aria-label="操作与通道提示记录"></ol>
+    </details>
     <details id="connection-trace" class="connection-trace">
       <summary>连接时间线</summary>
       <p class="muted">仅本页最近 50 条，不保存 IP、凭据或终端内容；退出后清空。耗时包含网络和服务端处理。</p>

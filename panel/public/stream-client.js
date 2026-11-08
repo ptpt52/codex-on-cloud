@@ -17,6 +17,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   let relayTimer, directTimer, directDue = 0, promotionTimer, recoveryTimer, directController, relayDelay = 250, probeDelay = 15000, terminalText = '';
   let heldOutput = [], heldBytes = 0;
   let directExpedited = false, directHalted = false, directAttempts = 0, pauseTerminal = false;
+  let lastPath = '';
   let textDecoder = new TextDecoder('utf-8', { fatal: true }), panelSequence = 0, targetSequence = 0, targetPending;
   const panelRequests = new Map();
   const failure = (message, status = 409) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -76,7 +77,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     const uncertainTarget = targetPending?.sent === true;
     if (uncertainTarget) reason = 'target-unknown';
     socket.lastError = reason; trace('session-ended', { reason: reason || 'closed', queuedBytes: inputBytes });
-    if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason }, location.origin);
+    if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason, eventId: id, path: active?.kind || lastPath }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
     ended = true; directController?.abort();
     for (const id of [...panelRequests.keys()]) finishPanel(id, failure('直连查询已取消'));
@@ -197,7 +198,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (value.type === 'active') {
         if (!peer.wait || !integer(value.epoch) || !integer(value.out) || value.out > out || value.input !== sent) throw new Error();
         trace('path-active', { path: peer.kind, queuedBytes: inputBytes });
-        epoch = value.epoch; active = peer; peer.epoch = epoch; inputAck = value.input; inputSizes.clear(); inputBytes = 0;
+        epoch = value.epoch; active = peer; lastPath = peer.kind; peer.epoch = epoch; inputAck = value.input; inputSizes.clear(); inputBytes = 0;
         heldOutput = []; heldBytes = 0;
         clearTimeout(recoveryTimer); recoveryTimer = undefined;
         const waiter = peer.wait; peer.wait = undefined; claiming = false;
