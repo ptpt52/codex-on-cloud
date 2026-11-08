@@ -51,7 +51,7 @@ let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
 let confirmation = null, uiGeneration = 0;
-let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalController = null, terminalLoadAttempted = false;
+let terminalCatalog = [], selectedTerminal = '', terminalBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false;
 let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
@@ -421,10 +421,11 @@ function renderConnection() {
   else if (transportSwitching) label = '正在优化连接';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
+  else if (terminalSwitching) label = '正在切换终端…';
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) label = '终端目标待确认';
   else if (frameState === 'connected') label = terminalMode() ? '终端在线' : '桌面在线';
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
-  $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线'].includes(label));
+  $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…'].includes(label));
   $('connection-status').lastChild.textContent = label;
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? panelRoute === 'direct' ? '可访问（加密直连）' : '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
@@ -576,7 +577,7 @@ function framePanelRequest(action, body = {}, signal) {
       $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-cancel', frame: String(frameEpoch), id }, location.origin);
       finishPanelRequest(id, signal?.reason || Object.assign(new Error('直连操作已取消或结果未知'), { status: 409, outcome: action === 'switch-terminal' ? 'unknown' : 'rejected' }));
     };
-    panelRequests.set(id, { action, resolve, reject, signal, abort, timer: setTimeout(abort, action === 'switch-terminal' ? 9000 : 6000) });
+    panelRequests.set(id, { action, resolve, reject, signal, abort, timer: setTimeout(abort, action === 'switch-terminal' ? 11000 : 6000) });
     signal?.addEventListener('abort', abort, { once: true });
     $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-request', frame: String(frameEpoch), id, action, body }, location.origin);
   });
@@ -587,7 +588,7 @@ function resetPanelRequests() {
 }
 async function switchTerminalStream(identity) {
   const expectedFrame = frameEpoch, generation = uiGeneration;
-  historyToolsPortal.reset(); terminalBusy = true; shortcutMenu.close(); renderConnection();
+  historyToolsPortal.reset(); terminalBusy = terminalSwitching = true; shortcutMenu.close(); renderConnection();
   try {
     const target = await framePanelRequest('switch-terminal', { terminalId: identity.id, terminalToken: identity.token });
     if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
@@ -600,8 +601,8 @@ async function switchTerminalStream(identity) {
   } catch (error) {
     if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
     if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }
-    toast(error.message, true);
-  } finally { if (generation === uiGeneration) { terminalBusy = false; renderConnection(); if (panelReady && !pollController) { stopPolling(); void poll(); } } }
+    toast(error.message, error.code !== 'terminal_switch_busy' || error.outcome !== 'rejected');
+  } finally { if (generation === uiGeneration) { terminalBusy = terminalSwitching = false; renderConnection(); if (panelReady && !pollController) { stopPolling(); void poll(); } } }
 }
 function overlay(title, description, takeover = false) {
   $('overlay-title').textContent = title;
@@ -614,6 +615,7 @@ function overlay(title, description, takeover = false) {
 function stopFrame({ keepLogout = false } = {}) {
   historyToolsPortal.reset();
   terminalController?.abort();
+  terminalSwitching = false;
   shortcutMenu.close();
   if (!keepLogout || confirmation?.kind !== 'logout') closeConfirmation();
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false; frameResizeReady = false;
@@ -1403,7 +1405,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-panel-result') {
     if (!panelRequests.has(event.data.id)) return;
-    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '连接请求失败'), { status: event.data.error?.status, outcome: event.data.error?.outcome || 'unknown' });
+    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '连接请求失败'), { status: event.data.error?.status, outcome: event.data.error?.outcome || 'unknown', code: event.data.error?.code });
     finishPanelRequest(event.data.id, error, event.data.value); return;
   }
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {
@@ -1438,7 +1440,10 @@ window.addEventListener('message', event => {
     clearTimeout(switchTimer); transportSwitching = false; renderConnection(); return;
   }
   if (event.data?.type === 'codex-stream-state' && typeof event.data.paused === 'boolean') {
-    transportSwitching = event.data.paused; renderConnection(); return;
+    // A selected terminal is already protected by terminalBusy. Treating its
+    // preparation as a route handoff would block and cancel its own wait.
+    transportSwitching = event.data.paused && !(terminalSwitching && event.data.terminalSwitch === true);
+    renderConnection(); return;
   }
   if (event.data?.type === 'codex-stream-reset' && event.data.reason === 'target-unknown') {
     terminalSelectionState = 'error'; stopFrame(); renderConnection(); toast('终端切换结果未知，草稿已保留；请重新选择目标，不会重发输入。', true); return;

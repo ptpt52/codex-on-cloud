@@ -27,9 +27,10 @@ let switching = false, switchingFrom, switchApproval, switchSequence = 0, lastIn
 const pressedKeys = new Set(), pressedPointers = new Set();
 const report = (state, extra = {}) => parent.postMessage({ type: 'codex-desktop', frame, state, transport: socket?.direct ? 'direct' : 'terminal', ...extra }, location.origin);
 const controlState = () => { parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin); panelBridge.report(); };
-const targetIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending && pendingWrites === 0;
+const targetInputIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending;
+const targetIdle = () => targetInputIdle() && pendingWrites === 0;
 const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped,
-  canSwitch: () => ready && !blocked && !switching && !streamPaused && targetIdle() });
+  canSwitch: () => ready && !blocked && !switching && !streamPaused && targetInputIdle() });
 const reportNetwork = () => {
   const rttMs = ready && !streamPaused && !document.hidden && navigator.onLine ? socket?.session ? socket.rttMs : health?.rttMs ?? null : null;
   parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, rttMs, issue: directIssue }, location.origin);
@@ -183,14 +184,15 @@ async function connect() {
   if (stopped || socket || candidateController || !csrf || !navigator.onLine || document.hidden) return;
   message('正在连接原有终端…'); report('connecting');
   if (streamEnabled) {
-    streamClient = createStreamClient({ viewer, csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle, idle: idleForSwitch,
+    streamClient = createStreamClient({ viewer, csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
+      canSwitchTarget: () => ready && !blocked && !switching && targetInputIdle(), idle: idleForSwitch,
       settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
       prepare: prepareSwitch,
-      paused: value => {
+      paused: (value, { terminalSwitch = false } = {}) => {
         streamPaused = value;
         if (value) health?.suspend();
         else { if (pendingOutputAck && socket) acknowledgeOutput(socket, 0); health?.wake(); size(); }
-        inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
+        inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value, terminalSwitch }, location.origin);
       },
       changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } },
       measured: () => { reportNetwork(); void refreshNetwork(); }, issue: directFailure });

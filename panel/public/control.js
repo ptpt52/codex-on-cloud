@@ -84,7 +84,8 @@ export function createPanelBridge({ frame, current, connected, canSwitch = () =>
     if (value.type === 'codex-panel-cancel') { pending.get(value.id)?.controller.abort(); return; }
     if (value.type !== 'codex-panel-request') return;
     const source = current(), action = value.action;
-    const reject = () => parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: '连接操作未就绪或仍在处理，本次未发送', status: 409, outcome: 'rejected' } }, location.origin);
+    const reject = () => parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: '连接操作未就绪或仍在处理，本次未发送', status: 409, outcome: 'rejected',
+      ...(action === 'switch-terminal' ? { code: 'terminal_switch_busy' } : {}) } }, location.origin);
     const capable = action === 'switch-terminal' ? source?.terminalSwitch && canSwitch() : source?.panelReady;
     if (!['state', 'terminals', 'switch-terminal'].includes(action) || pending.has(value.id) || !connected() || !capable || [...pending.values()].some(p => p.action === action)) { reject(); return; }
     const entry = { action, controller: new AbortController() }; pending.set(value.id, entry);
@@ -92,7 +93,7 @@ export function createPanelBridge({ frame, current, connected, canSwitch = () =>
       if (entry.controller.signal.aborted || source !== current()) return;
       parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: true, value: result }, location.origin);
     }, error => {
-      if (!entry.controller.signal.aborted) parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: error.message, status: error.status, outcome: error.outcome || 'unknown' } }, location.origin);
+      if (!entry.controller.signal.aborted) parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: error.message, status: error.status, outcome: error.outcome || 'unknown', code: error.code } }, location.origin);
     }).finally(() => pending.delete(value.id));
   });
   window.addEventListener('pagehide', () => { for (const entry of pending.values()) entry.controller.abort(); pending.clear(); });

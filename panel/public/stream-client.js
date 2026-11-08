@@ -10,7 +10,7 @@ const decode = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
 
 // One browser-visible channel. Network paths may change; the consumer and its
 // parser stay attached. Only downstream bytes can be replayed, never inputs.
-export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = () => true, settled = idle, targetIdle = settled, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {} }) {
+export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = () => true, settled = idle, targetIdle = settled, canSwitchTarget = targetIdle, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {} }) {
   const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
   let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
@@ -19,6 +19,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
   let textDecoder = new TextDecoder('utf-8', { fatal: true }), panelSequence = 0, targetSequence = 0, targetPending;
   const panelRequests = new Map();
   const failure = (message, status = 409) => Object.assign(new Error(message), { status, outcome: 'rejected' });
+  const switchBusy = message => Object.assign(failure(message), { code: 'terminal_switch_busy' });
   function finishPanel(id, error, value) {
     const pending = panelRequests.get(id); if (!pending) return;
     panelRequests.delete(id); clearTimeout(pending.timer); pending.signal?.removeEventListener('abort', pending.abort);
@@ -30,23 +31,51 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
     claiming = false; heldOutput = []; heldBytes = 0;
     if (!ended) { pause(false); scheduleDirect(); } error ? pending.reject(error) : pending.resolve(value);
   }
+  function cancelTarget(error) {
+    const held = heldOutput;
+    finishTarget(error);
+    for (const [peer, value] of held) receive(peer, value);
+  }
+  async function prepareTarget(pending) {
+    // One admitted selection, at most 1.5 seconds, no network switch sent yet.
+    // Hold old output within the existing byte/count limits so continuous
+    // rendering and its acknowledgments cannot keep the terminal busy forever.
+    const deadline = performance.now() + 1500, { peer, signal } = pending;
+    while (targetPending === pending && !pending.sent) {
+      if (ended || active !== peer || peer.gone || !peer.writable() || document.hidden || !navigator.onLine || signal?.aborted || !canSwitchTarget()) {
+        cancelTarget(switchBusy('当前操作或连接已变化，切换未发送；准备好后请再点目标终端')); return;
+      }
+      if (performance.now() >= deadline) {
+        cancelTarget(switchBusy('终端仍在处理，切换未发送；稍后请再点目标终端')); return;
+      }
+      if (targetIdle() && inputAck === sent) {
+        pending.sent = true; claiming = true;
+        pending.timer = setTimeout(pending.abort, 8000);
+        try { send(peer, { type: 'switch-terminal', id: pending.id, epoch, input: sent, target: pending.target }); }
+        catch { close('target-unknown'); }
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
   function emit(type, data) {
     const event = ['message', 'target'].includes(type) ? new MessageEvent(type, { data }) : new Event(type);
     socket[`on${type}`]?.(event); socket.dispatchEvent(event);
   }
-  function pause(value) { if (value !== isPaused) { isPaused = value; paused(value); } }
+  function pause(value) { if (value !== isPaused) { isPaused = value; paused(value, { terminalSwitch: value && !!targetPending }); } }
   function send(peer, value) {
     if (!peer || peer.gone || !peer.writable() || peer.buffered() > 256 * 1024) throw new Error('path unavailable'); peer.send(value);
   }
   function close(reason = '') {
     if (ended) return;
-    if (targetPending) reason = 'target-unknown';
+    const uncertainTarget = targetPending?.sent === true;
+    if (uncertainTarget) reason = 'target-unknown';
     socket.lastError = reason;
     if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
     ended = true; directController?.abort();
     for (const id of [...panelRequests.keys()]) finishPanel(id, failure('直连查询已取消'));
-    finishTarget(failure('终端切换结果未知，请重新选择'));
+    finishTarget(uncertainTarget ? failure('终端切换结果未知，请重新选择') : switchBusy('连接已关闭，切换未发送；恢复后请再点目标终端'));
     for (const timer of [relayTimer, directTimer, promotionTimer, recoveryTimer]) clearTimeout(timer);
     for (const peer of peers.values()) { peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('closed')); peer.prepareWait?.reject(new Error('closed')); peer.close(); }
     peers.clear(); active = undefined; inputSizes.clear(); terminalText = ''; pause(false);
@@ -57,7 +86,12 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
   function lost(peer) {
     if (!peer || peer.gone || ended) return;
     for (const [id, pending] of panelRequests) if (pending.peer === peer) finishPanel(id, failure('直连查询已中断'));
-    if (targetPending?.peer === peer) { close('target-unknown'); return; }
+    if (targetPending?.peer === peer) {
+      if (targetPending.sent) { close('target-unknown'); return; }
+      // The old target remains authoritative; normal route recovery resumes
+      // it, without retrying this selection or classifying it as committed.
+      finishTarget(switchBusy('连接正在恢复，切换未发送；恢复后请再点目标终端'));
+    }
     peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('path lost')); peer.prepareWait?.reject(new Error('path lost'));
     if (peers.get(peer.kind) === peer) peers.delete(peer.kind); peer.close();
     if (active === peer) {
@@ -122,8 +156,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
         changed(); ensureRelay(); return;
       }
       if (value.type === 'switch-result' && targetPending?.peer === peer && targetPending.id === value.id && value.epoch === epoch && value.ok === false) {
-        const held = heldOutput; finishTarget(failure(value.error?.message || '终端暂不可切换', value.error?.status));
-        for (const [from, chunk] of held) receive(from, chunk); return;
+        cancelTarget(failure(value.error?.message || '终端暂不可切换', value.error?.status)); return;
       }
       if (value.type === 'held' && peer === active && value.epoch === epoch) { peer.holdWait?.(); peer.holdWait = undefined; return; }
       if (value.type === 'prepared') {
@@ -149,7 +182,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
         return;
       }
       if (value.type !== 'chunk' || peer !== active || value.epoch !== epoch) return;
-      if (claiming) {
+      if (claiming || targetPending) {
         if (typeof value.data !== 'string' || value.data.length > 16384 || (heldBytes += value.data.length) > 1400 * 1024 || heldOutput.length >= 1024) throw new Error();
         heldOutput.push([peer, value]); return;
       }
@@ -276,6 +309,7 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
   function wake() {
     if (ended) return;
     if (document.hidden || !navigator.onLine) {
+      if (targetPending && !targetPending.sent) cancelTarget(switchBusy('页面已隐藏或离线，切换未发送；返回后请再点目标终端'));
       clearTimeout(directTimer); directTimer = undefined;
       clearTimeout(relayTimer); relayTimer = undefined;
       for (const peer of peers.values()) { clearTimeout(peer.timer); peer.timer = undefined; clearTimeout(peer.deadline); peer.ping = 0; peer.latency.clear(); }
@@ -293,20 +327,24 @@ export function createStreamClient({ viewer, csrf, terminal, bootstrap, idle = (
       if (ended || !peer?.ready || signal?.aborted) return Promise.reject(failure('会话通道未就绪'));
       if (!peer.writable()) { lost(peer); return Promise.reject(failure('连接正在关闭，本次操作未发送')); }
       if (action === 'switch-terminal') {
-        if (!terminal || !peer.terminalSwitch || targetPending || transitioning || claiming || !targetIdle() || inputAck !== sent || targetSequence >= 2147483647) return Promise.reject(failure('终端仍有操作进行中，本次切换未发送'));
+        if (!terminal || !peer.terminalSwitch || targetPending || transitioning || claiming || !canSwitchTarget() || targetSequence >= 2147483647) return Promise.reject(switchBusy('终端仍有操作进行中，切换未发送；完成后请再点目标终端'));
         const target = { terminalId: body.terminalId, terminalToken: body.terminalToken };
         if (!TERMINAL_IDS.includes(target.terminalId) || typeof target.terminalToken !== 'string' || !/^%\d{1,10}:\d{1,10}$/.test(target.terminalToken)) return Promise.reject(failure('终端目标无效', 400));
         return new Promise((resolve, reject) => {
-          const id = ++targetSequence, abort = () => close('target-unknown');
-          targetPending = { id, target, peer, resolve, reject, signal, abort, timer: setTimeout(abort, 8000) };
-          signal?.addEventListener('abort', abort, { once: true }); pause(true); claiming = true;
+          const id = ++targetSequence, abort = () => {
+            if (targetPending?.id !== id) return;
+            if (targetPending.sent) close('target-unknown');
+            else cancelTarget(switchBusy('切换已取消且未发送；需要时请再点目标终端'));
+          };
+          const pending = targetPending = { id, target, peer, resolve, reject, signal, abort, sent: false };
+          signal?.addEventListener('abort', abort, { once: true }); pause(true);
           if (peer.kind === 'relay') {
             // Retire probes admitted for the previous pane. Their completion
             // cannot race a target change on the retained relay connection.
             clearTimeout(directTimer); directTimer = undefined; clearTimeout(promotionTimer);
             directController?.abort(); const candidate = peers.get('direct'); if (candidate) lost(candidate);
           }
-          try { send(peer, { type: 'switch-terminal', id, epoch, input: sent, target }); } catch { close('target-unknown'); }
+          void prepareTarget(pending);
         });
       }
       if (peer.kind !== 'direct' || !peer.panel || !['state', 'terminals'].includes(action) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('该直连查询正在处理或不受支持', 429));

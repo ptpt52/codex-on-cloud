@@ -14,7 +14,15 @@ async function login(page, app, { legacy = false } = {}) {
     window.relaySockets = []; window.relayPeers = [];
     let terminalConstructor;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => terminalConstructor, set: Native => {
-      terminalConstructor = class extends Native { constructor(...args) { super(...args); window.relayTerminal = this; } };
+      terminalConstructor = class extends Native {
+        constructor(...args) { super(...args); window.relayTerminal = this; window.heldRender = []; }
+        write(data, callback) { super.write(data, () => {
+          if (parent.holdRender && callback) {
+            if (window.heldRender.length >= 8) throw Error('test render bound');
+            window.heldRender.push(callback);
+          } else callback?.();
+        }); }
+      };
     } });
     const Native = WebSocket;
     window.WebSocket = class extends Native {
@@ -24,6 +32,9 @@ async function login(page, app, { legacy = false } = {}) {
         parent.relayConnections++; window.relaySockets.push(this);
         this.addEventListener('message', event => {
           const value = JSON.parse(event.data);
+          if (event.isTrusted && value.type === 'input-ack' && parent.holdInputAck) {
+            event.stopImmediatePropagation(); this.heldInputAck = event.data; return;
+          }
           if (event.isTrusted && value.type === 'welcome' && parent.legacyRelay) {
             event.stopImmediatePropagation(); delete value.terminalSwitchRelay;
             this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) }));
@@ -62,6 +73,100 @@ async function choose(page, id) {
   await select(page, id); await expect(page.locator('#input-terminal')).toHaveValue(id);
   await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#input-terminal')).toBeEnabled();
 }
+
+test('a relay target switch waits for a delayed input acknowledgment without resending input', async ({ page }) => {
+  const app = await create();
+  try {
+    const frame = await login(page, app);
+    await page.evaluate(() => { window.holdInputAck = true; });
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.length).toBe(1);
+    await select(page, 'aux1');
+    await expect(page.locator('#connection-status')).toContainText('正在切换终端');
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(0);
+    await frame.evaluate(() => {
+      parent.holdInputAck = false;
+      const socket = window.relaySockets[0], value = socket.heldInputAck;
+      socket.heldInputAck = undefined; socket.dispatchEvent(new MessageEvent('message', { data: value }));
+    });
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(1);
+    expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: 'x' }]);
+    await expect(page.locator('#toast')).not.toHaveClass(/failure/);
+    expect(await page.evaluate(() => window.relayConnections)).toBe(1);
+  } finally { await app.close(); }
+});
+
+test('active output rendering settles before a relay target changes and old text cannot enter the new target', async ({ page }) => {
+  const app = await create();
+  try {
+    const frame = await login(page, app);
+    await page.evaluate(() => { window.holdRender = true; });
+    app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('OLD-RENDER-PENDING\r\n').toString('base64') }) + '\n');
+    await expect.poll(() => frame.evaluate(() => window.heldRender.length)).toBeGreaterThan(0);
+    await select(page, 'aux1');
+    await expect(page.locator('#connection-status')).toContainText('正在切换终端');
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(0);
+    app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('OLD-DURING-SWITCH\r\n').toString('base64') }) + '\n');
+    await frame.evaluate(() => { parent.holdRender = false; for (const done of window.heldRender.splice(0)) done(); });
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await frame.evaluate(() => {
+      const b = window.relayTerminal.buffer.active;
+      return Array.from({ length: b.length }, (_, index) => b.getLine(index)?.translateToString(true)).join('\n');
+    })).not.toContain('OLD-');
+    expect(app.terminalInputs).toEqual([]);
+    expect(await page.evaluate(() => window.relayConnections)).toBe(1);
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(1);
+  } finally { await app.close(); }
+});
+
+test('an unsent relay switch expires gently and releasing a late acknowledgment never switches automatically', async ({ page }) => {
+  const app = await create();
+  try {
+    const frame = await login(page, app);
+    await openInput(page); await page.locator('#mobile-input').fill('主终端草稿保留'); await closePanels(page);
+    await page.evaluate(() => { window.holdInputAck = true; });
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.length).toBe(1);
+    await select(page, 'aux1');
+    await expect(page.locator('#toast')).toContainText('请再点');
+    await expect(page.locator('#toast')).not.toHaveClass(/failure/);
+    await expect(page.locator('#input-terminal')).toHaveValue('main');
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(0);
+    await frame.evaluate(() => {
+      parent.holdInputAck = false; const socket = window.relaySockets[0];
+      socket.dispatchEvent(new MessageEvent('message', { data: socket.heldInputAck }));
+    });
+    await page.waitForTimeout(100);
+    await expect(page.locator('#input-terminal')).toHaveValue('main');
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(0);
+    await choose(page, 'aux1'); await choose(page, 'main'); await openInput(page);
+    await expect(page.locator('#mobile-input')).toHaveValue('主终端草稿保留');
+    expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: 'x' }]);
+  } finally { await app.close(); }
+});
+
+test('losing the path during switch preparation resumes the old target without replaying the selection', async ({ page }) => {
+  const app = await create();
+  try {
+    const frame = await login(page, app);
+    await page.evaluate(() => { window.holdInputAck = true; });
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.length).toBe(1);
+    await select(page, 'aux1');
+    await expect(page.locator('#connection-status')).toContainText('正在切换终端');
+    await frame.evaluate(() => { parent.holdInputAck = false; window.relaySockets[0].close(); });
+    await expect.poll(() => page.evaluate(() => window.relayConnections)).toBe(2);
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect(page.locator('#input-terminal')).toHaveValue('main');
+    expect(await page.evaluate(() => window.relaySent.length)).toBe(0);
+    expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: 'x' }]);
+    expect(app.terminalConnections).toBe(1);
+    await choose(page, 'aux1'); expect(await page.evaluate(() => window.relaySent.length)).toBe(1);
+  } finally { await app.close(); }
+});
 
 test('relay target switches retain one WebSocket and iframe, isolate drafts and reconnect to the last confirmed target', async ({ page }) => {
   const app = await create();

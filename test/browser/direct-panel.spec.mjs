@@ -6,7 +6,7 @@ import { openInput, openTools, closePanels } from './ui.mjs';
 // otherwise bypass Playwright routing in some engines.
 test.use({ serviceWorkers: 'block' });
 
-async function choose(page, id) {
+async function select(page, id) {
   await closePanels(page);
   if (await page.locator('#terminal-session-button').isVisible()) {
     const button = page.locator('#terminal-session-button');
@@ -14,8 +14,54 @@ async function choose(page, id) {
     await expect(page.locator('#terminal-switch-dialog')).toBeVisible();
     await page.locator(`#terminal-switch-list [data-terminal-choice="${id}"]`).click();
   } else await page.locator(`#terminal-tabs [data-terminal-choice="${id}"]`).click();
+}
+async function choose(page, id) {
+  await select(page, id);
   await expect(page.locator('#input-terminal')).toHaveValue(id); await expect(page.locator('#connection-status')).toContainText('终端在线');
 }
+
+test('a direct target switch waits for rendering on the retained peer without treating it as input failure', async ({ page }) => {
+  const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
+  await app.controls.manageTerminals({ action: 'create', name: '第二终端', view: 'terminal' });
+  await page.addInitScript(() => {
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
+    if (location.pathname !== '/terminal/index.html') return;
+    window.switchPeers = []; const Peer = RTCPeerConnection;
+    window.RTCPeerConnection = class extends Peer { constructor(...args) { super(...args); window.switchPeers.push(this); } };
+    let Constructor;
+    Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Constructor, set: Native => {
+      Constructor = class extends Native {
+        constructor(...args) { super(...args); window.switchWrites = []; }
+        write(data, callback) { super.write(data, () => {
+          if (window.delaySwitchRender && callback) {
+            if (window.switchWrites.length >= 8) throw Error('test render bound');
+            window.switchWrites.push(callback);
+          } else callback?.();
+        }); }
+      };
+    } });
+  });
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#diag-panel')).toContainText('加密直连', { timeout: 12000 });
+    await expect(page.locator('#terminal-tabs [data-terminal-choice="aux1"]')).toBeAttached();
+    const frame = page.frames().find(value => value.url().includes('/terminal/index.html'));
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    await frame.evaluate(() => { window.delaySwitchRender = true; });
+    app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('DIRECT-RENDER-PENDING\r\n').toString('base64') }) + '\n');
+    await expect.poll(() => frame.evaluate(() => window.switchWrites.length)).toBeGreaterThan(0);
+    await select(page, 'aux1');
+    await expect(page.locator('#connection-status')).toContainText('正在切换终端');
+    await frame.evaluate(() => { window.delaySwitchRender = false; for (const done of window.switchWrites.splice(0)) done(); });
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect(page.locator('#toast')).not.toHaveClass(/failure/);
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    expect(await frame.evaluate(() => window.switchPeers.length)).toBe(1);
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalConnections).toBe(2);
+    expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
 
 test('a direct terminal keeps its controls and switches targets on the same peer and iframe when HTTPS is unavailable', async ({ page }) => {
   test.setTimeout(45000);
