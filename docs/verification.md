@@ -885,3 +885,25 @@ home发布UI版本 `f141368fe371d7b648ea1ff1`。旧宿主的关键助手保留�
 - 已安装固定版本cloudflared的 `tunnel ingress validate` 接受合成 `unix:` 上游配置；没有创建Tunnel、修改Cloudflare路由或访问真实远端设备。
 
 文档同步：正式files服务、旧活动宿主独立端口迁移、保留既有迁移unit、重复部署的网关重启范围、Cloudflare私有入口切换、纯终端与非systemd容器的升级要求。代码尚未push、重载或部署，真实任务宿主、映射和当前会话保持。
+
+## 2026-11-08：最新界面上线与仓库综合复审
+
+上线基线为 `e95e0ac`（包含前一轮审计全部修复及新的输入提示），实际界面版本为 `f47023034404d6972161f848`。保留既有独立文件迁移unit与端口drop-in，保持原有home域名不变，在持久配置补齐36904文件端口；按正式安装流程更新unit，只重启files、manager、panel。先验证私有Unix接口 /readyz，再将同一个现有Tunnel的上游由回环HTTP改为私有Unix socket，保留其他远端配置。没有新建Tunnel、修改DNS或发布门户Worker。
+
+回环与真实公网home入口的健康、宿主/文件服务就绪、首页版本、匿名文件401均通过；实际管理员HTTPS登录及只读状态/目录读取通过，未认领桌面、附加终端或发送输入，测试登录已退出。新界面刷新后生效；面板重启后的映射仍需重新配对。发布前后desktop、actions、Tunnel身份，以及四个原任务/keeper窗格PID和原关键Python助手均不变；仅观看提示窗格允许随连接回收。真实密钥、环境配置、运行记录及私有发布备份均未进入Git。
+
+综合复审覆盖认证/锁屏/临时账号、HTTP/WebSocket与直连授权、输入结果、文件配额与取消、双向映射/串口、原生进程归属、门户状态以及部署/CI。此次补修独立提交：
+
+| 级别 | 问题与处理 | 验证与生效范围 |
+| --- | --- | --- |
+| P1，已修复 | native/desktop.mjs 对非关键查看器的spawn error也执行stop，能导致查看连接失败时终止桌面；现在只清理失败的非关键子进程 | 新增真实隔离Xvfb/XFCE/xterm/tmux测试，缺失x11vnc连续两次后监督器、显示和原shell保持；旧代码对照稳定失败。已加入native CI。现有桌面监督器保留，补修在下次明确维护重启加载 |
+| P2，已修复 | 部署健康检查继承旧任务shell中的PUBLIC_ORIGIN/PORT/助手端口，真实已就绪却报失败 | 默认改读持久.env，临时项目子进程回归覆盖旧环境；本机实际就绪检查通过。无需再次重启服务 |
+| 测试补齐 | 输入提示尚未纳入长期跨浏览器矩阵 | 加入compat清单，Chromium三视口、Firefox电脑、WebKit三视口共35项通过 |
+
+仍待下一阶段整改的明确问题（未作为本轮已修复项）：
+
+1. **P2，门户未初始化锁残留**：scripts/portal-files.mjs 的writerLock先创建文件再写PID/start；在两者之间SIGKILL会留下空.portal-lock，随后JSON解析失败并持续拒绝写入。隔离子进程已复现零字节锁及后续写入失败，原配置保持。需完善锁协议与故障回归；不能直接删除无法判断持有者的锁。
+2. **P2，自动公网发布顺序**：scripts/deploy.mjs 的--domain路径仍在native:start、后台重启和health前调用provision-cloudflare；旧实例尚无私有socket且后续启动失败时，远端会先指向未就绪的unix上游。隔离命令模拟已复现发布被调用而health未执行，不改真实Cloudflare。本次现场已先验证私有接口再切路由；下一阶段应将自动流程拆成配置准备、服务就绪、入口提交并保留回退。
+3. **P3，诊断可见性**：panel/service-diagnostics.mjs仍只读panel、manager及actions/terminal，未包含独立files服务；/readyz可识别文件服务失效，但界面系统服务摘要缺少该项。后续补充固定字段诊断，继续保持有界读取。
+
+验证已完成：285项脚本语法、356项Node、24项Python、35项新增跨浏览器用例；真实隔离X11生命周期、完整纯终端安装、双向TCP/TLS/WSS/UDP/DTLS/SCTP及8MiB/半关闭/恢复/撤权、串口辅助进程、门户workerd/SQLite持久化均通过。Go race、vet、模块校验通过，npm生产依赖审计为0已知漏洞。本机ShellCheck过旧不支持--norc，actionlint关闭外部ShellCheck后的结构检查通过；没有改动CI的ShellCheck策略或升级项目依赖。Chromium手机/电脑完整626项浏览器回归全部通过（66个用例文件，两个worker）。另外按锁文件校验了werift 0.26.0官方tarball的SHA512，安装目录828份文件全部与发行包一致，没有依赖本机未提交的node_modules修改。

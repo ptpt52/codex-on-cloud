@@ -25,3 +25,5 @@ HTML 用带 CSP 哈希的 import map 锁定模块版本；CSS、普通 script �
 旧宿主仍把旧助手作为关键子进程，不能结束它来加载更新。保留任务升级时先选择独立空闲端口（例如36904），在 `.env` 写入 `FILE_AGENT_PORT=36904`，运行 `npm run deploy`。安装器发现活动旧宿主且未分离端口时会在写 unit 前拒绝升级；不会自动改端口、重启宿主或终止任务。部署会更新文件服务、manager、panel，面板重启后映射需重新配对。旧助手继续保留直到任务已保存、宿主自然进入维护窗口。
 
 已部署的 `# Managed migration for codex-on-cloud file helper` 迁移 unit 和面板端口 drop-in 原样保留，不覆盖、不强制 enable。其旧 `PartOf=panel` 关系继续有效；新安装的正式服务独立启用。维护窗口后可以改用正式 unit，但独立文件服务本身继续保留。不得把真实 unit、路径配置、运行状态、密码或密钥提交到 Git。
+
+部署就绪检查默认读取当前 `.env`，避免旧任务 shell 继承的 `PUBLIC_ORIGIN`、`PORT`、助手端口导致已成功部署却被误判失败。systemd drop-in 的端口仍应与持久配置保持一致。已有活动 Tunnel 改入口时，先确认私有 socket 的 `/readyz` 成功，再修改远端路由，最后核对公网版本；不要为了重跑检查反复重启面板。
