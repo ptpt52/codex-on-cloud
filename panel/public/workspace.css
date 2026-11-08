@@ -127,6 +127,15 @@
   .workspace-keyboard-open .input-dock .composer textarea { min-height: 72px; }
   .workspace-keyboard-open .input-dock .dock-note { display: none; }
 }
+@media (max-width: 420px) {
+  /* Show the alternative action; the selected terminal/desktop remains clear
+     in the title and accessible group name. The existing confirmation stays. */
+  .mode-switch button[aria-pressed=true] { display: none; }
+  .mode-switch button::before { content: '⇄'; margin-inline-end: 2px; }
+  .terminal-session-bar { min-width: 72px; }
+  .terminal-session-bar[data-closable=true] { min-width: 116px; }
+  .terminal-session-button { min-width: 72px; padding-inline: 6px; }
+}
 @media (max-width: 360px) {
   .input-dock .keys { gap: 4px; }
   .input-dock .keys button { font-size: 11px; padding-inline: 4px; }

@@ -1,5 +1,9 @@
 export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialog, list, choose, closeTerminal, manage, changed }) {
   let signature = '', currentTerminal;
+  const narrow = matchMedia('(max-width: 420px)');
+  let fullLabel = '选择终端', shortLabel = fullLabel;
+  const label = () => { mobileButton.textContent = `${narrow.matches ? shortLabel : fullLabel} ▾`; mobileButton.setAttribute('aria-label', fullLabel + ' ▾'); };
+  narrow.addEventListener('change', label);
   function render(catalog, selected, { visible, disabled, invalid, loading }) {
     bar.hidden = !visible;
     mobileButton.disabled = disabled;
@@ -9,7 +13,9 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     mobileClose.disabled = disabled || !currentTerminal;
     mobileClose.title = mobileClose.ariaLabel = currentTerminal ? `结束 ${currentTerminal.name}` : '结束当前终端';
     bar.dataset.closable = String(!!currentTerminal);
-    mobileButton.textContent = invalid ? '原终端已失效 · 选择终端 ▾' : loading ? '正在核对终端…' : `${current?.name || '选择终端'} ▾`;
+    fullLabel = invalid ? '原终端已失效 · 选择终端' : loading ? '正在核对终端…' : current?.name || '选择终端';
+    shortLabel = invalid ? '选择终端' : loading ? '核对中…' : current?.id === 'main' && current.name === 'Codex 主终端' ? '主终端' : fullLabel;
+    label();
     mobileButton.title = current?.name || '选择终端';
     const next = JSON.stringify({ catalog, selected, disabled, invalid });
     if (signature === next) return;

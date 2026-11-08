@@ -253,6 +253,8 @@ function renderDisplayControls() {
   $('diag-resolution').previousElementSibling.textContent = terminalMode() ? '终端尺寸' : '实际分辨率';
   $('desktop-card').classList.toggle('terminal-mode', terminalMode());
   $('desktop-mode').setAttribute('aria-pressed', String(!terminalMode())); $('terminal-mode').setAttribute('aria-pressed', String(terminalMode()));
+  $('desktop-mode').parentElement.setAttribute('aria-label', `操作模式，当前为${terminalMode() ? '网页终端' : '桌面'}`);
+  $('desktop-mode').title = '切换到桌面'; $('terminal-mode').title = '切换到网页终端';
   $('view-title').textContent = terminalMode() ? '网页终端' : '开发桌面';
   $('fullscreen-button').setAttribute('aria-label', terminalMode() ? '全屏终端' : '全屏桌面');
   $('terminal-font-label').textContent = String(displayPreferences.terminalFontSize);

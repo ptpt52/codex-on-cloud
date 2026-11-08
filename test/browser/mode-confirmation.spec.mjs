@@ -24,7 +24,9 @@ test('mode changes in both directions require explicit confirmation, preserve th
   try {
     await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('确认切换后仍保留草稿');
     const originalFrame = await page.locator('#desktop-frame').getAttribute('src');
-    await page.locator('#desktop-mode').click(); await expect(page.locator('#action-confirmation')).toBeHidden();
+    if (await page.locator('#desktop-mode').isVisible()) await page.locator('#desktop-mode').click();
+    else await expect(page.locator('#desktop-mode')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#action-confirmation')).toBeHidden();
     await page.locator('#terminal-mode').dblclick(); await expect(page.locator('#confirmation-title')).toHaveText('切换到网页终端？');
     await expect(page.locator('#cancel-confirmation')).toBeFocused(); await expect(page.locator('#confirmation-description')).toContainText('当前任务继续运行');
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(originalFrame); expect(await storedMode(page)).toBe('desktop');
@@ -35,7 +37,9 @@ test('mode changes in both directions require explicit confirmation, preserve th
     expect(app.terminalConnections).toBe(0); expect(app.vncConnections).toBe(1); expect(await storedMode(page)).toBe('desktop');
     await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click(); await staleAccept(page);
     await expect(page.locator('#connection-status')).toContainText('终端在线'); expect(app.terminalConnections).toBe(1); expect(await storedMode(page)).toBe('terminal');
-    await page.locator('#terminal-mode').click(); await expect(page.locator('#action-confirmation')).toBeHidden(); expect(app.terminalConnections).toBe(1);
+    if (await page.locator('#terminal-mode').isVisible()) await page.locator('#terminal-mode').click();
+    else await expect(page.locator('#terminal-mode')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#action-confirmation')).toBeHidden(); expect(app.terminalConnections).toBe(1);
     const terminalFrame = await page.locator('#desktop-frame').getAttribute('src');
     await page.locator('#desktop-mode').dblclick(); await expect(page.locator('#confirmation-title')).toHaveText('切换到桌面？');
     await expect(page.locator('#cancel-confirmation')).toBeFocused(); await page.keyboard.press('Enter');
