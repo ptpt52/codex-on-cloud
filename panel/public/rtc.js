@@ -9,14 +9,14 @@ export function canTryDirect() { return enabled && window.isSecureContext && !!w
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, standby = false, bootstrap, service = false } = {}) {
+export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, standby = false, bootstrap, service = false, trace = () => {} } = {}) {
   if (signal?.aborted) return null;
   if (!canTryDirect()) { failed('unsupported'); return null; }
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });
   let timedOut = false, failureReported = false, stage = 'signaling';
-  const failure = reason => { if (!failureReported && !signal?.aborted) { failureReported = true; failed(reason); } };
+  const failure = reason => { if (!failureReported && !signal?.aborted) { failureReported = true; trace('path-lost', { path: 'direct', reason }); failed(reason); } };
   let timeout;
   const deadline = (nextStage, ms) => {
     stage = nextStage; clearTimeout(timeout); timeout = setTimeout(() => {
@@ -79,9 +79,12 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       fileChannel() { if (!service) throw Error('非服务通道'); return peer.createDataChannel('codex-files', { ordered: true, protocol: 'files-v1' }); },
       async stats() { return ended ? null : selectedRoute(await peer.getStats()); }, async start() {
       try {
+        let stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'gathering' });
         deadline('gathering', 3000);
         await peer.setLocalDescription(await peer.createOffer());
         await gatherCandidates(peer, controller.signal);
+        trace('rtc-stage', { path: 'direct', stage: 'gathering', durationMs: Math.round(performance.now() - stageAt) });
+        stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const result = await fetch(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
@@ -89,9 +92,12 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         });
         if (!result.ok) throw new Error('直连暂不可用');
         const answer = await result.json();
+        trace('rtc-stage', { path: 'direct', stage: 'signaling', durationMs: Math.round(performance.now() - stageAt) });
+        stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'connecting' });
         deadline('connecting', RTC_CONNECT_TIMEOUT);
         await peer.setRemoteDescription(answer);
         await ready;
+        trace('rtc-stage', { path: 'direct', stage: 'connecting', durationMs: Math.round(performance.now() - stageAt) });
         if (service) features = await control.request('ping', {});
         else if (!probe) await control.request('activate', {});
       } catch (error) { failure(timedOut ? 'timeout' : 'negotiation'); close(); throw error; }

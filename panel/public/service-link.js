@@ -5,7 +5,7 @@ const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics
 export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
 
 // Separate authenticated service link: no frame, desktop claim or input replay.
-export function createServiceLink({ viewer, options, changed }) {
+export function createServiceLink({ viewer, options, changed, trace = () => {} }) {
   let running = false, epoch = 0, current, files, pending, retry, timer, delay = 15000, busy = false, checking = false;
   const state = { ready: false, issue: '', route: null };
   const publish = () => changed({ ...state });
@@ -27,7 +27,7 @@ export function createServiceLink({ viewer, options, changed }) {
     const version = epoch, controller = pending = new AbortController(); let candidate;
     state.issue = 'connecting'; publish();
     try {
-      candidate = await desktopTransport(viewer, () => {}, { service: true, probe: true, signal: controller.signal, bootstrap: options,
+      candidate = await desktopTransport(viewer, () => {}, { service: true, trace, probe: true, signal: controller.signal, bootstrap: options,
         failed: reason => { if (epoch !== version || controller.signal.aborted) return; state.issue = reason; if (current === candidate) { retire(reason); schedule(1000); } } });
       if (!candidate) throw Error('服务直连不可用');
       await candidate.start(); await candidate.health.ping();

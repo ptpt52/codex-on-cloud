@@ -1,3 +1,4 @@
+import { createTraceReporter } from '/connection-trace.js';
 import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
@@ -10,6 +11,7 @@ import { rtcHints } from '/rtc-hints.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
+const trace = createTraceReporter(frame);
 let probed = false;
 const streamEnabled = query.get('stream') === '1';
 let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
@@ -186,7 +188,7 @@ async function connect() {
   if (stopped || socket || candidateController || !csrf || !navigator.onLine || document.hidden) return;
   message('正在连接原有终端…'); report('connecting');
   if (streamEnabled) {
-    streamClient = createStreamClient({ viewer, standby: new URLSearchParams(location.search).get('standby') === '1', csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
+    streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
       canSwitchTarget: () => ready && !blocked && !switching && targetInputIdle(), idle: idleForSwitch,
       settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
       prepare: prepareSwitch,
@@ -223,13 +225,13 @@ async function connect() {
 function attachSocket(current) {
   const previous = socket;
   socket = current; health?.close(); clearTimeout(connectingTimer);
-  const currentEpoch = ++epoch;
+  const currentEpoch = ++epoch; let firstPainted = false, firstFrameAt = performance.now();
   ready = false; sequence = 0; historySequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
   previous?.close(); networkDetails = null; reportNetwork();
   connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, current.session ? 45000 : 12000);
   current.addEventListener('target', event => {
     if (socket !== current || currentEpoch !== epoch) return;
-    terminalId = event.data.terminalId; terminalToken = event.data.terminalToken;
+    terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; firstPainted = false; firstFrameAt = performance.now();
     health?.close(); health = undefined;
     ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; pendingOutputAck = 0;
     finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; term?.dispose(); term = undefined;
@@ -272,7 +274,12 @@ function attachSocket(current) {
     if (value.type === 'output' && ready && typeof value.data === 'string' && value.data.length <= 11000) {
       let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
       pendingWrites++;
-      term.write(bytes, () => { pendingWrites--; if (socket === current && current.readyState === WebSocket.OPEN && bytes.length) acknowledgeOutput(current, bytes.length); }); return;
+      const writtenTerm = term;
+      term.write(bytes, () => {
+        pendingWrites--;
+        if (!firstPainted && socket === current && term === writtenTerm) { firstPainted = true; trace('first-frame', { path: current.direct ? 'direct' : 'relay', durationMs: Math.round(performance.now() - firstFrameAt) }); }
+        if (socket === current && current.readyState === WebSocket.OPEN && bytes.length) acknowledgeOutput(current, bytes.length);
+      }); return;
     }
     if (value.type === 'result' && pending?.id === value.id) {
       finish(value.ok ? { outcome: 'success' } : null, value.ok ? null : { message: value.message || '终端目标已变化，本次输入未发送', outcome: value.outcome || 'unknown' }); return;
@@ -303,7 +310,7 @@ function scheduleProbe(delay = probeDelay, network = false) {
   probeTimer = setTimeout(() => { probeTimer = undefined; probeNetworkCheck = false; void probeDirect(); }, fastConnect ? Math.max(delay, routes.remaining()) : delay);
 }
 function makeCandidate(controller) {
-  return terminalDirect(viewer, { terminalId, terminalToken }, { signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }),
+  return terminalDirect(viewer, { terminalId, terminalToken }, { trace, signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }),
     failed: reason => { if (!stopped && candidateController === controller && !controller.signal.aborted) directFailure(reason); } });
 }
 function finishSwitch(force = false) {

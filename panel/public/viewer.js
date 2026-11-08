@@ -1,3 +1,4 @@
+import { createTraceReporter } from '/connection-trace.js';
 import RFB from './novnc/core/rfb.js';
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { createDesktopPointer } from './desktop-pointer.js';
@@ -11,6 +12,7 @@ import { rtcHints } from '/rtc-hints.js';
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
 const frame = new URLSearchParams(location.search).get('frame');
+const trace = createTraceReporter(frame);
 const viewport = document.getElementById('viewport');
 const frameHold = createFrameHold(viewport), fastConnect = new URLSearchParams(location.search).get('fast') === '1', routes = routePolicy();
 const streamEnabled = new URLSearchParams(location.search).get('stream') === '1';
@@ -316,7 +318,7 @@ async function probeDirect() {
   const controller = probeController = new AbortController(), epoch = connectionEpoch;
   let candidate, prepared = false, requested = false, promoted = false;
   try {
-    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }),
+    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, trace, signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }),
       failed: reason => { if (epoch === connectionEpoch && !controller.signal.aborted) directFailure(reason); } });
     if (!candidate) throw new Error('直连未就绪');
     await candidate.start();
@@ -362,9 +364,10 @@ function attachViewer(direct, channel) {
   url.searchParams.set('viewer', viewer);
   const instance = rfb = new RFB(screen, channel || (direct ? direct.video() : url.href), { shared: false });
   resizeReady = false;
+  const firstFrameAt = performance.now();
   frameReadiness = afterFirstFrame(instance, () => {
     if (rfb !== instance || stopping) return;
-    resizeReady = true; reportView();
+    resizeReady = true; trace('first-frame', { path: streamClient?.socket.direct || direct ? 'direct' : 'relay', durationMs: Math.round(performance.now() - firstFrameAt) }); reportView();
   });
   if (channel) {
     const sendKey = instance.sendKey.bind(instance);
@@ -425,7 +428,7 @@ async function connect() {
   status.hidden = false; status.textContent = '正在连接独立桌面…';
   if (streamEnabled) {
     streamClient?.close();
-    streamClient = createStreamClient({ viewer, standby: new URLSearchParams(location.search).get('standby') === '1', csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
+    streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
       settled: () => !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800,
       prepare: prepareSwitch,
       paused: value => {
@@ -452,7 +455,7 @@ async function connect() {
     attachViewer(null, streamClient.socket); streamClient.start(); return;
   }
   frameHold.capture(canvas);
-  const direct = fastConnect || directFailed ? null : await desktopTransport(viewer, reportControl, { failed: directFailure, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }) });
+  const direct = fastConnect || directFailed ? null : await desktopTransport(viewer, reportControl, { trace, failed: directFailure, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }) });
   if (stopping || connectionEpoch !== epoch) { direct?.close(); return; }
   const instance = attachViewer(direct);
   // RFB handlers are attached before negotiation can deliver video bytes.

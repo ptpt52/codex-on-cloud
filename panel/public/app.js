@@ -13,6 +13,7 @@ import { createRTCHints } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
 import { createRoundTrip } from './health.js';
+import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -36,6 +37,37 @@ let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
 let frameNetwork = null, directIssue = '';
 const frameLatency = createRoundTrip(), relayLatency = createRoundTrip();
+const connectionTrace = createConnectionTrace();
+function recordConnection(type, detail, mode, standby = false) {
+  if (connectionTrace.add({ ...detail, type }, { mode, standby })) renderConnectionTrace();
+}
+function renderConnectionTrace() {
+  const list = $('connection-trace-list');
+  if (!list || !$('connection-dialog').open) return;
+  list.replaceChildren();
+  for (const event of connectionTrace.snapshot().reverse()) {
+    const item = document.createElement('li');
+    const mode = { desktop: '桌面', terminal: '网页终端', service: '文件与映射服务' }[event.mode];
+    item.textContent = `${(event.atMs / 1000).toFixed(1)} 秒 · ${mode}${event.standby ? '（待命）' : ''} · ${TRACE_LABELS[event.type]}${event.stage ? '：' + TRACE_STAGES[event.stage] : ''}${event.durationMs !== undefined ? ' · ' + event.durationMs + ' ms' : ''}${event.waitMs !== undefined ? ' · ' + event.waitMs + ' ms 后' : ''}${event.queuedBytes ? ' · 排队 ' + event.queuedBytes + ' 字节' : ''}${event.reason ? ' · ' + event.reason : ''}`;
+    list.append(item);
+  }
+}
+function clearConnectionTrace() {
+  connectionTrace.clear();
+  if ($('connection-trace-copy')) { $('connection-trace-copy').value = ''; $('connection-trace-copy').hidden = true; }
+  renderConnectionTrace();
+}
+$('connection-dialog').addEventListener('toggle', renderConnectionTrace);
+$('clear-connection-trace')?.addEventListener('click', clearConnectionTrace);
+$('copy-connection-trace')?.addEventListener('click', async () => {
+  const text = connectionTrace.text(), generation = uiGeneration;
+  try { await navigator.clipboard.writeText(text); if (generation === uiGeneration && loggedIn) toast('连接诊断已复制'); }
+  catch {
+    if (generation !== uiGeneration || !loggedIn || !$('connection-dialog').open) return;
+    const field = $('connection-trace-copy'); field.value = text; field.hidden = false; field.focus(); field.select();
+    toast('诊断已选中，可长按或按 Ctrl/Cmd+C 复制。');
+  }
+});
 let relayProbeController, relayProbeAt = -Infinity;
 const directIssues = { unsupported: '当前浏览器环境不支持直连', disabled: '服务端已关闭直连', signaling: '直连协商请求未完成',
   negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测',
@@ -72,7 +104,8 @@ try { browserStorage = localStorage; } catch {}
 const browserPreferences = createBrowserPreferences(browserStorage), displayPreferences = browserPreferences.value;
 const directHints = createRTCHints(browserStorage);
 let workspaceInitialized = false, serviceProtocol = 0;
-const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection() });
+const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection(),
+  trace: (type, detail) => recordConnection(type, detail, 'service') });
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
@@ -716,6 +749,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  clearConnectionTrace();
   clearFileURLs();
   workspaceInitialized = false; serviceProtocol = 0; serviceLink.stop();
   rtcConfig = undefined; panelRoute = 'https';
@@ -782,6 +816,7 @@ function syncModeStandby() {
 }
 function receiveStandby(value) {
   const entry = standbyFrame;
+  if (value.type === 'codex-network-event') { recordConnection(value.event?.type, value.event, entry.mode, true); return; }
   if (value.type === 'codex-desktop') {
     if (value.state === 'ready') { sendStandbyPreferences(); return; }
     if (value.state === 'connected') { entry.state = 'connected'; entry.transport = value.transport === 'direct' ? 'direct' : entry.mode === 'terminal' ? 'terminal' : 'relay'; sendStandbyPreferences(); }
@@ -917,6 +952,7 @@ async function claim(lockPassword, signal) {
   await poll();
 }
 async function showWorkspace(user) {
+  clearConnectionTrace();
   workspaceInitialized = false; serviceProtocol = user.serviceProtocol === 1 ? 1 : 0;
   uiGeneration++; closeConfirmation();
   maxTerminals = DEFAULT_TERMINAL_LIMIT;
@@ -1558,6 +1594,7 @@ window.addEventListener('message', event => {
   if (standbyFrame && event.source === standbyFrame.element.contentWindow && event.data?.frame === String(standbyFrame.epoch)) { receiveStandby(event.data); return; }
   if (event.source !== $('desktop-frame').contentWindow) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
   if (event.data?.type === 'codex-panel-state') {
     const wasReady = panelReady;
     panelReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
