@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildForward } from '../scripts/build-forward.mjs';
+import { createHash } from 'node:crypto';
+import { Writable } from 'node:stream';
+import { createForwardDownloads, FORWARD_FILES } from '../panel/forward-downloads.mjs';
+import { portalWrite } from '../scripts/portal-files.mjs';
+import { fixture as panelFixture } from './fixture.mjs';
 
 test('forward builds use persisted configuration instead of the task environment and keep explicit origins', async t => {
   const root = await mkdtemp(join(tmpdir(), 'forward-build-')); t.after(() => rm(root, { recursive: true, force: true }));
@@ -20,4 +25,70 @@ test('forward builds use persisted configuration instead of the task environment
     } }), /synthetic compiler stop/);
     assert.equal(compiled, true);
   }
+});
+
+async function fixture(t) {
+  const root = await mkdtemp(join(tmpdir(), 'atomic-forward-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'data/forward-client'); await mkdir(directory, { recursive: true, mode: 0o700 });
+  const legacy = Buffer.from('synthetic legacy helper'), name = FORWARD_FILES['windows-amd64'];
+  const manifest = JSON.stringify({ version: 1, files: [{ arch: 'windows-amd64', name, size: legacy.length, sha256: createHash('sha256').update(legacy).digest('hex'), build: 'legacy' }] });
+  await writeFile(join(directory, name), legacy); await writeFile(join(directory, 'manifest.json'), manifest);
+  let seed = 1;
+  const state = { fail: '', before: async () => {} };
+  const run = async (file, args, options) => {
+    if (file === 'git') return { stdout: '123456abcdef\n' };
+    if (file === 'go' && args[0] === 'version') return { stdout: 'go version go1.26.4 linux/amd64\n' };
+    if (file === 'go') {
+      const arch = options.env.GOOS + '-' + options.env.GOARCH; await state.before(arch);
+      if (state.fail === arch) throw Error('synthetic platform build failure');
+      const bytes = Buffer.alloc(256, seed++); bytes.write('MZ'); bytes.writeUInt32LE(64, 60); bytes.writeUInt32LE(0x4550, 64); bytes.writeUInt16LE(options.env.GOARCH === 'amd64' ? 0x8664 : 0xaa64, 68);
+      await writeFile(args[args.indexOf('-o') + 1], bytes); return { stdout: '' };
+    }
+    assert.equal(file, 'python3'); await writeFile(args.at(-1), Buffer.alloc(300, seed++)); return { stdout: '' }; // Mock packaging, not a real ZIP.
+  };
+  return { root, directory, legacy, manifest, state, run, downloads: createForwardDownloads(directory) };
+}
+async function download(downloads, generation) {
+  const chunks = [], sink = new Writable({ write(bytes, _encoding, done) { chunks.push(Buffer.from(bytes)); done(); } });
+  sink.writeHead = () => {};
+  await downloads.serve('windows-amd64', sink, generation); return Buffer.concat(chunks);
+}
+test('a later compiler failure leaves the complete previous download and its manifest untouched', async t => {
+  const h = await fixture(t); h.state.fail = 'windows-arm64';
+  await assert.rejects(buildForward({ root: h.root }, { run: h.run }), /platform build failure/);
+  assert.deepEqual(await download(h.downloads), h.legacy); assert.equal(await readFile(join(h.directory, 'manifest.json'), 'utf8'), h.manifest);
+  assert.deepEqual(await readdir(join(h.directory, 'releases')), []);
+});
+test('all four artifacts publish together, versioned downloads remain stable and retention is bounded', async t => {
+  const h = await fixture(t), first = await buildForward({ root: h.root }, { run: h.run });
+  const old = await download(h.downloads, first.generation), listed = await h.downloads.list();
+  assert.equal(listed.length, 4); assert.ok(listed.every(item => item.href.endsWith('?generation=' + first.generation)));
+  h.state.before = async () => { assert.deepEqual(await h.downloads.list(), listed); assert.deepEqual(await download(h.downloads), old); };
+  const second = await buildForward({ root: h.root }, { run: h.run }); h.state.before = async () => {};
+  assert.notDeepEqual(await download(h.downloads), old); assert.deepEqual(await download(h.downloads, first.generation), old);
+  await buildForward({ root: h.root }, { run: h.run });
+  assert.equal((await readdir(join(h.directory, 'releases'))).length, 2);
+  await assert.rejects(download(h.downloads, first.generation), { status: 410 });
+  assert.ok((await download(h.downloads, second.generation)).length > 0);
+  assert.deepEqual(await readFile(join(h.directory, FORWARD_FILES['windows-amd64'])), h.legacy);
+});
+test('an ambiguous pointer acknowledgement never deletes a generation already committed', async t => {
+  const h = await fixture(t);
+  await assert.rejects(buildForward({ root: h.root }, { run: h.run, publish: async (path, text) => {
+    await portalWrite(path, text); if (path.endsWith('/current.json')) throw Error('synthetic lost commit acknowledgement');
+  } }), /lost commit acknowledgement/);
+  assert.equal((await h.downloads.list()).length, 4); assert.ok((await download(h.downloads)).length > 0);
+});
+
+test('published downloads pin their generation through authenticated HTTP and reject arbitrary paths', async t => {
+  const h = await fixture(t), result = await buildForward({ root: h.root }, { run: h.run });
+  const app = await panelFixture({ forwardDownloadDir: h.directory }); t.after(() => app.close());
+  const url = '/api/forward/download/windows-amd64?generation=' + result.generation;
+  assert.equal((await app.request(url)).status, 401); await app.login();
+  const response = await app.request(url); assert.equal(response.status, 200);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), result.files.find(item => item.arch === 'windows-amd64').sha256);
+  assert.equal((await app.request(url + '&generation=' + result.generation)).status, 400);
+  assert.equal((await app.request('/api/forward/download/windows-amd64?generation=../../outside')).status, 400);
+  assert.equal((await app.request('/api/forward/download/windows-amd64?generation=' + '0'.repeat(32))).status, 410);
 });

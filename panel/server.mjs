@@ -401,7 +401,9 @@ export async function createPanel(config) {
       return reply(res, 200, path.endsWith('/remove') ? devices.remove(body) : devices.save(body));
     }
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
-      requireSession(req); return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res);
+      requireSession(req);
+      if (url.searchParams.getAll('generation').length > 1) throw new HttpError(400, '助手版本参数无效');
+      return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res, url.searchParams.get('generation') ?? undefined);
     }
     if (['/api/forward', '/api/forward/stop', '/api/forward/hints'].includes(path) && req.method === 'POST') {
       requireWrite(req);
