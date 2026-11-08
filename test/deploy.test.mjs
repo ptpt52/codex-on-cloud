@@ -52,7 +52,7 @@ test('terminal-only deployment installs minimal packages and production JS witho
   assert.ok(h.calls.some(c=>c.command==='npm'&&c.args.join(',')==='ci,--omit=dev,--omit=optional'));
   assert.match(await readFile(join(h.root,'.env'),'utf8'),/DEPLOY_MODE=terminal/);
   const units=serviceUnits('/app','/bin',process.execPath,'terminal');
-  assert.deepEqual([...units.keys()],['codex-cloud-terminal.service','codex-cloud-manager.service','codex-cloud-panel.service','codex-cloud-tunnel.service']);
+  assert.deepEqual([...units.keys()],['codex-cloud-terminal.service','codex-cloud-files.service','codex-cloud-manager.service','codex-cloud-panel.service','codex-cloud-tunnel.service']);
   assert.ok([...units.values()].every(text=>!text.includes('desktop.mjs')&&!text.includes('desktop-worker.mjs')&&!text.includes('PartOf=')));
   assert.match(units.get('codex-cloud-terminal.service'),/Restart=no/);
   assert.ok(h.calls.every(c=>c.capture||!c.args.some(arg=>/codex-cloud-(desktop|actions)/.test(arg))));
@@ -126,12 +126,13 @@ test('first deployment installs locked dependencies and initializes, enables and
   assert.ok(h.calls.every(c=>c.command!=='sudo'&&!c.args.includes('restart')));
 });
 
-test('rerunning with active or partially started services preserves dependencies, credentials and desktop lifetime',async t=>{
-  const h=await harness(t,{active:['codex-cloud-desktop.service']});
+test('rerunning updates active gateways and file services while preserving dependencies, credentials and desktop lifetime',async t=>{
+  const h=await harness(t,{active:['codex-cloud-desktop.service','codex-cloud-manager.service','codex-cloud-files.service','codex-cloud-panel.service']});
   await writeFile(join(h.root,'.env'),'PUBLIC_ORIGIN=http://existing.test:36080\nDESKTOP_SIZE=1920x2000\n');
   await mkdir(join(h.root,'secrets'));await writeFile(join(h.root,'secrets','credentials.txt'),'retained test credential');
   await deploy({},h.context);
-  assert.ok(h.calls.every(c=>!c.args.includes('ci')&&!c.args.includes('restart')&&!c.args.includes('stop')));
+  assert.ok(h.calls.every(c=>!c.args.includes('ci')&&!c.args.includes('stop')));
+  assert.deepEqual(h.calls.filter(c=>c.args.includes('restart')).map(c=>c.args.at(-1)),['codex-cloud-files.service','codex-cloud-manager.service','codex-cloud-panel.service']);
   assert.match(await readFile(join(h.root,'.env'),'utf8'),/1920x2000/);
   assert.equal(await readFile(join(h.root,'secrets','credentials.txt'),'utf8'),'retained test credential');
 });
@@ -193,10 +194,17 @@ test('real readiness HTTP uses the configured Host and helper authorization with
   const server=http.createServer((req,res)=>{
     requests.push(req.url);assert.ok(requests.length<=2);
     res.setHeader('content-type','application/json');
-    if(req.url==='/healthz') {assert.equal(req.headers.host,'desktop.example.test');res.end('{"ok":true}');}
-    else {assert.equal(req.url,'/health');assert.equal(req.headers.authorization,'Bearer synthetic_test_secret');res.end('{"ready":true}');}
+    if(req.url==='/readyz') {assert.equal(req.headers.host,'desktop.example.test');res.end('{"ok":true,"host":true,"files":true}');}
+    else {assert.equal(req.url,'/health');assert.equal(req.headers.authorization,'Bearer synthetic_test_secret');res.end('{"ready":true,"uploadProtocol":1,"quotaProtocol":1}');}
   });
   server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
   await checkHealth({port:server.address().port,agentPort:server.address().port,origin:'https://desktop.example.test',agentSecret:'synthetic_test_secret'});
-  assert.deepEqual(requests.sort(),['/health','/healthz']);
+  assert.deepEqual(requests.sort(),['/health','/readyz']);
+});
+
+test('readiness refuses an absent dedicated FILE_AGENT_PORT despite a healthy host and panel', async t => {
+  const server = http.createServer((_req,res) => { res.setHeader('content-type','application/json'); res.end('{"ok":true,"host":true,"files":true,"ready":true,"uploadProtocol":1,"quotaProtocol":1}'); });
+  server.listen(0,'127.0.0.1'); await once(server,'listening'); t.after(() => new Promise(resolve => server.close(resolve)));
+  const missing = http.createServer(); missing.listen(0,'127.0.0.1'); await once(missing,'listening'); const missingPort = missing.address().port; await new Promise(resolve => missing.close(resolve));
+  await assert.rejects(checkHealth({port:server.address().port,agentPort:server.address().port,fileAgentPort:missingPort,origin:'http://example.test',agentSecret:'synthetic_test_secret'}, {attempts:1}), /独立文件服务/);
 });

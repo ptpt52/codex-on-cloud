@@ -113,6 +113,7 @@ ALLOWED_HOSTS=127.0.0.1:36080
 ADMIN_USER=admin
 PANEL_PORT=36080
 AGENT_PORT=36902
+# FILE_AGENT_PORT=36904  # 旧活动宿主无损迁移时使用独立空闲端口
 DISPLAY_NUMBER=93
 DESKTOP_SIZE=1600x3200
 WORKSPACE_DIR=./workspaces
@@ -406,3 +407,5 @@ CHROME_PATH=/usr/bin/google-chrome npm run test:native
 网页资源更新可使用 `npm run reload-ui` 保持映射连接，首次升级和版本保留限制见 [前端热更新](docs/ui-updates.md)。
 
 0.7.0 助手新增[反向串口接入](docs/serial.md)：网页配置固定串口和通信参数，本地确认后，Codex 通过服务器回环 TCP 入口收发原始字节；单客户端、连接时打开、断线不重发。
+
+文件助手由独立的 `codex-cloud-files.service` 管理，异常退出不会结束桌面或终端任务。部署就绪检查包含文件服务；旧活动宿主迁移步骤见[文件服务升级](docs/ui-updates.md#文件服务与旧宿主迁移)。重复运行部署会更新文件服务、manager 和 panel，已有任务保留，映射需重新配对。

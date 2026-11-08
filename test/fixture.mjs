@@ -37,7 +37,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     const chunks = []; try { for await (const chunk of req) chunks.push(chunk); } catch (error) { if (req.destroyed) { res.destroy(); return; } throw error; }
     const body = Buffer.concat(chunks);
     if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
-    if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试' })); }
+    if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试', uploadProtocol: 1, quotaProtocol: 1 })); }
     if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, quotaProtocol: 1, truncated: files.size > 1000, files: [...files].slice(0, 1000).map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
     if (req.url.startsWith('/files/')) {
       const name = decodeURIComponent(req.url.slice('/files/'.length));

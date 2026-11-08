@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, lstat, chmod, unlink, writeFile, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -7,16 +7,18 @@ import net from 'node:net';
 import { settings } from './config.mjs';
 import { terminalEnvironment } from './deployment-mode.mjs';
 
-// This service owns tmux and the file helper. Browsers, panels and managers own
+// This service owns tmux. Browsers, panels, file helpers and managers own
 // only clients; restarting them cannot terminate a shell or replay its input.
 const config = settings(), exec = promisify(execFile), env = terminalEnvironment(config);
 const socket = env.TMUX_SOCKET, lock = join(config.runtime, 'terminal.pid');
-let owned = false, serverOwned = false, serverSocket, agent, agentDone, stopping = false;
+let owned = false, serverOwned = false, serverSocket, stopping = false;
 let starting = true, stopRequested = false;
+let monitor, probing = false;
 const tmux = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 16384 });
 async function stop(code = 0) {
   if (stopping) return;
   stopping = true;
+  clearInterval(monitor);
   if (serverOwned && serverSocket) {
     try {
       const current = await lstat(socket, { bigint: true });
@@ -25,10 +27,6 @@ async function stop(code = 0) {
       if (current.ino === serverSocket.ino && current.dev === serverSocket.dev) await tmux(['kill-server']);
     } catch {}
   }
-  agent?.kill('SIGTERM');
-  const deadline = setTimeout(() => agent?.kill('SIGKILL'), 1500).unref();
-  if (agentDone) await agentDone;
-  clearTimeout(deadline);
   if (owned) await unlink(lock).catch(() => {});
   process.exit(code);
 }
@@ -84,16 +82,14 @@ try {
   serverOwned = true; await chmod(socket, 0o600);
   serverSocket = await lstat(socket, { bigint: true });
   await tmux(['new-session', '-d', '-s', 'codex', '-c', config.workspace, 'bash', join(config.root, 'desktop', 'codex-session')]);
-  agent = spawn('python3', [join(config.root, 'desktop', 'agent.py')], { env: { ...env, AGENT_PORT: String(config.agentPort), AGENT_SECRET_FILE: join(config.root, 'secrets', 'agent_secret') }, stdio: ['ignore', 'pipe', 'pipe'] });
-  agentDone = new Promise(resolve => agent.once('close', resolve));
-  let window = Date.now(), bytes = 0;
-  const output = chunk => {
-    if (Date.now() - window >= 30000) { window = Date.now(); bytes = 0; }
-    const part = chunk.subarray(0, Math.max(0, 32768 - bytes)); bytes += part.length; process.stderr.write(part);
-  };
-  agent.stdout.on('data', output); agent.stderr.on('data', output);
-  agent.once('error', () => void stop(1)); agent.once('exit', () => { if (!stopping) void stop(1); });
   starting = false;
   if (stopRequested) await stop();
+  monitor = setInterval(async () => {
+    if (probing || stopping) return;
+    probing = true;
+    try { await tmux(['has-session', '-t', '=codex-host']); }
+    catch { if (!stopping) await stop(1); }
+    finally { probing = false; }
+  }, 3000);
   console.log('纯网页终端后台已启动，不启动图形桌面或 Codex 任务。');
 } catch (error) { starting = false; console.error(error.message); await stop(1); }

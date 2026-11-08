@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
@@ -84,6 +85,7 @@ class AgentError(Exception):
 class Desktop:
     def __init__(self, secret, transfer_dir):
         self.secret = secret
+        self.files_only = os.environ.get('FILE_AGENT_ONLY') == '1'
         self.terminal_only = os.environ.get('DEPLOY_MODE', 'desktop') == 'terminal'
         self.transfer_dir = Path(transfer_dir)
         self.transfer_dir.mkdir(parents=True, exist_ok=True)
@@ -92,11 +94,12 @@ class Desktop:
         self.input_lock = threading.Lock()
         self.upload_lock = threading.Lock()
         self.version = ''
-        try:
-            self.version = subprocess.run(['codex', '--version'], capture_output=True, text=True, timeout=10).stdout.strip()
-        except (OSError, subprocess.TimeoutExpired):
-            if not self.terminal_only:
-                raise
+        if not self.files_only:
+            try:
+                self.version = subprocess.run(['codex', '--version'], capture_output=True, text=True, timeout=10).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                if not self.terminal_only:
+                    raise
 
     def directory(self):
         return os.open(str(self.transfer_dir), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -108,7 +111,7 @@ class Desktop:
             raise AgentError(503, '桌面尚未就绪，或没有可接收输入的窗口')
 
     def action(self, path, body):
-        if self.terminal_only:
+        if self.terminal_only or self.files_only:
             raise AgentError(501, '纯终端部署未启用桌面操作')
         with self.input_lock:
             if path == '/paste':
@@ -183,9 +186,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         desktop = self.server.desktop
         if self.command == 'GET' and path == '/health':
+            if desktop.files_only:
+                return self.json(200, {'ready': True, 'uploadProtocol': UPLOAD_PROTOCOL, 'quotaProtocol': 1})
             command = ['tmux', '-S', os.environ['TMUX_SOCKET'], 'has-session', '-t', '=codex-host'] if desktop.terminal_only else ['xdotool', 'getdisplaygeometry']
             probe = subprocess.run(command, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return self.json(200, {'ready': probe.returncode == 0, 'version': desktop.version})
+            return self.json(200, {'ready': probe.returncode == 0, 'version': desktop.version, 'uploadProtocol': UPLOAD_PROTOCOL, 'quotaProtocol': 1})
         if self.command == 'GET' and path == '/files':
             directory = desktop.directory()
             try:
@@ -365,5 +370,11 @@ if __name__ == '__main__':
         if item.is_file() and not item.is_symlink():
             item.unlink()
     server = AgentServer(('127.0.0.1', int(os.environ.get('AGENT_PORT', '36902'))), desktop)
+    if desktop.files_only:
+        # A crashed wrapper closes the private pipe, including outside systemd.
+        def parent_closed():
+            sys.stdin.buffer.read(1)
+            server.shutdown()
+        threading.Thread(target=parent_closed, daemon=True).start()
     print('终端与文件内部接口已启动' if desktop.terminal_only else '桌面内部接口已启动', flush=True)
     server.serve_forever()

@@ -21,6 +21,7 @@ class AgentTests(unittest.TestCase):
         self.desktop = agent.Desktop.__new__(agent.Desktop)
         self.desktop.secret = 'a_private_test_secret'
         self.desktop.terminal_only = False
+        self.desktop.files_only = False
         self.desktop.transfer_dir = Path(self.temp.name) / 'transfer'
         self.desktop.transfer_dir.mkdir()
         self.desktop.input_lock = threading.Lock()
@@ -74,6 +75,18 @@ class AgentTests(unittest.TestCase):
             for path in ('/key', '/paste', '/terminal'):
                 self.assertEqual(self.request('POST', path, {'key': 'Enter', 'text': 'test'})[0], 501)
             run.assert_not_called()
+
+    def test_file_service_requires_no_codex_or_x11_and_has_no_desktop_actions(self):
+        with patch.dict(os.environ, {'FILE_AGENT_ONLY': '1', 'DEPLOY_MODE': 'desktop'}):
+            with patch.object(agent.subprocess, 'run') as run:
+                desktop = agent.Desktop('private-test-secret', Path(self.temp.name) / 'files-only')
+                self.assertTrue(desktop.files_only)
+                self.desktop.files_only = True
+                status, body = self.request('GET', '/health')
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body), {'ready': True, 'uploadProtocol': 1, 'quotaProtocol': 1})
+                self.assertEqual(self.request('POST', '/paste', {'text': 'not sent'})[0], 501)
+                run.assert_not_called()
 
     def test_terminal_health_uses_only_the_private_keeper_session_and_still_authenticates(self):
         self.desktop.terminal_only = True

@@ -130,7 +130,6 @@ try {
   vncServer.on('error', error => { console.error(`VNC socket: ${error.message}`); void stop(1); });
   await new Promise((resolve, reject) => { vncServer.once('error', reject); vncServer.listen(config.socket, resolve); });
   await chmod(config.socket, 0o600);
-  start('python3', [join(config.root, 'desktop', 'agent.py')], { ...env, VNC_SOCKET: config.socket });
   // This opens a shell attached to a private tmux server. It never starts or replays a Codex task.
   start(join(config.root, 'desktop', 'open-codex-terminal'), [], env, false);
   console.log(`独立桌面已启动：${config.display}；工作目录：${config.workspace}`);

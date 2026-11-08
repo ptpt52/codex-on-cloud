@@ -5,8 +5,8 @@ export function deploymentMode(value = 'desktop') {
   return value;
 }
 export function modeServices(mode) {
-  return mode === 'terminal' ? ['codex-cloud-terminal.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']
-    : ['codex-cloud-desktop.service', 'codex-cloud-actions.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service'];
+  return mode === 'terminal' ? ['codex-cloud-terminal.service', 'codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']
+    : ['codex-cloud-desktop.service', 'codex-cloud-actions.service', 'codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service'];
 }
 export function terminalEnvironment(config) {
   const env = { ...config.env, DEPLOY_MODE: 'terminal', WORKSPACE_DIR: config.workspace, TRANSFER_DIR: config.transfer,

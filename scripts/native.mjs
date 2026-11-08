@@ -83,16 +83,29 @@ try {
       await access(join(config.root, 'secrets', 'panel_password'));
       await mkdir(serviceDir, { recursive: true });
       const files = serviceUnits(config.root, path, process.execPath, config.mode);
-      for (const [name, content] of files) {
-        const file = join(serviceDir, name);
+      const preserved = new Set();
+      let previousFiles = '';
+      try { previousFiles = await readFile(join(serviceDir, 'codex-cloud-files.service'), 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const hostUnit = config.mode === 'terminal' ? 'codex-cloud-terminal.service' : 'codex-cloud-desktop.service';
+      if (!previousFiles && config.fileAgentPort === config.agentPort && spawnSync('systemctl', ['--user', 'is-active', '--quiet', hostUnit], { stdio: 'ignore' }).status === 0) {
+        throw Error('旧任务宿主仍持有文件端口。请在 .env 配置独立且空闲的 FILE_AGENT_PORT（例如 36904）后重试；不会重启宿主或停止任务');
+      }
+      // Validate every unit before writing any; preserve the previously deployed
+      // sidecar migration and its port drop-in without taking over its lifetime.
+      for (const name of files.keys()) {
         let previous = '';
-        try { previous = await readFile(file, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-        if (previous && !previous.startsWith('# Managed by codex-on-cloud')) throw new Error(`${file} 已存在且不是本项目生成的，不会覆盖`);
+        try { previous = await readFile(join(serviceDir, name), 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (name === 'codex-cloud-files.service' && previous.startsWith('# Managed migration for codex-on-cloud file helper')) { preserved.add(name); continue; }
+        if (previous && !previous.startsWith('# Managed by codex-on-cloud')) throw new Error(`${join(serviceDir, name)} 已存在且不是本项目生成的，不会覆盖`);
+      }
+      for (const [name, content] of files) {
+        if (preserved.has(name)) continue;
+        const file = join(serviceDir, name);
         await writeFile(file, content, { mode: 0o600 });
         await chmod(file, 0o600);
       }
       systemctl(['daemon-reload']);
-      systemctl(['enable', ...selectedUnits]);
+      systemctl(['enable', ...selectedUnits.filter(name => !preserved.has(name))]);
       console.log('用户服务已安装，尚未启动。运行 npm run native:start。\n如需退出本机登录后及开机继续运行，请执行一次：sudo loginctl enable-linger ' + process.env.USER);
     }
   } else if (command === 'start') systemctl(['start', ...selectedUnits]);

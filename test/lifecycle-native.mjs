@@ -49,6 +49,7 @@ try {
   const worker = start(process.execPath, [join(root, 'native/desktop-worker.mjs')]);
   let manager = start(process.execPath, [join(root, 'native/manager.mjs')]);
   await eventually(async () => (await managerRequest(clientConfig, '/status')).available);
+  assert.equal((await managerRequest(clientConfig, '/health')).ready, true);
   const action = desktopActionClient(join(runtime, 'actions.sock'), secret);
   await action('/terminal', { id: 'main' });
   let window, windowPid; await eventually(async () => { window = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']); windowPid = await run('xdotool', ['getwindowpid', window]); return /^\d+$/.test(windowPid); });

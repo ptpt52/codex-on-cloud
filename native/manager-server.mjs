@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 
-export function createManagerServer(secret, controls) {
+export function createManagerServer(secret, controls, { health } = {}) {
   let active = 0;
   const expected = Buffer.from(`Bearer ${secret}`);
   const server = http.createServer(async (req, res) => {
@@ -12,6 +12,7 @@ export function createManagerServer(secret, controls) {
     active++;
     req.setTimeout(req.url === '/resolution' ? 8000 : 5000, () => req.destroy());
     try {
+      if (health && req.method === 'GET' && req.url === '/health') return reply(200, await health());
       if (req.method === 'GET' && req.url === '/settings') return reply(200, await controls.get());
       if (req.method === 'GET' && req.url === '/status') return reply(200, controls.status());
       if (req.method === 'GET' && req.url === '/terminals') return reply(200, await controls.listTerminals());

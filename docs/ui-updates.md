@@ -16,14 +16,12 @@ HTML 用带 CSP 哈希的 import map 锁定模块版本；CSS、普通 script �
 
 超时可能是结果未知，命令不会自动重试。检查本机面板和 `/ui-version` 返回的资源版本后再操作。尚在使用的前端应保留后台协议兼容性；更新前运行项目测试。
 
-## 不结束任务地更新旧版文件助手
+## 文件服务与旧宿主迁移
 
-旧桌面/终端宿主将 Python 助手作为关键子进程，不能直接结束它来加载文件上传保护。可在同一用户下另建 `codex-cloud-files.service`，运行当前项目的 `desktop/agent.py`，仅监听新的回环端口（例如36904），并在面板的 systemd drop-in 中设置 `FILE_AGENT_PORT=36904`。文件接口使用新版助手，桌面健康继续使用原 `AGENT_PORT`，原宿主和 tmux 任务保留；独立文件服务失效时拒绝文件请求，不自动退回旧版覆盖逻辑。
+新安装由 `codex-cloud-files.service` 独立运行 `native/file-agent.mjs`，仅监听回环 `FILE_AGENT_PORT`（默认跟随 `AGENT_PORT`，36902）。文件服务只处理文件，不查询 Codex 或访问 X11；桌面和纯终端宿主都不再启动 Python 助手。它退出、无法启动或重启，不会停止已有任务。管理服务通过独立显示/私有 tmux 探测宿主健康；`/readyz` 同时检查宿主与文件协议，不把缺少文件服务的部署报告为成功。
 
-独立服务使用固定 Python 路径、项目绝对路径、原 `secrets/agent_secret` 文件和原 `TRANSFER_DIR`；桌面模式沿用原 DISPLAY/XAUTHORITY，纯终端模式沿用 DEPLOY_MODE/TMUX_SOCKET。仅传文件路径与非秘密设置，不把密钥内容写入 unit。每部署至多一个此类助手、一个 unit（上限8 KiB）和一个面板 drop-in（上限1 KiB）；日志沿用 journald，启动失败每60秒最多重试3次，不新增文件日志。助手继续使用12个并发线程、单上传互斥与50 MiB限制。
+`native:install/start/status/stop` 已纳入独立文件服务。服务失败每60秒最多启动3次，间隔5秒；日志沿用 journald，包装进程每30秒最多输出32 KiB。助手继续使用12个并发线程、单上传互斥、50 MiB单文件和临时账号配额。Python 子进程观察私有父管道，包装进程异常退出后也会结束。
 
-依赖方向为面板 `Wants=` / `After=codex-cloud-files.service`，独立服务 `PartOf=codex-cloud-panel.service` / `Before=codex-cloud-panel.service`，自身不依赖桌面宿主。这样随面板停止、重启和开机运行，不需要单独启用。仅维护已有独立助手时可重启 files 服务；面板重启仍需重新配对端口映射。`native:install` 不创建这个可选的迁移服务，管理员需保留或按此说明维护 unit 和 drop-in。
+旧宿主仍把旧助手作为关键子进程，不能结束它来加载更新。保留任务升级时先选择独立空闲端口（例如36904），在 `.env` 写入 `FILE_AGENT_PORT=36904`，运行 `npm run deploy`。安装器发现活动旧宿主且未分离端口时会在写 unit 前拒绝升级；不会自动改端口、重启宿主或终止任务。部署会更新文件服务、manager、panel，面板重启后映射需重新配对。旧助手继续保留直到任务已保存、宿主自然进入维护窗口。
 
-首次迁移先完成代码与测试、核对新端口空闲，再停止面板取消在途文件请求；确认原助手没有进行中的临时上传后安装并校验 unit，daemon-reload 后启动面板。验证新助手的 `/files` 返回 `uploadProtocol:1`，再核对公网页面和上传冲突保护。不得停止原助手、desktop/terminal、actions、manager或Tunnel来完成迁移，也不要同时让新旧面板向同一目录上传。
-
-维护窗口内原宿主自然重启、确认原端口也已支持新协议后，才可撤销面板对 files 服务的依赖与端口覆盖、重启面板，再停止并删除迁移服务。否则保留独立助手。运行状态、真实 unit 路径、密码与密钥不得提交到Git。
+已部署的 `# Managed migration for codex-on-cloud file helper` 迁移 unit 和面板端口 drop-in 原样保留，不覆盖、不强制 enable。其旧 `PartOf=panel` 关系继续有效；新安装的正式服务独立启用。维护窗口后可以改用正式 unit，但独立文件服务本身继续保留。不得把真实 unit、路径配置、运行状态、密码或密钥提交到 Git。

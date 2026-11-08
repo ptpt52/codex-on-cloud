@@ -15,7 +15,7 @@ import { createTerminalManager } from '../native/terminals.mjs';
 
 const exec = promisify(execFile), directory = await mkdtemp(join(tmpdir(), 'codex-terminal-only-'));
 const root = join(directory, 'app'), home = join(directory, 'home'), bin = join(directory, 'bin'), runtime = join(directory, 'run');
-const children = [], sockets = new Set(); let host, panel, manager, agentSecret, env, deadline, tmuxOwner;
+const children = [], sockets = new Set(); let host, files, panel, manager, agentSecret, env, deadline, tmuxOwner;
 const taskOwners = new Map();
 const systemd = process.env.TERMINAL_TEST_SYSTEMD === '1';
 async function freePort() { const server = net.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening'); const port = server.address().port; await new Promise(r => server.close(r)); return port; }
@@ -77,11 +77,12 @@ try {
     await writeFile(join(root, '.env'), (await readFile(join(root, '.env'), 'utf8')).replace('MAX_TERMINALS=4', 'MAX_TERMINALS=8'));
     const configuration = await readFile(join(root, '.env'), 'utf8'); assert.match(configuration, /DEPLOY_MODE=terminal/); assert.doesNotMatch(configuration, /DISPLAY_NUMBER|DESKTOP_SIZE/);
     agentSecret = (await readFile(join(root, 'secrets', 'agent_secret'), 'utf8')).trim();
-    host = launch('native/terminal-host.mjs');
+    host = launch('native/terminal-host.mjs'); files = launch('native/file-agent.mjs');
     await until(async () => { try { return (await (await fetch('http://127.0.0.1:' + agentPort + '/health', { headers: { authorization: 'Bearer ' + agentSecret }, signal: AbortSignal.timeout(1000) })).json()).ready === true; } catch { return false; } }, 'terminal host did not start');
     assert.equal((await lstat(join(runtime, 'tmux.sock'))).mode & 0o777, 0o600);
     manager = launch('native/manager.mjs'); panel = launch('panel/main.mjs');
     await until(async () => { try { return (await fetch(origin + '/healthz')).ok; } catch { return false; } }, 'panel did not start');
+    await until(async () => { try { return (await fetch(origin + '/readyz')).ok; } catch { return false; } }, 'task host or files did not become ready');
     let cookie = '', csrf = ''; const viewer = randomUUID();
     async function api(path, body) {
       const response = await fetch(origin + path, { method: body === undefined ? 'GET' : 'POST', headers: { origin, cookie, 'x-viewer-id': viewer, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(6000) });
@@ -129,6 +130,12 @@ try {
     const upload=await fetch(origin+'/api/files/terminal-test.txt',{method:'PUT',headers:{origin,cookie,'x-viewer-id':viewer,'x-csrf-token':csrf,'content-type':'application/octet-stream'},body:fileText});
     assert.equal(upload.status,200);assert.equal(await(await fetch(origin+'/api/files/terminal-test.txt',{headers:{cookie}})).text(),fileText);
     assert.equal((await api('/api/forward')).limit, 4);
+    await stop(files);
+    assert.equal(host.exitCode, null); assert.equal(host.signalCode, null);
+    for (const terminal of full.terminals) assert.ok(await taskAlive(Number(terminal.token.split(':')[1])), 'file service stop must preserve tasks');
+    assert.equal((await api('/api/state')).desktop.ready, true);
+    files = launch('native/file-agent.mjs');
+    await until(async () => { try { return (await fetch(origin + '/api/files', {headers:{cookie}})).ok; } catch { return false; } }, 'file service did not recover');
     await stop(panel); await stop(manager);
     assert.equal(host.exitCode, null); assert.equal(host.signalCode, null);
     assert.equal((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
@@ -205,8 +212,10 @@ try {
     }
     for(const [name,path]of Object.entries({tmux:'/usr/bin/tmux',bash:'/bin/bash',sleep:'/bin/sleep',dirname:'/usr/bin/dirname'}))await symlink(path,join(bin,name));
     await writeFile(join(bin,'python3'),'#!/no-such-codex-test-interpreter\n',{mode:0o700});
-    const originalPath=env.PATH;env.PATH=bin;host=launch('native/terminal-host.mjs');env.PATH=originalPath;
-    await until(()=>host.exitCode!==null,'failed helper did not terminate its terminal host');assert.notEqual(host.exitCode,0);
+    const originalPath=env.PATH;env.PATH=bin;files=launch('native/file-agent.mjs');host=launch('native/terminal-host.mjs');env.PATH=originalPath;
+    await until(()=>files.exitCode!==null,'failed file helper did not exit');assert.notEqual(files.exitCode,0);
+    await until(async () => { try { return (await tmux(['list-panes','-t','=codex','-F','#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'file helper failure must not prevent task host startup');
+    assert.equal(host.exitCode,null); await stop(host);
     await assert.rejects(tmux(['list-sessions']));await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
     console.log('✓ real terminal-only install without an executable Codex, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, panel/manager restarts preserve tasks, confirmed close ends only its shell, stale close rejected, closing all slots and migrating a desktop keeper preserve the server, explicit reopening, fixed host lifetime and shutdown');
     if(systemd)console.log('✓ real transient systemd control groups: all tasks and the keeper remain in the host, user bus settings are preserved, panel/manager stops preserve tasks, host stop kills HUP/TERM-ignoring tasks, host SIGKILL cleans its group; only unique test units were created');

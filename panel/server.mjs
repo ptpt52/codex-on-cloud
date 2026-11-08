@@ -74,6 +74,7 @@ export async function createPanel(config) {
   let owner = null;
   let loginBusy = 0;
   let healthCache = null;
+  let fileHealthCache = null;
   let maintenancePending = false;
   let closing = false;
   let rtcBusy = false;
@@ -208,12 +209,29 @@ export async function createPanel(config) {
     if (healthCache && healthCache.at > Date.now() - 3000) return healthCache.promise;
     const promise = (async () => {
       try {
-        const result = await agent('/health', { signal: AbortSignal.timeout(2500) });
+        let result;
+        try { result = await managerRequest(config, '/health', undefined, 1500); }
+        catch (error) {
+          // Transitional support for an already-running older manager only.
+          if (error.status !== 404) throw error;
+          result = await agent('/health', { signal: AbortSignal.timeout(1500) });
+        }
         return { ready: result.ready === true, version: result.version || '', transferDir: config.transferDir || '', message: result.ready ? '桌面已就绪' : '桌面正在启动' };
       } catch { return { ready: false, version: '', message: '正在等待桌面服务，任务不会因网页断开而停止' }; }
     })();
     healthCache = { at: Date.now(), promise };
     return promise;
+  }
+  async function fileHealth() {
+    if (fileHealthCache && fileHealthCache.at > Date.now() - 3000) return fileHealthCache.promise;
+    const promise = (async () => {
+      try {
+        const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/health`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
+        const result = await response.json();
+        return response.ok && result.ready === true && result.uploadProtocol === 1 && result.quotaProtocol === 1;
+      } catch { return false; }
+    })();
+    fileHealthCache = { at: Date.now(), promise }; return promise;
   }
   async function panelSnapshot(req, live = () => true) {
     const session = requireSession(req);
@@ -236,6 +254,10 @@ export async function createPanel(config) {
     const path = url.pathname;
     if (path === '/ui-version' && req.method === 'GET') return reply(res, 200, { revision: assets.revision });
     if (path === '/healthz' && req.method === 'GET') return reply(res, 200, { ok: true });
+    if (path === '/readyz' && req.method === 'GET') {
+      const [host, files] = await Promise.all([desktopHealth(), fileHealth()]);
+      return reply(res, host.ready && files ? 200 : 503, { ok: host.ready && files, host: host.ready, files });
+    }
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw new HttpError(403, '请求来源无效');
       const key = req.socket.remoteAddress || 'unknown'; // Never trust client-supplied forwarding headers.

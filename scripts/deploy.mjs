@@ -72,10 +72,10 @@ async function boundedFile(path, maximum) {
   } finally { await file.close(); }
 }
 
-export async function checkHealth(config) {
+export async function checkHealth(config, { attempts = 20, interval = 400 } = {}) {
   if (!config) { const { readConfig } = await import('../panel/config.mjs'); config = readConfig(); }
   const request = (port, path, headers) => new Promise(resolve => {
-    const req = http.get({hostname:'127.0.0.1', port, path, headers, timeout:1000}, res => {
+    const req = http.get({hostname:'127.0.0.1', port, path, headers, timeout:2500}, res => {
       const chunks = []; let size = 0;
       res.on('data', bytes => { size += bytes.length; if (size > 4096) res.destroy(); else chunks.push(bytes); });
       res.on('error', () => resolve(null));
@@ -85,15 +85,15 @@ export async function checkHealth(config) {
     });
     req.on('timeout', () => req.destroy()); req.on('error', () => resolve(null));
   });
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const [panel, desktop] = await Promise.all([
-      request(config.port, '/healthz', {host:new URL(config.origin).host}),
-      request(config.agentPort, '/health', {authorization:'Bearer ' + config.agentSecret}),
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const [panel, files] = await Promise.all([
+      request(config.port, '/readyz', {host:new URL(config.origin).host}),
+      request(config.fileAgentPort ?? config.agentPort, '/health', {authorization:'Bearer ' + config.agentSecret}),
     ]);
-    if (panel?.ok && desktop?.ready) return;
-    await new Promise(resolve => setTimeout(resolve, 400));
+    if (panel?.ok && panel.host && panel.files && files?.ready && files.uploadProtocol === 1 && files.quotaProtocol === 1) return;
+    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, interval));
   }
-  throw new Error('面板或桌面尚未就绪；请运行 npm run native:status，检查 journalctl --user -u codex-cloud-desktop.service -u codex-cloud-panel.service -n 50');
+  throw new Error('面板、任务宿主或独立文件服务尚未就绪；请运行 npm run native:status，检查 journalctl --user -u codex-cloud-manager.service -u codex-cloud-files.service -u codex-cloud-panel.service -n 50');
 }
 
 export async function deploy(values, { root = projectRoot, run = execute, health = checkHealth, log = console.log,
@@ -148,7 +148,9 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   }
   if (values['build-forward']) await step('构建端口映射助手', process.execPath, ['scripts/build-forward.mjs']);
   await native('start');
-  if (values.domain && active[selectedServices.indexOf('codex-cloud-panel.service')].status === 0) await step('公网配置生效：重启面板（端口映射需重新配对，原任务保留）', 'systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
+  for (const service of ['codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']) {
+    if (active[selectedServices.indexOf(service)].status === 0) await step('更新后台：' + service + '（原任务保留；面板重启后映射需重新配对）', 'systemctl', ['--user', 'restart', service]);
+  }
   const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
   let tunnel = false;
   try { tunnel = env.PUBLIC_ORIGIN?.startsWith('https://') && (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096)).trim().length > 0; }
