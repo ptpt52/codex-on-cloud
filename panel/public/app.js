@@ -1023,6 +1023,18 @@ function renderTerminalList() {
   }
   renderInputControls();
 }
+function updateTerminalCatalog(result, opened) {
+  if (!Number.isInteger(result.limit) || result.limit < 1 || result.limit > TERMINAL_CAPACITY || !Array.isArray(result.terminals) || result.terminals.length > TERMINAL_CAPACITY || result.terminals.some(item =>
+    !TERMINAL_IDS.includes(item?.id) || typeof item.supported !== 'boolean' ||
+    (item.supported ? !validTerminalIdentity(item) : item.token !== null) || typeof item.name !== 'string' || item.name.length > 96
+  ) || new Set(result.terminals.map(item => item.id)).size !== result.terminals.length) throw new Error('终端列表格式无效，请手动刷新');
+  if (result.slots !== undefined && (!Array.isArray(result.slots) || result.slots.length !== result.limit || result.slots.some((item, i) => item?.id !== TERMINAL_IDS[i] || typeof item.name !== 'string' || !item.name || item.name.length > 96))) throw new Error('终端位置格式无效，请手动刷新');
+  terminalCatalog = result.terminals;
+  terminalSlots = result.slots || [];
+  maxTerminals = result.limit;
+  terminalCatalogVerified = true;
+  reconcileTerminalSelection(opened);
+}
 async function terminalRequest(body) {
   if (!loggedIn || terminalBusy || (body && !canManageTerminals())) return;
   if (body?.action === 'close' && !rememberDraft()) return;
@@ -1039,17 +1051,8 @@ async function terminalRequest(body) {
   try {
     const result = await api('/api/terminals', { method: body ? 'POST' : 'GET', body, signal: controller.signal });
     if (terminalController !== controller || generation !== uiGeneration || !loggedIn || (body && !owned)) return;
-    if (!Number.isInteger(result.limit) || result.limit < 1 || result.limit > TERMINAL_CAPACITY || !Array.isArray(result.terminals) || result.terminals.length > TERMINAL_CAPACITY || result.terminals.some(item =>
-      !TERMINAL_IDS.includes(item?.id) || typeof item.supported !== 'boolean' ||
-      (item.supported ? !validTerminalIdentity(item) : item.token !== null) || typeof item.name !== 'string' || item.name.length > 96
-    ) || new Set(result.terminals.map(item => item.id)).size !== result.terminals.length) throw new Error('终端列表格式无效，请手动刷新');
-    if (result.slots !== undefined && (!Array.isArray(result.slots) || result.slots.length !== result.limit || result.slots.some((item, i) => item?.id !== TERMINAL_IDS[i] || typeof item.name !== 'string' || !item.name || item.name.length > 96))) throw new Error('终端位置格式无效，请手动刷新');
     if (body?.action === 'close' && result.closed !== body.terminalId) throw new Error('结束结果无效，请手动刷新');
-    terminalCatalog = result.terminals;
-    terminalSlots = result.slots || [];
-    maxTerminals = result.limit;
-    terminalCatalogVerified = true;
-    reconcileTerminalSelection(result.opened);
+    updateTerminalCatalog(result, body ? result.opened : undefined);
     if (body?.action === 'create') $('new-terminal-name').value = '';
     $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
     renderTerminalList();
@@ -1057,9 +1060,27 @@ async function terminalRequest(body) {
     if (terminalController === controller && generation === uiGeneration) {
       $('terminals-status').textContent = body && error.outcome !== 'rejected' ? '操作结果未知，请手动刷新列表确认；不会自动重试。' : error.message;
       if (closingCurrent) {
-        if (error.outcome === 'rejected') reconcileTerminalSelection();
-        else terminalSelectionState = 'error';
+        // The rejected target may have exited or been replaced. Neither an
+        // automatic reconnect nor manual selection may trust the old catalog.
+        terminalSelectionState = 'error'; terminalCatalogVerified = false;
+        terminalCatalog = []; terminalSlots = [];
+        if (error.outcome === 'rejected' && owned && !controller.signal.aborted) {
+          $('terminals-status').textContent = '关闭未执行，正在核对最新终端列表…';
+          renderTerminalList(); renderConnection();
+          try {
+            // One read, sharing this operation's deadline; never repeat close.
+            const latest = await api('/api/terminals', { signal: controller.signal });
+            if (terminalController !== controller || generation !== uiGeneration || !loggedIn || !owned || controller.signal.aborted) return;
+            updateTerminalCatalog(latest);
+            $('terminals-status').textContent = terminalSelectionState === 'closed' ? '原终端已结束，草稿已保留。'
+              : terminalSelectionState === 'ready' ? `未结束：${error.message}` : '终端身份或布局已变化，草稿已保留；请手动选择目标。';
+          } catch {
+            if (terminalController !== controller || generation !== uiGeneration || !loggedIn || !owned) return;
+            $('terminals-status').textContent = '关闭未执行，列表核对失败；草稿已保留，请手动刷新终端列表。';
+          }
+        }
       } else if (!body && terminalSelectionState === 'loading') terminalSelectionState = 'error';
+      if (closingCurrent) renderTerminalList();
       if (body && !$('terminals-dialog').open) toast($('terminals-status').textContent, true);
     }
   } finally {
