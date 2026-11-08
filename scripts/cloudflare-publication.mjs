@@ -5,6 +5,8 @@ import { parseEnv } from 'node:util';
 import { portalRead, portalWrite, portalRemove } from './portal-files.mjs';
 import { cloudflareDomainPlan, assertManagedIngress, renamedDNSRecord } from '../native/cloudflare-domain.mjs';
 import { acquireFileLock } from '../native/file-lock.mjs';
+import { randomBytes } from 'node:crypto';
+import { acquireDeploymentLease } from './deployment-lease.mjs';
 
 const LIMIT = 262144;
 const parse = (text, label) => { try { return JSON.parse(text); } catch { throw Error(`${label}格式无效`); } };
@@ -37,9 +39,10 @@ export async function privateIngressReady(socketPath, hostname) {
 
 // One private <=256 KiB recovery record per deployment; no API token is stored.
 // A failed/ambiguous write is reconciled by reading state, never blindly replayed.
-export function createCloudflarePublication({ root, socketPath, api: request, ready = privateIngressReady }) {
-  let lease, pendingText;
-  const valid = () => { if (!lease) throw Error('公网发布锁已释放'); lease.check(); };
+export function createCloudflarePublication({ root, socketPath, api: request, ready = privateIngressReady, deploymentLease, operationId }) {
+  if (!!deploymentLease !== (operationId !== undefined) || operationId !== undefined && (typeof operationId !== 'string' || !/^[a-f0-9]{32}$/.test(operationId))) throw Error('部署发布身份无效');
+  let lease, pendingText, whole;
+  const valid = () => { if (!lease) throw Error('公网发布锁已释放'); whole.check(); lease.check(); };
   const api = async (...args) => { valid(); const result = await request(...args); valid(); return result; };
   const statePath = join(root, 'data/cloudflare-deployment.json'), pendingPath = join(root, 'data/cloudflare-publication.json');
   const local = { env: [join(root, '.env'), 65536], credentials: [join(root, 'secrets/credentials.txt'), 4096], token: [join(root, 'secrets/tunnel_token'), 4096] };
@@ -49,6 +52,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
   async function pending() {
     const text = await optional(pendingPath, LIMIT); pendingText = text; if (text === null) return null;
     const value = parse(text, '公网发布恢复记录');
+    if (value.operationId !== undefined && !/^[a-f0-9]{32}$/.test(value.operationId)) throw Error('公网发布恢复身份损坏');
     if (value.version !== 1 || !['prepared', 'committing', 'committed', 'rollback-needed'].includes(value.phase) || typeof value.domain !== 'string' || !/^[a-z0-9.-]+$/.test(value.domain) || !value.plan?.tunnelId || !value.plan.accountId || !value.plan.zoneId || !value.files || !value.desiredConfig || !value.beforeConfig) throw Error('公网发布恢复记录损坏，请检查');
     return value;
   }
@@ -91,8 +95,13 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     }
     if (conflict) throw Error('本机配置已被其他操作修改，未覆盖；保留发布恢复记录');
   }
-  async function rollback() {
+  function belongs(stage, target = {}) {
+    if (operationId !== undefined && stage.operationId !== operationId || target.domain !== undefined && target.domain !== stage.domain || target.zone !== undefined && target.zone !== stage.zone) throw Object.assign(Error('已有待处理的公网发布属于其他操作或目标，未修改'), { status: 409, outcome: 'rejected' });
+  }
+  async function rollback(target) {
     const stage = await pending(); if (!stage) return { rolledBack: false };
+    if (operationId !== undefined && stage.operationId !== operationId) return { rolledBack: false, otherOperation: true };
+    belongs(stage, target);
     if (stage.phase === 'committed') throw Error('公网发布已提交；不会把已生效的发布当成失败回退');
     const { tunnel, dns } = endpoints(stage);
     try {
@@ -133,6 +142,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     if (typeof domain !== 'string' || typeof zone !== 'string' || !/^[a-z0-9.-]+$/.test(domain) || !/^[a-z0-9.-]+$/.test(zone) || !domain.endsWith('.' + zone)) throw Error('公网域名和区域无效');
     const previous = await pending();
     if (previous) {
+      belongs(previous, { domain, zone });
       if (previous.domain !== domain || previous.zone !== zone || !['prepared', 'committed'].includes(previous.phase)) throw Error('已有待处理的公网发布，请先完成或 --rollback');
       if (previous.phase === 'prepared') await prepareLocal(previous);
       return { prepared: true, resumed: true };
@@ -149,7 +159,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       // Keep ownership if preparation is interrupted; reruns reuse this tunnel.
       await write(statePath, plan, text);
     }
-    const stage = { version: 1, phase: 'prepared', domain, zone, plan, beforeState, files: {} };
+    const stage = { version: 1, operationId: operationId || randomBytes(16).toString('hex'), phase: 'prepared', domain, zone, plan, beforeState, files: {} };
     const { tunnel } = endpoints(stage), configuration = await api(tunnel + '/configurations'); assertManagedIngress(plan, configuration);
     stage.observedConfig = configuration.config ?? null;
     stage.beforeConfig = configuration.config || { ingress: [{ service: 'http_status:404' }] };
@@ -182,6 +192,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
   }
   async function commit({ domain, zone }) {
     const stage = await pending(); if (!stage || stage.domain !== domain || stage.zone !== zone) throw Error('没有匹配的公网准备记录');
+    belongs(stage, { domain, zone });
     if (stage.phase === 'committed') { await cleanup(stage); return { published: true }; }
     if (stage.phase !== 'prepared') throw Error('发布曾被中断，请先 --rollback 后重新准备');
     await ready(socketPath, domain); valid();
@@ -212,8 +223,12 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     await mkdir(join(root, 'data'), { recursive: true, mode: 0o700 });
     const directory = await lstat(join(root, 'data'));
     if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid()) throw Error('公网发布目录无效');
-    const held = await acquireFileLock(pendingPath + '.operation-lock'); lease = held;
-    try { return await action(...args); } finally { lease = undefined; await held.release(); }
+    let shared, held;
+    try {
+      if (deploymentLease) deploymentLease.check(); else shared = await acquireDeploymentLease(root);
+      held = await acquireFileLock(pendingPath + '.operation-lock'); lease = held; whole = deploymentLease || shared;
+      const result = await action(...args); valid(); return result;
+    } finally { if (held && lease === held) { lease = undefined; whole = undefined; } await held?.release(); await shared?.release(); }
   };
   return { prepare: locked(prepare), commit: locked(commit), rollback: locked(rollback) };
 }

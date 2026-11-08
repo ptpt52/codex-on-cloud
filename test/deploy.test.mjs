@@ -36,6 +36,10 @@ async function harness(t, { active = [], installed = true, failure = '', bus = '
       }
       return{status:0,stdout:''};
     }};
+  context.publicationFactory=async values=>Object.fromEntries([['prepare','--prepare-only'],['commit','--commit-only'],['rollback','--rollback']].map(([action,flag])=>[action,async()=>{
+    const result=await context.run(process.execPath,['scripts/provision-cloudflare.mjs','--domain',values.domain,'--zone',values.zone,'--api-token-file',values['api-token-file'],flag],{capture:false});
+    if(result.status!==0)throw Error('synthetic publication failure');return action==='rollback'?{rolledBack:true}:{};
+  }]));
   return {root,calls,logs,wslCalls,events,context,get healthy(){return healthy;}};
 }
 

@@ -1,0 +1,22 @@
+import { parseEnv } from 'node:util';
+import { join } from 'node:path';
+import { settings, root as projectRoot } from '../native/config.mjs';
+import { portalRead } from './portal-files.mjs';
+import { createCloudflarePublication } from './cloudflare-publication.mjs';
+
+export async function publicationClient(values, { root = projectRoot, deploymentLease, operationId, request = fetch } = {}) {
+  const token = (await portalRead(values['api-token-file'], 4096)).trim();
+  if (!token || /[\s\0]/.test(token)) throw Error('API token文件需为单行token');
+  const env = parseEnv(await portalRead(join(root, '.env'), 65536, true));
+  const config = settings({ ...env, ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}) });
+  async function api(path, method = 'GET', body) {
+    const response = await request('https://api.cloudflare.com/client/v4' + path, { method, redirect: 'error', signal: AbortSignal.timeout(25000),
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const chunks = []; let size = 0;
+    for await (const chunk of response.body) { size += chunk.length; if (size > 262144) throw Error('Cloudflare响应超过256KiB'); chunks.push(chunk); }
+    let result; try { result = JSON.parse(Buffer.concat(chunks)); } catch { throw Error(`Cloudflare响应无效，HTTP ${response.status}`); }
+    if (!response.ok || !result.success) throw Object.assign(Error(`Cloudflare ${method}失败：HTTP ${response.status}，错误码 ${(result.errors || []).map(error => error.code).filter(code => /^\d+$/.test(String(code))).join(',')}`), { status: response.status });
+    return result.result;
+  }
+  return createCloudflarePublication({ root, socketPath: config.tunnelSocket, api, deploymentLease, operationId });
+}

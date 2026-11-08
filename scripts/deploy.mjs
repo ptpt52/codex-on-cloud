@@ -8,6 +8,9 @@ import { userInfo } from 'node:os';
 import http from 'node:http';
 import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
 import { configureWSLNetwork } from './wsl-network.mjs';
+import { randomBytes } from 'node:crypto';
+import { acquireDeploymentLease } from './deployment-lease.mjs';
+import { publicationClient } from './cloudflare-client.mjs';
 
 // Keep the version guard reachable even when older Node lacks util.parseEnv.
 const { parseArgs, parseEnv } = util;
@@ -101,7 +104,15 @@ export async function checkHealth(config, { attempts = 20, interval = 400 } = {}
   throw new Error('面板、任务宿主或独立文件服务尚未就绪；请运行 npm run native:status，检查 journalctl --user -u codex-cloud-manager.service -u codex-cloud-files.service -u codex-cloud-panel.service -n 50');
 }
 
-export async function deploy(values, { root = projectRoot, run = execute, health = checkHealth, log = console.log,
+export async function deploy(values, context = {}) {
+  const { platform = process.platform, uid = process.getuid?.(), nodeVersion = process.versions.node } = context;
+  if (platform !== 'linux' || uid === 0 || Number(nodeVersion.split('.')[0]) < 22) return deployUnderLease(values, context);
+  if (values.check) return deployUnderLease(values, context);
+  const lease = await acquireDeploymentLease(context.root || projectRoot);
+  try { return await deployUnderLease(values, { ...context, lease, operationId: randomBytes(16).toString('hex') }); }
+  finally { await lease.release(); }
+}
+async function deployUnderLease(values, { root = projectRoot, run = execute, health = checkHealth, log = console.log, lease, operationId, publicationFactory = publicationClient,
   platform = process.platform, uid = process.getuid?.(), username = userInfo().username, nodeVersion = process.versions.node,
   wslNetwork = configureWSLNetwork } = {}) {
   if (platform !== 'linux') throw new Error('服务端需要 Linux 和 systemd；Mac/Windows 可运行端口映射助手');
@@ -113,7 +124,7 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   const mode = deploymentMode(values.mode || existingMode);
   if (!values.check && existingMode && values.mode && existingMode !== mode) throw Error('已有部署模式不同，不会自动切换或停止任务；请在新部署中选择模式');
   const selectedServices = modeServices(mode);
-  const call = (command, args, capture = false) => run(command, args, {cwd:root, capture});
+  const call = async (command, args, capture = false) => { lease?.check(); const result = await run(command, args, {cwd:root, capture}); lease?.check(); return result; };
   const step = async (label, command, args) => { log(label); if ((await call(command, args)).status !== 0) throw new Error(label + '失败，请处理上述错误后重新运行'); };
   const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command, ...(values.check && values.mode ? ['--mode', mode] : [])]);
   const configureWSL = check => !values['skip-wsl-network'] && (process.env.WEBRTC_ENABLED ?? existingEnv.WEBRTC_ENABLED) !== '0'
@@ -150,10 +161,12 @@ export async function deploy(values, { root = projectRoot, run = execute, health
   if (values.domain) {
     await step('安装固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);
   }
-  const publicationArgs = values.domain ? ['scripts/provision-cloudflare.mjs', '--domain', values.domain.toLowerCase(), '--zone', values.zone.toLowerCase(), '--api-token-file', resolve(values['api-token-file'])] : null;
+  const publication = values.domain ? await publicationFactory(values, { root, deploymentLease: lease, operationId }) : null;
+  const target = values.domain ? { domain: values.domain.toLowerCase(), zone: values.zone.toLowerCase() } : null;
+  const publish = async (label, action) => { log(label); lease.check(); return publication[action](target); };
   let prepared = false, panelTouched = false;
   try {
-    if (publicationArgs) { prepared = true; await step('准备 Cloudflare 本机配置（保留当前公网入口）', process.execPath, [...publicationArgs, '--prepare-only']); }
+    if (publication) { prepared = true; await publish('准备 Cloudflare 本机配置（保留当前公网入口）', 'prepare'); }
     if (values['build-forward']) await step('构建端口映射助手', process.execPath, ['scripts/build-forward.mjs']);
     await native('start');
     for (const service of ['codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']) {
@@ -173,13 +186,13 @@ export async function deploy(values, { root = projectRoot, run = execute, health
     for (const service of [...selectedServices, ...(tunnel ? ['codex-cloud-tunnel.service'] : [])]) {
       if ((await call('systemctl', ['--user', 'is-active', '--quiet', service], true)).status !== 0) throw new Error(service + ' 未运行，请执行 npm run native:status 检查');
     }
-    await health();
-    if (publicationArgs) await step('服务已就绪：提交 Cloudflare 公网入口', process.execPath, [...publicationArgs, '--commit-only']);
+    await health(); lease.check();
+    if (publication) await publish('服务已就绪：提交 Cloudflare 公网入口', 'commit');
   } catch (error) {
     if (prepared) {
       try {
-        await step('发布失败：回退本次配置', process.execPath, [...publicationArgs, '--rollback']);
-        if (panelTouched) await step('恢复原入口配置的面板（保留任务）', 'systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
+        const rollback = await publish('发布失败：回退本次配置', 'rollback');
+        if (panelTouched && rollback.rolledBack) await step('恢复原入口配置的面板（保留任务）', 'systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
       } catch { throw new Error(error.message + '；回退未能确认，请检查 data/cloudflare-publication.json 并执行 --rollback'); }
     }
     throw error;

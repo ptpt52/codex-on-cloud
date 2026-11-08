@@ -9,6 +9,8 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { chmod } from 'node:fs/promises';
 import { writeFileSync, readlinkSync } from 'node:fs';
+import { deploy } from '../scripts/deploy.mjs';
+import { acquireDeploymentLease } from '../scripts/deployment-lease.mjs';
 
 async function fixture(t, { fresh = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'cloudflare-publication-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -38,7 +40,7 @@ async function fixture(t, { fresh = false } = {}) {
     return result;
   };
   const options={domain:'home.example.test',zone:'example.test'};
-  const make=()=>createCloudflarePublication({root,socketPath:'/tmp/synthetic-private.sock',api,ready:async()=>{calls.push({path:'readiness',method:'GET'});if(!ready)throw Error('not ready');}});
+  const make=(extra={})=>createCloudflarePublication({root,socketPath:'/tmp/synthetic-private.sock',api,ready:async()=>{calls.push({path:'readiness',method:'GET'});if(!ready)throw Error('not ready');},...extra});
   return {root,env,credentials,options,calls,make,get configuration(){return configuration;},set configuration(v){configuration=v;},get dns(){return dns;},get created(){return created;},set ready(v){ready=v;},set fail(v){fail=v;}};
 }
 
@@ -147,4 +149,41 @@ test('rollback rechecks both replacement and deletion after a stale local snapsh
   assert.equal(await readFile(path,'utf8'),edited);assert.ok(h.calls.every(c=>c.method==='GET'));
   assert.equal(JSON.parse(await readFile(join(h.root,'data/cloudflare-publication.json'),'utf8')).phase,'rollback-needed');
  });
+});
+
+test('a complete deployment lease excludes other deployments and standalone publishers before side effects',async t=>{
+ const h=await fixture(t),lease=await acquireDeploymentLease(h.root);t.after(()=>lease.release());
+ await assert.rejects(h.make().prepare(h.options),{status:409});
+ let commands=0;await assert.rejects(deploy({}, {root:h.root,run:async()=>{commands++;return{status:0};}}),{status:409});
+ assert.equal(commands,0);assert.equal(h.calls.length,0);assert.equal(await readFile(join(h.root,'.env'),'utf8'),h.env);
+});
+
+test('failed deployment preparation never rolls back another operation, even with the same target',async t=>{
+ for(const domain of ['home.example.test','other.example.test'])await t.test(domain,async t=>{
+  const h=await fixture(t);await h.make().prepare(h.options);
+  const path=join(h.root,'data/cloudflare-publication.json'),record=await readFile(path,'utf8'),env=await readFile(join(h.root,'.env'),'utf8');
+  const token=join(h.root,'synthetic-api-token');await writeFile(token,'synthetic-api-token',{mode:0o600});let started=false;
+  await assert.rejects(deploy({domain,zone:'example.test','api-token-file':token,'skip-wsl-network':true},{root:h.root,log:()=>{},
+   publicationFactory:async(_values,context)=>h.make(context),health:async()=>{throw Error('unexpected health');},
+   run:async(_command,args)=>{if(args.includes('is-system-running'))return{status:0,stdout:'running\n'};if(args.includes('is-active'))return{status:args.at(-1)==='codex-cloud-terminal.service'?3:0};if(args.includes('start'))started=true;return{status:0,stdout:''};},
+  }),/属于其他操作/);
+  assert.equal(started,false);assert.equal(await readFile(path,'utf8'),record);assert.equal(await readFile(join(h.root,'.env'),'utf8'),env);
+  assert.ok(h.calls.every(call=>call.method==='GET'));
+ });
+});
+
+test('a lost prepare acknowledgement still rolls back only the operation that actually prepared',async t=>{
+ const h=await fixture(t),token=join(h.root,'synthetic-api-token');await writeFile(token,'synthetic-api-token',{mode:0o600});
+ await assert.rejects(deploy({...h.options,'api-token-file':token,'skip-wsl-network':true},{root:h.root,log:()=>{},
+  publicationFactory:async(_values,context)=>{const p=h.make(context);return{...p,async prepare(target){await p.prepare(target);throw Error('synthetic lost prepare acknowledgement');}};},
+  health:async()=>{throw Error('unexpected health');},run:async(_command,args)=>args.includes('is-system-running')?{status:0,stdout:'running\n'}:args.includes('is-active')?{status:args.at(-1)==='codex-cloud-terminal.service'?3:0}:{status:0,stdout:''},
+ }),/lost prepare acknowledgement/);
+ assert.equal(await readFile(join(h.root,'.env'),'utf8'),h.env);await assert.rejects(stat(join(h.root,'data/cloudflare-publication.json')),{code:'ENOENT'});
+ assert.ok(h.calls.every(call=>call.method==='GET'));
+});
+
+test('explicit standalone rollback validates the requested domain and zone before any modification',async t=>{
+ const h=await fixture(t),p=h.make();await p.prepare(h.options);const path=join(h.root,'data/cloudflare-publication.json'),record=await readFile(path,'utf8');
+ for(const target of [{...h.options,domain:'other.example.test'},{...h.options,zone:'other.test'}])await assert.rejects(p.rollback(target),{status:409});
+ assert.equal(await readFile(path,'utf8'),record);await p.rollback(h.options);assert.equal(await readFile(join(h.root,'.env'),'utf8'),h.env);
 });
