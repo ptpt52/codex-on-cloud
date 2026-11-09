@@ -180,6 +180,7 @@ test('invalid saved zoom falls back while valid dragging remains usable and can 
 async function observeScaleReports(page) {
   await page.addInitScript(() => window.addEventListener('message', event => {
     if (event.data?.type !== 'codex-desktop-view') return;
+    if (window.releaseScaleReport === event.data) { window.releaseScaleReport = undefined; return; }
     if (window.holdScaleReports) { window.heldScaleReport = event.data; event.stopImmediatePropagation(); }
     else window.latestScaleReport = event.data;
   }, true));
@@ -221,7 +222,8 @@ test('fit zoom waits for its matching report and ignores a late manual-scale rep
     await expect.poll(() => page.evaluate(() => window.heldScaleReport?.revision ?? -1)).toBeGreaterThan(stale.revision);
     const current = await page.evaluate(() => window.heldScaleReport);
     const deliver = report => page.evaluate(data => {
-      window.holdScaleReports = false;
+      // Release exactly this synthetic report while real frame reports remain paused.
+      window.releaseScaleReport = data;
       window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: document.getElementById('desktop-frame').contentWindow, data }));
     }, report);
     await deliver(stale);
