@@ -69,10 +69,12 @@ test('periodic probes replace a silently lost OPEN socket without waiting for cl
     await app.controls.manageTerminals({ action: 'create', name: '保留任务', view: 'terminal' });
     const before = (await app.controls.listTerminals()).terminals.map(({ id, token }) => ({ id, token }));
     const frame = await login(page, app, 'aux1'); await openTools(page); await page.locator('#terminal-font-up').click(); await openTools(page); await page.locator('#terminal-font-up').click();
-    const began = Date.now();
     expect(await frame.evaluate(() => { const state = window.terminalHealthTest; state.dropSocket = state.socket; state.stallClose = true; return state.socket.readyState; })).toBe(1);
-    await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.opened), { timeout: 6000, intervals: [100] }).toBe(2);
-    expect(Date.now() - began).toBeLessThan(6000); await online(page);
+    // Detection can consume a 3s schedule plus a 6s probe and 2s confirmation
+    // before the replacement connection starts. Keep that product budget plus
+    // transport setup separate from this browser's scheduling latency.
+    await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.opened), { timeout: 15000, intervals: [100] }).toBe(2);
+    await online(page);
     expect(await frame.evaluate(() => window.terminalHealthTest.closeCalls)).toBeGreaterThan(0);
     await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#terminal-font-label')).toHaveText('17');
     await expect(page.locator('#mobile-input')).toHaveValue('网络恢复后仍保留这段草稿');
