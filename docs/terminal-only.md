@@ -26,7 +26,7 @@ WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `host
 
 | 内容 | 桌面模式 | 纯终端模式 |
 | --- | --- | --- |
-| 运行基础 | Node.js、Codex、tmux、Python、Bash、systemd 用户服务 | Node.js、tmux、Python、Bash、systemd 用户服务；Codex 可选 |
+| 运行基础 | Node.js、Codex、tmux、Python、Bash、systemd 用户服务 | Node.js、tmux、Python、Bash、util-linux/flock、systemd 用户服务；Codex 可选 |
 | 图形系统 | Xvfb、x11vnc、XFCE、Xterm | 不安装、不启动 |
 | 桌面输入与选区 | xdotool、xclip、xauth、X11 工具 | 不安装、不调用 |
 | 桌面字体与 D-Bus 图形会话 | fontconfig、中文字体、独立图形 D-Bus 会话 | 不安装、不启动 |
@@ -43,7 +43,9 @@ WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `host
 
 `codex-cloud-terminal.service` 只持有私有 tmux 服务；回环文件助手由独立 `codex-cloud-files.service` 持有，失败或重启不会终止 shell。manager 管理固定终端名额并独立探测宿主健康，panel 负责认证与浏览器连接。关闭网页、刷新、重连、重启 panel 或 manager 不结束原 shell。主终端和辅助终端都可通过“结束终端”二次确认后结束；仅关闭当前查看的目标后切到末尾唯一的“新开终端”占位，显示“已关闭”；关闭其他目标时保持当前终端、观看连接与草稿。点击占位复用第一个空闲名额新建 shell，也可切换到其他运行中的终端；不保留多份关闭标签。电脑标签、手机当前终端按钮及会话列表提供“×”快捷关闭，均先二次确认。新 shell 使用新身份和空草稿，不自动恢复原任务或发送旧草稿。全部终端关闭后后台仍保留，只有明确新开才创建用户 shell。
 
-任务数量在 `.env` 通过 `MAX_TERMINALS` 配置，默认 4、范围 1–8，包含主终端。修改后重启 manager 和 panel；降低上限保留已有终端，禁止超额新建。配置清单与生效范围见[部署配置](deployment-config.md)。额外只有一个固定、不接收网页输入的 `codex-host` 保活会话，防止所有用户终端退出后 tmux 由管理器重新创建而改变服务归属。私有运行目录为 0700，新增 `terminal.pid` 最多 32 字节、0600；tmux socket 与物理桌面分开。现有历史、消息、缓冲、上传和映射上限保持，未新增任务队列、录制或输入日志。
+任务数量在 `.env` 通过 `MAX_TERMINALS` 配置，默认 4、范围 1–8，包含主终端。修改后重启 manager 和 panel；降低上限保留已有终端，禁止超额新建。配置清单与生效范围见[部署配置](deployment-config.md)。额外只有一个固定、不接收网页输入的 `codex-host` 保活会话，防止所有用户终端退出后 tmux 由管理器重新创建而改变服务归属。私有运行目录为0700，tmux socket与物理桌面分开；宿主只保留一份0600、至多256字节的空`terminal.lock`，固定inode不删除。现有历史、消息、缓冲、上传和映射上限保持，未新增任务队列、录制或输入日志。
+
+宿主使用util-linux的`flock`在继承的同一文件描述符上取得锁，随后工具退出，由Node自身持续持锁；无常驻锁助手，不依赖文件服务或Python能否启动。宿主退出或SIGKILL后内核释放锁。`--install-deps`会确保util-linux已安装，doctor检查flock；不下载或升级额外应用。旧版最多32字节的`terminal.pid`仅用于迁移：活跃PID保守拒绝，空记录或确认过期记录必须等私有tmux不活跃后才回收。活跃tmux始终拒绝接管或创建新任务，不按锁文件年龄猜测归属。升级应先结束旧宿主启动流程，不能混跑两代锁协议；已有任务保存前不要为了加载此修复重启宿主。
 
 Ubuntu 等发行版的 tmux 带有 systemd 集成，默认会将窗格任务移入独立的 `tmux-spawn-*.scope`。终端宿主只为自己的私有 tmux 服务进程禁用用户 D-Bus 连接，并在创建任何窗格前清除 shell 环境中的该覆盖，使保活、主终端和辅助任务留在宿主服务的 cgroup 内。用户 shell 仍可从自己的 `~/.bashrc` 配置 D-Bus；无需更换系统 tmux、安装额外依赖或修改系统 D-Bus。
 

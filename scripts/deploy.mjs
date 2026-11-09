@@ -22,7 +22,7 @@ export const help = `用法：npm run deploy -- [选项]
 默认自动执行 npm ci、初始化、依赖检查、安装并启动用户服务。
 WSL 镜像网络自动配置 hostAddressLoopback 并备份；重启 WSL 需自行保存任务后执行。
   --check                  只检查，不安装、不修改配置或服务
-  --mode desktop|terminal  新部署选择桌面或纯网页终端；默认 desktop，已有模式保持
+  --mode desktop|terminal  新部署选择桌面或纯网页终端；终端依赖 tmux/Python/util-linux
   --install-deps           使用 sudo apt-get 按模式安装系统依赖（Ubuntu/Debian）
   --enable-linger          使用 sudo loginctl 启用无人登录时的开机自启
   --skip-wsl-network       保留 Windows WSL 网络配置，不执行自动检查或修改
@@ -149,7 +149,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   if (values['install-deps']) {
     if ((await call('apt-get', ['--version'], true)).status !== 0) throw new Error('--install-deps 仅支持有 apt-get 的 Ubuntu/Debian');
     await step('更新系统软件包索引', 'sudo', ['apt-get', 'update']);
-    await step('安装系统依赖', 'sudo', ['apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', '--no-remove', ...(mode === 'terminal' ? ['tmux', 'python3'] : packages)]);
+    await step('安装系统依赖', 'sudo', ['apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', '--no-remove', ...(mode === 'terminal' ? ['tmux', 'python3', 'util-linux'] : packages)]);
   }
   if (!running) await step('安装锁定的项目依赖', 'npm', ['ci', ...(mode === 'terminal' ? ['--omit=dev', '--omit=optional'] : [])]);
   else log('保留运行中的服务和现有项目依赖。');

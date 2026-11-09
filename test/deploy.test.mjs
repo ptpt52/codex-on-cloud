@@ -53,7 +53,7 @@ test('deploy options validate public configuration before work and do not accept
 test('terminal-only deployment installs minimal packages and production JS without graphical services', async t => {
   const h=await harness(t);await deploy(options(['--mode','terminal','--install-deps']),h.context);
   const install=h.calls.find(c=>c.command==='sudo'&&c.args[1]==='install');
-  assert.deepEqual(install.args.slice(6),['tmux','python3']);
+  assert.deepEqual(install.args.slice(6),['tmux','python3','util-linux']);
   assert.ok(h.calls.some(c=>c.command==='npm'&&c.args.join(',')==='ci,--omit=dev,--omit=optional'));
   assert.match(await readFile(join(h.root,'.env'),'utf8'),/DEPLOY_MODE=terminal/);
   const units=serviceUnits('/app','/bin',process.execPath,'terminal');

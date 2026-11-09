@@ -77,9 +77,13 @@ try {
     await writeFile(join(root, '.env'), (await readFile(join(root, '.env'), 'utf8')).replace('MAX_TERMINALS=4', 'MAX_TERMINALS=8'));
     const configuration = await readFile(join(root, '.env'), 'utf8'); assert.match(configuration, /DEPLOY_MODE=terminal/); assert.doesNotMatch(configuration, /DISPLAY_NUMBER|DESKTOP_SIZE/);
     agentSecret = (await readFile(join(root, 'secrets', 'agent_secret'), 'utf8')).trim();
+    await mkdir(runtime,{recursive:true,mode:0o700});await writeFile(join(runtime,'terminal.pid'),'',{mode:0o600});
     host = launch('native/terminal-host.mjs'); files = launch('native/file-agent.mjs');
     await until(async () => { try { return (await (await fetch('http://127.0.0.1:' + agentPort + '/health', { headers: { authorization: 'Bearer ' + agentSecret }, signal: AbortSignal.timeout(1000) })).json()).ready === true; } catch { return false; } }, 'terminal host did not start');
     assert.equal((await lstat(join(runtime, 'tmux.sock'))).mode & 0o777, 0o600);
+    await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
+    assert.equal((await lstat(join(runtime,'terminal.lock'))).size,0);
+    const competing=launch('native/terminal-host.mjs');await once(competing,'exit');assert.notEqual(competing.exitCode,0);assert.match(competing.output,/已有终端宿主/);
     manager = launch('native/manager.mjs'); panel = launch('panel/main.mjs');
     await until(async () => { try { return (await fetch(origin + '/healthz')).ok; } catch { return false; } }, 'panel did not start');
     await until(async () => { try { return (await fetch(origin + '/readyz')).ok; } catch { return false; } }, 'task host or files did not become ready');
@@ -219,7 +223,7 @@ try {
       await until(async () => !await taskAlive(pid), 'host SIGKILL must clean its task group');
       await until(() => host.exitCode !== null || host.signalCode !== null, 'killed host unit did not finish');
     }
-    for(const [name,path]of Object.entries({tmux:'/usr/bin/tmux',bash:'/bin/bash',sleep:'/bin/sleep',dirname:'/usr/bin/dirname'}))await symlink(path,join(bin,name));
+    for(const [name,path]of Object.entries({tmux:'/usr/bin/tmux',flock:'/usr/bin/flock',bash:'/bin/bash',sleep:'/bin/sleep',dirname:'/usr/bin/dirname'}))await symlink(path,join(bin,name));
     await writeFile(join(bin,'python3'),'#!/no-such-codex-test-interpreter\n',{mode:0o700});
     const originalPath=env.PATH;env.PATH=bin;files=launch('native/file-agent.mjs');host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>files.exitCode!==null,'failed file helper did not exit');assert.notEqual(files.exitCode,0);

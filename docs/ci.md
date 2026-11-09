@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | portal | 固定 Wrangler/workerd，真实 SQLite Durable Object 注册、撤销与重启持久化 | 15 分钟 |
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
-| terminal | 只安装 tmux/Python 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
+| terminal | 只安装 tmux/Python/util-linux 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
 | browsers | Chromium、Firefox、WebKit 三个独立环境、七种配置的兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
 | native | 真实隔离 Xvfb、XFCE、xterm、tmux、剪贴板、noVNC、端口映射协议及四架构助手发布检查 | 25 分钟 |
 

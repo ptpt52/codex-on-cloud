@@ -1,17 +1,18 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, lstat, chmod, unlink, writeFile, open } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { mkdir, lstat, chmod, unlink, open } from 'node:fs/promises';
+import { constants, lstatSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
 import { settings } from './config.mjs';
 import { terminalEnvironment } from './deployment-mode.mjs';
+import { acquireTerminalLease } from './terminal-lease.mjs';
 
 // This service owns tmux. Browsers, panels, file helpers and managers own
 // only clients; restarting them cannot terminate a shell or replay its input.
 const config = settings(), exec = promisify(execFile), env = terminalEnvironment(config);
 const socket = env.TMUX_SOCKET, lock = join(config.runtime, 'terminal.pid');
-let owned = false, serverOwned = false, serverSocket, stopping = false;
+let lease, serverOwned = false, serverSocket, stopping = false;
 let starting = true, stopRequested = false;
 let monitor, probing = false;
 const tmux = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 16384 });
@@ -27,7 +28,7 @@ async function stop(code = 0) {
       if (current.ino === serverSocket.ino && current.dev === serverSocket.dev) await tmux(['kill-server']);
     } catch {}
   }
-  if (owned) await unlink(lock).catch(() => {});
+  await lease?.release();
   process.exit(code);
 }
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (starting) stopRequested = true; else void stop(); });
@@ -38,22 +39,25 @@ try {
   const directory = await lstat(config.runtime);
   if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== process.getuid()) throw Error('运行目录无效');
   await chmod(config.runtime, 0o700);
+  lease = await acquireTerminalLease(join(config.runtime, 'terminal.lock'));
+  let legacy;
   try {
     const file = await open(lock, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let pid;
     try {
-      const info = await file.stat();
-      if (!info.isFile() || info.size > 32 || info.uid !== process.getuid()) throw Error('终端服务锁文件无效');
+      const info = await file.stat({ bigint: true });
+      if (!info.isFile() || info.size > 32n || info.uid !== BigInt(process.getuid()) || info.nlink !== 1n) throw Error('终端服务锁文件无效');
       const bytes = Buffer.alloc(33), { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
-      if (bytesRead > 32) throw Error('终端服务锁文件过大');
+      if (bytesRead > 32 || BigInt(bytesRead) !== info.size) throw Error('终端服务锁文件过大或正在修改');
       const value = bytes.subarray(0, bytesRead).toString('utf8');
-      if (!/^[1-9]\d{0,9}\n?$/.test(value)) throw Error('终端服务锁文件无效');
-      pid = Number(value);
+      if (value && !/^[1-9]\d{0,9}\n?$/.test(value)) throw Error('终端服务锁文件无效');
+      pid = value ? Number(value) : undefined; legacy = info;
     } finally { await file.close(); }
-    let alive = true;
-    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; else throw error; }
-    if (alive) throw Error('已有终端服务，不会接管');
-    await unlink(lock);
+    if (pid !== undefined) {
+      let alive = true;
+      try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; else throw error; }
+      if (alive) throw Error('已有终端服务，不会接管');
+    }
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   try {
     const info = await lstat(socket);
@@ -68,12 +72,18 @@ try {
     if (active) throw Error('已有私有 tmux 服务，不会接管');
     await unlink(socket);
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  await writeFile(lock, String(process.pid) + '\n', { flag: 'wx', mode: 0o600 }); owned = true;
+  lease.check();
+  if (legacy) {
+    const current = lstatSync(lock, { bigint: true });
+    if (!['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => current[key] === legacy[key])) throw Error('旧终端锁已变化，不会接管');
+    unlinkSync(lock);
+  }
   await mkdir(config.workspace, { recursive: true }); await mkdir(config.transfer, { recursive: true });
   // systemd-enabled tmux otherwise moves panes into independent scopes. Block
   // the bus only in the server process, and remove the override from tmux's
   // shell environment before spawning any task (including the keeper).
   const serverEnv = { ...env, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/dev/null' };
+  lease.check();
   // One hidden fixed keeper session keeps the server in this service's cgroup
   // even when all eight user terminals have exited. It accepts no browser input.
   await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket,
