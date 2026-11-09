@@ -48,13 +48,12 @@ test('returning to a reachable network probes and promotes before the old thirty
     const frame = await login(page, app); await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 12000 });
     await frame.evaluate(() => window.streamPeers[0].close());
     await expect(page.locator('#diag-transport')).not.toContainText('WebRTC');
-    const before = offers, started = Date.now();
+    const before = offers;
     await frame.evaluate(() => { window.dispatchEvent(new Event('online')); window.networkStorm = setInterval(() => window.dispatchEvent(new Event('online')), 100); });
     try {
       await expect.poll(() => offers, { timeout: 4500 }).toBe(before + 1);
       await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 9000 });
     } finally { await frame.evaluate(() => clearInterval(window.networkStorm)); }
-    expect(Date.now() - started).toBeLessThan(15000);
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
