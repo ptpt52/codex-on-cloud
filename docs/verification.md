@@ -985,3 +985,21 @@ WSL更新在私有Linux目录持有单个固定租约，更新前重新读取，
 终端宿主用util-linux/flock在共享打开文件描述符上加锁，随后由Node持有该描述符，不需要常驻锁辅助进程。真实内核检查确认活跃锁拒绝竞争、SIGKILL后立即释放、没有残留子进程；空旧PID锁不会永久阻塞，但活跃私有tmux监听始终拒绝接管。安装器加入util-linux并在缺少flock时拒绝修改服务。默认`test:terminal-only`通过真实独立tmux/Bash/PTY、八槽、关闭/重开、认证/输入确认、manager/panel重启保持任务，以及Python文件助手无法启动仍保留宿主。`TERMINAL_TEST_SYSTEMD=1 npm run test:terminal-only`也通过，验证任务留在宿主cgroup、显式停止及SIGKILL清理；只创建唯一命名的临时测试unit，不操作生产任务。
 
 最终`npm run check`299项、`npm test`415项、`npm run test:desktop`24项全部通过；手机/电脑纯终端部署浏览器用例4项通过，管理上游为fixture。固定actionlint结构检查通过，本机旧ShellCheck子检查未运行；工作流只增加终端作业显式安装util-linux。前端和端口映射协议没有变化，未重复完整638项浏览器或Go协议测试。相关说明已更新到Cloudflare、纯终端、WSL和CI文档；本轮未push、重载生产服务或修改实际登录/锁密码。
+
+## 再次推送重载与全仓库审核（2026-11-09，36cae6f）
+
+`36cae6f`及前置四项维护恢复整改已推送origin/master，并重启panel及按既有PartOf关系关联的迁移files服务。panel从12030变为10371，files从12025变为10370；desktop 17107、actions 6622、manager 17005、Tunnel 20613的PID和启动时间保持。主任务`%0:17375`、aux1 `%2:14961`、keeper `%201:15228`均保持，观看专用窗格不计入任务断言。持久`.env`、管理员密码、内部密钥、Tunnel令牌及屏幕锁配置摘要相同。
+
+真实home HTTPS和回环的healthz、readyz、UI版本核对通过，匿名诊断和映射读取返回401，错误Host返回400。在不挤占既有登录名额的条件下新建验证登录，只读诊断、文件列表及四平台助手下载清单均返回200，随后只退出该验证登录。没有认领桌面、附加生产终端或发送输入；面板重启后的映射仍按既有规格重新配对。
+
+审核发现并补修终端附加期间状态轮询退回HTTPS的竞态，分别提交`06aff77`及`b2cb380`。修复暂停切换中的只读轮询，并等连接及管理能力两条消息都就绪后恢复；直连与中转同样处理，不重复选择或输入。两段故障注入分别让新PTY尚未就绪、连接消息已到而能力消息延迟，旧实现均稳定失败，修复后通过。测试捕获的消息重新构造为保留原data/origin/source的MessageEvent，避免Chromium保留stopImmediatePropagation标记阻止测试放行；没有删除零HTTP、同一连接或不重放的产品断言。
+
+补修通过私有维护接口热更新，最终公开UI版本`aab2b1aca5acac6b3e074eec`。真实HTTPS返回对应的新app.js，包含切换期轮询保护及能力就绪检查；healthz和宿主/文件readyz正常。热更新前后上述六个服务身份、三个原任务及配置摘要均保持，浏览器保存草稿后手动刷新使用新版。
+
+299项脚本语法、415项Node、24项Python通过；Go race命中同源缓存，vet、mod verify通过，生产npm依赖审计0项已知漏洞。固定actionlint结构检查通过，本机旧ShellCheck子检查未运行。真实隔离lifecycle、supervision、terminal-only及其systemd cgroup变体、forward、serial、workerd/SQLite、display、viewport、pointer、systemd恢复和四平台助手发布检查全部通过。覆盖X11/tmux/PTY、私有RFB/noVNC、TLS/WSS/TCP、UDP/DTLS/SCTP、8 MiB、半关闭、管理恢复及撤权。systemd恢复只对测试子进程采用用户管理器的真实HOME/XDG配置，只操作唯一测试unit；串口为Linux助手及模拟设备，跨平台构建不代表Windows/Mac或USB硬件真机验收。
+
+基线启动的完整Chromium手机/电脑回归638项通过（两个worker，19.3分钟）。切换补修另跑Chromium/Firefox/WebKit七种配置的直连与中转相关112项，全部通过；能力消息间隙补强后再次跑七种配置14项，全部通过。上游RFB和管理执行器为fixture，实际网络协议与浏览器运行。新增两种附加时序用例使后续完整回归为642项，本轮没有再次串行重跑全部642项，而用上述定向矩阵验证补修。
+
+远端检查明确区分运行：`6830fa2`曾七项全成功；后续文档提交`d2c8ce1`的WebKit实际有一项失败，本轮从该日志定位并修复，不能沿用前次成功状态。基线`36cae6f`的[Actions](https://github.com/ptpt52/codex-on-cloud/actions/runs/42541394762)在本轮最终推送前，backend、native、terminal、portal及Firefox已成功，Chromium完整回归与WebKit仍在执行。补修与审核文档的新推送会依照并发策略替代旧运行，最终远端结果应查看[当前工作流](https://github.com/ptpt52/codex-on-cloud/actions/workflows/check.yml)，不从本地通过推断新提交的七项已全部成功。
+
+全仓库复核未复现P0/P1，仍确认一项部署恢复P2：父部署被SIGKILL后，旧安装子进程可在新租约下继续修改临时产物。真实默认部署执行器配合固定systemctl/npm替身在隔离目录复现，Linux subreaper回收测试后代；未操作生产unit、安装依赖或修改真实Cloudflare入口。待修复位置和建议见[审核报告](code-review.md#2026-11-09再次推送重载后的全仓库审核36cae6f)。Chromium兼容及完整回归共用35分钟期限仍是单独的CI改进建议。
