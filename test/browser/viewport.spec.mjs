@@ -157,7 +157,10 @@ test('width-fit scrolls locally without remote drags and preserves tap coordinat
     if (info.project.name === 'mobile') {
       const client = await context.newCDPSession(page);
       await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
-      for (let step = 1; step <= 6; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - step * 16 }] });
+      for (let step = 1; step <= 8; step++) {
+        await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - step * 24 }] });
+        await page.waitForTimeout(16);
+      }
       await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
       await client.detach();
     } else await page.mouse.wheel(0, 240);
