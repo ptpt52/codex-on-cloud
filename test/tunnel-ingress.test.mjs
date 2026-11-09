@@ -63,6 +63,24 @@ test('private HTTP and WebSocket ingress retain Host, Origin, authentication, CS
   assert.deepEqual(app.inputCalls, []);
 });
 
+test('secure Tunnel ingress redirects plaintext visits and emits HSTS without trusting direct headers', async t => {
+  const { app, request } = await ingress(t);
+  app.config.secureCookies = true;
+  const host = new URL(app.config.origin).host;
+  const redirected = await request('/?ui=old', undefined, { 'cf-visitor': '{"scheme":"http"}' });
+  assert.equal(redirected.status, 308);
+  assert.equal(redirected.headers.location, `https://${host}/?ui=old`);
+  assert.equal(redirected.headers['strict-transport-security'], 'max-age=31536000');
+
+  const encrypted = await request('/', undefined, { 'cf-visitor': '{"scheme":"https"}' });
+  assert.equal(encrypted.status, 200);
+  assert.equal(encrypted.headers['strict-transport-security'], 'max-age=31536000');
+
+  const direct = await app.request('/', { headers: { 'cf-visitor': '{"scheme":"http"}' } });
+  assert.equal(direct.status, 200, 'Only the private Tunnel ingress trusts the visitor protocol header');
+  assert.equal(direct.headers.get('strict-transport-security'), 'max-age=31536000');
+});
+
 test('trusted client keys canonicalize IPv6 and reject malformed or scoped edge headers with a bounded fallback', () => {
   const req={socket:{remoteAddress:'127.0.0.1'},headers:{'cf-connecting-ip':'2001:0db8:0:0:0:0:0:1'}};
   assert.equal(loginClient(req,true),'tunnel:2001:db8::1');assert.equal(loginClient(req,false),'socket:127.0.0.1');

@@ -48,6 +48,8 @@ Cloudflare 私有入口按有效的 `CF-Connecting-IP`（仅当该地址为 Clas
 
 Cloudflare 官方说明：[Unix socket 上游](https://developers.cloudflare.com/tunnel/concepts/routing/)、[CF-Connecting-IP 与 IPv6 请求头](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
 
+HTTPS 部署由面板在全部响应上发送 `Strict-Transport-Security: max-age=31536000`。私有 Tunnel 入口还会读取 Cloudflare 的 `CF-Visitor` 协议标记，把明文 HTTP 请求以 308 跳转到同一允许 Host 的 HTTPS 地址；普通回环请求即使伪造该头也不会被跳转。Cloudflare 侧仍应开启 Always Use HTTPS，HSTS 只负责已通过 HTTPS 成功访问后的浏览器策略。
+
 使用 Access 时，在路由中启用 Protect with Access / Access JWT 验证，关联对应应用。具体控制台名称可能变化；使用配置文件时需配置等价的令牌验证。Tunnel 承载普通 HTTP / WebSocket，无需 VNC 专用端口。
 
 ## 4. 手动配置本机并启动

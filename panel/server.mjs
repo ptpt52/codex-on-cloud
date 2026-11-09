@@ -37,6 +37,15 @@ import { loginClient } from './login-client.mjs';
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
 const VIEWER = /^[a-f0-9-]{16,64}$/;
+const HSTS = 'max-age=31536000';
+
+function visitorScheme(value) {
+  if (typeof value !== 'string' || value.length > 128) return '';
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) && ['http', 'https'].includes(parsed.scheme) ? parsed.scheme : '';
+  } catch { return ''; }
+}
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -254,7 +263,15 @@ export async function createPanel(config) {
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader('x-frame-options', 'SAMEORIGIN');
+    if (config.secureCookies) res.setHeader('strict-transport-security', HSTS);
     if (!hostAllowed(req)) throw new HttpError(400, '访问域名未配置，请检查 PUBLIC_ORIGIN / ALLOWED_HOSTS');
+    if (config.secureCookies && tunnelRequests.has(req) && visitorScheme(req.headers['cf-visitor']) === 'http') {
+      const target = new URL(req.url, config.origin);
+      target.protocol = 'https:';
+      target.host = req.headers.host;
+      res.writeHead(308, { location: target.toString(), 'cache-control': 'no-store' });
+      return res.end();
+    }
     const url = new URL(req.url, 'http://internal');
     const path = url.pathname;
     if (path === '/ui-version' && req.method === 'GET') return reply(res, 200, { revision: assets.revision });
