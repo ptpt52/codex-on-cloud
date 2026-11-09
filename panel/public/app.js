@@ -732,8 +732,8 @@ async function switchTerminalStream(identity) {
     frameTerminalKey = `${identity.id}:${identity.token}`; terminalGeometry = null; terminalReviewing = false;
     renderTerminalList();
     const deadline = performance.now() + 8000;
-    while (frameEpoch === expectedFrame && owned && frameState !== 'connected' && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-    if (frameEpoch === expectedFrame && owned && frameState !== 'connected') throw Object.assign(new Error('终端附加未完成，请重新选择目标'), { outcome: 'unknown' });
+    while (frameEpoch === expectedFrame && owned && (frameState !== 'connected' || !terminalSwitchReady) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    if (frameEpoch === expectedFrame && owned && (frameState !== 'connected' || !terminalSwitchReady)) throw Object.assign(new Error('终端附加未完成，请重新选择目标'), { outcome: 'unknown' });
   } catch (error) {
     if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
     if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }

@@ -104,7 +104,16 @@ for (const direct of [false, true]) test(`a ${direct ? 'direct' : 'relay'} targe
   let attaching = false, stateRequests = 0; const unexpected = [];
   try {
     await app.controls.manageTerminals({ action: 'create', name: '第二终端', view: 'terminal' });
-    await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true })));
+    await page.addInitScript(() => {
+      if (window !== parent) return;
+      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
+      window.heldPanelStates = [];
+      window.addEventListener('message', event => {
+        if (!window.holdPanelReady || event.data?.type !== 'codex-panel-state' || event.data.terminalSwitch !== true) return;
+        if (window.heldPanelStates.length >= 8) throw Error('test capability message bound');
+        window.heldPanelStates.push(event); event.stopImmediatePropagation();
+      }, true);
+    });
     await page.route('**/api/state', route => { if (attaching) { unexpected.push('/api/state'); return route.abort(); } stateRequests++; return route.continue(); });
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('终端在线');
@@ -112,7 +121,14 @@ for (const direct of [false, true]) test(`a ${direct ? 'direct' : 'relay'} targe
     const source = await page.locator('#desktop-frame').getAttribute('src'), frame = page.frames().find(f => f.url().includes('/terminal/index.html'));
     await select(page, 'aux1'); await expect(frame.locator('#terminal-status')).toContainText('正在附加');
     attaching = true; await page.evaluate(() => window.dispatchEvent(new Event('online'))); await page.waitForTimeout(250);
-    expect(unexpected).toEqual([]); const previous = stateRequests; attaching = false; release();
+    expect(unexpected).toEqual([]); const previous = stateRequests;
+    // Connected and capability reports are separate window messages. Keep the
+    // latter pending so a timer cannot resume HTTP in the intervening task.
+    await page.evaluate(() => { window.holdPanelReady = true; }); release();
+    await expect.poll(() => page.evaluate(() => window.heldPanelStates.length)).toBeGreaterThan(0);
+    await page.waitForTimeout(100); await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    expect(unexpected).toEqual([]); await expect(page.locator('#connection-status')).toContainText('正在切换终端');
+    attaching = false; await page.evaluate(() => { window.holdPanelReady = false; for (const event of window.heldPanelStates.splice(0)) window.dispatchEvent(new MessageEvent('message', { data: event.data, origin: event.origin, source: event.source })); });
     await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线');
     if (direct) { await expect(page.locator('#diag-panel')).toContainText('加密直连'); expect(stateRequests).toBe(previous); }
     else await expect.poll(() => stateRequests, { timeout: 2500 }).toBeGreaterThan(previous);
