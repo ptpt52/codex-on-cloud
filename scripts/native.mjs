@@ -2,12 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { access, mkdir, writeFile, readFile, chmod } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
-import { settings } from '../native/config.mjs';
+import { maintenanceSettings } from '../native/config.mjs';
 import { serviceUnits } from '../native/service-units.mjs';
 import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
 import { parseArgs } from 'node:util';
 
-const config = settings();
+const config = maintenanceSettings();
 const command = process.argv[2] || 'doctor';
 const { values } = parseArgs({ args: process.argv.slice(3), options: { mode: { type: 'string' } } });
 if (values.mode) {

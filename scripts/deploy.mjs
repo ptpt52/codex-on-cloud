@@ -128,7 +128,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   const call = async (command, args, capture = false) => { lease?.check(); const result = await run(command, args, {cwd:root, capture}); lease?.check(); return result; };
   const step = async (label, command, args) => { log(label); if ((await call(command, args)).status !== 0) throw new Error(label + '失败，请处理上述错误后重新运行'); };
   const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command, ...(values.check && values.mode ? ['--mode', mode] : [])]);
-  const configureWSL = check => !values['skip-wsl-network'] && (process.env.WEBRTC_ENABLED ?? existingEnv.WEBRTC_ENABLED) !== '0'
+  const configureWSL = check => !values['skip-wsl-network'] && existingEnv.WEBRTC_ENABLED !== '0'
     ? wslNetwork({ check, run: (command, args) => call(command, args, true), log }) : undefined;
   const bus = await call('systemctl', ['--user', 'is-system-running'], true);
   if (!/^(running|degraded|starting|initializing)\s*$/.test(bus.stdout || '')) throw new Error('无法连接 systemd 用户服务，请通过普通用户登录主机后重试');

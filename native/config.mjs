@@ -7,11 +7,32 @@ import { deploymentMode } from './deployment-mode.mjs';
 import { terminalLimit } from '../panel/public/terminal-slots.js';
 
 export const root = fileURLToPath(new URL('../', import.meta.url));
+const maintenanceKeys = [
+  'DEPLOY_MODE', 'WORKSPACE_DIR', 'RUNTIME_DIR', 'DESKTOP_SIZE', 'DISPLAY_NUMBER',
+  'PANEL_PORT', 'PORT', 'AGENT_PORT', 'FILE_AGENT_PORT', 'TUNNEL_METRICS_PORT', 'MAX_TERMINALS',
+  'PUBLIC_ORIGIN', 'ALLOWED_HOSTS', 'ADMIN_USER', 'ADMIN_PASSWORD_FILE', 'AGENT_SECRET_FILE',
+  'WEBRTC_ENABLED', 'WEBRTC_LAN_ADDRESS', 'WEBRTC_IPV6', 'WEBRTC_IPV6_ADDRESS', 'WEBRTC_STUN_URL',
+  'TCP_FORWARD_PORTS', 'TUNNEL_DNS_SERVERS', 'TUNNEL_EDGE_IP_VERSION', 'TUNNEL_PROTOCOL',
+];
 export function environment(overrides = process.env) {
   let file = {};
   try { file = parseEnv(readFileSync(join(root, '.env'), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   return { ...file, ...overrides };
+}
+// Long-lived services use their captured environment. Interactive maintenance
+// must instead read the persisted deployment, even when launched from an older
+// Codex terminal whose deployment variables have since changed.
+export function maintenanceEnvironment(overrides = process.env, rootDirectory = root) {
+  let persisted;
+  try { persisted = parseEnv(readFileSync(join(rootDirectory, '.env'), 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return { ...overrides }; throw error; }
+  const inherited = { ...overrides };
+  for (const key of maintenanceKeys) delete inherited[key];
+  return { ...inherited, ...persisted };
+}
+export function maintenanceSettings(overrides = process.env, rootDirectory = root) {
+  return settings(maintenanceEnvironment(overrides, rootDirectory));
 }
 export function settings(env = environment()) {
   const number = (key, fallback, min, max) => {

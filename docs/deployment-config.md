@@ -51,6 +51,8 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | `DISPLAY_NUMBER` | 93；10–199，仅桌面模式 | 虚拟显示编号；需维护 desktop、actions、manager、panel |
 | `DESKTOP_SIZE` | `1600x3200`；宽高 320–4096，仅桌面模式 | 初始桌面默认值；已有持久化设置优先，日常调整用服务器桌面设置 |
 
+运行中的服务使用启动时捕获的环境。`npm run native:*` 等维护命令以持久 `.env` 为权威，并忽略旧 Codex 终端继承的部署变量；只有不存在 `.env` 的隔离测试才使用显式环境。修改 `.env` 后应按对应服务重新加载。
+
 `PORT` 是面板底层兼容覆盖项，优先于 `PANEL_PORT`；普通部署统一使用 `PANEL_PORT`，避免同时配置。`PATH`、`HOME`、`XDG_RUNTIME_DIR` 等属于宿主运行环境，systemd unit 安装时会固定可执行路径；更换 Node 安装位置后需重新生成 unit。Node、Codex、cloudflared、前端库及端口映射助手版本分别由宿主工具、安装脚本和锁文件管理；旧 `.env` 的 `CODEX_VERSION` 不控制原生部署升级。
 
 ## 密钥、系统配置与持久化设置
