@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
-import { openInput, closePanels } from './ui.mjs';
+import { openInput, closePanels, waitForTerminalLayout } from './ui.mjs';
+
+// These tests inject HTTP outcomes; service workers must not bypass the routes.
+test.use({ serviceWorkers: 'block' });
 
 async function setup(page, count = 2) {
   const app = await fixture({ mode: 'terminal', maxTerminals: 8, rfb: true, seamless: true });
@@ -13,6 +16,7 @@ const tab = (page, id) => page.locator(`#terminal-tabs [data-terminal-choice=${i
 async function activate(button) { if (test.info().project.use.hasTouch) await button.tap(); else await button.click(); }
 async function actions(page, id) {
   await closePanels(page);
+  await waitForTerminalLayout(page);
   const button = page.locator(`#terminal-tabs [data-terminal-actions=${id}]`);
   if (await button.isVisible()) await activate(button);
   else if (await page.locator('#input-terminal').inputValue() === id && await page.locator('#terminal-session-actions').isVisible()) await activate(page.locator('#terminal-session-actions'));
@@ -140,6 +144,7 @@ test('tablet touch can rename an overflow terminal with visible full-size action
     await edit(page, 'aux7'); await page.locator('#terminal-rename-name').fill('平板后台任务'); await activate(page.locator('#terminal-rename-save'));
     await expect(page.locator('#terminal-rename-dialog')).toBeHidden(); await expect(tab(page, 'aux7')).toHaveText('平板后台任务');
     await expect(page.locator('#input-terminal')).toHaveValue('main');
+    await expect(tab(page, 'aux7')).toBeHidden();
     await actions(page, 'aux7');
     for (const id of ['terminal-action-rename', 'terminal-action-end']) { const box = await page.locator('#' + id).boundingBox(); expect(box.height).toBeGreaterThanOrEqual(44); expect(box.width).toBeGreaterThanOrEqual(44); }
     const box = await page.locator('#terminal-action-menu').boundingBox(); expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(1024);

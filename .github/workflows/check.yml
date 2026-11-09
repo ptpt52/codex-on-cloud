@@ -78,19 +78,29 @@ jobs:
           go mod verify
 
   browsers:
+    name: browsers (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 5
       matrix:
         include:
-          - engine: chromium
+          - target: chromium
+            engine: chromium
             projects: --project=chromium-desktop --project=chromium-phone --project=chromium-tablet
-          - engine: firefox
+          - target: firefox
+            engine: firefox
             projects: --project=firefox-desktop
-          - engine: webkit
-            projects: --project=webkit-desktop --project=webkit-phone --project=webkit-tablet
+          - target: webkit-desktop
+            engine: webkit
+            projects: --project=webkit-desktop
+          - target: webkit-phone
+            engine: webkit
+            projects: --project=webkit-phone
+          - target: webkit-tablet
+            engine: webkit
+            projects: --project=webkit-tablet
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -101,12 +111,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.engine }}
+        timeout-minutes: 20
       - name: Cross-browser compatibility
+        timeout-minutes: 20
         run: npm run test:compat -- ${{ matrix.projects }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: failure()
+        if: ${{ always() && (failure() || cancelled()) }}
+        timeout-minutes: 3
         with:
-          name: browser-failures-${{ matrix.engine }}
+          name: browser-failures-${{ matrix.target }}
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
@@ -125,9 +138,11 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Full Chromium regression
-        run: npm run test:browser -- --workers=2
+        timeout-minutes: 35
+        run: npm run test:browser -- --workers=2 --trace=retain-on-failure
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: failure()
+        if: ${{ always() && (failure() || cancelled()) }}
+        timeout-minutes: 3
         with:
           name: browser-failures-chromium-full
           path: test-results/

@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
+// The recovery case injects an HTTP catalog, including after a page reload.
+test.use({ serviceWorkers: 'block' });
+
 async function setup(page, count) {
   const app = await fixture({ mode: 'terminal', maxTerminals: 8, rfb: true });
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: `辅助终端 ${n} 的任务`, view: 'terminal' });
@@ -134,12 +137,16 @@ test('recovery can open the full chooser even when every desktop tab fits', asyn
   test.skip(info.project.use.hasTouch || info.project.use.isMobile, 'Desktop recovery chooser');
   const app = await setup(page, 2);
   try {
+    let intercepted = 0;
     await page.route('**/api/terminals', async route => {
+      if (route.request().method() !== 'GET') return route.continue();
       const response = await route.fetch(), data = await response.json();
       data.terminals = data.terminals.map(item => item.id === 'main' ? { ...item, token: '%9999:99999' } : item);
       await route.fulfill({ response, json: data });
+      intercepted++;
     });
-    await page.reload(); await expect(page.locator('#overlay-title')).toHaveText('请选择终端');
+    await page.reload(); await expect.poll(() => intercepted).toBeGreaterThan(0);
+    await expect(page.locator('#overlay-title')).toHaveText('请选择终端');
     await page.locator('#choose-terminal-button').click();
     await page.setViewportSize({ width: 1800, height: 900 });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
