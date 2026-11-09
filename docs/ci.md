@@ -39,7 +39,9 @@ npm run test:serial
 npm run test:terminal-only
 ```
 
-CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对应的 Chromium。真实 systemd 恢复检查 `npm run test:recovery` 由具有 systemd 用户管理器的主机单独执行，不将普通 CI 的进程组检查记为 systemd 验收。
+CI 为这些检查安装临时虚拟桌面依赖，使用固定 Playwright 对应的 Chromium。真实 systemd 恢复检查 `npm run test:recovery` 由具有 systemd 用户管理器的主机单独执行，不将普通 CI 的进程组检查记为 systemd 验收。该测试默认使用锁定 Playwright 包提供的 Chromium，并只对唯一临时 unit 的 MainPID 发送 SIGKILL，兼容 systemd 255 对辅助进程信号的限制。
+
+浏览器兼容矩阵与 Chromium 全量回归是两个独立作业。兼容矩阵继续按引擎并行，Chromium 全量回归单独使用 40 分钟预算，避免完整回归与兼容检查共享 35 分钟期限。
 
 工作流已用固定 actionlint 1.7.11 在本地校验。宿主的旧 ShellCheck 不支持 actionlint 使用的参数，本地禁用了这个子检查；CI 的 Ubuntu 24.04 执行完整 actionlint。GitHub Actions 的首次远端运行需要将工作流推送到仓库，结果应以实际运行记录为准。
 

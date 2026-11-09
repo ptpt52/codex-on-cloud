@@ -38,7 +38,7 @@ async function taskAlive(pid) {
 }
 function launch(script) {
   const unit = 'codex-terminal-only-test-' + directory.split('-').at(-1) + '-' + children.length + '.service';
-  const variables = ['HOME','PATH','RUNTIME_DIR','WORKSPACE_DIR','DEPLOY_MODE','PUBLIC_ORIGIN','PANEL_PORT','AGENT_PORT','WEBRTC_ENABLED','HISTFILE'];
+  const variables = ['HOME','PATH','RUNTIME_DIR','WORKSPACE_DIR','DEPLOY_MODE','PUBLIC_ORIGIN','PANEL_PORT','PORT','AGENT_PORT','FILE_AGENT_PORT','TUNNEL_METRICS_PORT','MAX_TERMINALS','WEBRTC_ENABLED','WEBRTC_IPV6','TUNNEL_DNS_SERVERS','HISTFILE'];
   const command = systemd ? 'systemd-run' : process.execPath;
   const args = systemd ? ['--user','--wait','--pipe','--collect','--quiet','--unit='+unit,'--property=WorkingDirectory='+root,'--property=KillMode=control-group','--property=TimeoutStopSec=3','--property=UMask=0077',...variables.map(key=>'--setenv='+key+'='+env[key]),process.execPath,join(root,script)] : [join(root,script)];
   const child = spawn(command, args, { env: systemd ? { ...env, PATH: process.env.PATH } : env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child);
@@ -64,10 +64,12 @@ try {
     for (const name of ['Xvfb', 'x11vnc', 'xterm', 'xdotool', 'xclip', 'xdpyinfo', 'dbus-run-session']) {
       await writeFile(join(bin, name), '#!/bin/sh\nprintf "%s\\n" "$0" >> "$HOME/unexpected-x11"\nexit 99\n', { mode: 0o700 });
     }
-    const port = await freePort(), agentPort = await freePort(), origin = 'http://127.0.0.1:' + port;
-    env = { ...process.env, HOME: home, PATH: bin + ':' + process.env.PATH, RUNTIME_DIR: runtime, WORKSPACE_DIR: join(root, 'workspaces'), DEPLOY_MODE: 'terminal', MAX_TERMINALS: '8', PUBLIC_ORIGIN: origin,
-      PANEL_PORT: String(port), AGENT_PORT: String(agentPort), WEBRTC_ENABLED: '0', HISTFILE: '/dev/null', DISPLAY: ':199', XAUTHORITY: '/must-not-use-xauthority' };
-    for(const key of ['TMUX','TMUX_PANE','BASH_ENV','ENV'])delete env[key];
+    const port = await freePort(), agentPort = await freePort(), fileAgentPort = await freePort(), tunnelMetricsPort = await freePort(), origin = 'http://127.0.0.1:' + port;
+    env = { ...process.env };
+    for (const key of ['TMUX','TMUX_PANE','BASH_ENV','ENV','PORT','PANEL_PORT','AGENT_PORT','FILE_AGENT_PORT','TUNNEL_METRICS_PORT','RUNTIME_DIR','WORKSPACE_DIR','DEPLOY_MODE','PUBLIC_ORIGIN','MAX_TERMINALS','WEBRTC_ENABLED','WEBRTC_IPV6','TUNNEL_DNS_SERVERS']) delete env[key];
+    Object.assign(env, { HOME: home, PATH: bin + ':' + process.env.PATH, RUNTIME_DIR: runtime, WORKSPACE_DIR: join(root, 'workspaces'), DEPLOY_MODE: 'terminal', MAX_TERMINALS: '8', PUBLIC_ORIGIN: origin,
+      PANEL_PORT: String(port), PORT: String(port), AGENT_PORT: String(agentPort), FILE_AGENT_PORT: String(fileAgentPort), TUNNEL_METRICS_PORT: String(tunnelMetricsPort),
+      WEBRTC_ENABLED: '0', WEBRTC_IPV6: '0', TUNNEL_DNS_SERVERS: '', HISTFILE: '/dev/null', DISPLAY: ':199', XAUTHORITY: '/must-not-use-xauthority' });
     console.log('Terminal-only: install locked production dependencies without noVNC or browser tests');
     await exec('npm', ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: root, env, timeout: 180000, maxBuffer: 16384 });
     await assert.rejects(access(join(root, 'node_modules', '@novnc', 'novnc')), { code: 'ENOENT' });
@@ -79,7 +81,7 @@ try {
     agentSecret = (await readFile(join(root, 'secrets', 'agent_secret'), 'utf8')).trim();
     await mkdir(runtime,{recursive:true,mode:0o700});await writeFile(join(runtime,'terminal.pid'),'',{mode:0o600});
     host = launch('native/terminal-host.mjs'); files = launch('native/file-agent.mjs');
-    await until(async () => { try { return (await (await fetch('http://127.0.0.1:' + agentPort + '/health', { headers: { authorization: 'Bearer ' + agentSecret }, signal: AbortSignal.timeout(1000) })).json()).ready === true; } catch { return false; } }, 'terminal host did not start');
+    await until(async () => { try { return (await (await fetch('http://127.0.0.1:' + fileAgentPort + '/health', { headers: { authorization: 'Bearer ' + agentSecret }, signal: AbortSignal.timeout(1000) })).json()).ready === true; } catch { return false; } }, 'terminal host or file service did not start');
     assert.equal((await lstat(join(runtime, 'tmux.sock'))).mode & 0o777, 0o600);
     await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
     assert.equal((await lstat(join(runtime,'terminal.lock'))).size,0);

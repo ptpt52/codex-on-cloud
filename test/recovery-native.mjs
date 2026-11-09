@@ -14,6 +14,7 @@ import { serviceUnits } from '../native/service-units.mjs';
 const exec = promisify(execFile), root = await mkdtemp(join(tmpdir(), 'codex-recovery-'));
 const unit = `codex-cloud-test-recovery-${process.pid}.service`, unitFile = join(process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config'), 'systemd/user', unit);
 const ctl = async (...args) => (await exec('systemctl', ['--user', ...args], { timeout: 4000, maxBuffer: 8192 })).stdout;
+const killMain = () => ctl('kill', '--kill-who=main', '--signal=SIGKILL', unit);
 let browser, app, release;
 async function eventually(probe, attempts = 200) { for (let n = 0; n < attempts; n++) { try { if (await probe()) return; } catch {} await new Promise(r => setTimeout(r, 100)); } throw Error('test recovery deadline exceeded'); }
 const state = async () => Object.fromEntries((await ctl('show', unit, '--property=MainPID,ActiveState,Result,NRestarts')).trim().split('\n').map(line => line.split('=')));
@@ -32,12 +33,12 @@ const panel=await createPanel(config); panel.server.listen(config.port,config.ho
   await writeFile(unitFile, contents, { flag: 'wx', mode: 0o600 });
   await ctl('daemon-reload'); await ctl('start', unit);
   await eventually(async () => (await fetch(app.config.origin + '/healthz', { signal: AbortSignal.timeout(500) })).ok);
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome' }); const page = await browser.newPage();
+  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || chromium.executablePath() }); const page = await browser.newPage();
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'desktop', controlsCollapsed: true, collapsed: true, zoom: 'width', pan: false })));
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await page.waitForFunction(() => document.getElementById('connection-status').textContent.includes('桌面在线'));
   await page.locator('#toggle-input-button').click(); const draft = '已接受一次，恢复不得自动重发'; await page.locator('#mobile-input').fill(draft); await page.locator('#paste-button').click(); await started;
-  const first = await state(); await ctl('kill', '--signal=SIGKILL', unit);
+  const first = await state(); await killMain();
   await eventually(async () => { const s = await state(); return s.ActiveState === 'active' && s.MainPID !== first.MainPID && s.MainPID !== '0'; });
   release();
   await page.waitForFunction(() => document.getElementById('connection-status').textContent.includes('桌面在线'), { timeout: 15000 });
@@ -46,9 +47,9 @@ const panel=await createPanel(config); panel.server.listen(config.port,config.ho
   assert.equal(app.inputCalls.length, 1); assert.equal(app.managementStats.restarts, 0); assert.equal(app.managementStats.resumes, 0);
   await browser.close(); browser = undefined;
   // Initial start plus two recoveries exhaust the exact generated 60s budget.
-  let previous = (await state()).MainPID; await ctl('kill', '--signal=SIGKILL', unit);
+  let previous = (await state()).MainPID; await killMain();
   await eventually(async () => { const s = await state(); return s.ActiveState === 'active' && s.MainPID !== previous && s.MainPID !== '0'; });
-  await ctl('kill', '--signal=SIGKILL', unit);
+  await killMain();
   await eventually(async () => { const s = await state(); return s.ActiveState === 'failed' && s.MainPID === '0' && Number(s.NRestarts) >= 3; });
   const limited = await state(); await new Promise(r => setTimeout(r, 5500)); assert.deepEqual(await state(), limited);
   await ctl('reset-failed', unit); await ctl('start', unit); await ctl('stop', unit);

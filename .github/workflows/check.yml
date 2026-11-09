@@ -103,13 +103,33 @@ jobs:
       - run: npx playwright install --with-deps ${{ matrix.engine }}
       - name: Cross-browser compatibility
         run: npm run test:compat -- ${{ matrix.projects }}
-      - name: Full Chromium regression
-        if: matrix.engine == 'chromium'
-        run: npm run test:browser -- --workers=2
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: failure()
         with:
           name: browser-failures-${{ matrix.engine }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  chromium-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Full Chromium regression
+        run: npm run test:browser -- --workers=2
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: failure()
+        with:
+          name: browser-failures-chromium-full
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
