@@ -187,3 +187,9 @@ test('explicit standalone rollback validates the requested domain and zone befor
  for(const target of [{...h.options,domain:'other.example.test'},{...h.options,zone:'other.test'}])await assert.rejects(p.rollback(target),{status:409});
  assert.equal(await readFile(path,'utf8'),record);await p.rollback(h.options);assert.equal(await readFile(join(h.root,'.env'),'utf8'),h.env);
 });
+
+test('legacy prepared records without an operation identity remain manually resumable',async t=>{
+ const h=await fixture(t);await h.make().prepare(h.options);const path=join(h.root,'data/cloudflare-publication.json'),record=JSON.parse(await readFile(path,'utf8'));delete record.operationId;await writeFile(path,JSON.stringify(record),{mode:0o600});
+ const p=h.make();assert.equal((await p.prepare(h.options)).resumed,true);await p.commit(h.options);
+ assert.equal(h.configuration.ingress[0].service,'unix:/tmp/synthetic-private.sock');await assert.rejects(stat(path),{code:'ENOENT'});
+});

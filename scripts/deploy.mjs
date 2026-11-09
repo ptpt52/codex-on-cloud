@@ -20,9 +20,10 @@ const packages = ['xvfb', 'x11vnc', 'xfwm4', 'xfdesktop4', 'xfce4-panel', 'xfce4
 export const help = `用法：npm run deploy -- [选项]
 需要普通 Linux 用户、systemd 用户服务和 Node.js 22+；桌面模式另需 Codex CLI，纯终端模式可不安装。
 默认自动执行 npm ci、初始化、依赖检查、安装并启动用户服务。
+纯终端依赖 tmux、Python 和 util-linux/flock；Codex 可选。
 WSL 镜像网络自动配置 hostAddressLoopback 并备份；重启 WSL 需自行保存任务后执行。
   --check                  只检查，不安装、不修改配置或服务
-  --mode desktop|terminal  新部署选择桌面或纯网页终端；终端依赖 tmux/Python/util-linux
+  --mode desktop|terminal  新部署选择桌面或纯网页终端；默认 desktop，已有模式保持
   --install-deps           使用 sudo apt-get 按模式安装系统依赖（Ubuntu/Debian）
   --enable-linger          使用 sudo loginctl 启用无人登录时的开机自启
   --skip-wsl-network       保留 Windows WSL 网络配置，不执行自动检查或修改
