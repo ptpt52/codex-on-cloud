@@ -53,11 +53,12 @@ export function options(args) {
   return values;
 }
 
-async function execute(command, args, { cwd, capture = false } = {}) {
+async function execute(command, args, { cwd, capture = false, lease } = {}) {
   if (capture) {
     try { const result = await promisify(execFile)(command, args, {cwd, timeout:15000, maxBuffer:8192}); return {status:0, stdout:result.stdout}; }
     catch (error) { return {status:typeof error.code === 'number' ? error.code : 1, stdout:error.stdout || ''}; }
   }
+  if (lease?.runTerminal) return lease.runTerminal(command, args, { cwd, timeout: 1800000 });
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {cwd, stdio:'inherit'});
     child.once('error', () => reject(new Error('无法运行 ' + command)));
@@ -125,7 +126,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   const mode = deploymentMode(values.mode || existingMode);
   if (!values.check && existingMode && values.mode && existingMode !== mode) throw Error('已有部署模式不同，不会自动切换或停止任务；请在新部署中选择模式');
   const selectedServices = modeServices(mode);
-  const call = async (command, args, capture = false) => { lease?.check(); const result = await run(command, args, {cwd:root, capture}); lease?.check(); return result; };
+  const call = async (command, args, capture = false) => { lease?.check(); const result = await run(command, args, {cwd:root, capture, lease: capture ? undefined : lease}); lease?.check(); return result; };
   const step = async (label, command, args) => { log(label); if ((await call(command, args)).status !== 0) throw new Error(label + '失败，请处理上述错误后重新运行'); };
   const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command, ...(values.check && values.mode ? ['--mode', mode] : [])]);
   const configureWSL = check => !values['skip-wsl-network'] && existingEnv.WEBRTC_ENABLED !== '0'

@@ -50,6 +50,9 @@ try:
         if 'commands' in sys.argv[2:]:
             import runpy
             runpy.run_path(os.path.join(os.path.dirname(__file__), 'build_commands.py'))['serve'](fd)
+        elif 'interactive' in sys.argv[2:]:
+            import runpy
+            runpy.run_path(os.path.join(os.path.dirname(__file__), 'deploy_commands.py'))['serve'](fd)
         else:
             sys.stdin.buffer.read(1)  # Parent release/crash closes this private pipe.
     finally:

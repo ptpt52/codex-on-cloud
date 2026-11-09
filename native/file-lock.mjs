@@ -1,16 +1,19 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { lstatSync } from 'node:fs';
+import { basename } from 'node:path';
 
 const active = new Set(), helper = fileURLToPath(new URL('./file_lock.py', import.meta.url));
 const failure = busy => Object.assign(Error(busy ? '已有配置写入，请稍后再试' : '无法取得本机文件锁，请检查 Python 3 和私有目录'), { status: busy ? 409 : 503, outcome: 'rejected' });
 // Eight leases per Node process, no waiter queue. One <=256-byte persistent
 // lock inode per fixed path; never unlink it while another process can use it.
-export async function acquireFileLock(path, { legacy = false, commands = false } = {}) {
+export async function acquireFileLock(path, { legacy = false, commands = false, interactive = false } = {}) {
+  if (commands && interactive) throw failure(false);
   if (active.has(path) || active.size >= 8) throw failure(true);
   active.add(path);
   let child;
-  try { child = spawn('python3', ['-I', helper, path, ...(legacy ? ['legacy'] : []), ...(commands ? ['commands'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] }); }
+  const stdio = interactive ? ['pipe', 'pipe', 'pipe', 'inherit', 'inherit', 'inherit'] : ['pipe', 'pipe', 'pipe'];
+  try { child = spawn('python3', ['-I', helper, path, ...(legacy ? ['legacy'] : []), ...(commands ? ['commands'] : []), ...(interactive ? ['interactive'] : [])], { stdio }); }
   catch { active.delete(path); throw failure(false); }
   let ended = false, identity, releasing, pending, sequence = 0, output = '', bytes = 0;
   child.stdin.on('error', () => {});
@@ -31,6 +34,9 @@ export async function acquireFileLock(path, { legacy = false, commands = false }
         if (!identity) {
           if (value.ready !== true || !/^\d+$/.test(value.dev) || !/^\d+$/.test(value.ino)) throw Error();
           identity = { dev: BigInt(value.dev), ino: BigInt(value.ino) }; clearTimeout(deadline); readyResolve();
+        } else if (pending?.kind === 'terminal') {
+          if (value.id !== pending.id || Object.keys(value).sort().join(',') !== 'code,id' || !Number.isInteger(value.code) || value.code < 0 || value.code > 255) throw Error();
+          const entry = pending; pending = undefined; entry.resolve({ status: value.code });
         } else {
           if (!pending || value.id !== pending.id || !Number.isInteger(value.code) || typeof value.stdout !== 'string' || typeof value.stderr !== 'string') throw Error();
           const entry = pending; pending = undefined;
@@ -61,7 +67,19 @@ export async function acquireFileLock(path, { legacy = false, commands = false }
       if (!commands || pending || sequence >= 32 || !['go', 'git', 'python3'].includes(command)) return Promise.reject(failure(false));
       const id = ++sequence, request = JSON.stringify({ id, command, args, cwd: options.cwd || process.cwd(), env: options.env || process.env, timeout: options.timeout || 15000 }) + '\n';
       if (Buffer.byteLength(request) > 131072) return Promise.reject(failure(false));
-      return new Promise((resolve, reject) => { pending = { id, resolve, reject }; child.stdin.write(request, error => { if (error) failed(); }); });
+      return new Promise((resolve, reject) => { pending = { kind: 'build', id, resolve, reject }; child.stdin.write(request, error => { if (error) failed(); }); });
+    }, runTerminal(command, args, options = {}) {
+      check();
+      const name = basename(command);
+      const allowed = ['sudo', 'npm', 'systemctl', 'apt-get', 'loginctl'].includes(name) || /^node(?:js)?(?:\d+(?:\.\d+)*)?$/.test(name);
+      if (!interactive || pending || sequence >= 32 || !allowed || !Array.isArray(args) || args.length > 64 ||
+          args.some(value => typeof value !== 'string' || value.length > 8192 || value.includes('\0')) ||
+          typeof options.cwd !== 'string' || options.cwd.includes('\0') ||
+          !Number.isInteger(options.timeout ?? 1800000) || (options.timeout ?? 1800000) < 1 || (options.timeout ?? 1800000) > 1800000) return Promise.reject(failure(false));
+      const id = ++sequence;
+      const request = JSON.stringify({ id, command, args, cwd: options.cwd, timeout: options.timeout ?? 1800000 }) + '\n';
+      if (Buffer.byteLength(request) > 131072) return Promise.reject(failure(false));
+      return new Promise((resolve, reject) => { pending = { kind: 'terminal', id, resolve, reject }; child.stdin.write(request, error => { if (error) failed(); }); });
     } };
   } catch (error) { await release(); throw error; }
 }

@@ -8,6 +8,6 @@ export async function acquireDeploymentLease(root) {
   const path = join(root, 'data'); await mkdir(path, { recursive: true, mode: 0o700 });
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid()) throw Error('部署状态目录无效');
-  try { return await acquireFileLock(join(path, 'deploy.lock')); }
+  try { return await acquireFileLock(join(path, 'deploy.lock'), { interactive: true }); }
   catch (error) { if (error.status === 409) error.message = '已有部署或公网发布正在执行，请稍后重试'; throw error; }
 }
