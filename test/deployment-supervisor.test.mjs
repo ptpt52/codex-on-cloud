@@ -22,7 +22,7 @@ test('deployment SIGKILL reaps the active installer group before releasing its l
   const module = new URL('../scripts/deployment-lease.mjs', import.meta.url).href;
   const command = [
     "const fs=require('fs'),cp=require('child_process');",
-    "const child=cp.spawn('python3',['-c','import time;time.sleep(60)']);",
+    "const child=cp.spawn('python3',['-c','import time;time.sleep(60)'],{detached:true,stdio:'ignore'});",
     `fs.writeFileSync(${JSON.stringify(record)},JSON.stringify([process.pid,child.pid]));`,
     'setInterval(()=>{},1000);',
   ].join('');

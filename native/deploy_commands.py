@@ -35,8 +35,7 @@ def reap(process):
     # As a Linux child subreaper, separators and double-forked children become
     # our direct children. Kill and reap them before the caller can release the
     # lock, so a new deployment cannot overlap a surviving installer process.
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
+    while True:
         while True:
             try:
                 pid, _status = os.waitpid(-1, os.WNOHANG)
@@ -53,7 +52,6 @@ def reap(process):
             except ProcessLookupError:
                 pass
         time.sleep(0.01)
-    return 137
 
 
 def allowed(command):
