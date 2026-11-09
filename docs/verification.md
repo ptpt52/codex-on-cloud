@@ -1010,4 +1010,8 @@ WSL更新在私有Linux目录持有单个固定租约，更新前重新读取，
 
 301 项脚本语法和 24 项 Python 通过。当前任务进程的网络限制导致网卡枚举错误 97，上一轮默认 Node 测试为 404/415 通过；本轮在独立、限时的 systemd 测试单元验证宿主网络，未修改生产配置。并行 `npm test` 为 420/421 通过，失败项为文件直连协商 HTTP 502；该文件的五项单独复测通过，随后完整 `node --test --test-concurrency=1 test/*.test.mjs` 的 421 项全部通过，未把首次失败记成全量成功。
 
-`npm run test:browser` 的正向、反向设备及串口映射在 Chromium 手机／电脑布局共 36 项全部通过；使用已有系统 Chrome，WebSocket/TCP 为实际隔离连接，RFB／PTY／管理执行器为 fixture。仅修改映射控制连接建立时的错误监听，没有修改前端或 Go 助手，未重复全量浏览器、跨平台构建和原生桌面检查。上线结果在完成实际重载和核对后另行记录。
+`npm run test:browser` 的正向、反向设备及串口映射在 Chromium 手机／电脑布局共 36 项全部通过；使用已有系统 Chrome，WebSocket/TCP 为实际隔离连接，RFB／PTY／管理执行器为 fixture。仅修改映射控制连接建立时的错误监听，没有修改前端或 Go 助手，未重复全量浏览器、跨平台构建和原生桌面检查。
+
+修复提交 `bc584ba` 已推送 `origin/master`，随后只重启 `codex-cloud-panel.service` 及按既有 PartOf 关系关联的迁移 files 服务。panel 从 4032 变为 11439，files 从 4030 变为 11436，均为 active 且自动重启计数为零。desktop、actions、manager、Tunnel 的 PID 和启动时间保持；两个非观看任务窗格的 session／pane ID／PID 一致。持久 `.env`、管理员密码、内部密钥、Tunnel 令牌和屏幕锁配置的摘要保持一致，没有重装服务、升级依赖或修改 Codex 配置。原映射仍遵循面板重启后需重新配对的规则。
+
+实际 home HTTPS 与回环的 `/healthz`、`/readyz`、`/ui-version` 均通过且内容一致，宿主和文件服务均就绪；匿名诊断／映射读取返回 401，错误 Host 返回 400。在确认管理员会话未满、不挤占原登录的前提下，新建验证登录，只读取诊断、映射和文件目录，三项均返回 200，随后只退出该验证登录。没有认领桌面、附加生产终端、发送输入或在生产注入非法帧。部署核对首次缺少服务实际的 `XDG_RUNTIME_DIR`，只读 tmux 定位失败；采用运行中 panel 的 `/run/user/1000` 后完成部署前后比较，未将测试进程环境调整写入生产配置。新提交的远端 Actions 未等待完成，不以本地验证推断其状态。
