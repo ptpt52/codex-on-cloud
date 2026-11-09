@@ -1,5 +1,25 @@
 export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialog, list, choose, closeTerminal, manage, changed }) {
   let signature = '', currentTerminal;
+  let layoutFrame = 0;
+  function scheduleLayout() {
+    if (layoutFrame) return;
+    layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = 0;
+      const focused = document.activeElement;
+      // Measure with the entire bar available to the tabs, even when the
+      // previous layout used the picker. Both changes happen before paint.
+      bar.dataset.overflow = 'false';
+      bar.dataset.overflow = String(tabs.getClientRects().length > 0 && tabs.scrollWidth > tabs.clientWidth + 1);
+      if (tabs.contains(focused) && !tabs.getClientRects().length) mobileButton.focus({ preventScroll: true });
+      else if (focused === mobileButton || focused === mobileClose) {
+        const target = focused.getClientRects().length ? focused
+          : focused === mobileClose ? tabs.querySelector('[aria-selected=true] + [data-terminal-close]')
+          : tabs.querySelector('[tabindex="0"]');
+        target?.focus({ preventScroll: true });
+      }
+    });
+  }
+  new ResizeObserver(scheduleLayout).observe(bar);
   const narrow = matchMedia('(max-width: 420px)');
   let fullLabel = '选择终端', shortLabel = fullLabel;
   const label = () => { mobileButton.textContent = `${narrow.matches ? shortLabel : fullLabel} ▾`; mobileButton.setAttribute('aria-label', fullLabel + ' ▾'); };
@@ -8,6 +28,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     bar.hidden = !visible;
     mobileButton.disabled = disabled;
     const current = catalog.find(item => item.id === selected);
+    scheduleLayout();
     currentTerminal = !invalid && current?.supported && !current.available ? current : null;
     mobileClose.hidden = !currentTerminal;
     mobileClose.disabled = disabled || !currentTerminal;
@@ -53,7 +74,6 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
       }
     }
     if (!tabs.querySelector('[tabindex="0"]')) tabs.querySelector('button:not(:disabled)')?.setAttribute('tabindex', '0');
-    if (selected === 'new' && tabs.getClientRects().length) tabs.scrollLeft = tabs.scrollWidth;
     if (focusedId || focusedClose) {
       const replacement = [...tabs.querySelectorAll('button')].find(button => focusedId ? button.dataset.terminalChoice === focusedId : button.dataset.terminalClose === focusedClose);
       if (replacement && !replacement.disabled && replacement.getClientRects().length) replacement.focus({ preventScroll: true });
@@ -66,7 +86,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     event.preventDefault();
     const index = buttons.indexOf(document.activeElement);
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
-    buttons[next].focus();
+    buttons[next].focus({ preventScroll: true });
   });
   mobileButton.addEventListener('click', () => { dialog.showModal(); changed(); });
   mobileClose.addEventListener('click', () => { if (currentTerminal) closeTerminal(currentTerminal); });
