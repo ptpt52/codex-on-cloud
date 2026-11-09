@@ -1,12 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm, symlink, mkdir, readdir, open } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, symlink, mkdir, readdir, open, link, lstat } from 'node:fs/promises';
 import { readlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { promisify } from 'node:util';
-import { configureWSLNetwork, planWSLConfig, updateWSLConfig } from '../scripts/wsl-network.mjs';
+import { configureWSLNetwork, planWSLConfig, updateWSLConfig as update } from '../scripts/wsl-network.mjs';
+import { acquireFileLock } from '../native/file-lock.mjs';
+const updateWSLConfig = (file, options = {}) => update(file, { leaseDirectory: dirname(file), ...options });
 
 async function directory(t) {
   const root = await mkdtemp(join(tmpdir(), 'codex-wsl 中文 $() '));
@@ -57,7 +60,7 @@ test('automatic writes save one original backup, retain later user edits and are
   assert.equal((await updateWSLConfig(file)).changed, true);
   assert.match(await readFile(file, 'utf8'), /# later user edit/);
   assert.equal(await readFile(backup, 'utf8'), original);
-  assert.deepEqual((await readdir(root)).sort(), ['.wslconfig', '.wslconfig.codex-cloud.before-loopback']);
+  assert.deepEqual((await readdir(root)).sort(), ['.codex-cloud-wsl.lock', '.wslconfig', '.wslconfig.codex-cloud.before-loopback']);
   const missing = join(root, 'new-config'); assert.equal((await updateWSLConfig(missing)).backup, null);
   assert.equal((await updateWSLConfig(missing)).changed, false);
 });
@@ -67,7 +70,7 @@ test('special and oversized config or backup files cannot be overwritten or bloc
   const exec = promisify(execFile);
   for (const kind of ['symlink', 'directory', 'fifo', 'oversized']) {
     for (const atBackup of [false, true]) {
-      const folder = join(root, kind + '-' + atBackup); await mkdir(folder);
+      const folder = join(root, kind + '-' + atBackup); await mkdir(folder,{mode:0o700});
       const file = join(folder, '.wslconfig'), blocked = atBackup ? file + '.codex-cloud.before-loopback' : file;
       if (atBackup) await writeFile(file, '[wsl2]\nnetworkingMode=mirrored\n');
       if (kind === 'symlink') await symlink(target, blocked);
@@ -82,11 +85,12 @@ test('special and oversized config or backup files cannot be overwritten or bloc
   assert.equal(await readFile(target, 'utf8'), 'retain unrelated file');
 });
 
-test('an occupied temporary file refuses concurrent work without removing another writer or changing configuration', async t => {
+test('an active configuration lease refuses concurrent work without removing another writer temporary', async t => {
   const root = await directory(t), file = join(root, '.wslconfig');
   const original = '[wsl2]\nnetworkingMode=mirrored\n'; await writeFile(file, original);
   await writeFile(file + '.codex-cloud.tmp', 'another writer');
-  await assert.rejects(updateWSLConfig(file), { code: 'EEXIST' });
+  const lease=await acquireFileLock(join(root,'.codex-cloud-wsl.lock'));t.after(()=>lease.release());
+  await assert.rejects(updateWSLConfig(file), { status:409 });
   assert.equal(await readFile(file + '.codex-cloud.tmp', 'utf8'), 'another writer');
   assert.equal(await readFile(file, 'utf8'), original);
   await assert.rejects(readFile(file + '.codex-cloud.before-loopback'), { code: 'ENOENT' });
@@ -106,6 +110,28 @@ test('an edit during the final asynchronous close is preserved for existing and 
     await assert.rejects(updateWSLConfig(file),{status:409});assert.equal(injected,true);assert.equal(await readFile(file,'utf8'),edited);
     await assert.rejects(readFile(file+'.codex-cloud.tmp'),{code:'ENOENT'});
   });
+});
+
+test('SIGKILL during backup or configuration writes releases the lease and permits bounded residue recovery',async t=>{
+ for(const at of ['backup','configuration'])await t.test(at,async t=>{
+  const root=await directory(t),file=join(root,'.wslconfig'),original='[wsl2]\r\nnetworkingMode=mirrored\r\nmemory=4GB\r\n';await writeFile(file,original);
+  const module=new URL('../scripts/wsl-network.mjs',import.meta.url).href,target=at==='backup'?file+'.codex-cloud.before-loopback.next':file+'.codex-cloud.tmp';
+  const source=`import{open}from'node:fs/promises';import{readlinkSync}from'node:fs';import{updateWSLConfig}from${JSON.stringify(module)};const f=await open(process.argv[1]),p=Object.getPrototypeOf(f),sync=p.sync;await f.close();p.sync=async function(...args){await sync.apply(this,args);if(readlinkSync('/proc/self/fd/'+this.fd)===process.argv[3]){console.log('held');await new Promise(()=>{});}};setInterval(()=>{},1000);await updateWSLConfig(process.argv[1],{leaseDirectory:process.argv[2]});`;
+  const child=spawn(process.execPath,['--input-type=module','-e',source,file,root,target],{stdio:['ignore','pipe','pipe']});t.after(()=>child.kill('SIGKILL'));
+  await once(child.stdout,'data');await assert.rejects(updateWSLConfig(file),{status:409});assert.equal(await readFile(file,'utf8'),original);
+  const done=once(child,'close');child.kill('SIGKILL');await done;
+  let result;for(let n=0;n<100;n++){try{result=await updateWSLConfig(file);break;}catch(error){if(error.status!==409)throw error;await new Promise(resolve=>setTimeout(resolve,10));}}
+  assert.equal(result?.changed,true);assert.match(await readFile(file,'utf8'),/hostAddressLoopback=true/);assert.equal(await readFile(file+'.codex-cloud.before-loopback','utf8'),original);
+  for(const path of [file+'.codex-cloud.tmp',file+'.codex-cloud.before-loopback.next'])await assert.rejects(lstat(path),{code:'ENOENT'});
+ });
+});
+
+test('recovery recognizes its own exclusive publication links and preserves unrelated hard-linked data',async t=>{
+ const root=await directory(t),file=join(root,'.wslconfig'),temporary=file+'.codex-cloud.tmp',backup=file+'.codex-cloud.before-loopback',next=backup+'.next',original='[wsl2]\nnetworkingMode=mirrored\n';
+ await writeFile(file,original);await link(file,temporary);await writeFile(backup,original);await link(backup,next);
+ assert.equal((await updateWSLConfig(file)).changed,true);assert.equal((await lstat(backup)).nlink,1);
+ await writeFile(file,original);const unrelated=join(root,'unrelated');await writeFile(unrelated,'preserve');await link(unrelated,temporary);
+ await assert.rejects(updateWSLConfig(file),/硬链接/);assert.equal(await readFile(unrelated,'utf8'),'preserve');assert.equal(await readFile(file,'utf8'),original);
 });
 
 test('normal Linux and WSL NAT do not inspect or mutate Windows user configuration', async () => {
@@ -128,7 +154,7 @@ test('mirrored detection uses fixed commands and literal path arguments, with no
     assert.equal(command, 'wslpath'); assert.deepEqual(args, ['-u', windowsProfile]);
     return { status: 0, stdout: root + '\n' };
   };
-  const options = { kernel, run, log: line => logs.push(line) };
+  const options = { kernel, run, log: line => logs.push(line), leaseDirectory: root };
   assert.equal((await configureWSLNetwork({ ...options, check: true })).needsConfiguration, true);
   assert.deepEqual(await readdir(root), ['.wslconfig']);
   const written = await configureWSLNetwork(options); assert.equal(written.restartRequired, true);

@@ -13,7 +13,9 @@ hostAddressLoopback=true
 
 此设置让 Windows 和 WSL 可以通过 Windows 本机已分配的 IPv4 地址互访。镜像网络默认允许 `127.0.0.1` 回环，但通过本机的局域网 IP 访问仍需要此项；WebRTC 默认选择默认路由网卡的局域网地址，因此会遇到“公网网页正常，本机直连 UDP 超时”。无需把 `WEBRTC_LAN_ADDRESS` 改为回环地址，否则其他局域网设备不能通过该候选直连服务器。说明见[微软 WSL 配置文档](https://learn.microsoft.com/windows/wsl/wsl-config#experimental-settings)。
 
-安装器保留其他设置、注释、换行格式和 UTF-8/UTF-16LE BOM；原文件只备份一次到 `.wslconfig.codex-cloud.before-loopback`。配置、固定备份和独占临时文件 `.wslconfig.codex-cloud.tmp` 各最多 64 KiB，临时文件在操作结束后清理。符号链接、FIFO、目录、超限文件及重复的目标节或键会停止自动修改，避免覆盖不明确的配置。已有 `hostAddressLoopback=true` 时重复部署不写文件。
+安装器保留其他设置、注释、换行格式和UTF-8/UTF-16LE BOM；原文件只备份一次到`.wslconfig.codex-cloud.before-loopback`。配置、固定备份、`.wslconfig.codex-cloud.tmp`及备份暂存`.wslconfig.codex-cloud.before-loopback.next`各最多64 KiB。备份先完整写入/同步暂存，再独占发布，不暴露半份新备份；已有备份保持。符号链接、FIFO、目录、超限文件及重复的目标节或键会停止自动修改，避免覆盖不明确的配置。已有`hostAddressLoopback=true`时重复部署不写配置。
+
+实际修改由一个用户级内核租约串行化，无等待队列。默认Linux目录`/tmp/codex-cloud-wsl-<UID>`为0700，仅保留一份0600、最多256字节的`.codex-cloud-wsl.lock`；不依赖DrvFS/NTFS提供flock，也不为不同路径累积锁文件。正常结束或进程被杀后释放租约；下一写入者在持锁时回收有界、属于当前用户的固定暂存文件。崩溃若发生在独占链接发布之后，只在证明两条路径指向同一已发布文件时清理该暂存名；无关硬链接会拒绝并保留。旧版未使用此租约，升级前应先结束旧版配置命令，不混跑两代写入者。Linux租约不阻止Windows编辑器同时修改配置，仍应避开维护窗口。
 
 `--check` 只检测，不创建配置或备份；缺少设置时返回失败并提示正常部署自动修复。`--skip-wsl-network` 可跳过此功能；已配置 `WEBRTC_ENABLED=0` 时也跳过。普通 Linux 和 WSL NAT 网络不修改 Windows 配置。无法识别网络模式时明确提示手动检查，不主动切换网络模式或开放防火墙。
 

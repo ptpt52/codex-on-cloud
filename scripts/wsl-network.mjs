@@ -1,9 +1,10 @@
 import { constants, openSync, closeSync, readSync, fstatSync, lstatSync, renameSync, linkSync, unlinkSync } from 'node:fs';
-import { open, unlink } from 'node:fs/promises';
+import { open, mkdir, lstat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { release } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { acquireFileLock } from '../native/file-lock.mjs';
 
 const MAX_CONFIG = 65536;
 const READ = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -14,7 +15,8 @@ const changed = () => Object.assign(Error('WSL 配置在部署期间发生变化
 
 // Raw bytes preserve UTF-16/BOMs. Re-read after every asynchronous close, then
 // compare and publish synchronously; an absent target uses an exclusive link.
-function commitConfig(file, temporary, original) {
+function commitConfig(file, temporary, original, valid = () => {}) {
+  valid();
   let fd, current = null;
   try {
     try { fd = openSync(file, READ); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -34,6 +36,27 @@ function commitConfig(file, temporary, original) {
     try { linkSync(temporary, file); } catch (error) { if (error.code === 'EEXIST') throw changed(); throw error; }
     unlinkSync(temporary);
   }
+}
+
+// The one per-user lease lives on Linux, not DrvFS/NTFS, so Windows filesystem
+// lock support is not required. Tests may provide their own private directory.
+async function configurationLease(directory) {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077)) throw Error('WSL 租约目录必须是当前用户的私有 Linux 目录');
+  try { return await acquireFileLock(join(directory, '.codex-cloud-wsl.lock')); }
+  catch (error) { if (error.status === 409) error.message = '已有 WSL 配置更新正在执行，请稍后重试'; throw error; }
+}
+function removeTemporary(path, published) {
+  let info; try { info = lstatSync(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (!info.isFile() || info.uid !== process.getuid() || info.size > MAX_CONFIG) throw Error('WSL 暂存文件类型、归属或大小无效，已保留');
+  if (info.nlink !== 1) {
+    let target; try { target = lstatSync(published); } catch {}
+    // A crash after exclusive link publication can leave exactly these two
+    // names for the same file. Never remove a link to unrelated user data.
+    if (info.nlink !== 2 || !target?.isFile() || target.ino !== info.ino || target.dev !== info.dev) throw Error('WSL 暂存文件存在其他硬链接，已保留');
+  }
+  unlinkSync(path);
 }
 
 async function readConfig(file, optional = false) {
@@ -90,28 +113,32 @@ export function planWSLConfig(original) {
   return { changed: true, bytes: updated };
 }
 
-export async function updateWSLConfig(file, { check = false } = {}) {
-  const original = await readConfig(file, true), plan = planWSLConfig(original);
+export async function updateWSLConfig(file, { check = false, leaseDirectory = '/tmp/codex-cloud-wsl-' + process.getuid() } = {}) {
+  let original = await readConfig(file, true), plan = planWSLConfig(original);
   if (!plan.changed || check) return { changed: false, needsConfiguration: plan.changed };
-  const backup = file + '.codex-cloud.before-loopback', temporary = file + '.codex-cloud.tmp';
-  // One fixed exclusive temporary file serializes writers; no backup history or queue.
-  const handle = await open(temporary, CREATE, 0o600);
+  const backup = file + '.codex-cloud.before-loopback', temporary = file + '.codex-cloud.tmp', backupNext = backup + '.next';
+  const lease = await configurationLease(leaseDirectory); let handle, saved;
+  const clean = () => { lease.check(); removeTemporary(temporary, file); removeTemporary(backupNext, backup); };
   try {
-    if (original !== null) {
-      let saved;
-      try {
-        saved = await open(backup, CREATE, 0o600);
-        await saved.writeFile(original); await saved.sync();
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        await readConfig(backup);
-      } finally { await saved?.close(); }
+    // Re-read under the lease; a previous updater may already have finished.
+    original = await readConfig(file, true); plan = planWSLConfig(original); lease.check();
+    clean();
+    if (!plan.changed) return { changed: false, needsConfiguration: false };
+    if (original !== null && await readConfig(backup, true) === null) {
+      saved = await open(backupNext, CREATE, 0o600);
+      await saved.writeFile(original); await saved.sync(); await saved.close(); saved = undefined;
+      commitConfig(backup, backupNext, null, lease.check);
     }
+    lease.check(); handle = await open(temporary, CREATE, 0o600);
     await handle.writeFile(plan.bytes); await handle.sync();
     await handle.close();
-    commitConfig(file, temporary, original);
+    commitConfig(file, temporary, original, lease.check);
     return { changed: true, needsConfiguration: false, backup: original === null ? null : backup };
-  } finally { await handle.close().catch(() => {}); await unlink(temporary).catch(() => {}); }
+  } finally {
+    await saved?.close().catch(() => {}); await handle?.close().catch(() => {});
+    let owned = false; try { lease.check(); owned = true; } catch {}
+    try { if (owned) clean(); } finally { await lease.release(); }
+  }
 }
 
 async function execute(command, args) {
@@ -121,7 +148,7 @@ async function execute(command, args) {
   } catch { return { status: 1, stdout: '' }; }
 }
 
-export async function configureWSLNetwork({ check = false, kernel = release(), run = execute, log = console.log } = {}) {
+export async function configureWSLNetwork({ check = false, kernel = release(), run = execute, log = console.log, leaseDirectory } = {}) {
   if (!/microsoft|wsl/i.test(kernel)) return { status: 'not-wsl' };
   async function first(commands, args) {
     for (const command of commands) {
@@ -140,7 +167,7 @@ export async function configureWSLNetwork({ check = false, kernel = release(), r
   const translated = await run('wslpath', ['-u', windowsProfile]);
   const profile = translated.stdout?.trim();
   if (translated.status !== 0 || !profile || !isAbsolute(profile) || profile.length > 4096 || /[\r\n\0]/.test(profile)) throw Error('无法转换 Windows 用户目录；请检查 wslpath，或使用 --skip-wsl-network');
-  const file = join(profile, '.wslconfig'), result = await updateWSLConfig(file, { check });
+  const file = join(profile, '.wslconfig'), result = await updateWSLConfig(file, { check, leaseDirectory });
   if (result.needsConfiguration) log(`WSL 镜像网络缺少 hostAddressLoopback=true：${file}；正常部署会自动配置并保留一份原文件备份。`);
   else if (result.changed) {
     log(`已自动配置 WSL 镜像网络 hostAddressLoopback=true：${file}${result.backup ? `；原文件备份：${result.backup}` : ''}`);
