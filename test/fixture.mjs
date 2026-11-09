@@ -15,7 +15,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -245,7 +245,10 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
           })();
         }
       });
-      setTimeout(() => { emit({ type: 'ready' }); emit({ type: 'geometry', maxCols: terminalMaxCols }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); }, 10);
+      setTimeout(() => {
+        const ready = () => { emit({ type: 'ready' }); emit({ type: 'geometry', maxCols: terminalMaxCols }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); };
+        if (terminalReadyHook) void Promise.resolve().then(() => terminalReadyHook(target)).then(ready, () => child.kill()); else ready();
+      }, 10);
       return child;
     },
   };

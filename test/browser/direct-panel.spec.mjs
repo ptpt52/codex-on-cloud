@@ -98,6 +98,29 @@ test('a direct terminal keeps its controls and switches targets on the same peer
   } finally { await app.close(); }
 });
 
+for (const direct of [false, true]) test(`a ${direct ? 'direct' : 'relay'} target attachment pauses status polling and resumes it on the retained route`, async ({ page }) => {
+  let release; const hold = new Promise(resolve => { release = resolve; });
+  const app = await fixture({ rfb: true, webrtc: direct, fastConnect: true, seamless: true, terminalReadyHook: target => target.terminalId === 'aux1' ? hold : undefined });
+  let attaching = false, stateRequests = 0; const unexpected = [];
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '第二终端', view: 'terminal' });
+    await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true })));
+    await page.route('**/api/state', route => { if (attaching) { unexpected.push('/api/state'); return route.abort(); } stateRequests++; return route.continue(); });
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    if (direct) await expect(page.locator('#diag-panel')).toContainText('加密直连', { timeout: 12000 });
+    const source = await page.locator('#desktop-frame').getAttribute('src'), frame = page.frames().find(f => f.url().includes('/terminal/index.html'));
+    await select(page, 'aux1'); await expect(frame.locator('#terminal-status')).toContainText('正在附加');
+    attaching = true; await page.evaluate(() => window.dispatchEvent(new Event('online'))); await page.waitForTimeout(250);
+    expect(unexpected).toEqual([]); const previous = stateRequests; attaching = false; release();
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    if (direct) { await expect(page.locator('#diag-panel')).toContainText('加密直连'); expect(stateRequests).toBe(previous); }
+    else await expect.poll(() => stateRequests, { timeout: 2500 }).toBeGreaterThan(previous);
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source); expect(app.terminalConnections).toBe(2);
+    expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { release(); await app.close(); }
+});
+
 test('a direct desktop keeps read status and separate input control when HTTPS polling is unavailable', async ({ page }) => {
   const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
   try {

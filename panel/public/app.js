@@ -721,6 +721,9 @@ function resetPanelRequests() {
 }
 async function switchTerminalStream(identity) {
   const expectedFrame = frameEpoch, generation = uiGeneration;
+  // Attaching temporarily hides the retained route's read capability. Do not
+  // introduce an HTTPS dependency while that same connection is still alive.
+  stopPolling();
   historyToolsPortal.reset(); terminalBusy = terminalSwitching = true; shortcutMenu.close(); renderConnection();
   try {
     const target = await framePanelRequest('switch-terminal', { terminalId: identity.id, terminalToken: identity.token });
@@ -735,7 +738,7 @@ async function switchTerminalStream(identity) {
     if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
     if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }
     toast(error.message, error.code !== 'terminal_switch_busy' || error.outcome !== 'rejected');
-  } finally { if (generation === uiGeneration) { terminalBusy = terminalSwitching = false; renderConnection(); if (panelReady && !pollController) { stopPolling(); void poll(); } } }
+  } finally { if (generation === uiGeneration) { terminalBusy = terminalSwitching = false; renderConnection(); if (loggedIn && !accessExpired && !pollController) { stopPolling(); void poll(); } } }
 }
 function overlay(title, description, takeover = false) {
   $('overlay-title').textContent = title;
@@ -957,7 +960,7 @@ function openFrame() {
   renderConnection();
 }
 async function poll() {
-  if (!loggedIn || accessExpired || pollController) return;
+  if (!loggedIn || accessExpired || pollController || terminalSwitching) return;
   const controller = new AbortController();
   pollController = controller;
   const direct = panelReady && frameState === 'connected';
