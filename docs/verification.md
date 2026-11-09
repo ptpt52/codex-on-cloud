@@ -1003,3 +1003,11 @@ WSL更新在私有Linux目录持有单个固定租约，更新前重新读取，
 远端检查明确区分运行：`6830fa2`曾七项全成功；后续文档提交`d2c8ce1`的WebKit实际有一项失败，本轮从该日志定位并修复，不能沿用前次成功状态。基线`36cae6f`的[Actions](https://github.com/ptpt52/codex-on-cloud/actions/runs/42541394762)在本轮最终推送前，backend、native、terminal、portal及Firefox已成功，Chromium完整回归与WebKit仍在执行。补修与审核文档的新推送会依照并发策略替代旧运行，最终远端结果应查看[当前工作流](https://github.com/ptpt52/codex-on-cloud/actions/workflows/check.yml)，不从本地通过推断新提交的七项已全部成功。
 
 全仓库复核未复现P0/P1，仍确认一项部署恢复P2：父部署被SIGKILL后，旧安装子进程可在新租约下继续修改临时产物。真实默认部署执行器配合固定systemctl/npm替身在隔离目录复现，Linux subreaper回收测试后代；未操作生产unit、安装依赖或修改真实Cloudflare入口。待修复位置和建议见[审核报告](code-review.md#2026-11-09再次推送重载后的全仓库审核36cae6f)。Chromium兼容及完整回归共用35分钟期限仍是单独的CI改进建议。
+
+## 2026-11-09：映射助手 WebSocket 错误隔离
+
+基线为 `72955df`。修复反向 TCP／串口助手首次确认及反向恢复握手期间的未捕获 WebSocket 错误；普通正向连接原先已有心跳错误监听，初步审核范围在复核后缩小。六项独立 Node 子进程回归在旧实现全部以未捕获的非法帧／超限消息错误退出；修复后全部通过，保留另一条实际 TCP 流及原有恢复预算，不向桌面或终端发送输入。认证、桌面、PTY 和管理上游使用 fixture，不代表串口硬件或实际 Codex 部署验收。
+
+301 项脚本语法和 24 项 Python 通过。当前任务进程的网络限制导致网卡枚举错误 97，上一轮默认 Node 测试为 404/415 通过；本轮在独立、限时的 systemd 测试单元验证宿主网络，未修改生产配置。并行 `npm test` 为 420/421 通过，失败项为文件直连协商 HTTP 502；该文件的五项单独复测通过，随后完整 `node --test --test-concurrency=1 test/*.test.mjs` 的 421 项全部通过，未把首次失败记成全量成功。
+
+`npm run test:browser` 的正向、反向设备及串口映射在 Chromium 手机／电脑布局共 36 项全部通过；使用已有系统 Chrome，WebSocket/TCP 为实际隔离连接，RFB／PTY／管理执行器为 fixture。仅修改映射控制连接建立时的错误监听，没有修改前端或 Go 助手，未重复全量浏览器、跨平台构建和原生桌面检查。上线结果在完成实际重载和核对后另行记录。

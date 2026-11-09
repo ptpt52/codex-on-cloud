@@ -158,6 +158,10 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function sendConfig(item) { send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', hints: item.hints }); }
   function control(item, ws, resume = false, capable = false) {
+    // Reverse helpers wait for local consent before heartbeats are installed.
+    // Handle receiver errors from the first frame, including resume handshakes;
+    // close still owns the existing removal/recovery and stream cleanup rules.
+    ws.on('error', () => ws.terminate());
     clearTimeout(item.timer);
     item.activating = false;
     item.control = ws; item.generation = (item.generation || 0) + 1;
