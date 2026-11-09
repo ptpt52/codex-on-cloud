@@ -45,7 +45,7 @@
           <div id="terminal-session-bar" class="terminal-session-bar" hidden>
             <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端会话"></div>
             <button id="terminal-session-button" class="view-button terminal-session-button" type="button" aria-haspopup="dialog" aria-controls="terminal-switch-dialog">选择终端 ▾</button>
-            <button id="terminal-session-close" class="terminal-tab-close terminal-session-close" type="button" aria-label="结束当前终端" title="结束当前终端" hidden>×</button>
+            <button id="terminal-session-actions" class="terminal-tab-actions terminal-session-actions" type="button" aria-label="当前终端操作" title="当前终端操作" aria-haspopup="dialog" aria-controls="terminal-action-menu" hidden>⋯</button>
           </div>
           <span class="monitor-icon" aria-hidden="true">▣</span><strong id="view-title">开发桌面</strong><span id="connection-status" class="connection-status" role="status"><i></i>连接中</span>
         </div>
@@ -142,10 +142,27 @@
 
   <dialog id="terminal-switch-dialog" class="files-dialog terminal-switch-dialog" aria-labelledby="terminal-switch-title">
     <div class="dialog-heading"><h2 id="terminal-switch-title">选择终端</h2><button id="close-terminal-switch" class="quiet" type="button" aria-label="关闭会话列表">✕</button></div>
-    <p class="muted">点击终端切换，“×”确认后结束；末尾“新开终端”创建 shell。其他任务继续运行，草稿分别保留。</p>
+    <p class="muted">点击终端切换；“⋯”可重命名或结束终端。末尾“新开终端”创建 shell，草稿分别保留。</p>
     <div id="terminal-switch-list" class="terminal-switch-list"></div>
     <p id="terminal-switch-status" class="muted" role="status"></p>
     <div class="clipboard-actions"><button id="terminal-switch-refresh" class="secondary" type="button">刷新列表</button><button id="terminal-switch-manage" class="secondary" type="button">管理终端</button></div>
+  </dialog>
+  <dialog id="terminal-action-menu" class="files-dialog terminal-action-menu" aria-labelledby="terminal-action-title">
+    <div class="dialog-heading"><h2 id="terminal-action-title">终端操作</h2><button id="terminal-action-dismiss" class="quiet" type="button" aria-label="关闭终端操作">✕</button></div>
+    <div class="terminal-action-options">
+      <button id="terminal-action-rename" class="secondary" type="button" autofocus>重命名</button>
+      <button id="terminal-action-end" class="secondary danger" type="button">结束终端</button>
+    </div>
+  </dialog>
+  <dialog id="terminal-rename-dialog" class="files-dialog terminal-rename-dialog" aria-labelledby="terminal-rename-title" aria-describedby="terminal-rename-help">
+    <h2 id="terminal-rename-title">重命名终端</h2>
+    <form id="terminal-rename-form">
+      <label for="terminal-rename-name">终端名称</label>
+      <input id="terminal-rename-name" name="name" maxlength="48" autocomplete="off" required aria-describedby="terminal-rename-help terminal-rename-status">
+      <p id="terminal-rename-help" class="muted">1–24 个字符，修改后自动同步到终端标签和列表。</p>
+      <p id="terminal-rename-status" class="muted" role="status"></p>
+      <div class="confirmation-actions"><button id="terminal-rename-cancel" class="secondary" type="button">取消</button><button id="terminal-rename-save" class="primary" type="submit">保存</button></div>
+    </form>
   </dialog>
   <dialog id="terminals-dialog" class="files-dialog terminals-dialog" aria-labelledby="terminals-title">
     <div class="dialog-heading"><h2 id="terminals-title">终端管理</h2><button id="close-terminals" class="quiet" aria-label="关闭终端管理">✕</button></div>

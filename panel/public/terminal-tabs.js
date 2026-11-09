@@ -1,4 +1,4 @@
-export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialog, list, choose, closeTerminal, manage, changed }) {
+export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dialog, list, choose, openActions, manage, changed }) {
   let signature = '', currentTerminal;
   let layoutFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl;
   const compact = matchMedia('(max-width: 1000px)');
@@ -55,7 +55,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
         if (!shown(target)) {
           const active = buttons.find(button => shown(button) && button.getAttribute('aria-selected') === 'true');
           target = compact.matches || tabs.contains(focused) ? mobileButton
-            : focused === mobileClose ? active?.nextElementSibling : active || first;
+            : focused === mobileActions ? active?.nextElementSibling : active || first;
           if (!shown(target)) target = shown(mobileButton) ? mobileButton : first;
         }
         if (target && !target.disabled && document.activeElement !== target) target.focus({ preventScroll: true });
@@ -83,9 +83,9 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     const current = catalog.find(item => item.id === selected);
     scheduleLayout();
     currentTerminal = !invalid && current?.supported && !current.available ? current : null;
-    mobileClose.hidden = !currentTerminal;
-    mobileClose.disabled = disabled || !currentTerminal;
-    mobileClose.title = mobileClose.ariaLabel = currentTerminal ? `结束 ${currentTerminal.name}` : '结束当前终端';
+    mobileActions.hidden = !currentTerminal;
+    mobileActions.disabled = disabled || !currentTerminal;
+    mobileActions.title = mobileActions.ariaLabel = currentTerminal ? `操作 ${currentTerminal.name}` : '当前终端操作';
     bar.dataset.closable = String(!!currentTerminal);
     fullLabel = invalid ? '原终端已失效 · 选择终端' : loading ? '正在核对终端…' : current?.name || '选择终端';
     shortLabel = invalid ? '选择终端' : loading ? '核对中…' : current?.id === 'main' && current.name === 'Codex 主终端' ? '主终端' : fullLabel;
@@ -94,7 +94,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     if (signature === next) return;
     signature = next;
     const focused = tabs.contains(document.activeElement) ? document.activeElement : null;
-    const focusedId = focused?.dataset.terminalChoice, focusedClose = focused?.dataset.terminalClose;
+    const focusedId = focused?.dataset.terminalChoice, focusedActions = focused?.dataset.terminalActions;
     tabs.replaceChildren(); list.replaceChildren();
     for (const terminal of catalog) {
       const active = terminal.id === selected && !invalid;
@@ -114,20 +114,28 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
         button.addEventListener('click', () => { if (choose(terminal.id)) dialog.close(); });
         row.append(button);
         if (!terminal.available) {
-          // Sibling buttons: closing a tab never activates its terminal or
-          // bubbles through a nested interactive element.
-          const close = document.createElement('button'); close.type = 'button'; close.className = 'terminal-tab-close';
-          close.dataset.terminalClose = terminal.id; close.textContent = '×'; close.title = `结束 ${terminal.name}`;
-          close.setAttribute('aria-label', close.title); close.disabled = disabled || !terminal.supported;
-          close.addEventListener('click', event => { event.stopPropagation(); closeTerminal(terminal); });
-          row.append(close);
+          const actions = document.createElement('button'); actions.type = 'button'; actions.className = 'terminal-tab-actions';
+          actions.dataset.terminalActions = terminal.id; actions.textContent = '⋯'; actions.title = `操作 ${terminal.name}`;
+          actions.setAttribute('aria-label', actions.title); actions.setAttribute('aria-haspopup', 'dialog'); actions.setAttribute('aria-controls', 'terminal-action-menu');
+          actions.disabled = disabled || !terminal.supported;
+          actions.addEventListener('click', event => { event.stopPropagation(); if (!actions.disabled) openActions(terminal, actions); });
+          row.addEventListener('contextmenu', event => {
+            if (actions.disabled || event.pointerType === 'touch') return;
+            event.preventDefault(); openActions(terminal, actions);
+          });
+          row.addEventListener('keydown', event => {
+            if (!actions.disabled && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) {
+              event.preventDefault(); event.stopPropagation(); openActions(terminal, actions);
+            }
+          });
+          row.append(actions);
         }
         parent.append(row);
       }
     }
     if (!tabs.querySelector('[tabindex="0"]')) tabs.querySelector('button:not(:disabled)')?.setAttribute('tabindex', '0');
-    if (focusedId || focusedClose) {
-      const replacement = [...tabs.querySelectorAll('button')].find(button => focusedId ? button.dataset.terminalChoice === focusedId : button.dataset.terminalClose === focusedClose);
+    if (focusedId || focusedActions) {
+      const replacement = [...tabs.querySelectorAll('button')].find(button => focusedId ? button.dataset.terminalChoice === focusedId : button.dataset.terminalActions === focusedActions);
       if (replacement && !replacement.disabled && replacement.getClientRects().length) replacement.focus({ preventScroll: true });
     }
   }
@@ -145,8 +153,115 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     pickerDialog = false; dialogMode = 'all'; filterList();
     if (!shown(mobileButton) && document.activeElement === document.body) tabs.querySelector('[tabindex="0"]')?.focus({ preventScroll: true });
   });
-  mobileClose.addEventListener('click', () => { if (currentTerminal) closeTerminal(currentTerminal); });
+  mobileActions.addEventListener('click', () => { if (currentTerminal && !mobileActions.disabled) openActions(currentTerminal, mobileActions); });
   document.getElementById('close-terminal-switch').addEventListener('click', () => dialog.close());
   document.getElementById('terminal-switch-manage').addEventListener('click', () => { dialog.close(); manage(); });
   return { render };
+}
+
+export function createTerminalActions({ renameTerminal, closeTerminal, changed }) {
+  const $ = id => document.getElementById(id);
+  const menu = $('terminal-action-menu'), rename = $('terminal-rename-dialog'), field = $('terminal-rename-name');
+  const status = $('terminal-rename-status'), save = $('terminal-rename-save'), cancel = $('terminal-rename-cancel');
+  let catalog = [], disabled = true, visible = false, menuTarget, renameTarget, invoker;
+  let saving = false, composing = false, uncertain = false, failure = '', generation = 0;
+  const shown = element => !!element?.getClientRects().length;
+  const current = target => target && catalog.find(item => item.id === target.id && item.token === target.token && item.supported && !item.available);
+  function restore(target) {
+    if (document.querySelector('dialog[open]:not(#terminal-switch-dialog)')) return;
+    const replacement = [...document.querySelectorAll('[data-terminal-actions]')].find(button => button.dataset.terminalActions === target?.id && shown(button) && !button.disabled);
+    const picker = $('terminal-session-button');
+    const button = invoker?.isConnected && shown(invoker) && !invoker.disabled ? invoker : replacement || (shown(picker) && !picker.disabled ? picker : null);
+    button?.focus({ preventScroll: true });
+  }
+  function updateRename() {
+    const value = field.value.trim();
+    const invalidName = !value ? '名称不能为空。' : [...value].length > 24 || /[\x00-\x1f\x7f]/.test(value) ? '名称需为 1–24 个字符，不含控制字符。' : '';
+    field.disabled = cancel.disabled = saving;
+    save.disabled = saving || composing || disabled || uncertain || !current(renameTarget) || !!invalidName;
+    if (!saving) status.textContent = uncertain ? failure : !current(renameTarget) ? '终端已变化，请取消后重新选择。' : failure || invalidName || (disabled ? '当前暂时无法修改，请检查连接后手动保存。' : '');
+  }
+  function close() { if (menu.open) menu.close(); if (rename.open) rename.close(); }
+  function open(target, anchor) {
+    const terminal = current(target);
+    if (disabled || !visible || !terminal || rename.open) return;
+    menuTarget = { ...terminal }; invoker = anchor;
+    $('terminal-action-title').textContent = terminal.name;
+    const box = anchor.getBoundingClientRect(), view = window.visualViewport;
+    const left = (view?.offsetLeft || 0) + 8, top = (view?.offsetTop || 0) + 8;
+    const width = (view?.width || innerWidth) - 16, height = (view?.height || innerHeight) - 16;
+    menu.style.width = `${Math.min(280, width)}px`; menu.style.maxHeight = `${height}px`;
+    if (!menu.open) menu.showModal();
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(left, Math.min(box.right - rect.width, left + width - rect.width))}px`;
+    menu.style.top = `${Math.max(top, Math.min(box.bottom + 6, top + height - rect.height))}px`;
+    $('terminal-action-rename').focus({ preventScroll: true }); changed();
+  }
+  $('terminal-action-dismiss').addEventListener('click', () => menu.close());
+  menu.addEventListener('click', event => {
+    const box = menu.getBoundingClientRect();
+    if (event.target === menu && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom)) menu.close();
+  });
+  menu.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const buttons = [$('terminal-action-rename'), $('terminal-action-end')];
+    const index = buttons.indexOf(document.activeElement);
+    buttons[event.key === 'Home' ? 0 : event.key === 'End' ? 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + 2) % 2].focus();
+  });
+  menu.addEventListener('close', () => { if (!menu.open) { const target = menuTarget; menuTarget = null; restore(target); } changed(); });
+  $('terminal-action-end').addEventListener('click', () => {
+    const target = current(menuTarget);
+    if (disabled || !target) return;
+    menu.close(); closeTerminal(target);
+  });
+  $('terminal-action-rename').addEventListener('click', () => {
+    const target = current(menuTarget);
+    if (disabled || !target) return;
+    renameTarget = { ...target }; saving = composing = uncertain = false; failure = ''; generation++;
+    menu.close(); $('terminal-switch-dialog').close();
+    field.value = target.name; status.textContent = ''; updateRename();
+    rename.showModal(); field.focus({ preventScroll: true }); field.select(); changed();
+  });
+  field.addEventListener('input', () => { if (!uncertain) failure = ''; updateRename(); });
+  field.addEventListener('compositionstart', () => { composing = true; updateRename(); });
+  field.addEventListener('compositionend', () => { composing = false; updateRename(); });
+  rename.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.key === 'Enter' && (event.isComposing || composing || event.keyCode === 229)) event.preventDefault();
+  });
+  rename.addEventListener('cancel', event => { if (saving || composing) event.preventDefault(); });
+  cancel.addEventListener('click', () => { if (!saving) rename.close(); });
+  rename.addEventListener('close', () => {
+    if (!rename.open) { const target = renameTarget; renameTarget = null; generation++; saving = composing = uncertain = false; restore(target); }
+    changed();
+  });
+  $('terminal-rename-form').addEventListener('submit', async event => {
+    event.preventDefault(); updateRename();
+    if (save.disabled) return;
+    const target = current(renameTarget), value = field.value.trim();
+    if (value === target.name) { rename.close(); return; }
+    const serial = ++generation;
+    saving = true; updateRename(); status.textContent = '正在保存…';
+    let result;
+    try { result = await renameTerminal(target, value); }
+    catch { result = { ok: false, outcome: 'unknown', message: '保存结果未知，请到终端管理刷新列表确认；不会自动重试。' }; }
+    if (serial !== generation || !rename.open) return;
+    saving = false;
+    if (result?.ok) { rename.close(); return; }
+    uncertain = result?.outcome === 'unknown';
+    failure = result?.message || '当前无法修改，请检查连接后重新操作。'; updateRename();
+  });
+  window.addEventListener('resize', () => { if (menu.open) menu.close(); });
+  return {
+    open, close,
+    get busy() { return menu.open || rename.open; },
+    render(entries, state) {
+      catalog = entries; disabled = state.disabled; visible = state.visible;
+      if (!visible) { close(); return; }
+      if (menu.open && (disabled || !current(menuTarget))) menu.close();
+      if (rename.open) updateRename();
+    },
+  };
 }

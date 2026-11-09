@@ -23,13 +23,14 @@ async function manager(page) { await openTools(page); await page.locator('#termi
 const endButton = (page, id) => page.locator(`[data-terminal="${id}"] .terminal-close`);
 async function quickClose(page, id) {
   await closePanels(page);
-  const tabClose = page.locator(`#terminal-tabs [data-terminal-close="${id}"]`);
+  const tabClose = page.locator(`#terminal-tabs [data-terminal-actions="${id}"]`);
   if (await tabClose.isVisible()) await tabClose.click();
-  else if (await page.locator('#terminal-session-close').isVisible() && await page.locator('#input-terminal').inputValue() === id) await page.locator('#terminal-session-close').click();
+  else if (await page.locator('#terminal-session-actions').isVisible() && await page.locator('#input-terminal').inputValue() === id) await page.locator('#terminal-session-actions').click();
   else {
     await page.locator('#terminal-session-button').click();
-    await page.locator(`#terminal-switch-list [data-terminal-close="${id}"]`).click();
+    await page.locator(`#terminal-switch-list [data-terminal-actions="${id}"]`).click();
   }
+  await page.locator('#terminal-action-end').click();
   await expect(page.locator('#cancel-confirmation')).toBeFocused();
 }
 async function placeholder(page, ids) {
@@ -37,7 +38,7 @@ async function placeholder(page, ids) {
     await expect(page.locator(`${parent} [data-terminal-choice][data-available=true]`)).toHaveCount(1);
     expect(await page.locator(`${parent} [data-terminal-choice]`).evaluateAll(buttons => buttons.map(button => button.dataset.terminalChoice))).toEqual([...ids, 'new']);
     await expect(page.locator(`${parent} > :last-child [data-terminal-choice]`)).toHaveAttribute('data-terminal-choice', 'new');
-    await expect(page.locator(`${parent} > :last-child [data-terminal-close]`)).toHaveCount(0);
+    await expect(page.locator(`${parent} > :last-child [data-terminal-actions]`)).toHaveCount(0);
   }
 }
 
@@ -181,12 +182,12 @@ test('terminal composition disables quick close and ending composition never que
   try {
     const original = await app.controls.listTerminals(), field = page.frameLocator('#desktop-frame').locator('.xterm-helper-textarea');
     await field.dispatchEvent('compositionstart', { data: '中' });
-    await expect(page.locator('#terminal-tabs [data-terminal-close=main]')).toBeDisabled();
-    await expect(page.locator('#terminal-session-close')).toBeDisabled();
-    await page.locator('#terminal-tabs [data-terminal-close=main]').dispatchEvent('click');
+    await expect(page.locator('#terminal-tabs [data-terminal-actions=main]')).toBeDisabled();
+    await expect(page.locator('#terminal-session-actions')).toBeDisabled();
+    await page.locator('#terminal-tabs [data-terminal-actions=main]').dispatchEvent('click');
     await expect(page.locator('#action-confirmation')).toBeHidden();
     await field.dispatchEvent('compositionend', { data: '中' });
-    await expect(page.locator('#terminal-tabs [data-terminal-close=main]')).toBeEnabled();
+    await expect(page.locator('#terminal-tabs [data-terminal-actions=main]')).toBeEnabled();
     await expect(page.locator('#action-confirmation')).toBeHidden(); expect(await app.controls.listTerminals()).toEqual(original);
     await quickClose(page, 'main'); await page.locator('#cancel-confirmation').click();
     expect(await app.controls.listTerminals()).toEqual(original); expect(app.terminalInputs).toEqual([]);

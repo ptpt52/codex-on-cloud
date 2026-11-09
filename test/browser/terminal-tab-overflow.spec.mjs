@@ -48,7 +48,7 @@ test('desktop keeps the tabs that fit and lists only the remaining entries in Mo
       await expect.poll(() => page.locator('#terminal-tabs [data-terminal-choice], #terminal-switch-list [data-terminal-choice]').evaluateAll(buttons =>
         buttons.filter(button => button.getClientRects().length).map(button => button.dataset.terminalChoice))).toEqual(ids);
       await expect(list(page).locator('[data-terminal-choice=main]')).toBeHidden();
-      await expect(list(page).locator('[data-terminal-close=aux7]')).toBeVisible();
+      await expect(list(page).locator('[data-terminal-actions=aux7]')).toBeVisible();
       await expect(list(page).locator('[data-terminal-choice=new]')).toBeDisabled();
       await page.locator('#close-terminal-switch').click(); await expect(picker(page)).toBeFocused();
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
@@ -87,18 +87,20 @@ test('new and close actions remain reachable through partial desktop overflow as
     }
     await picker(page).click(); await expect(list(page).locator('[data-terminal-choice][data-available=true]:visible')).toHaveCount(1);
     await expect(list(page).locator('[data-terminal-choice=new]')).toBeDisabled();
-    await list(page).locator('[data-terminal-close=aux7]').click();
+    await list(page).locator('[data-terminal-actions=aux7]').click();
+    await page.locator('#terminal-action-end').click();
     await expect(page.locator('#cancel-confirmation')).toBeFocused(); await page.locator('#cancel-confirmation').click();
     expect((await app.controls.listTerminals()).terminals).toHaveLength(8);
     await picker(page).click();
-    await list(page).locator('[data-terminal-close=aux7]').click(); await page.locator('#accept-confirmation').click();
+    await list(page).locator('[data-terminal-actions=aux7]').click(); await page.locator('#terminal-action-end').click(); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#input-terminal')).toHaveValue('new'); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
     await expect(list(page).locator('[data-terminal-choice=aux7]')).toHaveCount(0);
     await picker(page).click();
     await list(page).locator('[data-terminal-choice=new]').click(); await expect(page.locator('#connection-status')).toContainText('终端在线');
     await expect(page.locator('#input-terminal')).toHaveValue('aux7');
     expect((await app.controls.listTerminals()).terminals).toHaveLength(8);
-    await page.locator('#terminal-tabs [data-terminal-close=main]').click();
+    await page.locator('#terminal-tabs [data-terminal-actions=main]').click();
+    await page.locator('#terminal-action-end').click();
     await expect(page.locator('#cancel-confirmation')).toBeFocused(); await page.locator('#cancel-confirmation').click();
     expect((await app.controls.listTerminals()).terminals).toHaveLength(8);
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
@@ -122,8 +124,8 @@ test('an open terminal list adapts between partial desktop overflow and the full
     await expect(tab(page, 'main')).toBeFocused();
     await page.setViewportSize({ width: 320, height: 800 }); await picker(page).click();
     expect(await visibleChoices(list(page))).toEqual(ids); await page.locator('#close-terminal-switch').click();
-    await page.locator('#terminal-session-close').focus(); await page.setViewportSize({ width: 1920, height: 900 });
-    await expect(page.locator('#terminal-tabs [data-terminal-close=main]')).toBeFocused();
+    await page.locator('#terminal-session-actions').focus(); await page.setViewportSize({ width: 1920, height: 900 });
+    await expect(page.locator('#terminal-tabs [data-terminal-actions=main]')).toBeFocused();
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });

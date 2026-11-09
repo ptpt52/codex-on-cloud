@@ -24,8 +24,9 @@ async function setup(page) {
   return app;
 }
 async function closeCurrent(page) {
-  if (await page.locator('#terminal-session-button').isVisible()) await page.locator('#terminal-session-close').click();
-  else await page.locator('#terminal-tabs [data-terminal-close=main]').click();
+  if (await page.locator('#terminal-session-button').isVisible()) await page.locator('#terminal-session-actions').click();
+  else await page.locator('#terminal-tabs [data-terminal-actions=main]').click();
+  await page.locator('#terminal-action-end').click();
   await page.locator('#accept-confirmation').click();
 }
 async function chooseMain(page) {

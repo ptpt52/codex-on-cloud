@@ -120,7 +120,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
       return { actual: size, maximum };
     },
   } : undefined;
-  let panePid = 4000, paneCommand = 'codex', terminalVisible = true, terminalChild, mainAlive = true, keeper = false;
+  let panePid = 4000, paneCommand = 'codex', mainName = '', terminalVisible = true, terminalChild, mainAlive = true, keeper = false;
   const auxiliary = new Map(); let activeWindow = '999', nextAuxPid = 4100;
   const controls = createDesktopControls({ root: directory, maxTerminals, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
@@ -179,18 +179,18 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
       }
       if (command === 'tmux' && args.includes('new-session')) {
         const session = args[args.indexOf('-s') + 1];
-        if (session === 'codex') { mainAlive = true; panePid++; paneCommand = 'bash'; return ''; }
+        if (session === 'codex') { mainAlive = true; panePid++; paneCommand = 'bash'; mainName = ''; return ''; }
         const id = session.replace('codex-', ''); auxiliary.set(id, { pid: nextAuxPid++, name: '', visible: false }); return '';
       }
       if (command === 'tmux' && args.includes('set-option')) {
         if (args.includes('history-limit')) return '';
         const id = args[args.indexOf('-t') + 1].replace('codex-', '');
-        if (id === 'codex') return '';
+        if (id === 'codex') { mainName = args.at(-1); return ''; }
         auxiliary.get(id).name = args.at(-1); return '';
       }
       if (command === 'tmux' && args.includes('list-clients')) return [terminalVisible ? '10999\t/dev/pts/0\tcodex' : '', ...[...auxiliary].filter(([, item]) => item.visible).map(([id]) => `${11000 + Number(id.slice(-1))}\t/dev/pts/${id.slice(-1)}\tcodex-${id}`)].filter(Boolean).join('\n');
       if (command === 'tmux' && args.includes('list-panes')) {
-        if (args.at(-1).includes('#{pane_id}')) return [mainAlive ? `codex\t%0\t${panePid}\t${paneCommand}\t0\t0\t` : '', ...[...auxiliary].map(([id, terminal]) => `codex-${id}\t%${id.slice(-1)}\t${terminal.pid}\tbash\t0\t0\t${terminal.name}`)].filter(Boolean).join('\n');
+        if (args.at(-1).includes('#{pane_id}')) return [mainAlive ? `codex\t%0\t${panePid}\t${paneCommand}\t0\t0\t${mainName}` : '', ...[...auxiliary].map(([id, terminal]) => `codex-${id}\t%${id.slice(-1)}\t${terminal.pid}\tbash\t0\t0\t${terminal.name}`)].filter(Boolean).join('\n');
         return args.at(-1) === '#{pane_pid}' ? [mainAlive ? panePid : '', ...[...auxiliary.values()].map(item => item.pid), keeper ? 4999 : ''].filter(Boolean).join('\n') : [mainAlive ? `codex:0.0\t${panePid}\t${paneCommand}\t/test-workspace` : '', ...[...auxiliary].map(([id, terminal]) => `codex-${id}:0.0\t${terminal.pid}\tbash\t/test-workspace`), keeper ? 'codex-host:0.0\t4999\tsleep\t/test-workspace' : ''].filter(Boolean).join('\n');
       }
       throw new Error('Unexpected mock desktop command');

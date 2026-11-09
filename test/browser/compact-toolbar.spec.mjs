@@ -16,7 +16,7 @@ test('narrow toolbar preserves a usable terminal picker and quick close in one r
     await login(page, app);
     for (const width of [320, 360, 390, 420]) {
       await page.setViewportSize({ width, height: 844 });
-      const picker = page.locator('#terminal-session-button'), close = page.locator('#terminal-session-close');
+      const picker = page.locator('#terminal-session-button'), close = page.locator('#terminal-session-actions');
       await expect(picker).toHaveText('主终端 ▾'); await expect(picker).toHaveAccessibleName('Codex 主终端 ▾');
       const [pickBox, closeBox, toolbar] = await Promise.all([picker.boundingBox(), close.boundingBox(), page.locator('.desktop-toolbar').boundingBox()]);
       expect(pickBox.width).toBeGreaterThanOrEqual(72); expect(pickBox.height).toBeGreaterThanOrEqual(44);

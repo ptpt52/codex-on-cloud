@@ -49,7 +49,7 @@ test('single-terminal mode keeps quick close and one final disabled create entry
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await page.locator('#terminal-mode').click(); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#terminal-session-bar')).toBeVisible();
-    await expect(page.locator('#terminal-tabs [data-terminal-close=main]')).toHaveCount(1);
+    await expect(page.locator('#terminal-tabs [data-terminal-actions=main]')).toHaveCount(1);
     await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toBeDisabled();
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }

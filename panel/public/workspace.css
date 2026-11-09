@@ -30,9 +30,9 @@
 .terminal-tabs .terminal-tab { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 .terminal-tab-item[data-available=true] { flex: 0 0 auto; min-width: 112px; }
 .terminal-tab-item[data-available=false] .terminal-tab { border-right: 0; border-radius: 6px 0 0 6px; }
-.terminal-tab-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; min-height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 0 6px 6px 0; background: var(--surface); color: var(--muted); font-size: 20px; }
-.terminal-tab-close:hover { background: var(--danger-soft); color: var(--danger); }
-.terminal-session-close { display: none; }
+.terminal-tab-actions { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; min-height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 0 6px 6px 0; background: var(--surface); color: var(--muted); font-size: 20px; }
+.terminal-tab-actions:hover { background: var(--surface-hover); color: var(--ink); }
+.terminal-session-actions { display: none; }
 .terminal-tab[aria-selected=true] { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); }
 .terminal-session-button { display: none; align-items: center; flex: 1; min-width: 0; width: 100%; text-align: left; overflow: hidden; font-size: 13px; }
 .terminal-session-button > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -43,11 +43,24 @@
 .terminal-switch-list { display: grid; gap: 8px; margin: 14px 0; }
 .terminal-choice-row { display: flex; gap: 6px; min-width: 0; }
 .terminal-choice-row .terminal-choice { flex: 1; min-width: 0; }
-.terminal-choice-row .terminal-tab-close { width: 44px; border-radius: 9px; }
+.terminal-choice-row .terminal-tab-actions { width: 44px; border-radius: 9px; }
 .terminal-choice { min-height: 64px; width: 100%; padding: 10px 12px; text-align: left; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
 .terminal-choice small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .terminal-choice[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); }
 #terminal-switch-status { min-height: 1.7em; font-size: 12px; }
+.terminal-action-menu { position: fixed; margin: 0; width: min(280px, calc(100vw - 16px)); padding: 12px; }
+.terminal-action-menu .dialog-heading { gap: 8px; margin-bottom: 8px; }
+.terminal-action-menu h2 { min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
+.terminal-action-menu .dialog-heading button { flex: none; min-width: 44px; min-height: 44px; }
+.terminal-action-options { display: grid; gap: 6px; }
+.terminal-action-options button { min-height: 44px; text-align: left; }
+.terminal-action-options .danger { color: var(--danger); }
+.terminal-rename-dialog { max-height: calc(var(--workspace-visible-height, 100dvh) - 24px); overflow: auto; }
+#terminal-rename-form { display: grid; gap: 10px; }
+#terminal-rename-name { width: 100%; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 16px; }
+#terminal-rename-status { min-height: 1.7em; margin: 0; overflow-wrap: anywhere; }
+#terminal-rename-form .confirmation-actions { justify-content: flex-end; }
+#terminal-rename-form button { min-width: 72px; min-height: 44px; }
 #draft-status { color: var(--warning); }
 .workspace-panel {
   position: fixed;
@@ -114,7 +127,7 @@
   .terminal-tabs { display: none; }
   .terminal-session-button { display: flex; }
   .terminal-session-bar[data-closable=true] .terminal-session-button { border-radius: 6px 0 0 6px; border-right: 0; }
-  .terminal-session-close:not([hidden]) { display: inline-flex; width: 44px; }
+  .terminal-session-actions:not([hidden]) { display: inline-flex; width: 44px; }
 }
 @media (max-width: 700px) {
   /* Use the phone width while keeping the notch out of the viewing area. */
