@@ -12,7 +12,7 @@ export async function acquireFileLock(path, { legacy = false, commands = false, 
   if (active.has(path) || active.size >= 8) throw failure(true);
   active.add(path);
   let child;
-  const stdio = interactive ? ['pipe', 'pipe', 'pipe', 'inherit', 'inherit', 'inherit'] : ['pipe', 'pipe', 'pipe'];
+  const stdio = interactive ? ['pipe', 'pipe', 'pipe', 0, 1, 2] : ['pipe', 'pipe', 'pipe'];
   try { child = spawn('python3', ['-I', helper, path, ...(legacy ? ['legacy'] : []), ...(commands ? ['commands'] : []), ...(interactive ? ['interactive'] : [])], { stdio }); }
   catch { active.delete(path); throw failure(false); }
   let ended = false, identity, releasing, pending, sequence = 0, output = '', bytes = 0;
@@ -20,7 +20,12 @@ export async function acquireFileLock(path, { legacy = false, commands = false, 
   let readyResolve, readyReject;
   const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const deadline = setTimeout(() => { child.kill('SIGKILL'); readyReject(failure(false)); }, 2000);
-  const failed = () => { child.kill('SIGKILL'); readyReject(failure(false)); pending?.reject(failure(false)); pending = undefined; };
+  const failed = () => {
+    // Once it can own installers, EOF requests cleanup. Killing the supervisor
+    // itself would release its lease before those installers have exited.
+    if (interactive && identity) child.stdin.end(); else child.kill('SIGKILL');
+    readyReject(failure(false)); pending?.reject(failure(false)); pending = undefined;
+  };
   child.once('error', failed);
   child.stderr.on('data', chunk => { bytes += chunk.length; if (bytes > 1024) failed(); });
   child.stdout.on('data', chunk => {
@@ -52,7 +57,7 @@ export async function acquireFileLock(path, { legacy = false, commands = false, 
   }));
   const release = () => releasing ||= (async () => {
     child.stdin.end();
-    const timer = setTimeout(() => child.kill('SIGKILL'), 1500).unref();
+    const timer = interactive ? undefined : setTimeout(() => child.kill('SIGKILL'), 1500).unref();
     await closed; clearTimeout(timer);
   })();
   const check = () => {

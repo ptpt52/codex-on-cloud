@@ -6,6 +6,7 @@ import selectors
 import signal
 import subprocess
 import sys
+import termios
 import time
 
 WIRE = 131072
@@ -16,22 +17,25 @@ COMMANDS = {'sudo', 'npm', 'systemctl', 'apt-get', 'loginctl'}
 def child_pids():
     try:
         with open('/proc/self/task/%d/children' % os.getpid(), 'rb') as source:
-            return [int(value) for value in source.read(4097).split() if value.isdigit()]
+            data = source.read(4096)
+            # A bounded read can end in the middle of a PID. Never signal that
+            # partial number; remaining children are picked up in later passes.
+            fields = data.split() if not data or data[-1:].isspace() else data.split()[:-1]
+            return [int(value) for value in fields if value.isdigit()]
     except OSError:
         return []
 
 
 def reap(process):
-    if process is None:
-        return 137
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
+    if process is not None and process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
     # As a Linux child subreaper, separators and double-forked children become
     # our direct children. Kill and reap them before the caller can release the
     # lock, so a new deployment cannot overlap a surviving installer process.
@@ -40,18 +44,60 @@ def reap(process):
             try:
                 pid, _status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
-                return process.returncode if process.returncode is not None else 137
+                return process.returncode if process is not None and process.returncode is not None else 137
             if not pid:
                 break
         children = child_pids()
-        if not children:
-            return process.returncode if process.returncode is not None else 137
         for pid in children:
             try:
                 os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
+                # Elevated descendants may reject a user signal. Keep the
+                # lease until waitpid confirms their exit, never fail open.
                 pass
         time.sleep(0.01)
+
+
+def terminal_state():
+    try:
+        fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        foreground = os.tcgetpgrp(fd)
+        if foreground == os.getpgrp():
+            return fd, foreground, termios.tcgetattr(fd)
+    except OSError:
+        os.close(fd)
+        raise
+    os.close(fd)
+    return None
+
+
+def command_group():
+    # A separate group remains killable, while sharing the caller's session
+    # preserves /dev/tty. The parent hands it foreground ownership after spawn;
+    # an early terminal read may stop with SIGTTIN and is resumed after handoff.
+    os.setpgrp()
+    for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGTTOU):
+        signal.signal(name, signal.SIG_DFL)
+
+
+def restore_terminal(terminal, process, flush=False):
+    if terminal is None:
+        return
+    fd, foreground, attributes = terminal
+    try:
+        # A shell may have reclaimed the terminal after its deployment parent
+        # died. Never take it away from a different foreground job.
+        current = os.tcgetpgrp(fd)
+        if current == foreground or process is not None and current == process.pid:
+            os.tcsetpgrp(fd, foreground)
+            termios.tcsetattr(fd, termios.TCSAFLUSH if flush else termios.TCSANOW, attributes)
+    except OSError:
+        pass  # The caller's terminal may have hung up.
+    finally:
+        os.close(fd)
 
 
 def allowed(command):
@@ -91,15 +137,26 @@ def serve(_lock_fd):
     request = None
     deadline = 0
     count = 0
+    terminal = None
+    stopping = False
+
+    def stop(_signal, _frame):
+        nonlocal stopping
+        stopping = True
+
+    previous_signals = {name: signal.getsignal(name) for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGTTOU)}
+    for name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(name, stop)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
     try:
-        while True:
+        while not stopping:
             parent_closed = False
             for key, _events in selector.select(0.05):
                 chunk = os.read(0, WIRE + 1)
                 if not chunk:
                     parent_closed = True
                     break
-                if process is not None or buffer or count >= 32:
+                if process is not None or count >= 32:
                     raise ValueError('no command queue')
                 buffer += chunk
                 if len(buffer) > WIRE:
@@ -115,13 +172,23 @@ def serve(_lock_fd):
                 request = value
                 count += 1
                 try:
+                    terminal = terminal_state()
                     process = subprocess.Popen([request['command']] + request['args'], cwd=request['cwd'],
-                                               stdin=3, stdout=4, stderr=5, start_new_session=True)
+                                               stdin=3, stdout=4, stderr=5, start_new_session=terminal is None,
+                                               preexec_fn=command_group if terminal else None)
                 except OSError:
+                    restore_terminal(terminal, None)
+                    terminal = None
                     print(json.dumps({'id': request['id'], 'code': 127}), flush=True)
                     process = None
                     request = None
                     continue
+                if terminal:
+                    os.tcsetpgrp(terminal[0], process.pid)
+                    try:
+                        os.killpg(process.pid, signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
                 deadline = time.monotonic() + request['timeout'] / 1000
             if parent_closed:
                 return
@@ -131,16 +198,23 @@ def serve(_lock_fd):
             exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
             if not expired and not exited:
                 continue
-            code = 124 if expired else reap(process)
-            if not expired:
-                # reap() also removes descendants that outlived the command leader.
-                code = process.returncode if process.returncode is not None else code
+            # The response is a cleanup barrier on success AND timeout. Do not
+            # clear process before its group and adopted descendants are gone.
+            code = reap(process)
+            restore_terminal(terminal, process, flush=expired or code < 0)
+            terminal = None
+            code = 124 if expired else 128 - code if code < 0 else code
             print(json.dumps({'id': request['id'], 'code': code}), flush=True)
             process = None
             request = None
     finally:
-        reap(process)
-        selector.close()
+        try:
+            reap(process)
+        finally:
+            restore_terminal(terminal, process, flush=True)
+            selector.close()
+            for name, handler in previous_signals.items():
+                signal.signal(name, handler)
 
 
 if __name__ == '__main__':

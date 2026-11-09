@@ -55,6 +55,8 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 完整部署的变更命令由持有 `data/deploy.lock` 的监督 helper 启动，而不是由部署 Node 进程直接运行。部署父进程正常退出、被信号结束或崩溃时，helper 都会先终止并回收命令进程组、分离出的后代，再释放内核租约；新部署只能在其清理完成后取得锁。只读探测仍使用有界短命令，不占部署命令队列。
 
+监督 helper 的交互描述符明确映射维护进程的标准输入、输出和错误，与租约协议管道分开。有前台控制终端时，命令共享调用者的 session、使用独立进程组，执行期间取得终端前台，结束后恢复原前台和终端属性，使 sudo 能从 `/dev/tty` 读取密码且不回显；没有控制终端时继续使用独立 session。超时先回收全部子进程再返回 124，释放租约不会因固定的短期限而强杀正在清理的监督器；权限不足、暂时无法结束的后代退出前，租约继续保持。
+
 `PORT` 是面板底层兼容覆盖项，优先于 `PANEL_PORT`；普通部署统一使用 `PANEL_PORT`，避免同时配置。`PATH`、`HOME`、`XDG_RUNTIME_DIR` 等属于宿主运行环境，systemd unit 安装时会固定可执行路径；更换 Node 安装位置后需重新生成 unit。Node、Codex、cloudflared、前端库及端口映射助手版本分别由宿主工具、安装脚本和锁文件管理；旧 `.env` 的 `CODEX_VERSION` 不控制原生部署升级。
 
 ## 密钥、系统配置与持久化设置
