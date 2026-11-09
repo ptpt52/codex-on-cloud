@@ -14,7 +14,7 @@ async function setup(page, options = {}) {
 }
 async function choose(page, id) {
   await closePanels(page);
-  if (await page.locator('#terminal-session-button').isVisible()) {
+  if (!await page.locator(`#terminal-tabs [data-terminal-choice="${id}"]`).isVisible()) {
     await page.locator('#terminal-session-button').click();
     await page.locator(`#terminal-switch-list [data-terminal-choice="${id}"]`).click();
   } else await page.locator(`#terminal-tabs [data-terminal-choice="${id}"]`).click();

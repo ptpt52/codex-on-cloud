@@ -1,28 +1,81 @@
 export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialog, list, choose, closeTerminal, manage, changed }) {
   let signature = '', currentTerminal;
-  let layoutFrame = 0;
+  let layoutFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl;
+  const compact = matchMedia('(max-width: 1000px)');
+  const shown = element => !!element?.getClientRects().length;
+  document.addEventListener('focusin', event => { focusedControl = bar.contains(event.target) ? event.target : null; });
+  function filterList() {
+    const focused = list.contains(document.activeElement) ? document.activeElement : null;
+    [...list.children].forEach((row, index) => { row.hidden = dialogMode === 'overflow' && !tabs.children[index]?.hidden; });
+    document.getElementById('terminal-switch-title').textContent = dialogMode === 'overflow' ? '更多终端' : '选择终端';
+    if (dialog.open && focused && !shown(focused)) {
+      const first = [...list.querySelectorAll('[data-terminal-choice]:not(:disabled)')].find(shown);
+      (first || document.getElementById('close-terminal-switch')).focus({ preventScroll: true });
+    }
+  }
   function scheduleLayout() {
     if (layoutFrame) return;
     layoutFrame = requestAnimationFrame(() => {
       layoutFrame = 0;
-      const focused = document.activeElement;
-      // Measure with the entire bar available to the tabs, even when the
-      // previous layout used the picker. Both changes happen before paint.
+      // Media queries can hide the focused mobile control before the resize
+      // observer runs. Keep that control until focus moves somewhere else.
+      const focused = document.activeElement === document.body && focusedControl ? focusedControl : document.activeElement;
+      const rows = [...tabs.children];
+      // First measure the full list. Only reserve picker space when needed,
+      // then keep the longest prefix that fits at the tabs' minimum widths.
+      rows.forEach(row => { row.hidden = false; });
       bar.dataset.overflow = 'false';
-      bar.dataset.overflow = String(tabs.getClientRects().length > 0 && tabs.scrollWidth > tabs.clientWidth + 1);
-      if (tabs.contains(focused) && !tabs.getClientRects().length) mobileButton.focus({ preventScroll: true });
-      else if (focused === mobileButton || focused === mobileClose) {
-        const target = focused.getClientRects().length ? focused
-          : focused === mobileClose ? tabs.querySelector('[aria-selected=true] + [data-terminal-close]')
-          : tabs.querySelector('[tabindex="0"]');
-        target?.focus({ preventScroll: true });
+      overflowCount = 0;
+      if (!compact.matches && shown(tabs) && tabs.scrollWidth > tabs.clientWidth + 1) {
+        bar.dataset.overflow = 'true';
+        const available = tabs.clientWidth, gap = parseFloat(getComputedStyle(tabs).columnGap) || 0;
+        let used = 0, fits = true;
+        for (const [index, row] of rows.entries()) {
+          const width = row.dataset.available === 'true' ? row.getBoundingClientRect().width : parseFloat(getComputedStyle(row).minWidth);
+          used += width + (index ? gap : 0);
+          fits &&= used <= available + 1;
+          row.hidden = !fits;
+          if (row.hidden) overflowCount++;
+        }
+      }
+      currentOverflow = rows.some(row => row.hidden && row.querySelector('[aria-selected=true]'));
+      label();
+      const buttons = [...tabs.querySelectorAll('[data-terminal-choice]')];
+      buttons.forEach(button => { button.tabIndex = shown(button) && button.getAttribute('aria-selected') === 'true' ? 0 : -1; });
+      const first = buttons.find(button => shown(button) && !button.disabled);
+      if (!buttons.some(button => button.tabIndex === 0) && first) first.tabIndex = 0;
+      if (dialog.open && pickerDialog) {
+        if (compact.matches) dialogMode = 'all';
+        else if (overflowCount) dialogMode = 'overflow';
+        else dialog.close();
+      }
+      filterList();
+      if (bar.contains(focused) && !dialog.open) {
+        let target = focused;
+        if (!shown(target)) {
+          const active = buttons.find(button => shown(button) && button.getAttribute('aria-selected') === 'true');
+          target = compact.matches || tabs.contains(focused) ? mobileButton
+            : focused === mobileClose ? active?.nextElementSibling : active || first;
+          if (!shown(target)) target = shown(mobileButton) ? mobileButton : first;
+        }
+        if (target && !target.disabled && document.activeElement !== target) target.focus({ preventScroll: true });
       }
     });
   }
   new ResizeObserver(scheduleLayout).observe(bar);
+  compact.addEventListener('change', scheduleLayout);
   const narrow = matchMedia('(max-width: 420px)');
+  const pickerLabel = document.createElement('span'), pickerArrow = document.createElement('span');
+  pickerArrow.textContent = ' ▾'; pickerArrow.setAttribute('aria-hidden', 'true');
+  mobileButton.replaceChildren(pickerLabel, pickerArrow);
   let fullLabel = '选择终端', shortLabel = fullLabel;
-  const label = () => { mobileButton.textContent = `${narrow.matches ? shortLabel : fullLabel} ▾`; mobileButton.setAttribute('aria-label', fullLabel + ' ▾'); };
+  const label = () => {
+    const more = !compact.matches && overflowCount > 0;
+    pickerLabel.textContent = more && !currentOverflow ? `更多终端 (${overflowCount})` : narrow.matches ? shortLabel : fullLabel;
+    mobileButton.setAttribute('aria-label', (more ? `更多终端（${overflowCount} 项）${currentOverflow ? `，当前：${fullLabel}` : ''}` : fullLabel) + ' ▾');
+    mobileButton.title = more ? currentOverflow ? `更多终端 · 当前：${fullLabel}` : '更多终端' : fullLabel;
+    mobileButton.dataset.active = String(more && currentOverflow);
+  };
   narrow.addEventListener('change', label);
   function render(catalog, selected, { visible, disabled, invalid, loading }) {
     bar.hidden = !visible;
@@ -37,7 +90,6 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
     fullLabel = invalid ? '原终端已失效 · 选择终端' : loading ? '正在核对终端…' : current?.name || '选择终端';
     shortLabel = invalid ? '选择终端' : loading ? '核对中…' : current?.id === 'main' && current.name === 'Codex 主终端' ? '主终端' : fullLabel;
     label();
-    mobileButton.title = current?.name || '选择终端';
     const next = JSON.stringify({ catalog, selected, disabled, invalid });
     if (signature === next) return;
     signature = next;
@@ -82,13 +134,17 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileClose, dialo
   tabs.addEventListener('keydown', event => {
     if (!event.target.matches('[data-terminal-choice]')) return;
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    const buttons = [...tabs.querySelectorAll('[data-terminal-choice]:not(:disabled)')]; if (!buttons.length) return;
+    const buttons = [...tabs.querySelectorAll('[data-terminal-choice]:not(:disabled)')].filter(shown); if (!buttons.length) return;
     event.preventDefault();
     const index = buttons.indexOf(document.activeElement);
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
     buttons[next].focus({ preventScroll: true });
   });
-  mobileButton.addEventListener('click', () => { dialog.showModal(); changed(); });
+  mobileButton.addEventListener('click', () => { pickerDialog = true; dialogMode = compact.matches ? 'all' : 'overflow'; filterList(); dialog.showModal(); changed(); });
+  dialog.addEventListener('close', () => {
+    pickerDialog = false; dialogMode = 'all'; filterList();
+    if (!shown(mobileButton) && document.activeElement === document.body) tabs.querySelector('[tabindex="0"]')?.focus({ preventScroll: true });
+  });
   mobileClose.addEventListener('click', () => { if (currentTerminal) closeTerminal(currentTerminal); });
   document.getElementById('close-terminal-switch').addEventListener('click', () => dialog.close());
   document.getElementById('terminal-switch-manage').addEventListener('click', () => { dialog.close(); manage(); });

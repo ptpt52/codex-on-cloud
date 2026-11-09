@@ -12,7 +12,7 @@ async function setup(page, options = {}) {
 }
 async function choose(page, id, opened = id) {
   await closePanels(page);
-  if (await page.locator('#terminal-session-button').isVisible()) {
+  if (!await page.locator(`#terminal-tabs [data-terminal-choice="${id}"]`).isVisible()) {
     await page.locator('#terminal-session-button').click();
     await page.locator(`#terminal-switch-list [data-terminal-choice="${id}"]`).click();
   } else await page.locator(`#terminal-tabs [data-terminal-choice="${id}"]`).click();
@@ -23,13 +23,13 @@ async function manager(page) { await openTools(page); await page.locator('#termi
 const endButton = (page, id) => page.locator(`[data-terminal="${id}"] .terminal-close`);
 async function quickClose(page, id) {
   await closePanels(page);
-  if (await page.locator('#terminal-session-button').isVisible()) {
-    if (await page.locator('#input-terminal').inputValue() === id) await page.locator('#terminal-session-close').click();
-    else {
-      await page.locator('#terminal-session-button').click();
-      await page.locator(`#terminal-switch-list [data-terminal-close="${id}"]`).click();
-    }
-  } else await page.locator(`#terminal-tabs [data-terminal-close="${id}"]`).click();
+  const tabClose = page.locator(`#terminal-tabs [data-terminal-close="${id}"]`);
+  if (await tabClose.isVisible()) await tabClose.click();
+  else if (await page.locator('#terminal-session-close').isVisible() && await page.locator('#input-terminal').inputValue() === id) await page.locator('#terminal-session-close').click();
+  else {
+    await page.locator('#terminal-session-button').click();
+    await page.locator(`#terminal-switch-list [data-terminal-close="${id}"]`).click();
+  }
   await expect(page.locator('#cancel-confirmation')).toBeFocused();
 }
 async function placeholder(page, ids) {
