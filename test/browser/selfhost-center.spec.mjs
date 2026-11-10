@@ -13,16 +13,22 @@ async function freePort() {
   });
 }
 
-test('central management page creates a one-time key and lists its fixed node path', async ({ page }) => {
+test('central management page creates a one-time key and lists its fixed node path', async ({ page, context }) => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-ui-')), port = await freePort(), origin = `http://127.0.0.1:${port}`;
   const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpToken: 'frp_test_token_very_long_123' });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
   try {
+    await context.addCookies([{ name: 'coc_session_center', value: 'legacy', url: origin }]);
     await page.goto(origin);
+    await expect(page).toHaveURL(origin + '/admin/');
     await expect(page.locator('#login-view')).toBeVisible();
     await page.locator('#password').fill('center_password_very_long_123');
     await page.locator('#login-form button[type="submit"]').click();
     await expect(page.locator('#center-view')).toBeVisible();
+    const adminCookies = await context.cookies(origin + '/admin/');
+    expect(adminCookies.some(cookie => cookie.name === 'coc_session_center')).toBe(false);
+    expect(adminCookies.find(cookie => cookie.name === 'coc_session_center_admin')?.path).toBe('/admin/');
+    expect((await context.cookies(origin + '/node/demo/')).some(cookie => cookie.name.startsWith('coc_session_center'))).toBe(false);
     await page.locator('#new-key').click();
     await page.locator('#key-name').fill('深圳测试机');
     await page.locator('#key-slug').fill('shenzhen-test');

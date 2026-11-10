@@ -49,6 +49,8 @@
 
 支持 SSH、Telnet 等原始 TCP；Telnet 在助手到设备这一段仍按设备原协议通信。0.7.0 新增[反向串口接入](serial.md)，设备命令执行器与密码管理不包含在此版本。Windows/Mac 真机需要重新下载匹配版本的助手，再用实际设备验收认证、目标拒绝/超时、短暂断网及明确停止；Linux 同源助手和模拟设备检查不能代替这一步。
 
+独立中心的节点入口从助手 `0.7.3` 起支持完整地址，例如 `--server https://desk.example.com/node/node-a/`。构建默认值来自 `.env` 的 `PUBLIC_ORIGIN` 与 `ENTRY_BASE_PATH`。切换域名或节点路径后重新构建并下载；网页会拒绝提供绑定旧入口的产物。根地址部署继续兼容。
+
 ## Mac 首次运行
 
 支持 macOS 12 Monterey 或更新版本，来自固定 Go 1.26.4 的系统要求；[Go 官方版本说明](https://go.dev/doc/go1.26#darwin)。在“关于本机”中显示 Apple M 系列芯片时选 Apple Silicon，显示 Intel 时选 Intel。网页只在打开下载窗口时请求浏览器的架构提示，最多等待 500 毫秒；浏览器拒绝、未提供或超时则保留手选，不从所有 Mac 都可能返回的 `MacIntel` 标识推断实际芯片，不把设备信息写入存储或发送给服务端。[Chrome Client Hints 文档](https://developer.chrome.com/docs/privacy-security/user-agent-client-hints)

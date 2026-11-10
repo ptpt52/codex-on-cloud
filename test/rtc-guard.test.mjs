@@ -44,3 +44,14 @@ test('public ICE peer learning, early checks, packet sizes and per-second reques
     .appendRawAttribute(0x7fff, Buffer.alloc(2200)).addMessageIntegrity(Buffer.from('test-password')).bytes;
   large.receive(packet); assert.equal(large.accepted.length, 0);
 });
+
+test('TURN peer guard runs after decapsulation and preserves authenticated ICE checks', () => {
+  const packets = [], protocol = { turn: {}, handleStunMessage: (bytes, address) => packets.push({ bytes, address }) };
+  const connection = { protocols: [protocol], onIceCandidate: { subscribe() {} }, localUsername: 'local', remoteUsername: 'remote', localPassword: 'test-password', earlyChecksDone: true, checkList: [] };
+  guardIceAgent(connection, { valid: () => true, allowed: (host, port) => host === '203.0.113.10' && port >= 49160 && port <= 49223 });
+  protocol.handleStunMessage(binding(), ['203.0.113.10', 3478]);
+  protocol.handleStunMessage(binding(), ['203.0.113.11', 49160]);
+  protocol.handleStunMessage(binding('wrong:remote'), ['203.0.113.10', 49160]);
+  assert.equal(packets.length, 0);
+  protocol.handleStunMessage(binding(), ['203.0.113.10', 49160]); assert.equal(packets.length, 1);
+});

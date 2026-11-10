@@ -17,6 +17,7 @@ export function readSelfhostNode(root, env = process.env) {
     if (!value || value.version !== 1 || !NODE_ID.test(value.nodeId) || !CREDENTIAL.test(value.credential) || typeof value.slug !== 'string' || !SLUG.test(value.slug) || typeof value.origin !== 'string' || value.path !== '/node/' + value.slug + '/' || typeof value.turnEndpoint !== 'string' && value.turnEndpoint !== null) throw Error('自建节点配置身份无效');
     const origin = new URL(value.origin);
     if (!['http:', 'https:'].includes(origin.protocol) || origin.origin !== value.origin) throw Error('自建节点中心地址无效');
+    if (value.turnEndpoint !== null && value.turnEndpoint !== value.origin + '/api/turn-credentials') throw Error('TURN 地址必须属于接入中心');
     return { origin: value.origin, slug: value.slug, nodeId: value.nodeId, credential: value.credential, path: value.path, turnEndpoint: value.turnEndpoint };
   } catch (error) {
     if (error.code === 'ENOENT') throw Error('SELFHOST_NODE_CONFIG_FILE 指向的文件不存在');

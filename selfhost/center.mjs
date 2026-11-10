@@ -60,13 +60,13 @@ export async function createSelfhostCenter({
   origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
   frpToken, turnSecret, turnRealm = publicHost, turnTtlMs = TURN_TTL_MS, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
-  frpsAdmin,
+  frpsAdmin, turnRelay,
 } = {}) {
   const parsed = new URL(origin);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw Error('中心 PUBLIC_ORIGIN 必须是 HTTP(S) 根地址');
   if (!password || typeof password !== 'string' || password.length < 16 || password.length > 512) throw Error('中心管理员密码长度无效');
   if (!frpToken || typeof frpToken !== 'string' || frpToken.length < 16 || frpToken.length > 512 || /[\r\n\0]/.test(frpToken)) throw Error('frp 接入密钥长度无效');
-  const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center', entryBasePath: '/' };
+  const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center_admin', entryBasePath: '/admin/', sessionRevision: 'codex-selfhost-admin-v2' };
   const auth = await createAuth(authConfig), web = await assets();
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
   const proxyOnline = frpsAdmin ? frpsProxyProbe(frpsAdmin) : undefined;
@@ -112,7 +112,7 @@ export async function createSelfhostCenter({
 
   async function route(req, res) {
     if (!hostAllowed(req)) throw selfhostError(400, '访问域名未配置');
-    const url = new URL(req.url, 'http://internal'), path = url.pathname;
+    const url = new URL(req.url, 'http://internal'); let path = url.pathname;
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader('x-frame-options', 'DENY');
@@ -130,14 +130,14 @@ export async function createSelfhostCenter({
       return res.end();
     }
     if (path === '/healthz' && req.method === 'GET') return reply(res, 200, { ok: true });
-    if (path === '/api/login' && req.method === 'POST') {
+    if (path === '/admin/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw selfhostError(403, '请求来源无效');
       const client = clientAddress(req); rate(failures, client, 8, 15 * 60_000);
       const body = await jsonBody(req, 4096), valid = await auth.verify(body.username, body.password);
       if (!valid) throw selfhostError(401, '管理员用户名或密码错误');
       failures.delete(client);
       const created = await auth.create({ role: 'admin' });
-      return reply(res, 200, { ok: true, csrf: created.session.csrf, username }, { 'set-cookie': sessionCookie(created.token, authConfig) });
+      return reply(res, 200, { ok: true, csrf: created.session.csrf, username }, { 'set-cookie': [sessionCookie(created.token, authConfig), sessionCookie('', { ...authConfig, nodeId: 'center', entryBasePath: '/' }, true)] });
     }
     if (path === '/api/join' && req.method === 'POST') {
       const client = clientAddress(req); rate(joinRequests, client, 60, 60_000);
@@ -150,13 +150,20 @@ export async function createSelfhostCenter({
       rate(turnRequests, clientAddress(req), 120, 60_000);
       const body = await jsonBody(req, 4096), allowed = await registry.turnAuthorized(body);
       if (!allowed) throw selfhostError(401, '节点授权、连接状态或凭据无效');
-      return reply(res, 200, turnCredentials({ secret: turnSecret, slug: body.slug, realm: turnRealm, ttlMs: turnTtlMs }));
+      return reply(res, 200, turnCredentials({ secret: turnSecret, slug: body.slug, realm: turnRealm, ttlMs: turnTtlMs, relay: turnRelay }));
     }
     if (path === '/api/leave' && req.method === 'POST') {
       rate(joinRequests, clientAddress(req), 60, 60_000);
       return reply(res, 200, await registry.leave(await jsonBody(req, 4096)));
     }
 
+    if ((path === '/' || path === '/admin') && req.method === 'GET') {
+      res.writeHead(308, { location: '/admin/', 'cache-control': 'no-store' }); return res.end();
+    }
+    if (!path.startsWith('/admin/')) throw selfhostError(404, '资源不存在');
+    // Revoke the legacy root cookie; the new revision also invalidates its stored sessions.
+    res.setHeader('set-cookie', sessionCookie('', { ...authConfig, nodeId: 'center', entryBasePath: '/' }, true));
+    path = path.slice('/admin'.length);
     const asset = web.get(path);
     if (asset && req.method === 'GET') {
       res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");

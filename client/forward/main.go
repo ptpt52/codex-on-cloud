@@ -41,8 +41,8 @@ const connectionLimit = 8
 
 func serverURL(value string) (*url.URL, error) {
 	u, err := url.Parse(value)
-	if err != nil || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return nil, errors.New("服务器地址需为网站根地址，例如 https://example.com")
+	if err != nil || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/" && !regexp.MustCompile(`^/node/[a-z0-9-]{1,48}/$`).MatchString(u.Path)) || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("服务器地址需为根地址或节点路径，例如 https://example.com/node/my-node/")
 	}
 	if u.Scheme != "https" {
 		ip := net.ParseIP(u.Hostname())
@@ -56,7 +56,9 @@ func serverURL(value string) (*url.URL, error) {
 			u.Host = "[" + u.Host + "]"
 		}
 	}
-	u.Path = ""
+	if u.Path == "/" {
+		u.Path = ""
+	}
 	u.Host = strings.ToLower(u.Host)
 	return u, nil
 }
@@ -66,7 +68,7 @@ func dial(ctx context.Context, server *url.URL, path, token string) (*websocket.
 }
 func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra http.Header) (*websocket.Conn, error) {
 	u := *server
-	u.Path = path
+	u.Path = strings.TrimSuffix(server.Path, "/") + path
 	if u.Scheme == "https" {
 		u.Scheme = "wss"
 	} else {
@@ -77,7 +79,9 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 		handshakeTimeout = dataConnectTimeout
 	}
 	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{"codex-forward-v1"}}
-	headers := http.Header{"Authorization": {"Bearer " + token}, "Origin": {server.String()}}
+	origin := *server
+	origin.Path = ""
+	headers := http.Header{"Authorization": {"Bearer " + token}, "Origin": {origin.String()}}
 	if path == "/forward/helper" || path == "/forward/resume" {
 		headers.Set("X-Codex-Forward-Resume", "1")
 		headers.Set("X-Codex-Forward-Reverse", "1")
@@ -552,7 +556,7 @@ func main() {
 		}
 		os.Exit(0)
 	}
-	server := flag.String("server", defaultServer, "服务器 HTTPS 根地址")
+	server := flag.String("server", defaultServer, "服务器 HTTPS 地址（可包含 /node/<slug>/）")
 	allowReverse := flag.String("allow-reverse", "", "明确授权一个反向目标 IP:端口；省略时在首次配对后交互确认")
 	listSerial := flag.Bool("list-serial", false, "列出本机串口名称，不打开设备")
 	showVersion := flag.Bool("version", false, "显示版本后退出")

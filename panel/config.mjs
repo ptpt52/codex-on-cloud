@@ -1,4 +1,5 @@
-import { readFileSync, lstatSync } from 'node:fs';
+import { readCenterCA } from './center-http.mjs';
+import { readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { environment, settings } from '../native/config.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
@@ -12,11 +13,9 @@ import { readSelfhostNode } from './selfhost-config.mjs';
 
 function selfhostCa(root, value) {
   if (!value) return undefined;
-  const base = resolve(root), file = resolve(base, value);
+  const file = resolve(root, value), base = resolve(root);
   if (file !== base && !file.startsWith(base + sep)) throw new Error('SELFHOST_CA_FILE 必须位于部署目录内');
-  const info = lstatSync(file), bytes = readFileSync(file);
-  if (!info.isFile() || info.isSymbolicLink() || bytes.length > 256 * 1024 || info.mode & 0o022 || !bytes.toString().includes('BEGIN CERTIFICATE')) throw new Error('SELFHOST_CA_FILE 必须是有界的 PEM 文件');
-  return bytes;
+  return readCenterCA(file);
 }
 
 function secret(env, name) {

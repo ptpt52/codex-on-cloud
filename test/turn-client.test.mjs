@@ -36,11 +36,11 @@ test('TURN responses accept only bounded STUN/TURN URLs and short-lived credenti
   } finally { await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); }
 });
 
-test('relay candidates are accepted only when TURN is available', () => {
+test('relay candidates require the trusted address and port range', () => {
   const sdp = ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'),
     'a=candidate:1 1 udp 123 47.119.157.242 49160 typ relay', ''].join('\r\n');
   assert(!rtcOffer({ type: 'offer', sdp }).sdp.includes('typ relay'));
-  assert(rtcOffer({ type: 'offer', sdp }, { allowRelay: true }).sdp.includes('47.119.157.242 49160 typ relay'));
+  assert(rtcOffer({ type: 'offer', sdp }, { relay: { addresses: ['47.119.157.242'], minPort: 49160, maxPort: 49223 } }).sdp.includes('47.119.157.242 49160 typ relay'));
 });
 
 test('browser ICE sanitizer deduplicates TURN credentials and ignores malformed entries', () => {
@@ -68,4 +68,27 @@ test('TURN client can pin an imported center CA without disabling certificate ve
   t.after(async () => { await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); await rm(directory, { recursive: true, force: true }); });
   await assert.rejects(requestTurnCredentials({ endpoint, node }), /fetch failed|certificate/);
   assert.deepEqual((await requestTurnCredentials({ endpoint, node, ca: await readFile(join(directory, 'cert.pem')) })).iceServers, iceServers);
+});
+
+test('relay policy rejects unrelated public hosts and ports in SDP and both ICE filters', async () => {
+  const { RTCPeerConnection } = await import('werift');
+  const { createRTCBridge } = await import('../panel/rtc.mjs');
+  const relay = { addresses: ['203.0.113.10'], minPort: 49160, maxPort: 49223 };
+  const description = host => ({ type: 'offer', sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'),
+    `a=candidate:1 1 udp 123 ${host} 49160 typ relay`, `a=candidate:2 1 udp 123 ${host} 443 typ relay`, ''].join('\r\n') });
+  assert(!rtcOffer(description('203.0.113.11'), { relay }).sdp.includes('typ relay'));
+  const accepted = rtcOffer(description('203.0.113.10'), { relay }).sdp;
+  assert(accepted.includes('49160 typ relay')); assert(!accepted.includes('443 typ relay'));
+  let pc;
+  const create = RTCPeerConnection.prototype.createSctpTransport;
+  RTCPeerConnection.prototype.createSctpTransport = function(...args) { pc = this; return create.apply(this, args); };
+  let bridge;
+  try {
+    bridge = createRTCBridge({ address: '127.0.0.1', relay, valid: () => true, closed() {} });
+    const config = pc.getConfiguration();
+    for (const [host, port, expected] of [['203.0.113.10', 49160, true], ['203.0.113.10', 3478, false], ['203.0.113.11', 49160, false]]) {
+      assert.equal(config.iceFilterStunResponse({}, [host, port]), expected);
+      assert.equal(config.iceFilterCandidatePair({ remoteCandidate: { host, port } }), expected);
+    }
+  } finally { RTCPeerConnection.prototype.createSctpTransport = create; await bridge?.destroy(); }
 });

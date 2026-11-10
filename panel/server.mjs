@@ -111,7 +111,7 @@ export async function createPanel(config) {
   let rtcClosing = Promise.resolve();
   let turnCache = null, turnPending = null;
   const forwarding = createForwarding(config);
-  const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
+  const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
   const fileTransfers = createFileTransfers();
   const turnConfig = async () => {
     const node = config.selfhostNode;
@@ -516,12 +516,12 @@ export async function createPanel(config) {
       const mode = terminalMode ? 'terminal' : 'desktop', standby = resumable && body.standby === true && config.mode !== 'terminal';
       if (resumable && (config.streamProtocol !== 1 || !STREAM_ID.test(body.streamId))) throw new HttpError(400, '会话协议无效');
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
-      let offer, hints, iceServers = [];
+      let offer, hints, relay, iceServers = [];
       try {
         hints = rtcHints(body.hints);
         const turn = await turnConfig();
-        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true, allowRelay: !!turn?.iceServers?.length }), hints.browser, { ipv6: config.webrtcIPv6 === true });
-        iceServers = turn?.iceServers || [];
+        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true, relay: turn?.relay }), hints.browser, { ipv6: config.webrtcIPv6 === true });
+        iceServers = turn?.iceServers || []; relay = turn?.relay;
       } catch (error) { throw new HttpError(400, error.message); }
       let target;
       if (terminalMode) {
@@ -555,7 +555,7 @@ export async function createPanel(config) {
           (!resumable || streamStates.get(body.streamId)?.stream === stream && (!!streamEntry || JSON.stringify(streamStates.get(body.streamId).target) === JSON.stringify(target)));
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
-        bridge = createRTCBridge({ address, ipv6Address, iceServers, vncSocket: config.vncSocket, valid,
+        bridge = createRTCBridge({ address, ipv6Address, iceServers, relay, turnCa: config.selfhostCaBundle, vncSocket: config.vncSocket, valid,
           ...(resumable ? { connectStream: (channel, authorized, fail) => {
             streamEntry = streamRTC(channel, stream, authorized, fail); return streamEntry;
           } } : terminalMode ? { connectTerminal: (channel, authorized, fail) => {

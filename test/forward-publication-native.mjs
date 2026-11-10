@@ -19,7 +19,7 @@ try {
   await mkdir(join(root, 'client')); await mkdir(join(root, 'scripts'));
   await cp(join(source, 'client/forward'), join(root, 'client/forward'), { recursive: true });
   await cp(join(source, 'scripts/forward_package.py'), join(root, 'scripts/forward_package.py'));
-  await writeFile(join(root, '.env'), 'PUBLIC_ORIGIN=https://synthetic-build.example.test\n', { mode: 0o600 });
+  await writeFile(join(root, '.env'), 'PUBLIC_ORIGIN=https://synthetic-build.example.test\nENTRY_BASE_PATH=/node/build-test/\n', { mode: 0o600 });
   const options = { cwd: root, env, timeout: 30000, maxBuffer: 16384 };
   await exec('git', ['init', '--quiet', '--template='], options);
   await exec('git', ['add', 'client', 'scripts'], options);
@@ -55,7 +55,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     const metadata = (await exec('go', ['version', '-m', binary], options)).stdout;
     assert.match(metadata, /go1\.26\.4/); assert.ok(metadata.includes('GOOS=' + platform)); assert.ok(metadata.includes('GOARCH=' + arch));
     const binaryBytes = platform === 'darwin' ? await readFile(binary) : bytes;
-    assert.ok(binaryBytes.includes(Buffer.from('https://synthetic-build.example.test'))); assert.ok(binaryBytes.includes(Buffer.from(item.build)));
+    assert.ok(binaryBytes.includes(Buffer.from('https://synthetic-build.example.test/node/build-test/'))); assert.ok(binaryBytes.includes(Buffer.from(item.build)));
     assert.deepEqual(await readFile(artifact), bytes);
     console.log('✓ ' + item.arch + ': actual pinned compiler, supervised lease, package structure and published download digest');
   }

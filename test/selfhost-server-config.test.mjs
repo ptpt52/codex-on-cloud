@@ -21,7 +21,9 @@ test('Caddy routes node paths through auth and frps while keeping internals priv
   assert.match(config, /reverse_proxy 127\.0\.0\.1:18080/);
   assert.match(config, /header_up Host \{host\}/);
   assert.match(config, /flush_interval -1/);
-  assert(!config.includes('disable_redirects'));
+  assert.match(config, /handle \/\.well-known\/acme-challenge/);
+  assert.match(config, /header_up Cookie/);
+  assert.match(caddyConfig('desk.example.com', { adminCidrs: ['198.51.100.0/24'] }), /path \/admin \/admin\/\*/);
   assert.match(caddyConfig('desk.example.com', { redirectHttp: false }), /auto_https disable_redirects/);
   assert.match(caddyConfig('desk.example.com', { adminCidrs: ['198.51.100.0/24'] }), /not remote_ip 198\.51\.100\.0\/24/);
   assert.match(caddyConfig('desk.example.com', { adminCidrs: ['198.51.100.0/24'] }), /127\.0\.0\.1\/32 ::1\/128/);
@@ -42,7 +44,7 @@ test('systemd units isolate privileges and have explicit memory, task and file b
   const center = centerUnit(), frps = frpsUnit(), caddy = caddyUnit();
   assert.match(center, /User=codex-selfhost/); assert.match(center, /ProtectSystem=strict/); assert.match(center, /MemoryMax=768M/); assert.match(center, /TasksMax=256/);
   assert.match(frps, /Requires=codex-selfhost-center.service/); assert.match(frps, /MemoryMax=512M/); assert.match(frps, /LimitNOFILE=65536/);
-  assert.match(caddy, /ExecReload=.*caddy reload/); assert.match(caddy, /ProtectHome=true/);
+  assert(!caddy.includes('ExecReload=')); assert.match(caddy, /ProtectHome=true/);
 });
 
 test('generated environment and renewal hook contain no embedded credentials', () => {
@@ -52,7 +54,7 @@ test('generated environment and renewal hook contain no embedded credentials', (
   assert(!/=.{64,}/.test(env));
   assert.match(hook, /install -o root -g codex-selfhost -m 0640/);
   assert.match(hook, /systemctl restart codex-selfhost-frps\.service/);
-  assert.match(hook, /systemctl reload codex-selfhost-caddy\.service/);
+  assert.match(hook, /systemctl restart codex-selfhost-caddy\.service/);
   assert.match(hook, /systemctl restart codex-selfhost-coturn\.service/);
 });
 

@@ -22,7 +22,7 @@ test('forward builds use persisted configuration instead of the task environment
     await assert.rejects(buildForward({ root, origin }, { run: async (file, args) => {
       if (file === 'git') return { stdout: '123456abcdef\n' };
       if (args[0] === 'version') return { stdout: 'go version go1.26.4 linux/amd64\n' };
-      compiled = true; assert.ok(args.includes('-s -w -X main.defaultServer=' + (origin || 'https://current.example.test') + ' -X main.version=0.7.2+123456abcdef'));
+      compiled = true; assert.ok(args.includes('-s -w -X main.defaultServer=' + (origin || 'https://current.example.test') + ' -X main.version=0.7.3+123456abcdef'));
       throw Error('synthetic compiler stop');
     } }), /synthetic compiler stop/);
     assert.equal(compiled, true);
@@ -105,8 +105,9 @@ test('expiry after reading a pinned manifest reports refresh instead of an inter
 });
 
 test('published downloads pin their generation through authenticated HTTP and reject arbitrary paths', async t => {
-  const h = await fixture(t), result = await buildForward({ root: h.root }, { run: h.run });
+  const h = await fixture(t);
   const app = await panelFixture({ forwardDownloadDir: h.directory }); t.after(() => app.close());
+  const result = await buildForward({ root: h.root, origin: app.config.origin }, { run: h.run });
   const url = '/api/forward/download/windows-amd64?generation=' + result.generation;
   assert.equal((await app.request(url)).status, 401); await app.login();
   const response = await app.request(url); assert.equal(response.status, 200);
@@ -115,4 +116,26 @@ test('published downloads pin their generation through authenticated HTTP and re
   assert.equal((await app.request(url + '&generation=' + result.generation)).status, 400);
   assert.equal((await app.request('/api/forward/download/windows-amd64?generation=../../outside')).status, 400);
   assert.equal((await app.request('/api/forward/download/windows-amd64?generation=' + '0'.repeat(32))).status, 410);
+});
+
+
+test('helper builds bind defaults and publication metadata to the configured node prefix', async t => {
+  const h = await fixture(t);
+  await writeFile(join(h.root, '.env'), 'PUBLIC_ORIGIN=https://desk.example.test\nENTRY_BASE_PATH=/node/site-a/\n', { mode: 0o600 });
+  let compiled = false;
+  const run = async (file, args, options) => {
+    if (file === 'go' && args[0] === 'build') {
+      compiled = true;
+      assert(args.includes('-s -w -X main.defaultServer=https://desk.example.test/node/site-a/ -X main.version=0.7.3+123456abcdef'));
+    }
+    return h.run(file, args, options);
+  };
+  const result = await buildForward({ root: h.root }, { run }); assert(compiled);
+  const manifest = JSON.parse(await readFile(join(h.root, 'data/forward-client/releases', result.generation, 'manifest.json')));
+  assert.equal(manifest.server, 'https://desk.example.test/node/site-a/');
+  const downloads = createForwardDownloads(h.directory, { server: manifest.server });
+  assert((await downloads.list())[0].href.startsWith('/node/site-a/api/forward/download/'));
+  const other = createForwardDownloads(h.directory, { server: 'https://desk.example.test/node/site-b/' });
+  assert.deepEqual(await other.list(), []);
+  await assert.rejects(other.serve('windows-amd64', {}), /入口已变化/);
 });

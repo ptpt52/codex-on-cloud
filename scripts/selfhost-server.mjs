@@ -139,7 +139,7 @@ async function copyApplication() {
   await rm(next, { recursive: true, force: true }); await mkdir(next, { recursive: true, mode: 0o755 });
   await cp(join(project, 'selfhost'), join(next, 'selfhost'), { recursive: true, force: true, dereference: false });
   await mkdir(join(next, 'panel'), { recursive: true, mode: 0o755 });
-  await cp(join(project, 'panel', 'auth.mjs'), join(next, 'panel', 'auth.mjs'), { force: true });
+  for (const file of ['auth.mjs', 'rtc-network.mjs']) await cp(join(project, 'panel', file), join(next, 'panel', file), { force: true });
   await mkdir(join(next, 'scripts'), { recursive: true, mode: 0o755 });
   await cp(join(project, 'scripts', 'state-files.mjs'), join(next, 'scripts', 'state-files.mjs'), { force: true });
   await mkdir(join(next, 'native'), { recursive: true, mode: 0o755 });
@@ -225,7 +225,7 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   for (const file of ['admin_password', 'frp_token', 'turn_secret']) { await chmod(join(ETC, file), 0o600); await chown(join(ETC, file), uid, gid); }
   await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), uid, gid);
   const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
-  await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
+  await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, publicIp, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
   await safeWrite(settingsPath, serverSettings(adminCidrs), 0o600, 0, 0);
   await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);
   await safeWrite(join(ETC, 'turnserver.conf'), coturnConfig({ domain, publicIp, privateIp: localIpv4, secret: turnSecret }), 0o640, 0, (await requiredCommand('id', ['-g', 'turnserver'])).stdout ? Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout) : gid);
@@ -240,13 +240,16 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
     const existingHook = await readFile(hook, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
     if (existingHook?.includes('# Managed by codex-selfhost.') || existingHook?.includes('systemctl restart codex-selfhost-frps.service')) await unlink(hook);
   } else {
-    await mkdir(dirname(hook), { recursive: true, mode: 0o755 }); await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
+    await mkdir(dirname(hook), { recursive: true, mode: 0o755 }); await safeWrite(hook, certbotHook(domain, { configDirectory: ETC, restart: false }), 0o755);
     await safeWrite(join(ETC, 'Caddyfile'), caddyAcmeConfig(domain, join(DATA, 'acme')), 0o644);
     await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
     for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
+    await requiredCommand('systemctl', ['restart', 'codex-selfhost-caddy.service']);
     const certificate = join('/etc/letsencrypt/live', domain, 'fullchain.pem');
-    if (!(await command('test', ['-f', certificate])).ok) await requiredCommand('certbot', ['certonly', '--webroot', '--webroot-path', join(DATA, 'acme'), '--domain', domain, '--non-interactive', '--agree-tos', '--email', email, '--deploy-hook', hook], { timeout: 300000 });
+    if (!(await command('test', ['-f', certificate])).ok) await requiredCommand('certbot', ['certonly', '--webroot', '--webroot-path', join(DATA, 'acme'), '--domain', domain, '--non-interactive', '--agree-tos', '--email', email], { timeout: 300000 });
+    // Bootstrap only copies the certificate. Activate services after writing the final config.
     await requiredCommand(hook, [], { timeout: 60000 });
+    await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
   }
   await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, frpHttpPort: 18080, redirectHttp: !certFile, adminCidrs }), 0o644);
   await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);

@@ -12,9 +12,13 @@ export function guardIceAgent(connection, { valid, allowed }) {
     for (const protocol of connection.protocols) {
       if (guarded.has(protocol)) continue;
       guarded.add(protocol);
-      const receive = protocol.transport.onData;
-      protocol.transport.onData = (bytes, address) => {
-        if (!valid() || !allowed(address[0]) || address[1] < 1024 || address[1] > 65535) return;
+      // TURN control traffic keeps its own transaction integrity checks. Guard
+      // decoded peer packets, rather than the allocation server's TCP/TLS socket.
+      const target = protocol.turn ? protocol : protocol.transport;
+      const method = protocol.turn ? 'handleStunMessage' : 'onData';
+      const receive = target[method].bind(target);
+      target[method] = (bytes, address) => {
+        if (!valid() || !allowed(address[0], address[1]) || address[1] < 1024 || address[1] > 65535) return;
         const key = `${address[0]}:${address[1]}`;
         if (isStunMessage(bytes)) {
           if (bytes.length > 2048) return;

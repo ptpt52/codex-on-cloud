@@ -12,7 +12,7 @@ const key = 'coc_' + 'a'.repeat(43), credential = 'cocn_' + 'b'.repeat(43);
 
 async function setup(t) {
   const root = await mkdtemp(join(tmpdir(), 'codex-selfhost-node-')), configHome = join(root, 'config'), calls = [];
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => { await chmod(join(root, 'secrets'), 0o700).catch(() => {}); await rm(root, { recursive: true, force: true }); });
   await mkdir(join(root, 'secrets'), { recursive: true, mode: 0o700 });
   await writeFile(join(root, '.env'), 'DEPLOY_MODE=terminal\nPUBLIC_ORIGIN=https://old.example.test\nSHARED_ENTRY=1\nNODE_ID=' + 'c'.repeat(32) + '\n', { mode: 0o600 });
   await writeFile(join(root, 'secrets', 'credentials.txt'), '工作台：https://old.example.test\n用户名：admin\n', { mode: 0o600 });
@@ -55,7 +55,7 @@ test('join stores only the node credential, generates bounded frpc and systemd f
 });
 
 test('joining a different center requires an explicit replacement and imported CA paths are private inputs', async t => {
-  const h = await setup(t), request = async (_url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify({ ...h.joined, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 }); };
+  const h = await setup(t), request = async (_url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify({ ...h.joined, turnEndpoint: null, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 }); };
   const common = { root: h.root, mode: 'desktop', panelPort: 36080, configHome: h.configHome, request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
   await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
   await assert.rejects(joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b' }), /server:leave/);
@@ -86,7 +86,7 @@ test('a rejected replacement restores the previous relay service and connection 
   const request = async (_url, options) => {
     joins++; const body = JSON.parse(options.body);
     if (joins === 2) return new Response('{"error":"center rejected replacement"}', { status: 409 });
-    return new Response(JSON.stringify({ ...h.joined, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 });
+    return new Response(JSON.stringify({ ...h.joined, turnEndpoint: null, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 });
   };
   const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run, install: async () => '/opt/frpc', promptKey: async () => key };
   await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
@@ -136,7 +136,7 @@ test('existing Cloudflare or Gateway state requires explicit takeover and leave 
   const h = await setup(t), gatewayPath = join(h.root, 'data', 'gateway-node.json'), gateway = JSON.stringify({ version: 1, origin: 'https://old.example.test' }, null, 2) + '\n';
   await mkdir(join(h.root, 'data'), { recursive: true, mode: 0o700 });
   await writeFile(gatewayPath, gateway, { mode: 0o600 });
-  const request = async (_url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify({ ...h.joined, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 }); };
+  const request = async (_url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify({ ...h.joined, turnEndpoint: null, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 }); };
   const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
   const beforeEnv = await readFile(join(h.root, '.env'), 'utf8'), beforeCredentials = await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8');
   await assert.rejects(joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' }), /switch-existing/);
@@ -262,7 +262,7 @@ test('failed center release preserves a recovery record that can be retried safe
 
 test('doctor verifies self-signed centers with the enrolled CA instead of disabling TLS checks', async t => {
   const h = await setup(t), certDir = join(h.root, 'certs'); await mkdir(certDir, { recursive: true });
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(certDir, 'key.pem'), '-out', join(certDir, 'cert.pem'), '-subj', '/CN=desk.example.test', '-addext', 'subjectAltName=DNS:desk.example.test'], { stdio: 'ignore' });
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(certDir, 'key.pem'), '-out', join(certDir, 'cert.pem'), '-subj', '/CN=desk.example.test', '-addext', 'subjectAltName=DNS:desk.example.test,IP:127.0.0.1'], { stdio: 'ignore' });
   const server = https.createServer({ key: await readFile(join(certDir, 'key.pem')), cert: await readFile(join(certDir, 'cert.pem')) }, (_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const nodeDir = join(h.root, 'data', 'selfhost-node'); await mkdir(nodeDir, { recursive: true, mode: 0o700 });
@@ -278,4 +278,53 @@ test('doctor verifies self-signed centers with the enrolled CA instead of disabl
   await chmod(caPath, 0o644);
   const unsafe = await nodeDoctor({ root: h.root, run: h.run });
   assert.equal(unsafe.ok, false); assert(unsafe.issues.some(issue => issue.includes('节点 CA 文件无效')));
+});
+
+test('partial credentials write failure restores the environment and original backup', async t => {
+  const h = await setup(t), env = await readFile(join(h.root, '.env'), 'utf8');
+  await chmod(join(h.root, 'secrets'), 0o500);
+  let released = false;
+  const request = async url => { if (url.endsWith('/api/leave')) released = true; return new Response(JSON.stringify(h.joined)); };
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key }), /已回滚/);
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), env);
+  assert(released);
+  for (const name of ['connection.json', 'panel-backup.json', 'join-recovery.json']) await assert.rejects(access(join(h.root, 'data/selfhost-node', name)));
+});
+
+test('rollback preserves operator edits and retains a prewritten recovery journal', async t => {
+  const h = await setup(t), envPath = join(h.root, '.env'); let changed, journal;
+  const request = async () => new Response(JSON.stringify(h.joined));
+  const run = async (tool, args) => {
+    if (args.includes('restart') && args.includes('codex-cloud-panel.service') && !changed) {
+      journal = JSON.parse(await readFile(join(h.root, 'data/selfhost-node/join-recovery.json'), 'utf8'));
+      changed = journal.after.env;
+      await writeFile(envPath, changed + '# operator change\n', { mode: 0o600 });
+      return { ok: false, stderr: 'injected failure' };
+    }
+    return h.run(tool, args);
+  };
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run, install: async () => '/opt/frpc', promptKey: async () => key }), /未完全确认/);
+  assert.equal(journal.version, 2); assert.equal(journal.before.connection, null);
+  assert.match(await readFile(envPath, 'utf8'), /operator change/);
+  await assert.rejects(leaveNode({ root: h.root, recover: true, configHome: h.configHome, request, run: h.run }), /未覆盖/);
+  await writeFile(envPath, changed, { mode: 0o600 });
+  assert((await leaveNode({ root: h.root, recover: true, configHome: h.configHome, request, run: h.run })).recovered);
+  assert.equal(await readFile(envPath, 'utf8'), journal.before.env);
+});
+
+test('rollback confirms an absent relay unit after a failure before unit creation', async t => {
+  const h = await setup(t), original = await readFile(join(h.root, '.env'), 'utf8');
+  await chmod(join(h.root, 'secrets'), 0o500);
+  const run = async (file, args) => {
+    if (args.includes('disable')) return { ok: false, stderr: 'Unit does not exist' };
+    if (args.includes('--property=LoadState')) return { ok: true, stdout: 'not-found' };
+    if (args.includes('is-active')) return { ok: false, stdout: 'inactive' };
+    return h.run(file, args);
+  };
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request: async () => new Response(JSON.stringify(h.joined)), run, install: async () => '/opt/frpc', promptKey: async () => key }), /已回滚/);
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), original);
+  await assert.rejects(access(join(h.root, 'data/selfhost-node/join-recovery.json')));
 });

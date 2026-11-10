@@ -43,10 +43,14 @@ export async function artifactSnapshot(directory, requested) {
   }
   let manifest; try { manifest = JSON.parse(await artifactRead(join(location, 'manifest.json'), ARTIFACT_LIMITS.manifest)); } catch { throw Error('Invalid helper manifest'); }
   if (manifest?.version !== (generation ? 2 : 1) || generation && manifest.generation !== generation || !Array.isArray(manifest.files) || manifest.files.length > 4 || new Set(manifest.files.map(item => item?.arch)).size !== manifest.files.length) throw Error('Invalid helper manifest');
+  if (manifest.server !== undefined) {
+    const target = new URL(manifest.server);
+    if (!['https:', 'http:'].includes(target.protocol) || target.username || target.password || target.search || target.hash || !/^\/(?:node\/[a-z0-9-]{1,48}\/)?$/.test(target.pathname)) throw Error('Invalid helper server');
+  }
   const files = manifest.files.filter(item => item && Object.hasOwn(FORWARD_FILES, item.arch) && item.name === FORWARD_FILES[item.arch] &&
     Number.isInteger(item.size) && item.size > 0 && item.size <= ARTIFACT_LIMITS.file && /^[a-f0-9]{64}$/.test(item.sha256) && typeof item.build === 'string' && /^[a-zA-Z0-9.+-]{1,64}$/.test(item.build));
   if (generation && files.length !== Object.keys(FORWARD_FILES).length) throw Error('Incomplete helper generation');
-  return { generation, location, files };
+  return { generation, location, files, server: manifest.server };
 }
 const releaseFiles = new Set([...Object.values(FORWARD_FILES), 'helper.tmp', 'package.tmp', 'manifest.json', 'manifest.json.portal-lock', 'manifest.json.portal-next-v2']);
 export async function removeRelease(directory, generation) {

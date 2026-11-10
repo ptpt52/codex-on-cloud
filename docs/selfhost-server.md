@@ -9,7 +9,7 @@
   | HTTPS / WSS :443
   v
 Caddy  https://<domain>
-  |- /             -> 中心管理服务 127.0.0.1:36180
+  |- /admin/       -> 中心管理服务 127.0.0.1:36180
   `- /node/<slug>/ -> route auth -> frps 127.0.0.1:18080 -> frpc -> 节点 Panel
 
 节点 frpc
@@ -32,7 +32,7 @@ frps
 - Ubuntu 24.04 LTS 和 systemd
 - 不使用 Docker
 
-安装脚本会校验 Node、Caddy 和 frp 的固定下载摘要，并拒绝覆盖校验不一致的已有二进制。
+安装脚本会校验 Node 和 frp 的固定下载摘要，并检查 Caddy 固定版本，并拒绝覆盖校验不一致的已有二进制。
 
 如果服务器无法访问 GitHub Release，可先在本机准备同版本 `frps`，通过 `--frps-file` 导入；导入文件仍会校验固定 SHA-256。Caddy 默认从 Ubuntu 仓库安装固定版本，也可用 `--caddy-file` 导入同版本二进制。
 
@@ -79,19 +79,29 @@ TURN 首版固定使用 IPv4。安装器从默认路由自动识别本机私网 
 
 这不关闭浏览器与节点之间的 IPv6 ICE 直连；只有需要 TURN relay 的纯 IPv6 或 IPv6 入站受阻场景不受此首版支持，会回退到 HTTPS/WSS。
 
-也可导入已有 PEM 证书：
+也可导入已有证书链和对应私钥。文件扩展名不限，内容必须是 PEM 格式；例如 `server.crt` 是域名证书及中间证书链，`server.pem` 是对应私钥：
 
 ```bash
 sudo ./scripts/selfhost-server.sh install \
   --domain desk.example.com \
   --public-ip 203.0.113.10 \
-  --cert-file /path/to/fullchain.pem \
-  --key-file /path/to/privkey.pem
+  --cert-file /path/to/server.crt \
+  --key-file /path/to/server.pem
 ```
 
 导入模式会校验证书域名、证书与私钥是否匹配，不启用 :80 跳转。证书续期由证书来源负责；更新 PEM 后重跑安装命令即可。节点若使用私有 CA，接入时指定 `--ca-file`。
 
-`server:doctor` 使用同一 CA 并通过 `servername` 严格验证中心 HTTPS，不会为了诊断关闭证书校验；CA 缺失、损坏或权限过宽都会明确报告。
+节点不需要各自申请域名 SSL 证书。浏览器访问的是中心域名，由中心 Caddy 提供证书；节点 Panel 只监听回环，frpc 主动建立 TLS 隧道。中心使用公共 CA 时，节点使用系统信任库，无需 `--ca-file`。
+
+私有 CA 接入示例：
+
+```bash
+npm run server:join -- --server https://desk.example.com --slug node-a --ca-file /path/to/center-ca.pem
+```
+
+`--ca-file` 是签发中心证书的 CA 公共证书，不是节点证书或服务器私钥。首次接入、退出、恢复、健康检查和 TURN 请求都使用该中心的 CA，并保留证书链、有效期和 URL 域名验证。切换中心时不会沿用旧中心的 CA；如新中心也使用私有 CA，应重新传入。重复接入同一中心可沿用已保存的 CA。
+
+自动签发模式持续从 `/.well-known/acme-challenge/` 提供 HTTP-01 验证。首次签发只复制证书，写入最终配置后才启用完整服务；续期 hook 显式重启 frps、Caddy 和 coturn。Caddy 保持 `admin off`，不支持 `systemctl reload`。更新证书会短暂断开网络连接，节点桌面、终端后台和任务继续运行。
 
 可选 UFW：
 
@@ -146,7 +156,7 @@ sudo ./scripts/selfhost-server.sh rollback
 打开：
 
 ```text
-https://<domain>/
+https://<domain>/admin/
 ```
 
 中心管理员可以创建绑定固定 slug 的授权：
@@ -160,6 +170,10 @@ https://<domain>/
 - 中心最多允许 64 个在线节点，不限制业务并发、活跃浏览器或 TURN 会话数量。
 - 仅当 frps 异常退出遗漏 `CloseProxy` 时，中心会在新 `Login` 中核对回环 frps Admin API；旧代理已消失则允许 recovery，仍在线则继续拒绝重复接入。
 - 节点代理只允许绑定中心本身的一个域名和 `/node/<slug>/` 的一个 location；额外子域名、HTTP Basic 凭据、Host 重写或注入的请求/响应头都会拒绝接入，防止同一代理越过自己的节点路径。
+
+管理页和管理员 API 位于 `/admin/`，管理员 Cookie 也限制在该路径。升级后旧根路径管理员会话失效，需要重新登录；Caddy 转发节点请求时会剔除新旧管理员 Cookie。`--admin-cidr` 只限制 `/admin/`，节点接入、退出和 TURN 机器接口保持独立凭据认证。
+
+所有节点和管理页仍在同一浏览器源，必须由同一管理员控制、相互信任。Cookie 路径和转发过滤只能减少凭据外泄，不能隔离恶意节点的同源脚本。不要把不受信任的第三方节点接入同一域名。
 
 中心只信任回环 Caddy 写入的 `X-Forwarded-For` 客户端地址；管理员登录、节点接入和 TURN 刷新分别按客户端限流，不会互相消耗或让一个外部地址锁住其他管理员。
 
@@ -192,7 +206,7 @@ npm run server:join -- \
 
 `server:leave` 先确认 frpc 已停止，再释放中心租约并恢复 Panel；停止或恢复失败时保留接入配置与备份，修复问题后可直接重试。中心网络不可达时会明确警告，并在本地中继确认停止后完成离线清理。
 
-`server:join` 使用部署锁，并先完成 frpc、CA 和本地条件检查，再申请中心授权。正式接入失败时会逆序停止服务、恢复 Panel 和文件、调用中心 leave；若回滚或中心释放仍未确认，会保留私有 `data/selfhost-node/join-recovery.json`，`server:doctor` 会报告该状态。故障排除后运行 `npm run server:leave -- --recover` 完成收尾。
+`server:join` 使用部署锁，并先完成 frpc、CA 和本地条件检查，再申请中心授权。改写配置前先写入最多 256 KiB 的私有事务快照，包含 Panel、旧备份、中继配置、CA 和服务状态；超出限制时拒绝更改。正式接入失败时会停止中继、释放中心授权并恢复原文件和服务状态；若回滚或中心释放仍未确认，会保留私有 `data/selfhost-node/join-recovery.json`，`server:doctor` 会报告该状态。恢复会逐个比较文件与事务预期内容，遇到人工修改保留现场，不覆盖冲突；只有全部恢复已确认才删除记录。故障排除后运行 `npm run server:leave -- --recover` 完成收尾。
 
 诊断与退出：
 
@@ -241,3 +255,13 @@ npm run test:browser
 4. 撤销 key 后新请求立即失败，旧 WebSocket 在心跳周期内关闭。
 5. TURN UDP、TCP、TLS 和仅 relay 路径可用。
 6. 重启 center、frps 或 caddy 后节点自动恢复，任务不重启。
+
+## TURN 与转发助手
+
+中心通过 HTTPS 返回短期 TURN 凭据及固定公网 IPv4、UDP relay 端口范围。节点只在该地址范围内接收公网 IPv4 relay 候选；SDP、候选对和收包检查使用同一规则，ICE 消息完整性及 DTLS 校验保持启用。既有私网 IPv4、公网 IPv6 直连和 HTTPS/WSS 回退继续可用。TURN 控制连接支持 UDP、TCP 和 TLS；relay 对端流量使用 UDP。
+
+转发助手从 `0.7.3` 起支持 `https://desk.example.com/node/node-a/`。TCP、串口、反向映射及恢复连接均保留节点前缀，Origin 仍是 `https://desk.example.com`。更新节点后重新运行 `npm run build:forward` 并重新下载助手；构建使用 `.env` 的 `PUBLIC_ORIGIN` 与 `ENTRY_BASE_PATH`，也可显式指定完整节点 URL。旧根地址部署继续兼容。
+
+## 验证范围
+
+`npm run test:selfhost:edge` 使用真实 Caddy 验证本地 TLS、HTTP-01 路由和 Cookie 过滤；续期 shell 命令使用本地夹具，不访问 systemd 或公共 ACME。`npm run test:turn` 使用真实 coturn 做 UDP、TCP、TLS 强制 relay 数据往返。`npm run test:forward:entry` 编译真实 Go 助手并通过节点路径传输 TCP 数据，桌面管理使用夹具。它们都不替代正式服务器上的 DNS、安全组、公共 CA 签发、FRP 和 Cloudflare 部署检查。

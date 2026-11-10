@@ -6,14 +6,23 @@ import { FORWARD_CLIENTS } from './public/forward-platform.js';
 import { FORWARD_FILES, ARTIFACT_LIMITS, artifactSnapshot } from '../native/forward-artifacts.mjs';
 
 export { FORWARD_FILES };
-export function createForwardDownloads(directory) {
+export function createForwardDownloads(directory, { server } = {}) {
+  const entry = () => { const value = typeof server === 'function' ? server() : server; return { server: value, base: value ? new URL(value).pathname : '/' }; };
+  function matching(snapshot) {
+    // Root publications made before server metadata remain usable. Node paths
+    // require a helper compiled for this exact entry, including its prefix.
+    const { server: expected, base } = entry();
+    if (expected && (snapshot.server ? snapshot.server !== expected : base !== '/')) throw Object.assign(Error('助手入口已变化，请重新构建并下载'), { status: 409 });
+    return snapshot;
+  }
   let active = 0;
   async function list() {
     if (!directory) return [];
     try {
-      const { files, generation } = await artifactSnapshot(directory);
+      const { files, generation } = matching(await artifactSnapshot(directory));
+      const { base } = entry();
       return files.map(({ arch, name, size, sha256, build }) => ({ arch, name, size, sha256, build,
-        href: '/api/forward/download/' + arch + (generation ? '?generation=' + generation : '') }));
+        href: (base === '/' ? '' : base.slice(0, -1)) + '/api/forward/download/' + arch + (generation ? '?generation=' + generation : '') }));
     } catch { return []; }
   }
   async function serve(arch, res, generation) {
@@ -21,7 +30,7 @@ export function createForwardDownloads(directory) {
     active++; let fd;
     try {
       let snapshot;
-      try { snapshot = await artifactSnapshot(directory, generation); }
+      try { snapshot = matching(await artifactSnapshot(directory, generation)); }
       catch (error) { if (error.status) throw error; throw Object.assign(Error(generation ? '助手版本已更新，请刷新列表重新下载' : '助手尚未构建或下载项不存在'), { status: generation ? 410 : 404 }); }
       const item = snapshot.files.find(item => item.arch === arch);
       if (!item) throw Object.assign(new Error('助手尚未构建或下载项不存在'), { status: 404 });

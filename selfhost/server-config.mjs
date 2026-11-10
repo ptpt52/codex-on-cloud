@@ -30,13 +30,13 @@ http://${domain} {
 `;
 }
 
-export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [] } = {}) {
+export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [], webroot = '/var/lib/codex-selfhost/acme' } = {}) {
   domain = serverDomain(domain);
   if (!Array.isArray(adminCidrs) || adminCidrs.some(cidr => typeof cidr !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-fA-F:]+\/\d{1,3}$/.test(cidr))) throw Error('管理页访问 CIDR 无效');
   const effectiveAdminCidrs = [...new Set([...adminCidrs, '127.0.0.1/32', '::1/128'])];
   const adminGuard = adminCidrs.length ? `
 	@outsideAdmin {
-		not path /node /node/*
+		path /admin /admin/*
 		not remote_ip ${effectiveAdminCidrs.join(' ')}
 	}
 	handle @outsideAdmin {
@@ -48,7 +48,7 @@ export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', 
 	servers {
 		protocols h1 h2
 	}
-	${redirectHttp ? '' : 'auto_https disable_redirects'}
+	auto_https disable_redirects
 }
 
 https://${domain} {
@@ -79,6 +79,7 @@ ${adminGuard}
 		}
 		reverse_proxy 127.0.0.1:${frpHttpPort} {
 			header_up Host {host}
+			header_up Cookie "(^|;[ \t]*)coc_session_center(_admin)?=[^;]*" "$1"
 			flush_interval -1
 			transport http {
 				read_timeout 0
@@ -91,6 +92,17 @@ ${adminGuard}
 		reverse_proxy 127.0.0.1:${centerPort}
 	}
 }
+${redirectHttp ? `
+http://${domain} {
+\troot * ${webroot}
+\thandle /.well-known/acme-challenge/* {
+\t\tfile_server
+\t}
+\thandle {
+\t\tredir https://{host}{uri} 308
+\t}
+}
+` : ''}
 `;
 }
 
@@ -123,7 +135,7 @@ ops = ["Login", "NewProxy", "CloseProxy", "Ping"]
 `;
 }
 
-export function centerEnvironment({ domain, dataDirectory = '/var/lib/codex-selfhost', port = 36180, frpPort = 7000, configDirectory = '/etc/codex-selfhost' }) {
+export function centerEnvironment({ domain, publicIp, dataDirectory = '/var/lib/codex-selfhost', port = 36180, frpPort = 7000, configDirectory = '/etc/codex-selfhost' }) {
   domain = serverDomain(domain);
   return `SELFHOST_ORIGIN=https://${domain}
 SELFHOST_PUBLIC_HOST=${domain}
@@ -134,6 +146,7 @@ SELFHOST_FRP_TLS_NAME=${domain}
 SELFHOST_FRPS_ADMIN_URL=http://127.0.0.1:17500
 SELFHOST_TURN_SECRET_FILE=${configDirectory}/turn_secret
 SELFHOST_TURN_REALM=${domain}
+${publicIp ? `SELFHOST_TURN_RELAY_IPV4=${publicIp}\n` : ''}
 `;
 }
 
@@ -282,7 +295,6 @@ StartLimitBurst=8
 [Service]
 Type=simple
 ExecStart=${root}/bin/caddy run --config ${configDirectory}/Caddyfile
-ExecReload=${root}/bin/caddy reload --config ${configDirectory}/Caddyfile
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -300,7 +312,7 @@ WantedBy=multi-user.target
 `;
 }
 
-export function certbotHook(domain, { configDirectory = '/etc/codex-selfhost' } = {}) {
+export function certbotHook(domain, { configDirectory = '/etc/codex-selfhost', restart = true } = {}) {
   domain = serverDomain(domain);
   return `#!/bin/sh
 # Managed by codex-selfhost. Removed when switching to imported PEM certificates.
@@ -310,8 +322,6 @@ install -o root -g codex-selfhost -m 0640 /etc/letsencrypt/live/${domain}/fullch
 install -o root -g codex-selfhost -m 0640 /etc/letsencrypt/live/${domain}/privkey.pem ${configDirectory}/tls/privkey.pem
 install -o root -g turnserver -m 0640 /etc/letsencrypt/live/${domain}/fullchain.pem ${configDirectory}/tls/turn-fullchain.pem
 install -o root -g turnserver -m 0640 /etc/letsencrypt/live/${domain}/privkey.pem ${configDirectory}/tls/turn-privkey.pem
-systemctl restart codex-selfhost-frps.service
-systemctl reload codex-selfhost-caddy.service
-systemctl restart codex-selfhost-coturn.service
+${restart ? 'systemctl restart codex-selfhost-frps.service\nsystemctl restart codex-selfhost-caddy.service\nsystemctl restart codex-selfhost-coturn.service' : ''}
 `;
 }

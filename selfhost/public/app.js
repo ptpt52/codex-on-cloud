@@ -5,7 +5,7 @@ async function api(path, { method = 'GET', body, signal } = {}) {
   const headers = { accept: 'application/json' };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const response = await fetch(path, { method, credentials: 'same-origin', headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual', signal });
+  const response = await fetch('/admin' + path, { method, credentials: 'same-origin', headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual', signal });
   const value = await response.json().catch(() => ({}));
   if (!response.ok) throw Object.assign(Error(value.error || '请求失败'), { status: response.status });
   return value;

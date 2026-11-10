@@ -2,7 +2,7 @@ import net from 'node:net';
 import { RTCPeerConnection } from 'werift';
 import { attachRTCControl } from './rtc-control.mjs';
 import { attachRTCHealth } from './rtc-health.mjs';
-import { peerAddress } from './rtc-network.mjs';
+import { peerAddress, relayAddress } from './rtc-network.mjs';
 import { createMDNSLookup } from './rtc-mdns.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
@@ -12,13 +12,13 @@ export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network
 export const RTC_TIMEOUT = RTC_CONNECT_TIMEOUT;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
 
-export function createRTCBridge({ address, ipv6Address, iceServers = [], vncSocket, valid, closed, performControl, connectTerminal, connectStream, serviceOnly = false, connectFiles }) {
-  const allowed = host => peerAddress(host, !!ipv6Address);
+export function createRTCBridge({ address, ipv6Address, iceServers = [], relay, turnCa, vncSocket, valid, closed, performControl, connectTerminal, connectStream, serviceOnly = false, connectFiles }) {
+  const allowed = (host, port) => peerAddress(host, !!ipv6Address) || relayAddress(host, port, relay);
   const pc = new RTCPeerConnection({
-    iceServers, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: iceServers.some(server => [server.urls].flat().some(url => /^turns?:.*[?&]transport=tcp/.test(url))),
+    iceServers, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false, turnTlsOptions: turnCa ? { ca: turnCa, rejectUnauthorized: true } : undefined,
     iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: serviceOnly ? [40112, 40143] : [40000, 40015],
-    iceFilterStunResponse: (_message, [host]) => allowed(host),
-    iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host),
+    iceFilterStunResponse: (_message, [host, port]) => allowed(host, port),
+    iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host, pair.remoteCandidate.port),
     maxMessageSize: MAX_MESSAGE,
   });
   // One application m-section: prepare its transport before remote candidates

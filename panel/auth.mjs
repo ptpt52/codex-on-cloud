@@ -18,7 +18,7 @@ export async function createAuth(config, { validSession = () => true } = {}) {
   // Older panels do not understand roles. A separate revision domain makes
   // them discard these cookies on rollback instead of promoting guests.
   const legacyRevision = tokenHash(config.password);
-  const revision = tokenHash('codex-cloud-role-sessions-v1\0' + config.password);
+  const revision = tokenHash((config.sessionRevision || 'codex-cloud-role-sessions-v1') + '\0' + config.password);
   const sessions = new Map();
   const file = join(config.dataDir, 'sessions.json');
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
@@ -33,7 +33,7 @@ export async function createAuth(config, { validSession = () => true } = {}) {
     const bytes = Buffer.alloc(SESSION_FILE_LIMIT + 1), { bytesRead } = await source.read(bytes, 0, bytes.length, 0);
     if (bytesRead > SESSION_FILE_LIMIT) throw new Error('Oversized session file');
     const stored = JSON.parse(bytes.subarray(0, bytesRead).toString('utf8'));
-    const legacy = stored.revision === legacyRevision;
+    const legacy = !config.sessionRevision && stored.revision === legacyRevision;
     if ((stored.revision === revision || legacy) && Array.isArray(stored.sessions)) {
       for (const item of stored.sessions.slice(-12)) {
         if (item && typeof item.hash === 'string' && /^[a-f0-9]{64}$/.test(item.hash) && typeof item.csrf === 'string' && /^[a-f0-9]{48}$/.test(item.csrf) && Number.isSafeInteger(item.expires) && item.expires > Date.now()) {

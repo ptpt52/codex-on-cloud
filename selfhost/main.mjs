@@ -27,6 +27,7 @@ try {
     frpTlsServerName: required('SELFHOST_FRP_TLS_NAME'),
     frpToken,
     turnSecret,
+    turnRelay: { addresses: [required('SELFHOST_TURN_RELAY_IPV4')], minPort: 49160, maxPort: 49223 },
     turnRealm: process.env.SELFHOST_TURN_REALM || required('SELFHOST_PUBLIC_HOST'),
     frpsAdmin: { endpoint: process.env.SELFHOST_FRPS_ADMIN_URL || 'http://127.0.0.1:17500', username: 'admin', password: frpsAdminPassword },
   });

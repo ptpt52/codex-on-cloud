@@ -62,7 +62,7 @@ npm run deploy -- --domain desk.example.com --zone example.com
 
 需要多个节点共用一个浏览器地址时，增加[固定域名网关](docs/gateway.md)。网页从 `/__nodes/` 切换节点，日常切换不使用 CF 管理 Token，也不修改 DNS。已有独立域名要并入现有网关时，按[网关节点迁移 SOP](docs/gateway-migration.md)保留旧入口、增加节点后端，验收后再撤下旧入口。
 
-不依赖 Cloudflare 时，可部署一台 Ubuntu 24.04 公网服务器，通过 `/node/<slug>/` 同时接入多个节点。中心授权、frps、coturn、证书和节点命令见[独立公网服务器部署](docs/selfhost-server.md)。
+不依赖 Cloudflare 时，可部署一台 Ubuntu 24.04 公网服务器，通过 `/node/<slug>/` 同时接入多个节点。管理入口为 `/admin/`，接入的节点须相互信任。中心授权、frps、coturn、证书和节点命令见[独立公网服务器部署](docs/selfhost-server.md)。
 
 ## 使用与维护
 

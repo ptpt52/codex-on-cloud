@@ -1,4 +1,5 @@
-import https from 'node:https';
+import { relayPolicy } from './rtc-network.mjs';
+import { centerClient, centerRequest } from './center-http.mjs';
 
 const MAX_BODY = 16 * 1024;
 
@@ -20,6 +21,7 @@ export function validateTurnResponse(value, now = Date.now()) {
   if (!value || typeof value !== 'object' || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= now || value.expiresAt > now + 60 * 60 * 1000 + 60_000 || !Number.isSafeInteger(value.ttlMs) || value.ttlMs < 60_000 || value.ttlMs > 60 * 60 * 1000 || !Array.isArray(value.iceServers) || value.iceServers.length < 1 || value.iceServers.length > 4) throw Error('TURN 响应无效');
   return {
     expiresAt: value.expiresAt,
+    relay: relayPolicy(value.relay),
     iceServers: value.iceServers.map(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) throw Error('TURN ICE 配置无效');
       const urls = Array.isArray(item.urls) ? item.urls : [item.urls];
@@ -32,32 +34,21 @@ export function validateTurnResponse(value, now = Date.now()) {
   };
 }
 
-function secureRequest(url, body, ca) {
-  return new Promise((resolve, reject) => {
-    const request = https.request(url, { method: 'POST', ca, headers: { 'content-type': 'application/json', accept: 'application/json', 'content-length': Buffer.byteLength(body) }, timeout: 5000 }, response => {
-      const chunks = []; let size = 0;
-      response.on('data', chunk => { size += chunk.length; if (size > MAX_BODY) response.destroy(Error('TURN 响应超过大小上限')); else chunks.push(chunk); });
-      response.on('end', () => resolve({ ok: response.statusCode >= 200 && response.statusCode < 300, status: response.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
-      response.on('error', reject);
-    });
-    request.on('timeout', () => request.destroy(Error('TURN 请求超时'))); request.on('error', reject); request.end(body);
-  });
-}
-
-export async function requestTurnCredentials({ endpoint, node, request = fetch, ca, now = Date.now() } = {}) {
+export async function requestTurnCredentials({ endpoint, node, request = centerRequest, ca, now = Date.now() } = {}) {
   const url = origin(endpoint, 'TURN endpoint');
   if (!node || typeof node.credential !== 'string' || typeof node.slug !== 'string' || typeof node.nodeId !== 'string') throw Error('节点 TURN 身份无效');
+  if (node.origin && new URL(url).origin !== node.origin) throw Error('TURN endpoint 与中心地址不匹配');
   const body = JSON.stringify({ slug: node.slug, nodeId: node.nodeId, credential: node.credential });
-  let ok, status, text;
-  if (ca) {
-    const secured = await secureRequest(url, body, ca); ok = secured.ok; status = secured.status; text = secured.text;
-  } else {
-    const result = await request(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body, redirect: 'error', signal: AbortSignal.timeout(5000) });
-    const reader = result.body?.getReader(), chunks = []; let size = 0;
-    if (reader) { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > MAX_BODY) { await reader.cancel(); throw Error('TURN 响应超过大小上限'); } chunks.push(value); } }
-    else chunks.push(Buffer.from(await result.arrayBuffer()));
-    ok = result.ok; status = result.status; text = Buffer.concat(chunks.map(chunk => Buffer.from(chunk))).toString('utf8');
+  const result = await centerClient(new URL(url).origin, ca, request)(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body, redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const reader = result.body?.getReader(), chunks = []; let size = 0;
+  if (!reader) throw Error('TURN 响应缺少有界数据流');
+  while (true) {
+    const { done, value } = await reader.read(); if (done) break;
+    size += value.length;
+    if (size > MAX_BODY) { await reader.cancel(); throw Error('TURN 响应超过大小上限'); }
+    chunks.push(Buffer.from(value));
   }
+  const { ok, status } = result, text = Buffer.concat(chunks).toString('utf8');
   let value;
   try { value = JSON.parse(text); } catch { throw Error('TURN 响应格式无效'); }
   if (!ok) throw Object.assign(Error(value.error || 'TURN 凭据暂不可用'), { status });
