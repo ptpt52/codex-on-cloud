@@ -66,7 +66,7 @@ export function stunURL(value = 'stun:stun.cloudflare.com:3478') {
 
 // At most eight candidates, reserving room for both address families. mDNS is
 // checked again after resolution; public IPv4 and relay candidates stay disabled.
-export function rtcOffer(body, { ipv6 = false } = {}) {
+export function rtcOffer(body, { ipv6 = false, allowRelay = false } = {}) {
   if (body.type !== 'offer' || typeof body.sdp !== 'string' || Buffer.byteLength(body.sdp) > 32768 || /\0/.test(body.sdp)) throw new Error('连接协商内容无效');
   const lines = body.sdp.split(/\r?\n/);
   const media = lines.filter(line => line.startsWith('m='));
@@ -79,7 +79,7 @@ export function rtcOffer(body, { ipv6 = false } = {}) {
     const public6 = ipv6 && globalIPv6(host);
     const mdns = /^[a-zA-Z0-9-]{1,63}\.local$/.test(host || '');
     if (component !== '1' || transport?.toLowerCase() !== 'udp' || !/^\d+$/.test(port) || Number(port) < 1024 || Number(port) > 65535 || typ !== 'typ' ||
-        !(kind === 'host' && (privateIPv4(host) || mdns || public6) || kind === 'srflx' && public6)) continue;
+        !(kind === 'host' && (privateIPv4(host) || mdns || public6) || kind === 'srflx' && public6 || allowRelay && kind === 'relay' && (net.isIP(host) === 4 && !privateIPv4(host) || public6))) continue;
     const list = public6 ? v6 : v4, key = `${public6 ? canonical(host) : host}:${Number(port)}`;
     if (list.length >= 8 || seen.has(key)) continue;
     seen.add(key); list.push(line);

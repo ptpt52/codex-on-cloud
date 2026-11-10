@@ -6,6 +6,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSelfhostCenter } from '../selfhost/center.mjs';
+import { createHmac } from 'node:crypto';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -15,9 +16,9 @@ function freePort() {
   });
 }
 
-async function setup(t) {
+async function setup(t, { turnSecret } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-center-')), port = await freePort(), origin = `http://127.0.0.1:${port}`, closed = [];
-  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
+  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', turnSecret, closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
   t.after(async () => { await center.close(); await rm(directory, { recursive: true, force: true }); });
   let cookie = '', csrf = '';
@@ -68,6 +69,8 @@ test('join, frp plugin authorization, disconnect and revoke form one bounded nod
   assert.deepEqual(await (await plugin({ op: 'Login', content: { metas, run_id: 'run-a', client_address: '127.0.0.1' } })).json(), { reject: false, unchange: true });
   assert.deepEqual(await (await plugin({ op: 'NewProxy', content: { user: { metas, run_id: 'run-a' }, proxy_name: 'node-node-a', proxy_type: 'http', custom_domains: ['desk.example.test'], locations: ['/node/node-a/'] } })).json(), { reject: false, unchange: true });
   assert.equal((await (await h.request('/api/status')).json()).onlineNodes, 1);
+  assert.equal((await h.request('/internal/route-auth?path=%2Fnode%2Fnode-a%2Fapi%2Fme', { authenticated: false })).status, 204);
+  assert.equal((await h.request('/internal/route-auth?path=%2Fnode%2Fnode-b%2F', { authenticated: false })).status, 503);
   assert.equal((await h.request('/api/nodes/node-a/disconnect', { method: 'POST', body: {} })).status, 200);
   assert.deepEqual(h.closed, [{ slug: 'node-a', reason: 'disconnected_by_admin' }]);
   assert.equal((await (await h.request('/api/keys')).json()).keys[0].status, 'offline');
@@ -86,4 +89,24 @@ test('the frp plugin endpoint cannot be reached through a non-loopback socket co
   const response = await h.request('/internal/frp-plugin?version=0.1.0&op=Login', { method: 'POST', authenticated: false, headers: { 'x-forwarded-for': '203.0.113.8' }, body: { content: {} } });
   assert.equal(response.status, 200); // Socket-origin is loopback; forwarding headers carry no trust.
   assert.equal((await response.json()).reject, true);
+});
+
+test('TURN credentials are short-lived, session-bound and signed with the coturn shared secret', async t => {
+  const h = await setup(t, { turnSecret: 'turn_shared_secret_very_long_123' }); await h.login();
+  const created = await (await h.request('/api/keys', { method: 'POST', body: { name: 'TURN 节点', slug: 'turn-a', expiresAt: null } })).json();
+  const joined = await (await h.request('/api/join', { method: 'POST', authenticated: false, body: { version: 1, slug: 'turn-a', key: created.key, node: { id: 'a'.repeat(32), mode: 'desktop' } } })).json();
+  assert.equal(joined.turnEndpoint, h.origin + '/api/turn-credentials');
+  const metas = { credential: joined.credential, slug: 'turn-a', nodeId: 'a'.repeat(32), mode: 'desktop' };
+  const plugin = body => h.request('/internal/frp-plugin?version=0.1.0&op=' + body.op, { method: 'POST', authenticated: false, body: { version: '0.1.0', op: body.op, content: body.content } });
+  await plugin({ op: 'Login', content: { metas, run_id: '', client_address: '127.0.0.1' } });
+  await plugin({ op: 'NewProxy', content: { user: { metas, run_id: 'run-turn' }, proxy_name: 'node-turn-a', proxy_type: 'http', custom_domains: ['desk.example.test'], locations: ['/node/turn-a/'] } });
+  const response = await h.request('/api/turn-credentials', { method: 'POST', authenticated: false, body: { slug: 'turn-a', nodeId: 'a'.repeat(32), credential: joined.credential } });
+  assert.equal(response.status, 200);
+  const turn = await response.json();
+  assert(turn.ttlMs <= 3600000 && turn.expiresAt > Date.now());
+  assert.match(turn.iceServers[1].urls[0], /^turn:desk\.example\.test:3478\?transport=udp$/);
+  assert.match(turn.iceServers[1].urls[2], /^turns:desk\.example\.test:5349\?transport=tcp$/);
+  assert.equal(turn.iceServers[1].credential, createHmac('sha1', 'turn_shared_secret_very_long_123').update(turn.iceServers[1].username).digest('base64'));
+  assert.equal((await h.request('/api/turn-credentials', { method: 'POST', authenticated: false, body: { slug: 'turn-a', nodeId: 'a'.repeat(32), credential: 'cocn_' + 'z'.repeat(43) } })).status, 401);
+  assert.equal((await (await h.request('/api/status')).json()).turn, true);
 });

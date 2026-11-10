@@ -15,6 +15,7 @@ export const ASSETS = new Map([
   ['/node-scope.js', ['node-scope.js', 'text/javascript; charset=utf-8']],
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
   ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
+  ['/rtc-ice.js', ['rtc-ice.js', 'text/javascript; charset=utf-8']],
   ['/service-link.js', ['service-link.js', 'text/javascript; charset=utf-8']],
   ['/file-wire.js', ['file-wire.js', 'text/javascript; charset=utf-8']],
   ['/file-client.js', ['file-client.js', 'text/javascript; charset=utf-8']],

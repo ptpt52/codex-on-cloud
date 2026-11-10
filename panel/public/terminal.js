@@ -1,5 +1,6 @@
 import { createTraceReporter } from '/connection-trace.js';
 import { nodeURL } from '/node-scope.js';
+import { rtcIceServers } from '/rtc-ice.js';
 import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
@@ -371,7 +372,7 @@ window.addEventListener('message', event => {
   if (value?.type === 'codex-desktop-options') {
     if (value.frame !== frame) return;
     if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
-      try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, hints: rtcHints(value.rtc.hints) }; } catch {}
+      try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, rtcIceServers: rtcIceServers(value.rtc), hints: rtcHints(value.rtc.hints) }; } catch {}
     }
     const wasStandby = standby; standby = value.standby === true;
     blocked = standby || value.blocked !== false; busy = standby || value.busy === true;

@@ -5,6 +5,7 @@ import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureSta
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
 import { nodeHeaders } from '/node-scope.js';
 import { entryPath } from '/entry-path.js';
+import { rtcIceServers } from '/rtc-ice.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -45,7 +46,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     const { csrf, webrtc, rtcStunUrl } = settings;
     if (controller.signal.aborted) throw new Error('连接已取消');
     if (!webrtc) { failure('disabled'); enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
-    peer = new RTCPeerConnection({ iceServers: typeof rtcStunUrl === 'string' && rtcStunUrl.length <= 256 && rtcStunUrl.startsWith('stun:') ? [{ urls: rtcStunUrl }] : [] });
+    peer = new RTCPeerConnection({ iceServers: rtcIceServers(settings) });
     let channel, ended = false, videoReadySent = false, resolveReady, rejectReady, grace;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     void ready.catch(() => {});

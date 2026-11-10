@@ -107,6 +107,18 @@ export class SelfhostRegistry {
     };
   }
 
+  async routeAllowed(nodeSlug) {
+    await this.queue;
+    const item = this.value.keys.find(key => key.slug === nodeSlug), session = this.sessions.get(nodeSlug), now = this.now();
+    return !!item && this.keyStatus(item, now) === 'ready' && session?.status === 'online';
+  }
+
+  async turnAuthorized(input = {}) {
+    await this.queue;
+    const nodeSlug = slug(input.slug), owner = this.credentialOwner(this.value, input.credential), session = this.sessions.get(nodeSlug), now = this.now();
+    return !!owner && owner.slug === nodeSlug && owner.id === session?.keyId && session.nodeId === input.nodeId && session.status === 'online' && this.keyStatus(owner, now) === 'ready';
+  }
+
   credentialOwner(value, credential) {
     if (typeof credential !== 'string' || !CREDENTIAL.test(credential)) return null;
     const hash = tokenHash(credential);

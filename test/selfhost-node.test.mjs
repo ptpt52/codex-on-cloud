@@ -12,7 +12,7 @@ async function setup(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const run = async (file, args) => { calls.push([file, ...args]); return { ok: true, stdout: args.includes('--value') ? 'yes' : '', stderr: '' }; };
   const joined = {
-    name: '现场节点 A', entryBasePath: '/node/node-a/', credential, proxyHost: 'desk.example.test',
+    name: '现场节点 A', entryBasePath: '/node/node-a/', credential, proxyHost: 'desk.example.test', turnEndpoint: 'https://desk.example.test/api/turn-credentials',
     frp: { serverAddr: 'desk.example.test', serverPort: 7000, tlsServerName: 'desk.example.test', token: 'frp_secret_token_1234' },
   };
   return { root, configHome, calls, run, joined };

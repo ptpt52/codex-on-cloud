@@ -18,6 +18,7 @@ import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-
 import { createInputNotices } from './input-notices.js';
 import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
 import { entryPath } from './entry-path.js';
+import { rtcIceServers } from './rtc-ice.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -708,7 +709,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
   return data;
 }
 function cacheRTC(value) {
-  if (typeof value?.webrtc === 'boolean' && typeof value.rtcStunUrl === 'string' && value.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.webrtc, rtcStunUrl: value.rtcStunUrl };
+  if (typeof value?.webrtc === 'boolean' && typeof value.rtcStunUrl === 'string' && value.rtcStunUrl.length <= 256) rtcConfig = { webrtc: value.webrtc, rtcStunUrl: value.rtcStunUrl, rtcIceServers: rtcIceServers(value), rtcIceExpiresAt: Number.isSafeInteger(value.rtcIceExpiresAt) ? value.rtcIceExpiresAt : undefined };
 }
 function finishPanelRequest(id, error, value) {
   const pending = panelRequests.get(id); if (!pending) return;

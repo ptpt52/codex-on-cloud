@@ -5,6 +5,7 @@ import { readStateFile } from '../scripts/state-files.mjs';
 import { createAuth, cookieToken, sessionCookie } from '../panel/auth.mjs';
 import { SelfhostRegistry } from './registry.mjs';
 import { selfhostError } from './protocol.mjs';
+import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
 
 const PUBLIC = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = new Map([
@@ -51,7 +52,7 @@ const ip = req => (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 export async function createSelfhostCenter({
   origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
-  frpToken, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
+  frpToken, turnSecret, turnRealm = publicHost, turnTtlMs = TURN_TTL_MS, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
 } = {}) {
   const parsed = new URL(origin);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw Error('中心 PUBLIC_ORIGIN 必须是 HTTP(S) 根地址');
@@ -110,6 +111,14 @@ export async function createSelfhostCenter({
       if (req.method !== 'POST') throw selfhostError(405, '只允许 POST');
       return plugin(req, res);
     }
+    if (path === '/internal/route-auth' && req.method === 'GET') {
+      if (!loopback(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
+      const requestPath = url.searchParams.get('path') || '', matched = requestPath.match(/^\/node\/([a-z0-9-]{1,48})\//);
+      if (!matched) throw selfhostError(404, '节点路径不存在');
+      const allowed = await registry.routeAllowed(matched[1]);
+      res.writeHead(allowed ? 204 : 503, { 'cache-control': 'no-store', ...(allowed ? {} : { 'x-selfhost-node': 'offline' }) });
+      return res.end();
+    }
     if (path === '/healthz' && req.method === 'GET') return reply(res, 200, { ok: true });
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw selfhostError(403, '请求来源无效');
@@ -124,7 +133,14 @@ export async function createSelfhostCenter({
       rate(joins, ip(req), 60, 60_000);
       const body = await jsonBody(req, 8192);
       const joined = await registry.join({ ...body, source: ip(req) });
-      return reply(res, 200, { ...joined, origin: parsed.origin, proxyHost: publicHost, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName, token: frpToken } });
+      return reply(res, 200, { ...joined, origin: parsed.origin, proxyHost: publicHost, turnEndpoint: turnSecret ? parsed.origin + '/api/turn-credentials' : null, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName, token: frpToken } });
+    }
+    if (path === '/api/turn-credentials' && req.method === 'POST') {
+      if (!turnSecret) throw selfhostError(503, 'TURN 尚未启用');
+      rate(joins, ip(req), 120, 60_000);
+      const body = await jsonBody(req, 4096), allowed = await registry.turnAuthorized(body);
+      if (!allowed) throw selfhostError(401, '节点授权、连接状态或凭据无效');
+      return reply(res, 200, turnCredentials({ secret: turnSecret, slug: body.slug, realm: turnRealm, ttlMs: turnTtlMs }));
     }
     if (path === '/api/leave' && req.method === 'POST') {
       rate(joins, ip(req), 60, 60_000);
@@ -144,7 +160,7 @@ export async function createSelfhostCenter({
       requireWrite(req, current); await auth.revoke(cookieToken(req.headers.cookie, authConfig));
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', authConfig, true) });
     }
-    if (path === '/api/status' && req.method === 'GET') return reply(res, 200, { ...await registry.status(), host: parsed.host, turn: false });
+    if (path === '/api/status' && req.method === 'GET') return reply(res, 200, { ...await registry.status(), host: parsed.host, turn: !!turnSecret });
     if (path === '/api/keys' && req.method === 'GET') return reply(res, 200, { revision: (await registry.status()).revision, keys: await registry.list() });
     if (path === '/api/keys' && req.method === 'POST') {
       requireWrite(req, current); const body = await jsonBody(req, 4096), value = await registry.createKey(body);

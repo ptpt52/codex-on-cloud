@@ -29,7 +29,7 @@ input:focus { outline: 3px solid rgb(50 112 79 / 20%); border-color: #32704f; }
 .topbar strong { font-size: 17px; }
 .host { margin-left: 12px; color: #6b766e; font: 12px ui-monospace, monospace; }
 .top-actions { display: flex; gap: 12px; align-items: center; }
-.summary { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) auto; gap: 1px; margin: 26px 0; overflow: hidden; border: 1px solid #d2dad3; border-radius: 8px; background: #d2dad3; }
+.summary { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)) auto; gap: 1px; margin: 26px 0; overflow: hidden; border: 1px solid #d2dad3; border-radius: 8px; background: #d2dad3; }
 .summary > div { display: grid; gap: 3px; padding: 18px 20px; background: #fff; }
 .summary span, .summary small { color: #68736b; font-size: 12px; }
 .summary strong { font-size: 28px; line-height: 1.1; }

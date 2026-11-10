@@ -36,6 +36,7 @@ function renderStatus(value) {
   $('grace-count').textContent = value.graceNodes;
   $('active-count').textContent = value.activeKeys;
   $('total-count').textContent = '共 ' + value.totalKeys + ' 个';
+  $('turn-state').textContent = value.turn ? '已启用' : '未启用';
   $('connection-state').textContent = '可用';
   $('connection-state').className = 'status online';
 }
@@ -53,7 +54,10 @@ function renderKeys() {
     state.className = 'status ' + (['online', 'authenticated', 'connecting'].includes(item.status) ? 'online' : item.status === 'grace' ? 'warning' : item.status === 'offline' ? 'neutral' : 'error');
     state.textContent = statusLabel(item.status);
     connection.append(state);
-    if (item.session?.source) { const source = document.createElement('small'); source.textContent = item.session.source; connection.append(source); }
+    if (item.session) {
+      const mode = document.createElement('small'); mode.textContent = (item.session.mode === 'terminal' ? '网页终端' : '开发桌面') + ' · ' + date(item.session.connectedAt); connection.append(mode);
+      if (item.session.source) { const source = document.createElement('small'); source.textContent = item.session.source; connection.append(source); }
+    }
     activity.textContent = date(item.session?.lastSeenAt);
     actions.className = 'actions';
     if (item.session && !['revoked', 'expired'].includes(item.status)) {

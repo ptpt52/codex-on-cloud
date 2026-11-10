@@ -32,6 +32,7 @@ import { createUIAssets } from './ui-assets.mjs';
 import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
+import { requestTurnCredentials } from './turn-client.mjs';
 
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -108,13 +109,24 @@ export async function createPanel(config) {
   let closing = false;
   let rtcBusy = false;
   let rtcClosing = Promise.resolve();
+  let turnCache = null, turnPending = null;
   const forwarding = createForwarding(config);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir);
   const fileTransfers = createFileTransfers();
-  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port,
+  const turnConfig = async () => {
+    const node = config.selfhostNode;
+    if (!config.webrtc || !node?.turnEndpoint) return null;
+    if (turnCache && turnCache.expiresAt > Date.now() + 60_000) return turnCache;
+    if (turnPending) return turnPending;
+    turnPending = requestTurnCredentials({ endpoint: node.turnEndpoint, node }).then(value => turnCache = value).catch(() => null).finally(() => { turnPending = null; });
+    return turnPending;
+  };
+  const rtcConfig = async () => {
+    const turn = await turnConfig();
+    return { serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '', rtcIceServers: config.webrtc && turn ? turn.iceServers : [], rtcIceExpiresAt: turn?.expiresAt };
+  };
+  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port, turn: turnConfig,
     connectFiles: (channel, valid, headers, signal, fail) => attachServiceFiles(channel, { valid, headers, signal, fail, port: () => server.address().port }) });
-  const rtcConfig = () => ({ serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
-
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
     const origin = req.headers.origin;
@@ -269,7 +281,7 @@ export async function createPanel(config) {
     requireSession(req); if (!live()) throw new HttpError(409, '控制权已变化');
     const permission = accessState(req, session);
     const visibleControls = desktopAccess(req, session) ? controls : { available: controls.available, maintenance: controls.maintenance, inputBusy: false, clipboardBusy: false, viewportBusy: false };
-    return { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full, rtc: rtcConfig() };
+    return { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full, rtc: await rtcConfig() };
   }
 
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
@@ -332,12 +344,11 @@ export async function createPanel(config) {
       if (previous && owner?.session === previous.hash) lockDesktop();
       const { token, session } = await auth.create(identity);
       if (!auth.get(token)) throw new HttpError(401, '登录授权已改变，请重新登录');
-      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, modeStandby: config.streamProtocol === 1 && config.mode !== 'terminal' ? 1 : 0, ...rtcConfig() }, { 'set-cookie': sessionCookie(token, config) });
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, modeStandby: config.streamProtocol === 1 && config.mode !== 'terminal' ? 1 : 0, ...await rtcConfig() }, { 'set-cookie': sessionCookie(token, config) });
     }
     if (path === '/api/me' && req.method === 'GET') {
       const session = requireSession(req);
-      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, modeStandby: config.streamProtocol === 1 && config.mode !== 'terminal' ? 1 : 0, serviceProtocol: 1, webrtc: config.webrtc === true,
-        rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '' });
+      return reply(res, 200, { mode: config.mode || 'desktop', username: session.username || config.username, access: accessState(req, session), csrf: session.csrf, fastConnect: config.fastConnect === true, streamProtocol: config.streamProtocol === 1 ? 1 : 0, modeStandby: config.streamProtocol === 1 && config.mode !== 'terminal' ? 1 : 0, ...await rtcConfig() });
     }
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);
@@ -505,10 +516,12 @@ export async function createPanel(config) {
       const mode = terminalMode ? 'terminal' : 'desktop', standby = resumable && body.standby === true && config.mode !== 'terminal';
       if (resumable && (config.streamProtocol !== 1 || !STREAM_ID.test(body.streamId))) throw new HttpError(400, '会话协议无效');
       if (!config.webrtc) throw new HttpError(404, '未启用桌面直连');
-      let offer, hints;
+      let offer, hints, iceServers = [];
       try {
         hints = rtcHints(body.hints);
-        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true }), hints.browser, { ipv6: config.webrtcIPv6 === true });
+        const turn = await turnConfig();
+        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true, allowRelay: !!turn?.iceServers?.length }), hints.browser, { ipv6: config.webrtcIPv6 === true });
+        iceServers = turn?.iceServers || [];
       } catch (error) { throw new HttpError(400, error.message); }
       let target;
       if (terminalMode) {
@@ -542,7 +555,7 @@ export async function createPanel(config) {
           (!resumable || streamStates.get(body.streamId)?.stream === stream && (!!streamEntry || JSON.stringify(streamStates.get(body.streamId).target) === JSON.stringify(target)));
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
-        bridge = createRTCBridge({ address, ipv6Address, vncSocket: config.vncSocket, valid,
+        bridge = createRTCBridge({ address, ipv6Address, iceServers, vncSocket: config.vncSocket, valid,
           ...(resumable ? { connectStream: (channel, authorized, fail) => {
             streamEntry = streamRTC(channel, stream, authorized, fail); return streamEntry;
           } } : terminalMode ? { connectTerminal: (channel, authorized, fail) => {
