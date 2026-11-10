@@ -102,7 +102,7 @@ export async function createSelfhostCenter({
     }
     const allowed = await (async () => {
       if (url.searchParams.get('op') === 'Login') return registry.authorizeLogin({ metas: content.metas, runId: content.run_id, source: content.client_address, proxyOnline });
-      if (url.searchParams.get('op') === 'NewProxy') return registry.authorizeProxy({ metas: content.user?.metas, runId: content.user?.run_id, name: content.proxy_name, type: content.proxy_type, host: content.custom_domains?.[0], locations: content.locations });
+      if (url.searchParams.get('op') === 'NewProxy') return registry.authorizeProxy({ metas: content.user?.metas, runId: content.user?.run_id, name: content.proxy_name, type: content.proxy_type, customDomains: content.custom_domains, subdomain: content.subdomain, locations: content.locations, httpUser: content.http_user, httpPwd: content.http_pwd, hostHeaderRewrite: content.host_header_rewrite, routeByHTTPUser: content.route_by_http_user, headers: content.headers, responseHeaders: content.response_headers });
       if (url.searchParams.get('op') === 'Ping') return registry.authorizePing({ metas: content.user?.metas, runId: content.user?.run_id });
       if (url.searchParams.get('op') === 'CloseProxy') { await registry.closeProxy({ metas: content.user?.metas, runId: content.user?.run_id }); return true; }
       return false;

@@ -42,7 +42,7 @@ test('one slug has one live connection, resumes only in its grace window, and th
   assert.match(first.credential, /^cocn_[A-Za-z0-9_-]{43}$/);
   await assert.rejects(registry.join({ version: 1, slug: key.slug, credential: first.credential, node: { id: 'a'.repeat(32), mode: 'terminal' } }), /已有在线连接/);
   assert.equal(await registry.authorizeLogin({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a' }), true);
-  assert.equal(await registry.authorizeProxy({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a', name: 'node-node-a', type: 'http', host: 'desk.example.test', locations: ['/node/node-a/'] }), true);
+  assert.equal(await registry.authorizeProxy({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a', name: 'node-node-a', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/node-a/'] }), true);
   assert.equal((await registry.list())[0].status, 'online');
   await registry.closeProxy({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a' });
   assert.equal((await registry.list())[0].status, 'grace');
@@ -50,7 +50,7 @@ test('one slug has one live connection, resumes only in its grace window, and th
   assert.equal(resumed.credential, first.credential);
 
   assert.equal(await registry.authorizeLogin({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a2' }), true);
-  assert.equal(await registry.authorizeProxy({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a2', name: 'node-node-a', type: 'http', host: 'desk.example.test', locations: ['/node/node-a/'] }), true);
+  assert.equal(await registry.authorizeProxy({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a2', name: 'node-node-a', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/node-a/'] }), true);
   await registry.closeProxy({ metas: metadata(first.credential, key.slug, 'a'.repeat(32)), runId: 'run-a2' });
   clock.value += SELFHOST_LIMITS.graceMs + 1;
   const released = await registry.join({ version: 1, slug: key.slug, credential: first.credential, node: { id: 'a'.repeat(32), mode: 'terminal' } });
@@ -62,8 +62,12 @@ test('frp login and proxy authorization require the exact node, host, proxy and 
   const joined = await registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'desktop' } });
   const metas = metadata(joined.credential, key.slug, 'a'.repeat(32));
   assert.equal(await registry.authorizeLogin({ metas, runId: '' }), true);
-  const proxy = { metas, runId: 'run-a', name: 'node-node-a', type: 'http', host: 'desk.example.test', locations: ['/node/node-a/'] };
-  assert.equal(await registry.authorizeProxy({ ...proxy, host: 'evil.example.test' }), false);
+  const proxy = { metas, runId: 'run-a', name: 'node-node-a', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/node-a/'] };
+  assert.equal(await registry.authorizeProxy({ ...proxy, customDomains: ['evil.example.test'] }), false);
+  assert.equal(await registry.authorizeProxy({ ...proxy, customDomains: ['desk.example.test', 'evil.example.test'] }), false);
+  assert.equal(await registry.authorizeProxy({ ...proxy, subdomain: 'extra' }), false);
+  assert.equal(await registry.authorizeProxy({ ...proxy, httpUser: 'private' }), false);
+  assert.equal(await registry.authorizeProxy({ ...proxy, hostHeaderRewrite: 'evil.example.test' }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, locations: ['/node/node-a'] }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, name: 'other' }), false);
   assert.equal(await registry.authorizeProxy(proxy), true);

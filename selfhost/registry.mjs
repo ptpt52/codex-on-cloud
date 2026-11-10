@@ -219,12 +219,14 @@ export class SelfhostRegistry {
     });
   }
 
-  async authorizeProxy({ metas, runId, name, type, host, locations } = {}) {
+  async authorizeProxy({ metas, runId, name, type, customDomains, subdomain, locations, httpUser, httpPwd, hostHeaderRewrite, routeByHTTPUser, headers, responseHeaders } = {}) {
     const meta = this.loginMeta(metas); if (!meta || typeof runId !== 'string') return false;
     return this.mutate(({ value, sessions, now, close }) => {
       const item = this.credentialOwner(value, meta.credential), session = item && sessions.get(item.slug);
       if (session?.status === 'authenticated' && !session.runId) session.runId = runId;
-      const allowed = !!item && this.keyStatus(item, now) === 'ready' && item.slug === meta.slug && session && session.nodeId === meta.nodeId && session.runId === runId && session.status === 'authenticated' && name === proxyName(item.slug) && type === 'http' && host === this.host && Array.isArray(locations) && locations.length === 1 && locations[0] === entryBasePath(item.slug);
+      const empty = value => value === undefined || value === '';
+      const emptyHeaders = value => value === undefined || value === null || typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
+      const allowed = !!item && this.keyStatus(item, now) === 'ready' && item.slug === meta.slug && session && session.nodeId === meta.nodeId && session.runId === runId && session.status === 'authenticated' && name === proxyName(item.slug) && type === 'http' && Array.isArray(customDomains) && customDomains.length === 1 && customDomains[0] === this.host && empty(subdomain) && Array.isArray(locations) && locations.length === 1 && locations[0] === entryBasePath(item.slug) && empty(httpUser) && empty(httpPwd) && empty(hostHeaderRewrite) && empty(routeByHTTPUser) && emptyHeaders(headers) && emptyHeaders(responseHeaders);
       if (!allowed) return { value: false, close };
       session.status = 'online'; session.onlineAt = session.onlineAt || now; session.lastSeenAt = now; this.audit(value, 'node_online', item, now); return { value: true, close };
     });
