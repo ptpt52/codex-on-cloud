@@ -116,10 +116,12 @@ export async function createAuth(config, { validSession = () => true } = {}) {
   };
 }
 
-export function cookieToken(header = '') {
-  return header.split(';').map(part => part.trim()).find(part => part.startsWith('coc_session='))?.slice(12);
+export const sessionCookieName = (config = {}) => config.nodeId ? 'coc_session_' + config.nodeId : 'coc_session';
+export function cookieToken(header = '', config = {}) {
+  const prefix = sessionCookieName(config) + '=';
+  return header.split(';').map(part => part.trim()).find(part => part.startsWith(prefix))?.slice(prefix.length);
 }
 
 export function sessionCookie(token, config, expired = false) {
-  return `coc_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${expired ? 0 : Math.floor(config.sessionMs / 1000)}${config.secureCookies ? '; Secure' : ''}`;
+  return `${sessionCookieName(config)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${expired ? 0 : Math.floor(config.sessionMs / 1000)}${config.secureCookies ? '; Secure' : ''}`;
 }

@@ -144,6 +144,55 @@ systemctl --user restart codex-cloud-panel.service codex-cloud-tunnel.service
 
 来源：[cloudflared 官方下载](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/)、[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/)、[Access 自托管应用](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)。
 
+## 固定域名在任意节点之间切换
+
+需要始终访问同一个完整域名、经常把入口切到当前机器时，使用独立的 `native:activate`，不需要预先登记节点数量或名称。每台机器使用自己的 Tunnel、节点身份、登录、工作区与终端；共享域名只指向当前激活节点，不把多个独立工作台作为同一 Tunnel 的副本混用。Cloudflare 副本不能保证指定某台主机，参见[官方说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-availability/)。
+
+先更新各节点代码并完成本机部署；新机器可先用 `npm run deploy -- --origin https://desk.example.com` 初始化本地服务，不先发布 DNS。激活命令会检查／安装项目固定版本的 cloudflared，已有其他版本文件时拒绝覆盖。首次在**当前拥有该域名的原节点**执行一次，启用共享入口；随后任意新节点首次接入也运行完整命令，例如：
+
+```sh
+npm run native:activate -- --domain desk.example.com --zone example.com \
+  --api-token-file /path/to/private-cf-api-token
+```
+
+令牌文件需属于当前用户、权限 0600、最多 4 KiB；权限沿用自动发布需要的 Tunnel 编辑、Zone 读取和 DNS 编辑，范围限制为目标账户与区域。API Token 可以在各节点独立签发，只保存文件路径；不要复制原节点的 `secrets`、`data`、工作区或登录缓存。新节点有已初始化的其他域名部署时会拒绝隐式改绑，需先明确迁移到选定的固定入口。
+
+首次接入后，在想使用的任意节点执行以下命令，即将固定域名入口切到这台机器：
+
+```sh
+npm run native:activate
+```
+
+每节点只维护一份接入身份并复用同一个 Tunnel；节点数量可动态增加、退出，不需要修改固定 A/B/C 列表。首次启用会把该节点的 `PUBLIC_ORIGIN`、`NODE_ID` 和 `SHARED_ENTRY=1` 写入原 `.env`，必要时仅重启本机面板和 Tunnel；按已有 PartOf 关系关联的文件服务可能随面板重启。桌面、manager、tmux 和任务不重启。面板首次重启后的映射仍需重新配对；后续配置未变化的激活不重启面板。
+
+命令先验证私有入口、固定节点身份、文件服务和 Tunnel 已健康接入 Cloudflare，再更新 CNAME；随后读取确认并通过公网 `/readyz` 核对当前可见节点。已有域名未启用共享标记且不属于本机部署、DNS 指向其他服务、Tunnel 含其他路由、备注空间不足或配置被人工修改时均拒绝覆盖。普通 `deploy`／`native:publish` 不会因此获得抢回其他活动节点入口的权限。
+
+所有节点的共享入口身份使用 DNS 备注中的固定标记关联，保留已有备注前缀，按 Free 套餐的 100 字符上限处理，不依赖付费 DNS tags；空间不足时先由用户备份并缩短原备注，不自动丢弃备注。[Cloudflare 备注及 tags 限制](https://developers.cloudflare.com/dns/manage-dns-records/reference/record-attributes/)
+
+切换后先保存浏览器草稿并刷新页面，顶部显示当前节点身份的前八位，可与命令输出的 `nodeId` 对照。各节点登录 Cookie 和草稿隔离；即使不同机器恰好有相同 pane/PID，也不带入另一节点的草稿。浏览器最多持久保存 16 个节点的临时草稿命名空间，总序列化字符上限 2 MiB；超限保留当前内存草稿并提示保存失败，不静默淘汰未提交文字。旧版未绑定节点的草稿不自动导入任意新节点，首次启用前先复制重要文字。
+
+旧页面的 HTTP／WebSocket 请求绑定原节点，路由已切到别处时停止操作并提示刷新，不把重命名、粘贴、Enter 或其他未确认动作改发到新节点。已有健康的直连／WebSocket 可能仍连接原节点；它们不会迁移，旧任务继续在原机器运行。原映射后续恢复若访问到其他节点会失败，不会换目标或重放旧数据。门户仍是目录，若将共享域名加入门户，应把它作为一个逻辑入口，不用同一个地址重复注册多台物理节点。
+
+查看状态：
+
+```sh
+npm run native:activate -- --status
+```
+
+`active` 表示当前读取的 DNS 记录确实指向本节点且共享标记匹配，不保证其他地区或已有连接已经切换。公网传播未确认时命令会明确提示；不重复提交切换或回退旧节点。多机同时切换不提供跨主机锁或原子比较写入保证，以最终 DNS 状态为准，**不要并行发起激活**。
+
+接受后回复丢失会通过一次读取核对本次随机操作标记；仍无法确认时保留有界恢复记录并阻止自动重发。先运行 `--status`，确认愿意接受当前 DNS 结果后可明确解除本机待核对记录：
+
+```sh
+npm run native:activate -- --resolve-unknown
+```
+
+此动作只读取 DNS 并收尾／清除本机记录，不发送新的切换，也不回滚别人后来激活的节点。原先准备的本机服务配置会保留，之后可重新明确执行 `native:activate`。
+
+普通域名发布与共享入口激活互相检查未完成记录。普通发布未结束时先按原目标完成或回退；共享切换待核对时先查询／解除记录，再运行部署或普通发布，避免不同维护命令覆盖对方的准备状态。
+
+新增持久状态只有每节点一份 `data/cloudflare-node.json`（最多 8 KiB，含身份与令牌文件路径）和一份 `data/cloudflare-activation.json`（最多 256 KiB，含本机配置快照及本次操作），均 0600、被 Git 忽略；临时文件与空租约沿用已有有界写入工具，不保存节点列表、历史队列或流量日志。已退出且不再使用的机器，其独立 Tunnel 可由账户管理员在 Cloudflare 控制台明确删除；命令不自动删除其他节点的资源。
+
 ## 修改本项目节点域名
 
 已有部署修改为 `home-codex.x-wrt.dev` 时，显式使用 `--rename`，沿用本项目记录的 Tunnel，不创建共享副本：

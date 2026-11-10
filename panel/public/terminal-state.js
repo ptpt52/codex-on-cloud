@@ -4,6 +4,7 @@ export const TERMINAL_STATE_KEY = 'codex-cloud.terminals.v1';
 export const DRAFT_LIMIT = 32768;
 export const DRAFT_SLOTS = 9; // current window and eight terminals; stale identities share this bound
 export const STATE_LIMIT = 2 * 1024 * 1024; // includes worst-case JSON escaping
+export const NODE_DRAFT_LIMIT = 16; // Node inventory is unbounded; browser draft persistence is not.
 const ids = new Set(TERMINAL_IDS);
 export function validTerminalIdentity(value) {
   return !!value && ((value.id === '' && value.token === '') || (ids.has(value.id) && typeof value.token === 'string' && /^%\d{1,10}:\d{1,10}$/.test(value.token)));
@@ -13,11 +14,13 @@ const windowIdentity = { id: '', token: '' };
 
 // Text stays in this browser tab. The server receives neither this state nor
 // stale drafts; selecting a target never sends any terminal input.
-export function createTerminalState(storage) {
+export function createTerminalState(storage, nodeId = '') {
+  if (nodeId && !/^[a-f0-9]{32}$/.test(nodeId)) throw Error('终端节点身份无效');
+  const storageKey = nodeId ? TERMINAL_STATE_KEY + '.' + nodeId : TERMINAL_STATE_KEY;
   const drafts = new Map();
   let selection = null, persistenceFailed = false;
   try {
-    const raw = storage?.getItem(TERMINAL_STATE_KEY);
+    const raw = storage?.getItem(storageKey);
     if (raw && raw.length <= STATE_LIMIT) {
       const value = JSON.parse(raw);
       if (value?.version === 1 && Array.isArray(value.drafts) && value.drafts.length <= DRAFT_SLOTS) {
@@ -27,7 +30,7 @@ export function createTerminalState(storage) {
         }
       }
     }
-    if (!raw) {
+    if (!raw && !nodeId) {
       const legacy = storage?.getItem('codex-cloud.draft');
       if (legacy && legacy.length <= DRAFT_LIMIT) drafts.set('window', { ...windowIdentity, text: legacy });
     }
@@ -37,8 +40,15 @@ export function createTerminalState(storage) {
     if (raw.length > STATE_LIMIT) { persistenceFailed = true; return; }
     try {
       if (!storage) throw new Error('Session storage unavailable');
-      storage.setItem(TERMINAL_STATE_KEY, raw);
-      storage.removeItem('codex-cloud.draft');
+      if (nodeId) {
+        if (!Number.isInteger(storage.length) || storage.length > 256) throw Error('Draft storage metadata limit');
+        const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(key => key?.startsWith(TERMINAL_STATE_KEY + '.'));
+        if (!keys.includes(storageKey) && keys.length >= NODE_DRAFT_LIMIT) throw Error('Node draft limit');
+        const total = keys.filter(key => key !== storageKey).reduce((sum, key) => sum + (storage.getItem(key)?.length || 0), raw.length);
+        if (total > STATE_LIMIT) throw Error('Node draft byte limit');
+      }
+      storage.setItem(storageKey, raw);
+      if (!nodeId) storage.removeItem('codex-cloud.draft');
       persistenceFailed = false;
     } catch { persistenceFailed = true; }
   }

@@ -12,6 +12,7 @@ export const ASSETS = new Map([
   ['/node-directory.js', ['node-directory.js', 'text/javascript; charset=utf-8']],
   ['/node-ui.js', ['node-ui.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/node-scope.js', ['node-scope.js', 'text/javascript; charset=utf-8']],
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
   ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
   ['/service-link.js', ['service-link.js', 'text/javascript; charset=utf-8']],
@@ -86,7 +87,8 @@ async function checkScripts(raw) {
     child.stdin.end(JSON.stringify(sources));
   });
 }
-export async function createUIAssets({ root = PUBLIC, validate = true } = {}) {
+export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '' } = {}) {
+  if (nodeId && !/^[a-f0-9]{32}$/.test(nodeId)) throw Error('前端节点身份无效');
   const versions = new Map(); let current, busy = false;
   async function reload() {
     if (busy) throw Error('前端更新正在进行，请稍后重试');
@@ -99,6 +101,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true } = {}) {
         raw.set(route, { bytes, type });
       }
       const hash = createHash('sha256');
+      if (nodeId) hash.update('node:' + nodeId);
       for (const [route, asset] of raw) hash.update(route).update(asset.bytes);
       const revision = hash.digest('hex').slice(0, 24);
       if (current?.revision === revision) return { revision, changed: false };
@@ -119,7 +122,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true } = {}) {
             if (url.origin !== 'http://ui.local' || !raw.has(url.pathname) || url.pathname === '/sw.js') return match;
             url.searchParams.set('ui', revision); return attr + '=' + quote + url.pathname + url.search + url.hash + quote;
           });
-          html = html.replace(/<head(?:\s[^>]*)?>/i, '<head><meta name="ui-revision" content="' + revision + '"><script type="importmap">' + importMap + '</script>');
+          html = html.replace(/<head(?:\s[^>]*)?>/i, '<head><meta name="ui-revision" content="' + revision + '">' + (nodeId ? '<meta name="node-id" content="' + nodeId + '">' : '') + '<script type="importmap">' + importMap + '</script>');
           bytes = Buffer.from(html);
         }
         if (route === '/sw.js') bytes = Buffer.from(bytes.toString().replace('__UI_REVISION__', revision));

@@ -17,6 +17,7 @@ import { createFileListReader } from './file-list.js';
 import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 import { createInputNotices } from './input-notices.js';
+import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -29,14 +30,14 @@ let fastConnectEnabled = false;
 let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = null, frameSerial = 0;
 let draftStorage;
 try { draftStorage = sessionStorage; } catch {}
-const terminalState = createTerminalState(draftStorage);
+const terminalState = createTerminalState(draftStorage, nodeIdentity());
 let draftIdentity = { id: '', token: '' }, draftNotice = '';
 let inputBusy = false;
 let inputComposing = false;
 let inputController = null, inputFeedback = false, maintenancePending = false;
 let controlsState = { available: false, maintenance: false, inputBusy: false };
 let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = false, clipboardText = '';
-let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false;
+let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false, nodeMismatch = false;
 let diagnosticsController = null, diagnosticsTimer;
 let frameTransport = '';
 let frameNetwork = null, directIssue = '';
@@ -536,7 +537,8 @@ function renderConnection() {
   if (confirmation && !confirmationValid(confirmation)) closeConfirmation();
   syncScreenLock();
   let label;
-  if (accessExpired) label = '访问验证已过期';
+  if (nodeMismatch) label = '入口已切换';
+  else if (accessExpired) label = '访问验证已过期';
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
   else if (!owned) label = permissions.role === 'temporary' ? '临时访问' : permissions.requiresUnlock ? '屏幕已锁定' : '等待接管';
   else if (desktopReady === false) label = terminalOnly ? '终端后台未就绪' : '桌面未就绪';
@@ -584,7 +586,10 @@ function renderConnection() {
   syncModeStandby();
   sendDisplayPreferences();
   if (!loggedIn) return;
-  if (accessExpired) {
+  if (nodeMismatch) {
+    overlay('入口已切换', '请保存草稿后刷新页面，连接当前节点；已发送操作不会重试。');
+    $('access-refresh-button').hidden = false;
+  } else if (accessExpired) {
     overlay('访问验证已过期', '刷新页面完成外层访问验证，然后返回原来的工作会话。');
     $('access-refresh-button').hidden = false;
   } else if (!navigator.onLine || panelState === 'offline') {
@@ -677,7 +682,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
   if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) return framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
-  const headers = { 'x-viewer-id': viewer };
+  const headers = { 'x-viewer-id': viewer, ...nodeHeaders() };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (upload !== undefined) Object.assign(headers, uploadHeaders(upload));
@@ -694,6 +699,9 @@ async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
   });
   if (!signal?.aborted && response.status === 401 && path !== '/api/login') showLogin(loggedIn ? '登录已过期，请重新登录' : '');
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw invalidResponse();
+  if (data.code === 'node_changed') {
+    nodeMismatch = accessExpired = true; owned = false; serviceLink.stop(); stopPolling(); stopFrame(); stopDiagnostics(); renderConnection();
+  }
   if (!response.ok) {
     if (!signal?.aborted && data.access) updateAccess(data.access);
     const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; error.status = response.status; error.code = data.code; throw error;
@@ -944,6 +952,7 @@ function swapStandby(mode) {
 }
 function frameUrl(mode = displayPreferences.mode, epoch = frameEpoch, terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported)) {
   const query = new URLSearchParams({ viewer, frame: String(epoch) });
+  if (nodeIdentity()) query.set('node', nodeIdentity());
   const ui = document.querySelector('meta[name="ui-revision"]')?.content; if (ui) query.set('ui', ui);
   if (fastConnectEnabled) query.set('fast', '1');
   if (streamProtocolEnabled) query.set('stream', '1');
@@ -1057,7 +1066,7 @@ async function showWorkspace(user) {
   accessExpired = false; panelState = 'online'; desktopReady = null;
   if (permissions.canClaim && !permissions.requiresUnlock) initializeTerminalSelection();
   else { selectedTerminal = ''; selectedTerminalToken = ''; terminalCatalog = []; terminalSlots = []; $('mobile-input').value = ''; }
-  $('user-label').textContent = user.username + (permissions.role === 'temporary' ? ' · 临时访问' : '');
+  $('user-label').textContent = user.username + (permissions.role === 'temporary' ? ' · 临时访问' : '') + (nodeIdentity() ? ' · 节点 ' + nodeIdentity().slice(0, 8) : '');
   $('password').value = '';
   $('login-view').hidden = true;
   $('workspace-view').hidden = false;
@@ -1422,7 +1431,7 @@ function renderFiles(files) {
     const row = document.createElement('div'); row.className = 'file-row';
     const detail = document.createElement('span'); detail.textContent = file.name;
     const info = document.createElement('small'); info.textContent = sizeLabel(file.size); detail.append(info);
-    const link = document.createElement('a'); link.href = `/api/files/${encodeURIComponent(file.name)}`; link.textContent = '下载'; link.download = file.name;
+    const link = document.createElement('a'); link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.textContent = '下载'; link.download = file.name;
     link.addEventListener('click', event => {
       const client = serviceLink.files;
       if (!client || file.size > FILE_MAX) return;

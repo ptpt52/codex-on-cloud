@@ -3,6 +3,7 @@ import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute } from './rtc-stats.js';
 import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureStatus } from './transport-policy.js';
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
+import { nodeHeaders } from '/node-scope.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -36,7 +37,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     if (settings?.hints === undefined) { let storage; try { storage = localStorage; } catch {} storedHints = createRTCHints(storage).value; }
     const hints = rtcHints(settings?.hints ?? storedHints);
     if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256) {
-      const response = await fetch('/api/me', { redirect: 'manual', signal: controller.signal });
+      const response = await fetch('/api/me', { headers: nodeHeaders(), redirect: 'manual', signal: controller.signal });
       if (!response.ok) { failure(response.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(response.status)); throw new Error('无法验证连接'); }
       settings = await response.json();
     }
@@ -87,7 +88,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const result = await fetch(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc', { method: 'POST', redirect: 'manual', signal: controller.signal,
-          headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer },
+          headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...nodeHeaders() },
           body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
         });
         if (!result.ok) { const reason = result.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(result.status); failure(reason); throw Object.assign(new Error('直连暂不可用'), { reason, status: result.status }); }

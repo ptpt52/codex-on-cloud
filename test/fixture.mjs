@@ -15,7 +15,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -202,7 +202,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const managerSocket = join(directory, 'manager.sock');
   manager.listen(managerSocket); await once(manager, 'listening');
   const config = {
-    uiRoot, uiValidate: false, mode, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
+    uiRoot, uiValidate: false, mode, nodeId, sharedEntry, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
     forwardPorts, forwardDownloadDir, forwardPeerFactory, agentPort: upstream.address().port,
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
@@ -260,7 +260,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const viewer = '11111111-1111-4111-8111-111111111111';
   async function request(path, { method = 'GET', body, headers = {}, raw } = {}) {
     return fetch(config.origin + path, {
-      method, headers: { origin: config.origin, cookie, 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+      method, headers: { origin: config.origin, cookie, 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...(nodeId ? { 'x-codex-node': nodeId } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual',
     });
   }

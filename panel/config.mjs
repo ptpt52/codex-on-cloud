@@ -33,10 +33,14 @@ export function readConfig(env = environment()) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 无效');
   if (env.WEBRTC_ENABLED !== undefined && !['0', '1'].includes(env.WEBRTC_ENABLED)) throw new Error('WEBRTC_ENABLED 必须为 0 或 1');
   if (env.WEBRTC_IPV6 !== undefined && !['0', '1'].includes(env.WEBRTC_IPV6)) throw new Error('WEBRTC_IPV6 必须为 0 或 1');
+  if (env.NODE_ID !== undefined && !/^[a-f0-9]{32}$/.test(env.NODE_ID)) throw new Error('NODE_ID 必须为 32 位小写十六进制节点身份');
+  if (env.SHARED_ENTRY !== undefined && !['0', '1'].includes(env.SHARED_ENTRY)) throw new Error('SHARED_ENTRY 必须为 0 或 1');
+  if (env.SHARED_ENTRY === '1' && !env.NODE_ID) throw new Error('共享入口需要固定 NODE_ID');
   const webrtcAddress = env.WEBRTC_ENABLED === '0' ? undefined : rtcAddress(env.WEBRTC_LAN_ADDRESS);
   const webrtcIPv6 = env.WEBRTC_IPV6 !== '0';
   return {
     mode: native.mode,
+    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1',
     host: '127.0.0.1', port, origin: origin.origin,
     agentPort: native.agentPort, fileAgentPort: native.fileAgentPort, tunnelMetricsPort: native.tunnelMetricsPort,
     forwardPorts: forwardPorts(env.TCP_FORWARD_PORTS), forwardDownloadDir: join(native.root, 'data', 'forward-client'),

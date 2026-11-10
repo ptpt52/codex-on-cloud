@@ -3,6 +3,7 @@ import { controlDecoder, sendControl } from '/control.js';
 import { routePolicy, STABLE_ROUTE, directRetry } from './transport-policy.js';
 import { TERMINAL_IDS } from '/terminal-slots.js';
 import { createRoundTrip, createHeartbeatPolicy } from '/health.js';
+import { nodeURL } from '/node-scope.js';
 
 const CHUNK = 12 * 1024, integer = n => Number.isSafeInteger(n) && n >= 0 && n <= 2 ** 40;
 const encode = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
@@ -304,7 +305,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       const url = new URL('/session/connect', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       for (const [key, value] of Object.entries({ viewer, streamId: id, mode: terminal ? 'terminal' : 'desktop', ...(standby ? { standby: '1' } : {}), ...(terminal || {}) })) url.searchParams.set(key, value);
       trace('relay-start', { path: 'relay' });
-      const ws = new WebSocket(url), peer = peerFor('relay', value => ws.send(JSON.stringify(value)), () => ws.close(), () => ws.bufferedAmount, false, () => ws.readyState === WebSocket.OPEN);
+      const ws = new WebSocket(nodeURL(url)), peer = peerFor('relay', value => ws.send(JSON.stringify(value)), () => ws.close(), () => ws.bufferedAmount, false, () => ws.readyState === WebSocket.OPEN);
       ws.addEventListener('open', () => { trace('relay-open', { path: 'relay', durationMs: Math.round(performance.now() - peer.startedAt) }); if (!ended && !peer.gone) ws.send(JSON.stringify({ type: 'auth', csrf })); });
       ws.addEventListener('message', event => { try { if (typeof event.data !== 'string' || event.data.length > 24576) throw new Error(); receive(peer, JSON.parse(event.data)); } catch { lost(peer); } });
       ws.addEventListener('close', () => lost(peer)); ws.addEventListener('error', () => lost(peer));

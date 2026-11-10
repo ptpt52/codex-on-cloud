@@ -1,4 +1,5 @@
 import { createTraceReporter } from '/connection-trace.js';
+import { nodeURL } from '/node-scope.js';
 import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
@@ -220,7 +221,7 @@ async function connect() {
   if (stopped || document.hidden || !navigator.onLine) return;
   const url = new URL('/terminal/connect', location.href); url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   for (const [key, value] of Object.entries({ viewer, terminalId, terminalToken })) url.searchParams.set(key, value);
-  attachSocket(new WebSocket(url));
+  attachSocket(new WebSocket(nodeURL(url)));
 }
 function attachSocket(current) {
   const previous = socket;

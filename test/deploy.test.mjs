@@ -89,6 +89,14 @@ test('check-only tolerates a degraded user manager and performs no installs, set
   assert.equal(h.healthy,false);await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
 });
 
+test('deployment preserves a pending shared-entry activation before setup or service mutations', async t => {
+  const h = await harness(t); await mkdir(join(h.root, 'data'), { mode: 0o700 });
+  const file = join(h.root, 'data/cloudflare-activation.json'); await writeFile(file, '{}', { mode: 0o600 });
+  await assert.rejects(deploy(options(['--install-deps']), h.context), /共享入口切换待核对/);
+  assert.ok(h.calls.every(call => call.capture)); assert.equal(await readFile(file, 'utf8'), '{}');
+  await assert.rejects(readFile(join(h.root, '.env')), { code: 'ENOENT' });
+});
+
 test('missing user bus stops before initialization rather than reporting a working deployment',async t=>{
   const h=await harness(t,{bus:''});await assert.rejects(deploy({},h.context),/systemd 用户服务/);assert.equal(h.calls.length,1);
 });

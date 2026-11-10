@@ -144,6 +144,10 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
     log('环境检查通过。未安装依赖、修改配置、启动或重启服务。'); return;
   }
   const oppositeHost = mode === 'terminal' ? 'codex-cloud-desktop.service' : 'codex-cloud-terminal.service';
+  try {
+    await boundedFile(join(root, 'data/cloudflare-activation.json'), 262144);
+    throw Error('共享入口切换待核对，请先用 native:activate -- --status 或 --resolve-unknown 处理，再部署');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if ((await call('systemctl', ['--user', 'is-active', '--quiet', oppositeHost], true)).status === 0) throw Error('另一部署模式仍在运行，不会覆盖服务或停止任务；请保留当前部署');
   const active = await Promise.all(selectedServices.map(service => call('systemctl', ['--user', 'is-active', '--quiet', service], true)));
   const running = active.some(item => item.status === 0);

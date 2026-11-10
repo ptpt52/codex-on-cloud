@@ -4,6 +4,22 @@ import { createTerminalState, DRAFT_LIMIT, DRAFT_SLOTS, STATE_LIMIT, TERMINAL_ST
 const main = { id: 'main', token: '%0:4000' }, auxiliary = { id: 'aux1', token: '%1:4100' }, current = { id: '', token: '' };
 function memory() { const map = new Map(); return { map, getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) }; }
 
+test('shared-origin nodes with identical pane identities keep independent drafts and do not adopt unscoped legacy text', () => {
+  const storage = memory(); Object.defineProperty(storage, 'length', { get: () => storage.map.size }); storage.key = index => [...storage.map.keys()][index] ?? null;
+  createTerminalState(storage).save(main, 'legacy machine draft');
+  const a = createTerminalState(storage, 'a'.repeat(32)), b = createTerminalState(storage, 'b'.repeat(32));
+  assert.equal(a.read(main), ''); a.save(main, 'node A'); a.choose(main); assert.equal(b.read(main), ''); assert.equal(b.selection, null);
+  b.save(main, 'node B'); assert.equal(createTerminalState(storage, 'a'.repeat(32)).read(main), 'node A');
+  assert.equal(createTerminalState(storage, 'b'.repeat(32)).read(main), 'node B'); assert.equal(createTerminalState(storage).read(main), 'legacy machine draft');
+});
+
+test('node draft persistence has bounded namespace count and preserves prior nodes instead of evicting unsent text', () => {
+  const storage = memory(); Object.defineProperty(storage, 'length', { get: () => storage.map.size }); storage.key = index => [...storage.map.keys()][index] ?? null;
+  for (let n = 0; n < 16; n++) createTerminalState(storage, n.toString(16).padStart(32, '0')).save(main, 'keep');
+  const next = createTerminalState(storage, 'f'.repeat(32)); next.save(main, 'still available in this tab'); assert.equal(next.persistenceFailed, true); assert.equal(next.read(main), 'still available in this tab'); assert.equal(storage.length, 16);
+  assert.equal(createTerminalState(storage, '0'.repeat(32)).read(main), 'keep');
+});
+
 test('terminal drafts and selection survive reconstruction without crossing identities', () => {
   const storage = memory(), state = createTerminalState(storage);
   assert.equal(state.save(main, '主终端\n中文'), true); state.save(auxiliary, '日志'); state.choose(auxiliary);

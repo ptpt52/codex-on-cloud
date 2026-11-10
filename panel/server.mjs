@@ -6,7 +6,7 @@ import { Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { resolve, sep } from 'node:path';
 import { WebSocketServer, createWebSocketStream } from 'ws';
-import { createAuth, cookieToken, sessionCookie, equal } from './auth.mjs';
+import { createAuth, cookieToken as readCookieToken, sessionCookie, sessionCookieName, equal } from './auth.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { createServiceDiagnostics } from './service-diagnostics.mjs';
 import { createDeviceDirectory } from './devices.mjs';
@@ -72,7 +72,9 @@ function reply(res, status, data, headers = {}) {
 }
 
 export async function createPanel(config) {
-  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false });
+  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '' });
+  const cookieToken = header => readCookieToken(header, config);
+  const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
   const access = await createAccessControl(config);
   const auth = await createAuth(config, { validSession: session => session.role !== 'temporary' || access.temporaryValid(session) });
   const devices = createDeviceDirectory(config.dataDir);
@@ -183,7 +185,7 @@ export async function createPanel(config) {
     closeSockets(state => state.streamId !== id && !(standby && state.standby && state.mode !== mode));
     const state = { id, streamId: id, mode, standby, target, expected, token, session: expected.session, socket: null };
     const valid = () => streamStates.get(id) === state && owner === expected && !!auth.get(token) && !closing && !maintenancePending;
-    const request = { headers: { cookie: 'coc_session=' + token, 'x-viewer-id': expected.viewer } };
+    const request = { headers: { cookie: sessionCookieName(config) + '=' + token, 'x-viewer-id': expected.viewer } };
     state.stream = createStreamSession({ id, valid,
       canActivate: async planned => {
         const controls = await controlStatus();
@@ -278,11 +280,12 @@ export async function createPanel(config) {
     }
     const url = new URL(req.url, 'http://internal');
     const path = url.pathname;
+    if (path.startsWith('/api/') && !scopedNode(req, url)) return reply(res, 409, { error: '入口已切换到其他节点，请保存草稿后刷新页面。', code: 'node_changed', outcome: 'rejected' });
     if (path === '/ui-version' && req.method === 'GET') return reply(res, 200, { revision: assets.revision });
     if (path === '/healthz' && req.method === 'GET') return reply(res, 200, { ok: true });
     if (path === '/readyz' && req.method === 'GET') {
       const [host, files] = await Promise.all([desktopHealth(), fileHealth()]);
-      return reply(res, host.ready && files ? 200 : 503, { ok: host.ready && files, host: host.ready, files });
+      return reply(res, host.ready && files ? 200 : 503, { ok: host.ready && files, host: host.ready, files, ...(config.nodeId ? { nodeId: config.nodeId } : {}) });
     }
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw new HttpError(403, '请求来源无效');
@@ -359,7 +362,7 @@ export async function createPanel(config) {
       requireWrite(req);
       const body = await jsonBody(req, 48 * 1024), session = requireWrite(req);
       const controller = new AbortController(); res.once('close', () => { if (!res.writableFinished) controller.abort(); });
-      const headers = { host: req.headers.host, origin: req.headers.origin, cookie: req.headers.cookie, 'x-csrf-token': session.csrf, 'x-viewer-id': req.headers['x-viewer-id'] || '' };
+      const headers = { host: req.headers.host, origin: req.headers.origin, cookie: req.headers.cookie, 'x-csrf-token': session.csrf, 'x-viewer-id': req.headers['x-viewer-id'] || '', ...(config.nodeId ? { 'x-codex-node': config.nodeId } : {}) };
       return reply(res, 200, await services.negotiate({ token: cookieToken(req.headers.cookie), session, viewer: headers['x-viewer-id'], body, headers, signal: controller.signal }));
     }
     if (path.startsWith('/api/')) {
@@ -709,6 +712,7 @@ export async function createPanel(config) {
       if (closing || forwardURL.search) return deny(400);
       return forwarding.upgrade(req, socket, head, forwardURL.pathname);
     }
+    if (!scopedNode(req, forwardURL)) return deny(409);
     const session = sessionOf(req);
     if (!session) return deny(401);
     if (!isOwner(req, session, forwardURL.searchParams.get('viewer'))) return deny(session.role === 'temporary' ? 403 : access.screenEnabled ? 423 : 409);

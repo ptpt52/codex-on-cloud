@@ -19,6 +19,7 @@
     "native:tunnel": "node scripts/native.mjs tunnel",
     "native:cloudflared": "node scripts/install-cloudflared.mjs",
     "native:publish": "node scripts/provision-cloudflare.mjs",
+    "native:activate": "node scripts/activate-node.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
     "test:desktop": "python3 -m unittest discover -s test -p '*_test.py'",

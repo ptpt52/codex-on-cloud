@@ -1,4 +1,5 @@
 import { FORWARD_CLIENTS, forwardOS, detectForwardClient } from './forward-platform.js';
+import { nodeLink } from './node-scope.js';
 
 import { forwardReport, forwardFaultArea } from './forward-report.js';
 import { rtcHints } from './rtc-hints.js';
@@ -82,7 +83,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     for (const file of ordered) {
       const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small');
       row.className = 'forward-download'; row.dataset.arch = file.arch;
-      link.href = file.href; link.download = file.name; link.textContent = '下载 ' + FORWARD_CLIENTS[file.arch].label + ' 助手';
+      link.href = nodeLink(file.href); link.download = file.name; link.textContent = '下载 ' + FORWARD_CLIENTS[file.arch].label + ' 助手';
       if (file.arch === platform.arch) { row.classList.add('recommended'); link.setAttribute('aria-description', '推荐版本'); }
       hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); target.append(row);
     }

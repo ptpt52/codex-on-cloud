@@ -20,7 +20,7 @@ const dnsBody = record => Object.fromEntries(['type', 'name', 'content', 'proxie
 const ownedDNS = (record, stage) => record?.type === 'CNAME' && record.name === stage.domain && record.content === `${stage.plan.tunnelId}.cfargotunnel.com`;
 const desiredDNS = stage => ({ type: 'CNAME', name: stage.domain, content: `${stage.plan.tunnelId}.cfargotunnel.com`, proxied: true, ttl: 1 });
 
-export async function privateIngressReady(socketPath, hostname) {
+export async function privateIngressReady(socketPath, hostname, nodeId) {
   const info = await lstat(socketPath);
   if (!info.isSocket() || info.uid !== process.getuid() || (info.mode & 0o077)) throw Error('私有 Tunnel 接口尚未就绪');
   await new Promise((resolve, reject) => {
@@ -29,7 +29,7 @@ export async function privateIngressReady(socketPath, hostname) {
       res.on('data', chunk => { size += chunk.length; if (size > 4096) res.destroy(); else chunks.push(chunk); });
       res.once('error', reject); res.once('aborted', () => reject(Error('私有入口就绪响应中断')));
       res.once('end', () => {
-        try { const value = JSON.parse(Buffer.concat(chunks)); if (res.statusCode !== 200 || value.ok !== true || value.host !== true || value.files !== true) throw Error(); resolve(); }
+        try { const value = JSON.parse(Buffer.concat(chunks)); if (res.statusCode !== 200 || value.ok !== true || value.host !== true || value.files !== true || nodeId && value.nodeId !== nodeId) throw Error(); resolve(); }
         catch { reject(Error('私有入口、任务宿主或文件服务未就绪，未切换公网路由')); }
       });
     });
@@ -226,6 +226,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     let shared, held;
     try {
       if (deploymentLease) deploymentLease.check(); else shared = await acquireDeploymentLease(root);
+      if (await optional(join(root, 'data/cloudflare-activation.json'), LIMIT) !== null) throw Error('共享入口切换待核对，请先用 native:activate -- --status 或 --resolve-unknown 处理');
       held = await acquireFileLock(pendingPath + '.operation-lock'); lease = held; whole = deploymentLease || shared;
       const result = await action(...args); valid(); return result;
     } finally { if (held && lease === held) { lease = undefined; whole = undefined; } await held?.release(); await shared?.release(); }

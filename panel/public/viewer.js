@@ -1,4 +1,5 @@
 import { createTraceReporter } from '/connection-trace.js';
+import { nodeURL } from '/node-scope.js';
 import RFB from './novnc/core/rfb.js';
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { createDesktopPointer } from './desktop-pointer.js';
@@ -359,7 +360,7 @@ function attachViewer(direct, channel) {
   transport = direct;
   networkDetails = null;
   transportName = direct ? 'direct' : 'relay';
-  const url = new URL('/desktop/websockify', location.origin);
+  const url = nodeURL(new URL('/desktop/websockify', location.origin));
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('viewer', viewer);
   const instance = rfb = new RFB(screen, channel || (direct ? direct.video() : url.href), { shared: false });
