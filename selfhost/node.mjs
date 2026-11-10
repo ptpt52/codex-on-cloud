@@ -269,6 +269,27 @@ function servicePath(configHome = process.env.XDG_CONFIG_HOME || join(homedir(),
   return join(configHome, 'systemd', 'user', NODE_SERVICE);
 }
 
+async function relayState(run) {
+  const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]);
+  const enabled = await run('systemctl', ['--user', 'is-enabled', NODE_SERVICE]);
+  return { active: active.ok && active.stdout === 'active', enabled: enabled.ok && ['enabled', 'enabled-runtime'].includes(enabled.stdout) };
+}
+
+async function restoreRelay(before, run) {
+  if (!before) return [];
+  const failures = [];
+  if (before.enabled) {
+    const enabled = await run('systemctl', ['--user', 'enable', NODE_SERVICE]);
+    if (!enabled.ok) failures.push('恢复中继自启动：' + (enabled.stderr || enabled.stdout || enabled.code || 'unknown'));
+  }
+  if (before.active) {
+    const restarted = await run('systemctl', ['--user', 'restart', NODE_SERVICE]);
+    const active = restarted.ok ? await run('systemctl', ['--user', 'is-active', NODE_SERVICE]) : restarted;
+    if (!active.ok || active.stdout !== 'active') failures.push('恢复中继服务：' + (active.stderr || active.stdout || active.code || 'unknown'));
+  }
+  return failures;
+}
+
 async function restoreFile(path, before, limit = 262144) {
   const current = await optional(path, limit);
   if (before === null) { if (current !== null) await removeStateFile(path, { expected: current }); }
@@ -297,6 +318,7 @@ async function joinNodeLocked({
   if (await readRecovery(root)) throw Error('存在未完成的中继回滚，请先运行 server:leave --recover');
   await preflightPanel(root, switchExisting);
   const same = existing?.origin === serverOrigin && existing.slug === nodeSlug, body = { version: 1, slug: nodeSlug, node: { id: same ? existing.nodeId : randomBytes(16).toString('hex'), mode } };
+  const previousRelay = existing && !same ? await relayState(run) : null;
   if (same) body.credential = existing.credential;
   else { const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key; }
   const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), connectionPath = pathFor(root, 'connection.json'), unit = servicePath(configHome);
@@ -309,12 +331,23 @@ async function joinNodeLocked({
     unit: await optional(unit, 65536),
     ca: caPath ? await optional(caPath, 262144) : null,
   };
-  const response = await request(serverOrigin + '/api/join', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000) });
-  let joined;
-  try { joined = await response.json(); } catch { throw Error('中心接入响应格式无效'); }
-  if (!response.ok) throw Error(joined.error || '中心拒绝节点接入（HTTP ' + response.status + '）');
-  const connection = validateConnection({ version: 1, origin: serverOrigin, slug: nodeSlug, name: joined.name, path: joined.entryBasePath, nodeId: body.node.id, mode, credential: joined.credential, proxyHost: joined.proxyHost || joined.frp?.tlsServerName, turnEndpoint: joined.turnEndpoint || null, frp: joined.frp });
-  if (connection.path !== entryBasePath(nodeSlug) || !/^cocn_[A-Za-z0-9_-]{43}$/.test(connection.credential)) throw Error('中心接入响应与节点身份不一致');
+  if (previousRelay) {
+    const stopped = await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
+    if (!stopped.ok) throw Error('无法停止现有节点中继，未修改接入配置：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
+  }
+  let connection;
+  try {
+    const response = await request(serverOrigin + '/api/join', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000) });
+    let joined;
+    try { joined = await response.json(); } catch { throw Error('中心接入响应格式无效'); }
+    if (!response.ok) throw Error(joined.error || '中心拒绝节点接入（HTTP ' + response.status + '）');
+    connection = validateConnection({ version: 1, origin: serverOrigin, slug: nodeSlug, name: joined.name, path: joined.entryBasePath, nodeId: body.node.id, mode, credential: joined.credential, proxyHost: joined.proxyHost || joined.frp?.tlsServerName, turnEndpoint: joined.turnEndpoint || null, frp: joined.frp });
+    if (connection.path !== entryBasePath(nodeSlug) || !/^cocn_[A-Za-z0-9_-]{43}$/.test(connection.credential)) throw Error('中心接入响应与节点身份不一致');
+  } catch (error) {
+    const failures = await restoreRelay(previousRelay, run);
+    if (failures.length) throw Object.assign(Error(error.message + '；旧中继恢复失败（' + failures.join('；') + '）'), { outcome: 'unknown' });
+    throw error;
+  }
 
   let panelChanged = false;
   try {
@@ -326,7 +359,7 @@ async function joinNodeLocked({
     panelChanged = panel.changed;
     await mkdir(join(unit, '..'), { recursive: true, mode: 0o700 });
     await writeStateFile(unit, serviceUnit({ frpc, config }), { expected: before.unit });
-    for (const [tool, args] of [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', NODE_SERVICE]]]) {
+    for (const [tool, args] of [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', NODE_SERVICE]], ['systemctl', ['--user', 'restart', NODE_SERVICE]]]) {
       const result = await run(tool, args); if (!result.ok) throw Error(tool + ' 执行失败：' + (result.stderr || result.stdout || result.code || 'unknown'));
     }
     const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]);
@@ -347,6 +380,7 @@ async function joinNodeLocked({
       if (!path) continue;
       try { await restoreFile(path, text, limit); } catch (failure) { rollback.push(path + '：' + failure.message); }
     }
+    rollback.push(...await restoreRelay(previousRelay, run));
     try { await releaseCentral(connection, request); } catch (failure) { rollback.push('中心：' + failure.message); }
     const suffix = rollback.length ? '；回滚未完全确认（' + rollback.join('；') + '）' : '；中心授权和本地变更已回滚';
     if (!rollback.length) { const text = await optional(recoveryPath(root), 256 * 1024); if (text !== null) await removeStateFile(recoveryPath(root), { expected: text }); }

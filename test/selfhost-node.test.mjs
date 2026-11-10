@@ -38,7 +38,7 @@ test('join stores only the node credential, generates bounded frpc and systemd f
   const unit = await readFile(join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service'), 'utf8');
   assert(!connectionText.includes(key)); assert(!config.includes(key)); assert.match(config, /useSystemCa = true/);
   assert.match(config, /locations = \["\/node\/node-a\/"\]/); assert.match(config, /metadatas\.credential/); assert.match(unit, /Restart=on-failure/);
-  assert.deepEqual(h.calls.slice(0, 3), [['systemctl', '--user', 'restart', 'codex-cloud-panel.service'], ['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', '--now', 'codex-cloud-selfhost-node.service']]);
+  assert.deepEqual(h.calls.slice(0, 4), [['systemctl', '--user', 'restart', 'codex-cloud-panel.service'], ['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', 'codex-cloud-selfhost-node.service'], ['systemctl', '--user', 'restart', 'codex-cloud-selfhost-node.service']]);
   const env = await readFile(join(h.root, '.env'), 'utf8');
   assert.match(env, /PUBLIC_ORIGIN=https:\/\/desk\.example\.test/); assert.match(env, /ENTRY_BASE_PATH=\/node\/node-a\//); assert.match(env, /SHARED_ENTRY=0/);
   assert.match(env, new RegExp('^NODE_ID=' + result.connection.nodeId + '$', 'm'));
@@ -60,6 +60,8 @@ test('joining a different center requires an explicit replacement and imported C
   await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
   await assert.rejects(joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b' }), /server:leave/);
   await joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b', replace: true });
+  assert.equal(h.calls.some(([, ...args]) => args.join(' ') === '--user disable --now codex-cloud-selfhost-node.service'), true);
+  assert.equal(h.calls.filter(([, ...args]) => args.join(' ') === '--user restart codex-cloud-selfhost-node.service').length >= 2, true);
   assert.match(await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8'), /other\.example\.test/);
   const env = await readFile(join(h.root, '.env'), 'utf8');
   assert.match(env, /PUBLIC_ORIGIN=https:\/\/other\.example\.test/);
@@ -71,6 +73,28 @@ test('joining a different center requires an explicit replacement and imported C
   await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => new Response('{"ok":true}', { status: 200 }) });
   assert.match(await readFile(join(h.root, '.env'), 'utf8'), /PUBLIC_ORIGIN=https:\/\/old\.example\.test/);
   assert.match(await readFile(join(h.root, '.env'), 'utf8'), /^NODE_ID=c{32}$/m);
+});
+
+test('a rejected replacement restores the previous relay service and connection files', async t => {
+  const h = await setup(t); let relayActive = false, joins = 0;
+  const run = async (_file, args) => {
+    h.calls.push([_file, ...args]);
+    if (args.includes('disable')) relayActive = false;
+    if (args.includes('restart') && args.includes('codex-cloud-selfhost-node.service')) relayActive = true;
+    return { ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-enabled') ? 'enabled' : args.includes('is-active') ? relayActive ? 'active' : 'inactive' : '', stderr: '' };
+  };
+  const request = async (_url, options) => {
+    joins++; const body = JSON.parse(options.body);
+    if (joins === 2) return new Response('{"error":"center rejected replacement"}', { status: 409 });
+    return new Response(JSON.stringify({ ...h.joined, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 });
+  };
+  const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run, install: async () => '/opt/frpc', promptKey: async () => key };
+  await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
+  const connection = await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8');
+  await assert.rejects(joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b', replace: true }), /center rejected replacement/);
+  assert.equal(relayActive, true);
+  assert.equal(await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8'), connection);
+  assert.match(await readFile(join(h.root, '.env'), 'utf8'), /ENTRY_BASE_PATH=\/node\/node-a\//);
 });
 
 test('a version 1 Panel backup is migrated using the prior node identity', async t => {
