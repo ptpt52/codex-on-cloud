@@ -14,7 +14,7 @@ export function nodeURL(url) {
   const id = nodeIdentity(); if (id) next.searchParams.set('node', id); return next;
 }
 export function nodeLink(path) {
-  const url = entryURL(path);
+  const url = nodeURL(new URL(path, location.origin));
   if (url.origin !== location.origin) throw Error('下载目标不属于当前入口');
   return url.pathname + url.search + url.hash;
 }
