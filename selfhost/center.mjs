@@ -7,6 +7,7 @@ import { createAuth, cookieToken, sessionCookie } from '../panel/auth.mjs';
 import { SelfhostRegistry } from './registry.mjs';
 import { selfhostError } from './protocol.mjs';
 import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
+import { clientAddress, loopbackAddress } from './client-address.mjs';
 
 const PUBLIC = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = new Map([
@@ -54,9 +55,6 @@ async function assets() {
   return result;
 }
 
-const loopback = address => /^(?:::ffff:)?127\.0\.0\.1$/.test(address || '') || address === '::1';
-const ip = req => (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
-
 export async function createSelfhostCenter({
   origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
@@ -69,12 +67,12 @@ export async function createSelfhostCenter({
   const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center', entryBasePath: '/' };
   const auth = await createAuth(authConfig), web = await assets();
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
-  const failures = new Map(), joins = new Map();
+  const failures = new Map(), joinRequests = new Map(), turnRequests = new Map();
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
   let closing = false, timer;
 
-  const hostAllowed = req => allowedHosts.has(String(req.headers.host || '').toLowerCase()) || loopback(req.socket.remoteAddress) && internalHosts.has(String(req.headers.host || '').toLowerCase());
+  const hostAllowed = req => allowedHosts.has(String(req.headers.host || '').toLowerCase()) || loopbackAddress(req.socket.remoteAddress) && internalHosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => req.headers.origin === parsed.origin;
   const session = req => auth.get(cookieToken(req.headers.cookie, authConfig));
   const requireSession = req => {
@@ -94,7 +92,7 @@ export async function createSelfhostCenter({
   };
 
   async function plugin(req, res) {
-    if (!loopback(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
+    if (!loopbackAddress(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
     const url = new URL(req.url, 'http://internal'), body = await jsonBody(req, PLUGIN_LIMIT), content = body.content || {};
     if (process.env.SELFHOST_PLUGIN_DEBUG === '1') {
       console.error('[selfhost-plugin]', JSON.stringify({ op: url.searchParams.get('op'), keys: Object.keys(content), proxy: content.proxy_name, type: content.proxy_type, domains: content.custom_domains, locations: content.locations, metaKeys: content.metas ? Object.keys(content.metas) : content.user?.metas ? Object.keys(content.user.metas) : [], runId: content.run_id || content.user?.run_id || '' }));
@@ -121,7 +119,7 @@ export async function createSelfhostCenter({
       return plugin(req, res);
     }
     if (path === '/internal/route-auth' && req.method === 'GET') {
-      if (!loopback(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
+      if (!loopbackAddress(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
       const requestPath = url.searchParams.get('path') || '', matched = requestPath.match(/^\/node\/([a-z0-9-]{1,48})\//);
       if (!matched) throw selfhostError(404, '节点路径不存在');
       const allowed = await registry.routeAllowed(matched[1]);
@@ -131,7 +129,7 @@ export async function createSelfhostCenter({
     if (path === '/healthz' && req.method === 'GET') return reply(res, 200, { ok: true });
     if (path === '/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw selfhostError(403, '请求来源无效');
-      const client = ip(req); rate(failures, client, 8, 15 * 60_000);
+      const client = clientAddress(req); rate(failures, client, 8, 15 * 60_000);
       const body = await jsonBody(req, 4096), valid = await auth.verify(body.username, body.password);
       if (!valid) throw selfhostError(401, '管理员用户名或密码错误');
       failures.delete(client);
@@ -139,20 +137,20 @@ export async function createSelfhostCenter({
       return reply(res, 200, { ok: true, csrf: created.session.csrf, username }, { 'set-cookie': sessionCookie(created.token, authConfig) });
     }
     if (path === '/api/join' && req.method === 'POST') {
-      rate(joins, ip(req), 60, 60_000);
+      const client = clientAddress(req); rate(joinRequests, client, 60, 60_000);
       const body = await jsonBody(req, 8192);
-      const joined = await registry.join({ ...body, source: ip(req) });
+      const joined = await registry.join({ ...body, source: client });
       return reply(res, 200, { ...joined, origin: parsed.origin, proxyHost: publicHost, turnEndpoint: turnSecret ? parsed.origin + '/api/turn-credentials' : null, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName, token: frpToken } });
     }
     if (path === '/api/turn-credentials' && req.method === 'POST') {
       if (!turnSecret) throw selfhostError(503, 'TURN 尚未启用');
-      rate(joins, ip(req), 120, 60_000);
+      rate(turnRequests, clientAddress(req), 120, 60_000);
       const body = await jsonBody(req, 4096), allowed = await registry.turnAuthorized(body);
       if (!allowed) throw selfhostError(401, '节点授权、连接状态或凭据无效');
       return reply(res, 200, turnCredentials({ secret: turnSecret, slug: body.slug, realm: turnRealm, ttlMs: turnTtlMs }));
     }
     if (path === '/api/leave' && req.method === 'POST') {
-      rate(joins, ip(req), 60, 60_000);
+      rate(joinRequests, clientAddress(req), 60, 60_000);
       return reply(res, 200, await registry.leave(await jsonBody(req, 4096)));
     }
 

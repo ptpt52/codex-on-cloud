@@ -54,6 +54,23 @@ test('central login, Host, Origin, CSRF and private state protect key management
   const disk = await readFile(join(h.directory, 'center', 'state.json'), 'utf8'); assert(!disk.includes(secret.key));
 });
 
+test('login limits follow the forwarded client address and do not lock out another client', async t => {
+  const h = await setup(t);
+  for (let index = 0; index < 9; index++) assert.equal((await h.request('/api/login', { method: 'POST', authenticated: false, headers: { 'x-forwarded-for': '198.51.100.8' }, body: { username: 'admin', password: 'wrong_password_123' } })).status, index < 8 ? 401 : 429);
+  const allowed = await h.request('/api/login', { method: 'POST', authenticated: false, headers: { 'x-forwarded-for': '198.51.100.9' }, body: { username: 'admin', password: 'center_password_very_long_123' } });
+  assert.equal(allowed.status, 200);
+});
+
+test('join and TURN rate buckets are independent and record the forwarded source', async t => {
+  const h = await setup(t, { turnSecret: 'turn_shared_secret_very_long_123' });
+  for (let index = 0; index < 121; index++) await h.request('/api/turn-credentials', { method: 'POST', authenticated: false, headers: { 'x-forwarded-for': '198.51.100.20' }, body: { slug: 'none', nodeId: 'a'.repeat(32), credential: 'cocn_' + 'z'.repeat(43) } });
+  await h.login();
+  const key = await (await h.request('/api/keys', { method: 'POST', body: { name: 'Rate node', slug: 'rate-node', expiresAt: null } })).json();
+  const joined = await h.request('/api/join', { method: 'POST', authenticated: false, headers: { 'x-forwarded-for': '198.51.100.20' }, body: { version: 1, slug: 'rate-node', key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } } });
+  assert.equal(joined.status, 200);
+  assert.equal((await (await h.request('/api/keys')).json()).keys[0].session.source, '198.51.100.20');
+});
+
 test('join, frp plugin authorization, disconnect and revoke form one bounded node lifecycle', async t => {
   const h = await setup(t); await h.login();
   const created = await (await h.request('/api/keys', { method: 'POST', body: { name: '现场节点 A', slug: 'node-a', expiresAt: null } })).json();
