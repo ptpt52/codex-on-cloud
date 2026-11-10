@@ -29,7 +29,7 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | --- | --- | --- |
 | `DEPLOY_MODE` | `desktop` / `terminal`，默认 desktop | 新部署选项。已有部署不能靠改文件在线转换；安装器拒绝自动切换，需单独迁移 |
 | `MAX_TERMINALS` | 4；1–8，包含主终端 | 重启 manager、panel；不重启任务宿主 |
-| `PUBLIC_ORIGIN` | `http://localhost:36080`；HTTP(S) 根地址 | 重启 panel；公网入口还需同步 Cloudflare 路由/DNS，已有门户注册也需核对 |
+| `PUBLIC_ORIGIN` | `http://localhost:36080`；HTTP(S) 根地址 | 重启 panel；公网入口还需同步 Cloudflare 路由/DNS，网关节点需保持固定入口一致 |
 | `ALLOWED_HOSTS` | 空；额外 Host 列表，可带端口，逗号分隔 | 重启 panel；不支持通配符，主入口 Host 已自动允许 |
 | `ADMIN_USER` | `admin` | 重启 panel；密码另走密码管理流程 |
 | `PANEL_PORT` | 36080；1024–65535 | 重启 panel，并更新本机允许入口；新 Tunnel 使用私有 Unix socket，无需随 TCP 端口修改；旧 TCP 上游需同步 |
@@ -68,13 +68,17 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | Tunnel 运行凭据 | `secrets/tunnel_token` | 重启 tunnel；不要把 token 放进命令行或日志 |
 | Cloudflare API token | 用户指定文件，如 `secrets/cf_token` | 仅供部署/配置 API 使用，不是常驻 Tunnel token |
 | Cloudflare 公网域名、DNS 与 Tunnel 路由 | 部署脚本参数及 Cloudflare 账户配置 | 入口配置必须与 `PUBLIC_ORIGIN` 一致 |
-| 门户注册、服务器目录 | 门户接入流程，`data/panel/portal.json` | 独立的持久化业务配置，包含节点密钥；不属于浏览器偏好 |
+| 网关接入、节点目录 | `gateway:join`，`data/gateway-node.json`；目录在网关 DO | 独立持久配置和节点凭据，不属于浏览器偏好 |
 | 屏幕锁、临时账号、设备授权 | 网页对应管理流程 | 按功能立即生效；不直接编辑其运行文件 |
 | 共享桌面分辨率 | 服务器桌面设置，`data/desktop-settings.json` | 显式保存和应用；不是浏览器字号/缩放 |
 | WSL 镜像网络 | Windows 用户 `.wslconfig` 的 `networkingMode`、`hostAddressLoopback` | 部署会检查/补齐 loopback；需保存任务后重启 WSL |
 | 开机运行 | systemd user enable、loginctl linger，WSL 发行版启动 | 宿主系统部署配置；不由网页的保持亮屏控制 |
 
 ## 不属于部署配置的内容
+
+本机维护使用 `scripts/state-files.mjs` 读写有界状态文件，单次输出最多 256 KiB，采用内核租约、预期内容复核及原子提交。磁盘上的 `.portal-lock` 和 `.portal-next-v2` 是沿用的锁／暂存后缀；保留它们是为了让升级前后的写入者继续共享同一锁，不代表仍有独立门户功能。不要删除活跃锁 inode 或把这些运行文件加入 Git。
+
+本次独立门户下线保存了一份私有 `data/retired-portal.json` 维护记录，最多 256 KiB，含旧目录元数据、资源身份和下线核对结果，不包含登录密码或 API Token；应用不读取该记录。
 
 浏览器字号、缩放、宽度适配、网页历史行数、亮屏选择和面板折叠属于当前浏览器，详见 [浏览器偏好](browser-preferences.md)。终端选择和草稿属于当前标签页。连接诊断、控制权、实际亮屏锁和在线状态属于运行状态。
 

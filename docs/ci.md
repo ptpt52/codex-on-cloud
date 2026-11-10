@@ -6,7 +6,7 @@
 
 | 作业 | 内容 | 期限 |
 | --- | --- | --- |
-| portal | 固定 Wrangler/workerd，真实 SQLite Durable Object 注册、撤销与重启持久化 | 15 分钟 |
+| gateway | 固定 Wrangler/workerd，真实 SQLite Durable Object、HTTP／WebSocket 转发与路由重启持久化 | 15 分钟 |
 | backend | 脚本语法、Node、Python、Go race/vet/mod verify、工作流 actionlint | 15 分钟 |
 | terminal | 只安装 tmux/Python/util-linux 与生产 JS，验证无 noVNC/X11 的真实终端后台 | 10 分钟 |
 | browsers | Chromium、Firefox、WebKit 三个独立环境、七种配置的兼容性流程；Chromium 另跑完整手机/电脑回归 | 每个环境 35 分钟 |
@@ -65,4 +65,10 @@ backend还覆盖维护故障：旧任务部署变量、后续平台构建失败�
 
 兼容性用例在旋转后轮询按钮的边界和实际命中位置，等待 `requestAnimationFrame` 中的浮层布局完成。快捷键菜单用例先确认忙碌状态已传入桌面 iframe，再推进探测时间；恢复真实 HTTP/ICE/DTLS 协商时用 `clock.runFor` 按顺序执行计时器，避免一次跳跃让握手超时先于网络回复执行。两者均保留原有可见范围、遮挡、连接数和不发送输入的断言。
 
-门户测试包括事务模拟的 Node/浏览器检查，以及独立 `portal` 作业的真实 workerd/SQLite 验证。后者使用固定 `wrangler@4.158.0` 和临时存储，不连接 Cloudflare 账户或真实节点；详见[统一门户](portal.md#验证范围)。
+网关检查包括事务模拟的 Node／浏览器检查，以及独立 `gateway` 作业的真实 workerd／SQLite、HTTP／WebSocket 和私有面板入口验证。该作业使用固定 `wrangler@4.158.0` 和临时存储，不连接 Cloudflare 账户或生产节点；终端／文件／管理宿主为夹具，详见[网关验证范围](gateway.md#验证范围)。
+
+```sh
+npm install --prefix /tmp/codex-worker-tools --no-save --ignore-scripts \
+  --no-audit --no-fund wrangler@4.158.0
+WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
+```

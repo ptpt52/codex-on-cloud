@@ -5,14 +5,14 @@ import { root as projectRoot } from '../native/config.mjs';
 import { parseEnv } from 'node:util';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { portalRead, portalWrite } from './portal-files.mjs';
+import { readStateFile, writeStateFile } from './state-files.mjs';
 import { acquireFileLock } from '../native/file-lock.mjs';
 import { FORWARD_FILES, ARTIFACT_LIMITS, artifactRead, currentGeneration, prepareReleaseDirectory, removeRelease } from '../native/forward-artifacts.mjs';
 
-export async function buildForward({ root = projectRoot, origin: explicit, signal } = {}, { run, publish = portalWrite } = {}) {
+export async function buildForward({ root = projectRoot, origin: explicit, signal } = {}, { run, publish = writeStateFile } = {}) {
   const directory = join(root, 'data', 'forward-client');
   let persisted = {};
-  try { persisted = parseEnv(await portalRead(join(root, '.env'), 65536, true)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try { persisted = parseEnv(await readStateFile(join(root, '.env'), 65536, true)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const origin = new URL(explicit || persisted.PUBLIC_ORIGIN || 'http://localhost:36080');
   if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || !['http:', 'https:'].includes(origin.protocol) ||
     (origin.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname))) throw new Error('构建地址必须是 HTTPS 根地址；仅回环测试允许 HTTP');

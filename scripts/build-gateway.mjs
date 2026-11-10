@@ -3,13 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { portalRead, portalWrite } from './portal-files.mjs';
+import { readStateFile, writeStateFile } from './state-files.mjs';
 import { gatewayConfig, GATEWAY_PREFIX } from '../gateway/protocol.mjs';
 const gatewayBuildRoot = fileURLToPath(new URL('../', import.meta.url));
 export const GATEWAY_COMPATIBILITY_DATE = '2026-11-01';
 export async function buildGateway({ config = join(gatewayBuildRoot, 'data/gateway.json'), output = join(gatewayBuildRoot, 'data/gateway-build'), passwordFile = join(gatewayBuildRoot, 'secrets/gateway_password') } = {}) {
-  let parsed; try { parsed = JSON.parse(await portalRead(config, 2048, true)); } catch { throw Error('请先运行 gateway:setup，或检查网关配置'); }
-  const settings = gatewayConfig(parsed), password = (await portalRead(passwordFile, 128, true)).trim();
+  let parsed; try { parsed = JSON.parse(await readStateFile(config, 2048, true)); } catch { throw Error('请先运行 gateway:setup，或检查网关配置'); }
+  const settings = gatewayConfig(parsed), password = (await readStateFile(passwordFile, 128, true)).trim();
   if (!/^[a-f0-9]{64}$/.test(password)) throw Error('网关密码格式无效');
   const assets = {};
   for (const [name, type] of [['index.html', 'text/html; charset=utf-8'], ['gateway.js', 'text/javascript; charset=utf-8'], ['gateway.css', 'text/css; charset=utf-8']]) {
@@ -21,8 +21,8 @@ export async function buildGateway({ config = join(gatewayBuildRoot, 'data/gatew
   if (Buffer.byteLength(source) > 262144) throw Error('网关 Worker 超过 256 KiB');
   const wrangler = { name: 'codex-cloud-gateway', main: 'worker.mjs', compatibility_date: GATEWAY_COMPATIBILITY_DATE, workers_dev: false, preview_urls: false,
     routes: [{ pattern: new URL(settings.origin).host, custom_domain: true }], durable_objects: { bindings: [{ name: 'GATEWAY_REGISTRY', class_name: 'GatewayState' }] }, migrations: [{ tag: 'v1', new_sqlite_classes: ['GatewayState'] }] };
-  await portalWrite(join(output, 'worker.mjs'), source); await portalWrite(join(output, 'wrangler.json'), JSON.stringify(wrangler, null, 2) + '\n');
-  await portalWrite(join(output, 'worker-secrets.json'), JSON.stringify({ GATEWAY_PASSWORD_HASH: createHash('sha256').update(password).digest('hex') }) + '\n');
+  await writeStateFile(join(output, 'worker.mjs'), source); await writeStateFile(join(output, 'wrangler.json'), JSON.stringify(wrangler, null, 2) + '\n');
+  await writeStateFile(join(output, 'worker-secrets.json'), JSON.stringify({ GATEWAY_PASSWORD_HASH: createHash('sha256').update(password).digest('hex') }) + '\n');
   return { output: resolve(output), origin: settings.origin };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

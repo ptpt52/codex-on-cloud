@@ -2,7 +2,7 @@ import { constants, openSync, closeSync, readSync, fstatSync, writeFileSync, fsy
 import { open } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { acquireFileLock } from '../native/file-lock.mjs';
-export async function portalRead(path, limit = 65536, privateFile = false) {
+export async function readStateFile(path, limit = 65536, privateFile = false) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
@@ -47,7 +47,7 @@ async function withLease(path, valid, action) {
   regular(path, 262144);
   let lease;
   try { lease = await acquireFileLock(path + '.portal-lock', { legacy: true }); }
-  catch (error) { if (error.status === 409) error.message = '已有门户配置写入，请稍后再试'; throw error; }
+  catch (error) { if (error.status === 409) error.message = '已有配置写入，请稍后再试'; throw error; }
   const guard = () => {
     lease.check(); const current = lstatSync(dirname(path));
     if (current.ino !== parent.ino || current.dev !== parent.dev || !current.isDirectory() || current.isSymbolicLink()) throw Error('配置目录已变化');
@@ -57,9 +57,11 @@ async function withLease(path, valid, action) {
   } finally { await lease.release(); }
 }
 
+// Retain the legacy on-disk lock and temporary names so existing writers and
+// interrupted deployments keep sharing the same leases during upgrades.
 // One <=256 KiB temporary and a persistent empty lease inode. Compare inside
 // the lease and immediately before committing, with no intervening await.
-export async function portalWrite(path, text, { exclusive = false, expected, valid = () => {} } = {}) {
+export async function writeStateFile(path, text, { exclusive = false, expected, valid = () => {} } = {}) {
   if (Buffer.byteLength(text) > 262144) throw Error('输出文件超过 256 KiB');
   const prior = expectation(expected);
   return withLease(path, valid, guard => {
@@ -79,7 +81,7 @@ export async function portalWrite(path, text, { exclusive = false, expected, val
     } finally { if (fd !== undefined) closeSync(fd); if (created) unlinkSync(target); }
   });
 }
-export async function portalRemove(path, { expected, valid = () => {} } = {}) {
+export async function removeStateFile(path, { expected, valid = () => {} } = {}) {
   if (expected === undefined) throw Error('删除配置必须指定预期内容');
   const prior = expectation(expected);
   return withLease(path, valid, guard => {

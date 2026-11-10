@@ -8,7 +8,7 @@ import { buildForward } from '../scripts/build-forward.mjs';
 import { createHash } from 'node:crypto';
 import { Writable } from 'node:stream';
 import { createForwardDownloads, FORWARD_FILES } from '../panel/forward-downloads.mjs';
-import { portalWrite } from '../scripts/portal-files.mjs';
+import { writeStateFile } from '../scripts/state-files.mjs';
 import { removeRelease } from '../native/forward-artifacts.mjs';
 import { fixture as panelFixture } from './fixture.mjs';
 
@@ -77,7 +77,7 @@ test('all four artifacts publish together, versioned downloads remain stable and
 test('an ambiguous pointer acknowledgement never deletes a generation already committed', async t => {
   const h = await fixture(t);
   await assert.rejects(buildForward({ root: h.root }, { run: h.run, publish: async (path, text, options) => {
-    await portalWrite(path, text, options); if (path.endsWith('/current.json')) throw Error('synthetic lost commit acknowledgement');
+    await writeStateFile(path, text, options); if (path.endsWith('/current.json')) throw Error('synthetic lost commit acknowledgement');
   } }), /lost commit acknowledgement/);
   assert.equal((await h.downloads.list()).length, 4); assert.ok((await download(h.downloads)).length > 0);
 });
@@ -87,7 +87,7 @@ test('publication rechecks the exact pointer inside its write lease', async t =>
   const pointer=join(h.directory,'current.json'),edited=JSON.stringify({version:1,generation:first.generation},null,2)+'\n';
   await assert.rejects(buildForward({root:h.root},{run:h.run,publish:async(path,text,options)=>{
     if(path===pointer)await writeFile(pointer,edited);
-    await portalWrite(path,text,options);
+    await writeStateFile(path,text,options);
   }}),{status:409});
   assert.equal(await readFile(pointer,'utf8'),edited);assert.equal((await h.downloads.list()).length,4);
   assert.equal((await readdir(join(h.directory,'releases'))).length,1);

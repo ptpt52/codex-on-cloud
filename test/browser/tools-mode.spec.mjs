@@ -4,7 +4,7 @@ import { openTools } from './ui.mjs';
 
 const desktopControls = ['#terminal-button', '#workspace-tools .zoom-controls', '#pointer-options', '#desktop-settings-button', '#pan-button'];
 const terminalControls = ['#terminal-view-controls', '#terminal-view-select', '#terminal-width-mode', '#terminal-font-up', '#terminal-history-rows'];
-const commonControls = ['#terminals-button', '#reconnect-button', '#tools-fullscreen-button', '#awake-button', '#portal-settings-button', '#access-settings-button'];
+const commonControls = ['#terminals-button', '#reconnect-button', '#tools-fullscreen-button', '#awake-button', '#access-settings-button'];
 async function login(page, app, status) {
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText(status);

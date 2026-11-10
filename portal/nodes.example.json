@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "portalOrigin": "https://codex.example.com",
-  "nodes": [
-    { "id": "home", "name": "家里的服务器", "origin": "https://codex-home.example.com", "description": "日常开发", "mode": "desktop" },
-    { "id": "lab", "name": "实验室服务器", "origin": "https://codex-lab.example.com", "description": "纯网页终端", "mode": "terminal" }
-  ]
-}

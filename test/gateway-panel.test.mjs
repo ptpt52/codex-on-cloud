@@ -2,10 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import WebSocket from 'ws';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fixture } from './fixture.mjs';
 import { gatewayHTTPFixture } from './gateway-http-fixture.mjs';
 import { gatewayProxyHeaders } from '../gateway/protocol.mjs';
 
 const raw = (options, body) => new Promise((resolve, reject) => { const req = http.request({ ...options, signal: AbortSignal.timeout(5000) }, res => { const chunks = []; res.on('data', bytes => chunks.push(bytes)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text: Buffer.concat(chunks).toString() })); }); req.on('error', reject); req.end(body); });
+
+test('retired enrollment and directory APIs stay unavailable while legacy private state cannot interfere with the node', async t => {
+  const app = await fixture({ mode: 'terminal' }); t.after(() => app.close());
+  for (const name of ['portal.json', 'portal-pending.json']) await writeFile(join(app.directory, name), 'obsolete and invalid private state', { mode: 0o600 });
+  await app.login(); await app.claim();
+  for (const [path, method] of [['/api/nodes', 'GET'], ['/api/portal', 'GET'], ['/api/portal/register', 'POST'], ['/node-directory.js', 'GET'], ['/node-ui.js', 'GET']]) {
+    const result = await app.request(path, { method, ...(method === 'POST' ? { body: {} } : {}) }); assert.equal(result.status, 404, path);
+  }
+  assert.equal((await app.request('/api/me')).status, 200); assert.equal((await app.request('/api/diagnostics')).status, 200);
+  assert.deepEqual(app.inputCalls, []); assert.deepEqual(app.terminalInputs, []); assert.equal(app.managementStats.restarts, 0);
+});
 
 test('a fixed gateway reaches a private node with its public Host while preserving authentication, Origin and CSRF checks', async t => {
   const gateway = await gatewayHTTPFixture(); t.after(() => gateway.close()); const app = await gateway.add(1), node = app.gatewayEntry;

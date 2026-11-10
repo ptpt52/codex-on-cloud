@@ -23,6 +23,7 @@ test('web selection keeps one URL while independent logins and same-pane drafts 
   const h = await gatewayHTTPFixture(), a = await h.add(1), b = await h.add(2);
   try {
     await control(page, h); await expect(page.locator('#nodes .node-row')).toHaveCount(2); await choose(page, a); await nodeLogin(page, a);
+    await expect(page.locator('#portal-settings-button, #servers-button, #portal-settings-dialog, #servers-dialog')).toHaveCount(0);
     await openInput(page); await page.locator('#mobile-input').fill('节点 A 的草稿'); await leaveNode(page);
     await control(page, h); await choose(page, b); await nodeLogin(page, b); await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('');
     await page.locator('#mobile-input').fill('节点 B 的草稿'); await leaveNode(page); await control(page, h); await choose(page, a);

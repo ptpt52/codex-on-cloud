@@ -1,27 +1,22 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
-for (const mode of ['terminal', 'desktop']) test(`${mode} uses the phone width without outer gutters or portal header overflow`, async ({ page }) => {
+for (const mode of ['terminal', 'desktop']) test(`${mode} uses the phone width without outer gutters or header overflow`, async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true });
   try {
     await page.setViewportSize({ width: 444, height: 900 });
     await page.addInitScript(mode => {
       if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode, controlsCollapsed: true, terminalInputCollapsed: true }));
     }, mode);
-    await page.route('**/api/nodes', route => route.fulfill({ json: {
-      version: 1, enabled: true, portalOrigin: 'https://portal.example.test', currentId: 'home',
-      nodes: [{ id: 'home', name: 'home-codex', origin: app.config.origin, mode: 'desktop', enabled: true }],
-    } }));
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
-    await expect(page.locator('#servers-button')).toBeVisible();
     for (const width of [320, 360, 390, 420, 421, 444, 480, 700]) {
       await page.setViewportSize({ width, height: 900 });
       await expect.poll(async () => (await page.locator('#desktop-frame').boundingBox()).width).toBe(width);
       const bounds = await page.evaluate(() => {
         const card = document.getElementById('desktop-card').getBoundingClientRect();
         const frame = document.getElementById('desktop-frame').getBoundingClientRect();
-        const actions = ['servers-button', 'connection-button', 'forward-button', 'files-button', 'logout-button'].map(id => {
+        const actions = ['connection-button', 'forward-button', 'files-button', 'logout-button'].map(id => {
           const box = document.getElementById(id).getBoundingClientRect(); return { id, left: box.left, right: box.right, width: box.width, height: box.height };
         });
         return { card: [card.left, card.right], frame: [frame.left, frame.right], scrollWidth: document.documentElement.scrollWidth,

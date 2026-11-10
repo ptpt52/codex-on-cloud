@@ -1,13 +1,13 @@
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { parseEnv } from 'node:util';
-import { portalRead, portalWrite, portalRemove } from './portal-files.mjs';
+import { readStateFile, writeStateFile, removeStateFile } from './state-files.mjs';
 import { acquireDeploymentLease } from './deployment-lease.mjs';
 import { privateIngressReady } from './cloudflare-publication.mjs';
 
 export const ACTIVATION_LIMITS = Object.freeze({ profile: 8192, pending: 262144, configuration: 16384, comment: 100 });
 const HEX = /^[a-f0-9]{32}$/, UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-const optional = async (path, limit) => { try { return await portalRead(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+const optional = async (path, limit) => { try { return await readStateFile(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const encode = value => JSON.stringify(value, null, 2) + '\n';
 const parse = (text, label) => { try { return JSON.parse(text); } catch { throw Error(label + '格式无效'); } };
 const canonical = (value, depth = 0) => {
@@ -51,7 +51,7 @@ export function createNodeActivation({ root, socketPath, api, services, ready = 
   let lease;
   const check = () => { if (!lease) throw Error('节点切换锁已释放'); lease.check(); };
   const call = async (...args) => { check(); const result = await api(...args); check(); return result; };
-  const write = async (path, value, expected) => { const text = encode(value); if (Buffer.byteLength(text) > (path === profilePath ? ACTIVATION_LIMITS.profile : ACTIVATION_LIMITS.pending)) throw Error('节点接入状态超过大小限制'); await portalWrite(path, text, { expected, valid: check }); return text; };
+  const write = async (path, value, expected) => { const text = encode(value); if (Buffer.byteLength(text) > (path === profilePath ? ACTIVATION_LIMITS.profile : ACTIVATION_LIMITS.pending)) throw Error('节点接入状态超过大小限制'); await writeStateFile(path, text, { expected, valid: check }); return text; };
   async function records(profile) {
     const result = await call('/zones/' + profile.zoneId + '/dns_records?name=' + encodeURIComponent(profile.domain));
     if (!Array.isArray(result) || result.length > 1) throw Error('域名存在多条记录，不会接管');
@@ -88,7 +88,7 @@ export function createNodeActivation({ root, socketPath, api, services, ready = 
     const current = await optional(deploymentPath, 65536);
     if (current !== stage.deploymentBefore && current !== encode(plan)) throw Error('本机部署归属已被修改，入口已提交；请核对状态');
     await write(deploymentPath, plan, current);
-    await portalRemove(pendingPath, { expected: pendingText, valid: check });
+    await removeStateFile(pendingPath, { expected: pendingText, valid: check });
     let reachable = false;
     try { await publicReady(stage.profile); reachable = true; } catch {}
     return { domain: stage.profile.domain, nodeId: stage.profile.nodeId, active: true, published: true, reachable };
@@ -168,7 +168,7 @@ export function createNodeActivation({ root, socketPath, api, services, ready = 
     for (const [key, [path, limit]] of Object.entries(files)) {
       const value = stage.files[key], current = await optional(path, limit);
       if (!value || typeof value.after !== 'string' || Buffer.byteLength(value.after) > limit || ![value.before, value.after].includes(current)) throw Error('本机准备配置已被修改，未覆盖或切换入口');
-      if (current !== value.after) await portalWrite(path, value.after, { expected: current, valid: check });
+      if (current !== value.after) await writeStateFile(path, value.after, { expected: current, valid: check });
       if (key === 'env' && value.before !== value.after) panelChanged = true;
       if (key === 'token' && value.before !== value.after) tunnelChanged = true;
     }
@@ -188,7 +188,7 @@ export function createNodeActivation({ root, socketPath, api, services, ready = 
     let actual;
     try { actual = await records(profile); } catch { throw Error('切换结果未知，未重试或回退；请运行 --status 核对'); }
     if (!isOurs(actual, profile, stage.operation)) {
-      if (!failure || failure.status >= 400 && failure.status < 500) await portalRemove(pendingPath, { expected: text, valid: check });
+      if (!failure || failure.status >= 400 && failure.status < 500) await removeStateFile(pendingPath, { expected: text, valid: check });
       throw Error('入口未确认指向本机，未重试或回退；请运行 --status 核对');
     }
     stage.phase = 'committed'; text = await write(pendingPath, stage, text);
@@ -199,7 +199,7 @@ export function createNodeActivation({ root, socketPath, api, services, ready = 
     const record = await records(pending.value.profile), owned = await optional(deploymentPath, 65536);
     recognized(record, pending.value.profile, owned === null ? null : parse(owned, '本机部署记录'));
     if (isOurs(record, pending.value.profile, pending.value.operation)) return finalize(pending.value, pending.text, record);
-    await portalRemove(pendingPath, { expected: pending.text, valid: check }); return status();
+    await removeStateFile(pendingPath, { expected: pending.text, valid: check }); return status();
   }
   const locked = action => async (...args) => {
     const held = await acquireDeploymentLease(root); lease = held;

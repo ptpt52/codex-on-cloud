@@ -81,7 +81,7 @@ npx --yes wrangler@4.158.0 secret bulk data/gateway-build/worker-secrets.json \
   --config data/gateway-build/wrangler.json
 ```
 
-Worker 配置关闭 `workers.dev` 和预览网址，使用独立 SQLite Durable Object 保存目录与路由。不要覆盖现有统一门户的 Worker。网关创建的固定域名绑定应由这个 Worker 管理，不能再让旧 `native:activate` 或域名发布命令修改它。
+Worker 配置关闭 `workers.dev` 和预览网址，使用独立 SQLite Durable Object 保存目录与路由。后续更新保持 Worker 名称和 DO 类名不变，以保留已有目录与路由。网关创建的固定域名绑定应由这个 Worker 管理，不能再让旧 `native:activate` 或域名发布命令修改它。
 
 ### 5. 创建接入码，完成登记
 

@@ -13,8 +13,8 @@ import { buildGateway, GATEWAY_COMPATIBILITY_DATE } from '../scripts/build-gatew
 import { decodeGatewayCode } from '../gateway/protocol.mjs';
 import { gatewayHTTPFixture } from './gateway-http-fixture.mjs';
 
-const tools = process.env.PORTAL_WORKER_TOOLS;
-if (!tools) throw Error('请设置 PORTAL_WORKER_TOOLS，指向固定 wrangler@4.158.0 的工具目录');
+const tools = process.env.WORKER_TOOLS;
+if (!tools) throw Error('请设置 WORKER_TOOLS，指向固定 wrangler@4.158.0 的工具目录');
 const require = createRequire(join(resolve(tools), 'package.json')); assert.equal(require('wrangler/package.json').version, '4.158.0');
 const { Miniflare, Log, LogLevel, convertV4MiniflareOptions } = require('miniflare');
 const root = await mkdtemp(join(tmpdir(), 'codex-gateway-worker-')); let runtime, socket, h;

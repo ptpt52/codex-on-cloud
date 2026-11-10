@@ -2,7 +2,7 @@ import http from 'node:http';
 import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
-import { portalRead, portalWrite, portalRemove } from './portal-files.mjs';
+import { readStateFile, writeStateFile, removeStateFile } from './state-files.mjs';
 import { cloudflareDomainPlan, assertManagedIngress, renamedDNSRecord } from '../native/cloudflare-domain.mjs';
 import { acquireFileLock } from '../native/file-lock.mjs';
 import { randomBytes } from 'node:crypto';
@@ -46,9 +46,9 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
   const api = async (...args) => { valid(); const result = await request(...args); valid(); return result; };
   const statePath = join(root, 'data/cloudflare-deployment.json'), pendingPath = join(root, 'data/cloudflare-publication.json');
   const local = { env: [join(root, '.env'), 65536], credentials: [join(root, 'secrets/credentials.txt'), 4096], token: [join(root, 'secrets/tunnel_token'), 4096] };
-  const optional = async (path, limit) => { try { return await portalRead(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+  const optional = async (path, limit) => { try { return await readStateFile(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
   const encode = value => JSON.stringify(value, null, 2) + '\n';
-  const write = (path, value, expected) => portalWrite(path, encode(value), { expected, valid });
+  const write = (path, value, expected) => writeStateFile(path, encode(value), { expected, valid });
   async function pending() {
     const text = await optional(pendingPath, LIMIT); pendingText = text; if (text === null) return null;
     const value = parse(text, '公网发布恢复记录');
@@ -63,14 +63,14 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     return value;
   };
   async function save(stage) { await write(pendingPath, stage, pendingText); pendingText = encode(stage); }
-  async function removePending() { await portalRemove(pendingPath, { expected: pendingText, valid }); pendingText = null; }
+  async function removePending() { await removeStateFile(pendingPath, { expected: pendingText, valid }); pendingText = null; }
   async function prepareLocal(stage) {
     for (const [key, [path, limit]] of Object.entries(local)) {
       const value = stage.files[key], current = await optional(path, limit);
       if (!value || ![value.before, value.after].every(text => text === null || typeof text === 'string' && Buffer.byteLength(text) <= limit) || value.after === null) throw Error('本机发布恢复记录无效');
       if (current === value.after) continue;
       if (current !== value.before) throw Error('准备期间本机配置已被修改，未覆盖');
-      await portalWrite(path, value.after, { expected: value.before, valid });
+      await writeStateFile(path, value.after, { expected: value.before, valid });
     }
   }
   async function verifyPreparedLocal(stage) {
@@ -89,8 +89,8 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
       if (current === value.before) continue;
       if (current !== value.after) { conflict = true; continue; }
       try {
-        if (value.before === null) await portalRemove(path, { expected: value.after, valid });
-        else await portalWrite(path, value.before, { expected: value.after, valid });
+        if (value.before === null) await removeStateFile(path, { expected: value.after, valid });
+        else await writeStateFile(path, value.before, { expected: value.after, valid });
       } catch (error) { if (error.status !== 409) throw error; conflict = true; }
     }
     if (conflict) throw Error('本机配置已被其他操作修改，未覆盖；保留发布恢复记录');

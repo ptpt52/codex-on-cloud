@@ -3,12 +3,12 @@ import { randomBytes } from 'node:crypto';
 import { parseEnv } from 'node:util';
 import http from 'node:http';
 import { lstat } from 'node:fs/promises';
-import { portalRead, portalWrite, portalRemove } from './portal-files.mjs';
+import { readStateFile, writeStateFile, removeStateFile } from './state-files.mjs';
 import { acquireDeploymentLease } from './deployment-lease.mjs';
 import { validateGatewayConnection } from '../native/gateway-config.mjs';
 import { gatewayOrigin, gatewayHex, gatewayProxyHeaders, decodeGatewayCode, gatewayJSON } from '../gateway/protocol.mjs';
 
-const gatewayOptional = async (path, limit) => { try { return await portalRead(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+const gatewayOptional = async (path, limit) => { try { return await readStateFile(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const gatewayEncode = value => JSON.stringify(value, null, 2) + '\n';
 const gatewayParse = text => { try { return JSON.parse(text); } catch { throw Error('网关接入恢复记录格式无效'); } };
 export async function privateGatewayReady(socketPath, connection) {
@@ -26,7 +26,7 @@ export function createGatewayJoin({ root, socketPath, request = fetch, ready = p
   const files = { env: [join(root, '.env'), 65536], credentials: [join(root, 'secrets/credentials.txt'), 4096], config: [configPath, 4096] };
   return { async join(values) {
     const lease = await acquireDeploymentLease(root), valid = () => lease.check();
-    const save = async (stage, expected) => { const text = gatewayEncode(stage); if (Buffer.byteLength(text) > 262144) throw Error('网关恢复状态超过 256 KiB'); await portalWrite(pendingPath, text, { expected, valid }); return text; };
+    const save = async (stage, expected) => { const text = gatewayEncode(stage); if (Buffer.byteLength(text) > 262144) throw Error('网关恢复状态超过 256 KiB'); await writeStateFile(pendingPath, text, { expected, valid }); return text; };
     try {
       for (const name of ['cloudflare-publication.json', 'cloudflare-activation.json']) if (await gatewayOptional(join(root, 'data', name), 262144) !== null) throw Error('已有域名维护待核对，请先完成或解除原操作');
       let text = await gatewayOptional(pendingPath, 262144), stage = text === null ? null : gatewayParse(text);
@@ -75,14 +75,14 @@ export function createGatewayJoin({ root, socketPath, request = fetch, ready = p
           const completed = key === 'config' && stage.completed ? gatewayEncode(validateGatewayConnection(stage.completed)) : null;
           if (![before, stage.files[key].after, ...(completed ? [completed] : [])].includes(current)) throw Error('恢复期间文件已被人工修改，未覆盖');
           if (current === before) continue;
-          if (before === null) await portalRemove(path, { expected: current, valid }); else await portalWrite(path, before, { expected: current, valid });
+          if (before === null) await removeStateFile(path, { expected: current, valid }); else await writeStateFile(path, before, { expected: current, valid });
         }
-        await reload(lease); valid(); await portalRemove(pendingPath, { expected: text, valid }); return { aborted: true, origin: stage.connection.origin };
+        await reload(lease); valid(); await removeStateFile(pendingPath, { expected: text, valid }); return { aborted: true, origin: stage.connection.origin };
       }
       for (const [key, [path, limit]] of Object.entries(files)) {
         const item = stage.files[key], current = await gatewayOptional(path, limit), completed = key === 'config' && stage.completed ? gatewayEncode(validateGatewayConnection(stage.completed)) : null;
         if (!item || typeof item.after !== 'string' || Buffer.byteLength(item.after) > limit || ![item.before, item.after, ...(completed ? [completed] : [])].includes(current)) throw Error('接入准备文件已被修改，未覆盖');
-        if (current !== item.after && (completed === null || current !== completed)) await portalWrite(path, item.after, { expected: current, valid });
+        if (current !== item.after && (completed === null || current !== completed)) await writeStateFile(path, item.after, { expected: current, valid });
       }
       if (values.prepareOnly) return { prepared: true, nodeId: stage.connection.nodeId, origin: stage.connection.origin };
       if (stage.phase !== 'registered') {
@@ -107,8 +107,8 @@ export function createGatewayJoin({ root, socketPath, request = fetch, ready = p
       for (const key of ['env', 'credentials']) if (await gatewayOptional(files[key][0], files[key][1]) !== stage.files[key].after) throw Error('登记已确认，但本机配置已变化，请核对恢复记录；未覆盖人工修改');
       const current = await gatewayOptional(configPath, 4096), completedText = gatewayEncode(validateGatewayConnection(stage.completed));
       if (![stage.files.config.after, completedText].includes(current)) throw Error('登记后本机接入文件已变化，未覆盖');
-      if (current !== completedText) await portalWrite(configPath, completedText, { expected: current, valid });
-      await portalRemove(pendingPath, { expected: text, valid });
+      if (current !== completedText) await writeStateFile(configPath, completedText, { expected: current, valid });
+      await removeStateFile(pendingPath, { expected: text, valid });
       return { registered: true, nodeId: stage.connection.nodeId, origin: stage.connection.origin, backendOrigin: stage.connection.backendOrigin };
     } finally { await lease.release(); }
   } };

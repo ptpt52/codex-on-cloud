@@ -296,13 +296,9 @@ cloudflared 的诊断接口固定监听 `127.0.0.1:36903`，可用 `TUNNEL_METRI
 
 每次最多读取 32 KiB UTF-8 纯文本，保留中文、换行和空白；不支持的内容、超限或超时会提示手动重试。读取不发送按键，不把内容粘贴到输入助手或终端。内容只在当前预览窗口暂存，不进入浏览器存储或服务日志；关闭、切换来源、失去控制权、断网或画面重连会清空预览。重新连接和刷新不会自动读取。
 
-## 统一门户与多服务器
+## 网页切换节点
 
-可将 `codex.x-wrt.dev` 部署为独立 Cloudflare Workers 门户，home、work 和后续节点分别使用自己的域名与 Tunnel。门户动态管理节点、生成长期复用授权码；在节点的“工具 → 门户接入”粘贴授权码即可注册。删除授权码只禁止新注册，已接入节点保留身份。节点不依赖门户在线，切换保留任务、登录和端口映射。
-
-当前入口：[统一门户](https://codex.x-wrt.dev)、[home 工作台](https://home-codex.x-wrt.dev)。work 保留待部署入口。门户密码保存在部署主机的 `secrets/portal_password`；home 使用原工作台账号和密码。
-
-门户目录保存在 SQLite Durable Object，各节点的桌面、文件和映射仍留在各自机器。初始化、发布、界面接入、资源边界与验证说明见[统一门户](docs/portal.md)。
+当前入口：[home 工作台](https://home-codex.x-wrt.dev)、[节点选择页](https://home-codex.x-wrt.dev/__nodes/)。通过固定域名网关动态接入和切换机器，最多 64 个节点。网关密码保存在本机 `secrets/gateway_password`，进入节点后使用该机器自己的账号；原机器任务继续运行。接入命令、部署和恢复步骤见[固定域名网关](docs/gateway.md)。
 
 ## Cloudflare 外网访问
 
