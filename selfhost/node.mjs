@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parseEnv, promisify } from 'node:util';
 import { readStateFile, removeStateFile, writeStateFile } from '../scripts/state-files.mjs';
 import { installFrpc } from './frpc.mjs';
-import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, entryBasePath, slug } from './protocol.mjs';
+import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, entryBasePath, slug } from './protocol.mjs';
 
 const exec = promisify(execFile);
 export const NODE_SERVICE = 'codex-cloud-selfhost-node.service';
@@ -121,6 +121,16 @@ function panelEnvironment(before, connection, caFile) {
   return text;
 }
 
+function panelTarget(connection) {
+  return { origin: connection.origin, slug: connection.slug, nodeId: connection.nodeId, path: connection.path };
+}
+
+function validPanelTarget(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 4 &&
+    equalsOrigin(value.origin) && typeof value.slug === 'string' && SLUG.test(value.slug) &&
+    NODE_ID.test(value.nodeId) && value.path === entryBasePath(value.slug);
+}
+
 const panelPaths = root => ({
   env: join(root, '.env'),
   credentials: join(root, 'secrets', 'credentials.txt'),
@@ -140,21 +150,41 @@ async function publicationState(root) {
   return null;
 }
 
-async function configurePanel(root, connection, { switchExisting = false, caFile, run = command } = {}) {
+async function configurePanel(root, connection, { switchExisting = false, replace = false, previousConnection, caFile, run = command } = {}) {
   const current = await panelState(root), backupText = await optional(current.paths.backup, 131072);
-  let backup;
+  let backup, backupChanged = false;
   if (backupText !== null) {
     try { backup = JSON.parse(backupText); } catch { throw Error('Panel 切换备份格式无效'); }
-    if (!backup || backup.version !== 1 || typeof backup.envBefore !== 'string' || typeof backup.envAfter !== 'string' || typeof backup.gatewayBefore !== 'string' && backup.gatewayBefore !== null || typeof backup.credentialsBefore !== 'string' && backup.credentialsBefore !== null || typeof backup.credentialsAfter !== 'string' && backup.credentialsAfter !== null) throw Error('Panel 切换备份内容无效');
+    if (!backup || ![1, 2].includes(backup.version) || typeof backup.envBefore !== 'string' || typeof backup.envAfter !== 'string' || typeof backup.gatewayBefore !== 'string' && backup.gatewayBefore !== null || typeof backup.credentialsBefore !== 'string' && backup.credentialsBefore !== null || typeof backup.credentialsAfter !== 'string' && backup.credentialsAfter !== null) throw Error('Panel 切换备份内容无效');
+    if (backup.version === 1) {
+      if (!previousConnection || !validPanelTarget(panelTarget(previousConnection))) throw Error('旧版 Panel 切换备份缺少可识别的原连接，未覆盖');
+      backup = { ...backup, version: 2, target: panelTarget(previousConnection) }; backupChanged = true;
+    }
+    if (!validPanelTarget(backup.target)) throw Error('Panel 切换备份目标无效');
   } else {
     const publication = await publicationState(root);
     if (publication && !switchExisting) throw Error('检测到现有 Cloudflare/Gateway 发布状态；如需接管，请显式使用 --switch-existing。普通 server:leave 会恢复原配置');
-    const envAfter = panelEnvironment(current.env, connection, caFile), credentialsAfter = current.credentials?.replace(/^工作台：.*$/m, '工作台：' + connection.origin) ?? null;
-    backup = { version: 1, envBefore: current.env, envAfter, credentialsBefore: current.credentials, credentialsAfter, gatewayBefore: current.gatewayBefore };
-    await writeStateFile(current.paths.backup, json(backup), { expected: null });
+    backup = {
+      version: 2,
+      target: panelTarget(connection),
+      envBefore: current.env,
+      envAfter: panelEnvironment(current.env, connection, caFile),
+      credentialsBefore: current.credentials,
+      credentialsAfter: current.credentials?.replace(/^工作台：.*$/m, '工作台：' + connection.origin) ?? null,
+      gatewayBefore: current.gatewayBefore,
+    };
+    backupChanged = true;
   }
-  if (current.env !== backup.envBefore && current.env !== backup.envAfter) throw Error('Panel 环境配置在接入过程中被修改，未覆盖');
-  if (current.credentials !== backup.credentialsBefore && current.credentials !== backup.credentialsAfter) throw Error('Panel 登录说明在接入过程中被修改，未覆盖');
+  const previousEnvAfter = backup.envAfter, previousCredentialsAfter = backup.credentialsAfter;
+  const desiredTarget = panelTarget(connection), sameTarget = JSON.stringify(backup.target) === JSON.stringify(desiredTarget);
+  if (!sameTarget && !replace) throw Error('Panel 已绑定其他自建节点；切换中心或 slug 必须显式使用 --replace');
+  const desiredEnvAfter = panelEnvironment(backup.envBefore, connection, caFile);
+  const desiredCredentialsAfter = backup.credentialsBefore?.replace(/^工作台：.*$/m, '工作台：' + connection.origin) ?? null;
+  if (backup.target.origin !== desiredTarget.origin || backup.target.slug !== desiredTarget.slug || backup.target.nodeId !== desiredTarget.nodeId || backup.target.path !== desiredTarget.path || backup.envAfter !== desiredEnvAfter || backup.credentialsAfter !== desiredCredentialsAfter) backupChanged = true;
+  backup = { ...backup, target: desiredTarget, envAfter: desiredEnvAfter, credentialsAfter: desiredCredentialsAfter };
+  if (backupChanged) await writeStateFile(current.paths.backup, json(backup), { expected: backupText });
+  if (current.env !== backup.envBefore && current.env !== previousEnvAfter && current.env !== backup.envAfter) throw Error('Panel 环境配置在接入过程中被修改，未覆盖');
+  if (current.credentials !== backup.credentialsBefore && current.credentials !== previousCredentialsAfter && current.credentials !== backup.credentialsAfter) throw Error('Panel 登录说明在接入过程中被修改，未覆盖');
   if (current.env !== backup.envAfter) await writeStateFile(current.paths.env, backup.envAfter, { expected: current.env });
   if (backup.credentialsAfter !== null && current.credentials !== backup.credentialsAfter) await writeStateFile(current.paths.credentials, backup.credentialsAfter, { expected: current.credentials });
   if (current.gatewayBefore !== null) {
@@ -234,7 +264,7 @@ export async function joinNode({
   await mkdir(pathFor(root, ''), { recursive: true, mode: 0o700 });
   await writeStateFile(pathFor(root, 'connection.json'), json(connection), { expected: existingText });
   await writeStateFile(config, frpcConfig(connection, { panelPort, caFile: caPath }), { expected: await optional(config, 262144) });
-  await configurePanel(root, connection, { switchExisting, caFile: caPath, run });
+  await configurePanel(root, connection, { switchExisting, replace, previousConnection: existing, caFile: caPath, run });
   await mkdir(join(unit, '..'), { recursive: true, mode: 0o700 });
   await writeStateFile(unit, serviceUnit({ frpc, config }), { expected: await optional(unit, 65536) });
 

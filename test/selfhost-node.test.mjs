@@ -40,6 +40,8 @@ test('join stores only the node credential, generates bounded frpc and systemd f
   assert.match(env, /PUBLIC_ORIGIN=https:\/\/desk\.example\.test/); assert.match(env, /ENTRY_BASE_PATH=\/node\/node-a\//); assert.match(env, /SHARED_ENTRY=0/);
   assert.match(env, /SELFHOST_CA_FILE=\n/);
   assert.match(await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8'), /工作台：https:\/\/desk\.example\.test/);
+  const backup = JSON.parse(await readFile(join(h.root, 'data', 'selfhost-node', 'panel-backup.json'), 'utf8'));
+  assert.deepEqual(backup.target, { origin: 'https://desk.example.test', slug: 'node-a', nodeId: result.connection.nodeId, path: '/node/node-a/' });
 
   let secondPrompt = false;
   await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
@@ -55,6 +57,28 @@ test('joining a different center requires an explicit replacement and imported C
   await assert.rejects(joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b' }), /server:leave/);
   await joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b', replace: true });
   assert.match(await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8'), /other\.example\.test/);
+  const env = await readFile(join(h.root, '.env'), 'utf8');
+  assert.match(env, /PUBLIC_ORIGIN=https:\/\/other\.example\.test/);
+  assert.match(env, /ENTRY_BASE_PATH=\/node\/node-b\//);
+  const backup = JSON.parse(await readFile(join(h.root, 'data', 'selfhost-node', 'panel-backup.json'), 'utf8'));
+  assert.equal(backup.version, 2);
+  assert.deepEqual(backup.target, { origin: 'https://other.example.test', slug: 'node-b', nodeId: backup.target.nodeId, path: '/node/node-b/' });
+  assert.equal(backup.envBefore.includes('PUBLIC_ORIGIN=https://old.example.test'), true);
+  await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => new Response('{"ok":true}', { status: 200 }) });
+  assert.match(await readFile(join(h.root, '.env'), 'utf8'), /PUBLIC_ORIGIN=https:\/\/old\.example\.test/);
+});
+
+test('a version 1 Panel backup is migrated using the prior node identity', async t => {
+  const h = await setup(t), request = async () => new Response(JSON.stringify(h.joined), { status: 200 });
+  const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
+  const result = await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
+  const path = join(h.root, 'data', 'selfhost-node', 'panel-backup.json'), backup = JSON.parse(await readFile(path, 'utf8'));
+  delete backup.target; backup.version = 1;
+  await writeFile(path, JSON.stringify(backup, null, 2) + '\n', { mode: 0o600 });
+  await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
+  const migrated = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(migrated.version, 2);
+  assert.deepEqual(migrated.target, { origin: 'https://desk.example.test', slug: 'node-a', nodeId: result.connection.nodeId, path: '/node/node-a/' });
 });
 
 test('existing Cloudflare or Gateway state requires explicit takeover and leave restores every prior file', async t => {
