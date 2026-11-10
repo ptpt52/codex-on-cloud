@@ -195,7 +195,11 @@ export async function createPanel(config) {
         if (!valid() || !live()) throw new HttpError(409, '控制权已变化');
         return result;
       },
-      ...(mode !== 'terminal' ? {} : { switchTarget: async (body, live) => {
+      ...(mode !== 'terminal' ? {} : { createTerminal: async (body, live) => {
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['name', 'terminalId'].includes(key))) throw new HttpError(400, '创建终端参数无效');
+        if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化，创建未执行');
+        return managerRequest(config, '/terminals', { ...body, action: 'create', view: 'terminal' });
+      }, switchTarget: async (body, live) => {
         let next;
         try { next = terminalTarget(body); if (!next.terminalId) throw Error(); } catch { throw new HttpError(400, '终端目标无效'); }
         const catalog = await managerRequest(config, '/terminals', undefined, 3000);

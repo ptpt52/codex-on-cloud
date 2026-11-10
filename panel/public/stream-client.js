@@ -21,6 +21,8 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   let textDecoder = new TextDecoder('utf-8', { fatal: true }), panelSequence = 0, targetSequence = 0, targetPending;
   const panelRequests = new Map();
   const failure = (message, status = 409) => Object.assign(new Error(message), { status, outcome: 'rejected' });
+  const creating = () => [...panelRequests.values()].some(p => p.action === 'create-terminal');
+  const panelFailure = (action, message, status = 409, outcome) => Object.assign(failure(message, status), { outcome: outcome || (action === 'create-terminal' ? 'unknown' : 'rejected') });
   const switchBusy = message => Object.assign(failure(message), { code: 'terminal_switch_busy' });
   function finishPanel(id, error, value) {
     const pending = panelRequests.get(id); if (!pending) return;
@@ -80,7 +82,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason, eventId: id, path: active?.kind || lastPath }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
     ended = true; directController?.abort();
-    for (const id of [...panelRequests.keys()]) finishPanel(id, failure('直连查询已取消'));
+    for (const [id, pending] of panelRequests) finishPanel(id, panelFailure(pending.action, '连接已关闭，操作结果请核对终端列表'));
     finishTarget(uncertainTarget ? failure('终端切换结果未知，请重新选择') : switchBusy('连接已关闭，切换未发送；恢复后请再点目标终端'));
     for (const timer of [relayTimer, directTimer, promotionTimer, recoveryTimer]) clearTimeout(timer);
     for (const peer of peers.values()) { peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('closed')); peer.prepareWait?.reject(new Error('closed')); peer.close(); }
@@ -92,7 +94,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   function healthy(peer) { return peer?.ready && !peer.gone && !peer.health.suspect && peer.writable() && performance.now() - peer.healthyAt <= 10000; }
   function lost(peer, reason = 'closed') {
     if (!peer || peer.gone || ended) return;
-    for (const [id, pending] of panelRequests) if (pending.peer === peer) finishPanel(id, failure('直连查询已中断'));
+    for (const [id, pending] of panelRequests) if (pending.peer === peer) finishPanel(id, panelFailure(pending.action, '连接已中断，操作结果请核对终端列表'));
     if (targetPending?.peer === peer) {
       if (targetPending.sent) { close('target-unknown'); return; }
       // The old target remains authoritative; normal route recovery resumes
@@ -147,6 +149,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         // in-flight target switch. Only activation commits that boundary.
         if (!active || peer === active && !targetPending) epoch = Math.max(epoch, value.epoch);
         peer.epoch = value.epoch; peer.handoff = value.handoff === 1; peer.panel = value.panel === 1;
+        peer.terminalCreate = value.terminalCreate === 1;
         peer.terminalSwitch = value.terminalSwitch === 1 && (peer.kind === 'direct' || value.terminalSwitchRelay === 1);
         if (!peer.ready) trace(peer.kind === 'relay' ? 'relay-ready' : 'direct-ready', { path: peer.kind, durationMs: Math.round(performance.now() - peer.startedAt) });
         peer.ready = true; peer.healthyAt = performance.now(); clearTimeout(peer.startTimer); heartbeat(peer);
@@ -171,7 +174,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (value.type === 'panel-result') {
         const pending = panelRequests.get(value.id);
         if (!pending || pending.peer !== peer || pending.epoch !== value.epoch || peer !== active || value.epoch !== epoch) return;
-        finishPanel(value.id, value.ok === true ? null : failure(value.error?.message || '直连查询失败', value.error?.status), value.value); return;
+        finishPanel(value.id, value.ok === true ? null : panelFailure(pending.action, value.error?.message || '连接操作失败', value.error?.status, value.error?.outcome), value.value); return;
       }
       if (value.type === 'switched') {
         const pending = targetPending;
@@ -230,7 +233,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     } catch { lost(peer); }
   }
   async function activate(peer, planned = false) {
-    if (ended || transitioning || peer.gone || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
+    if (ended || transitioning || creating() || peer.gone || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
     transitioning = true;
     let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
     try {
@@ -378,7 +381,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (ended || !peer?.ready || signal?.aborted) return Promise.reject(failure('会话通道未就绪'));
       if (!peer.writable()) { lost(peer); return Promise.reject(failure('连接正在关闭，本次操作未发送')); }
       if (action === 'switch-terminal') {
-        if (!terminal || !peer.terminalSwitch || targetPending || transitioning || claiming || !canSwitchTarget() || targetSequence >= 2147483647) return Promise.reject(switchBusy('终端仍有操作进行中，切换未发送；完成后请再点目标终端'));
+        if (!terminal || !peer.terminalSwitch || targetPending || creating() || transitioning || claiming || !canSwitchTarget() || targetSequence >= 2147483647) return Promise.reject(switchBusy('终端仍有操作进行中，切换未发送；完成后请再点目标终端'));
         const target = { terminalId: body.terminalId, terminalToken: body.terminalToken };
         if (!TERMINAL_IDS.includes(target.terminalId) || typeof target.terminalToken !== 'string' || !/^%\d{1,10}:\d{1,10}$/.test(target.terminalToken)) return Promise.reject(failure('终端目标无效', 400));
         return new Promise((resolve, reject) => {
@@ -399,11 +402,13 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
           void prepareTarget(pending);
         });
       }
-      if (peer.kind !== 'direct' || !peer.panel || !['state', 'terminals'].includes(action) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('该直连查询正在处理或不受支持', 429));
+      const mutation = action === 'create-terminal';
+      if ((mutation ? !terminal || !peer.terminalCreate || targetPending || transitioning || claiming : peer.kind !== 'direct' || !peer.panel || !['state', 'terminals'].includes(action)) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('连接操作正在处理或不受支持，本次未发送', 429));
+      if (mutation && new TextEncoder().encode(JSON.stringify(body)).length > 1024) return Promise.reject(failure('创建参数超过 1 KiB，本次未发送', 413));
       return new Promise((resolve, reject) => {
-        const id = ++panelSequence, abort = () => finishPanel(id, failure('直连查询已取消'));
-        panelRequests.set(id, { action, peer, epoch, resolve, reject, signal, abort, timer: setTimeout(() => finishPanel(id, failure('直连查询超时', 504)), 5000) }); signal?.addEventListener('abort', abort, { once: true });
-        try { send(peer, { type: 'panel', id, epoch, action }); } catch { finishPanel(id, failure('直连查询未发送')); }
+        const id = ++panelSequence, abort = () => finishPanel(id, panelFailure(action, '连接请求已取消，操作结果请核对终端列表'));
+        panelRequests.set(id, { action, peer, epoch, resolve, reject, signal, abort, timer: setTimeout(() => finishPanel(id, panelFailure(action, '连接请求超时，操作结果请核对终端列表', 504)), mutation ? 6500 : 5000) }); signal?.addEventListener('abort', abort, { once: true });
+        try { send(peer, { type: 'panel', id, epoch, action, ...(mutation ? { body } : {}) }); } catch { finishPanel(id, panelFailure(action, '连接请求未完成')); }
       });
     },
     send(data) {
@@ -420,7 +425,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       catch { lost(peer); }
     },
   });
-  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
+  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalCreate: { get: () => !!terminal && !ended && active?.ready === true && active.terminalCreate === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
   for (const name of ['online', 'offline']) window.addEventListener(name, wake);
   navigator.connection?.addEventListener('change', wake); document.addEventListener('visibilitychange', wake);
   return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake,

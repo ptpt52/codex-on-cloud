@@ -172,3 +172,43 @@ test('attachment failure after committing a target closes the viewer instead of 
   assert.equal(committed, true); assert.equal(session.closed, true);
   assert.equal(records.some(value => value.type === 'switch-result'), false); assert.equal(records.at(-1).type, 'switched');
 });
+
+for (const kind of ['direct', 'relay']) test(`${kind}: terminal creation is bounded, never replayed, and fences target and route changes until its reply`, async t => {
+  let release, calls = 0; const gate = new Promise(resolve => { release = resolve; });
+  const app = setup({ createTerminal: async body => { calls++; await gate; return { created: body.terminalId }; }, switchTarget: async target => ({ target, commit() {} }) });
+  t.after(() => { release(); app.session.close(); }); const peer = app.peer(kind); await activate(peer, 0);
+  assert.equal(peer.records[0].terminalCreate, 1);
+  peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { terminalId: 'aux1', name: 'one shell' } });
+  peer.entry.receive({ type: 'panel', id: 2, epoch: 1, action: 'create-terminal', body: { terminalId: 'aux2', name: 'must not queue' } });
+  peer.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } });
+  const standby = app.peer(kind === 'direct' ? 'relay' : 'direct'); await activate(standby, 1);
+  assert.equal(calls, 1); assert.equal(peer.entry.active, true); assert.equal(standby.records.at(-1).type, 'wait');
+  assert.equal(peer.records.find(v => v.id === 2 && v.type === 'panel-result').error.outcome, 'rejected');
+  assert.equal(peer.records.find(v => v.type === 'switch-result').ok, false);
+  release(); await tick(); assert.equal(peer.records.find(v => v.id === 1 && v.type === 'panel-result').value.created, 'aux1');
+  assert.equal(app.launches, 1); assert.deepEqual(app.writes, []);
+  peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'replay' } }); await tick(); assert.equal(calls, 1); assert.equal(peer.closed, true);
+});
+
+test('creation preserves unknown outcomes, rejects oversized requests before acting, and reports oversized accepted results as unknown', async t => {
+  let calls = 0;
+  const app = setup({ createTerminal: async body => {
+    calls++; if (body.name === 'large reply') return { data: 'x'.repeat(16384) };
+    throw Object.assign(Error('accepted but result unknown'), { status: 503, outcome: 'unknown' });
+  } }); t.after(() => app.session.close()); const peer = app.peer('direct'); await activate(peer, 0);
+  peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'x'.repeat(1025) } }); await tick();
+  assert.equal(calls, 0); assert.equal(peer.records.at(-1).error.outcome, 'rejected'); assert.equal(peer.records.at(-1).error.status, 413);
+  peer.entry.receive({ type: 'panel', id: 2, epoch: 1, action: 'create-terminal', body: { name: 'lost result' } }); await tick();
+  assert.equal(calls, 1); assert.equal(peer.records.at(-1).error.outcome, 'unknown');
+  peer.entry.receive({ type: 'panel', id: 3, epoch: 1, action: 'create-terminal', body: { name: 'large reply' } }); await tick();
+  assert.equal(calls, 2); assert.equal(peer.records.at(-1).error.outcome, 'unknown'); assert.equal(peer.records.at(-1).error.status, 413);
+});
+
+test('standby and revoked stream peers cannot create terminals', async t => {
+  let allowed = true, calls = 0;
+  const app = setup({ valid: () => allowed, createTerminal: async () => { calls++; return {}; } }); t.after(() => app.session.close());
+  const relay = app.peer('relay'), standby = app.peer('direct'); await activate(relay, 0);
+  standby.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'standby' } }); await tick(); assert.equal(calls, 0);
+  allowed = false; relay.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'revoked' } }); await tick();
+  assert.equal(calls, 0); assert.equal(app.session.closed, true);
+});

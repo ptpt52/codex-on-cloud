@@ -21,6 +21,26 @@ async function denied(url, options) {
     ws.once('unexpected-response', (_req, res) => { res.resume(); ws.terminate(); resolve(res.statusCode); });
   });
 }
+test('authenticated terminal creation uses the retained stream, validates fixed parameters and switches to the created identity', async t => {
+  const app = await fixture({ seamless: true, maxTerminals: 2 }); t.after(() => app.close()); await app.login(); await app.claim();
+  const main = (await app.controls.listTerminals()).terminals[0], target = { terminalId: main.id, terminalToken: main.token };
+  const peer = await connected(app, true, target); t.after(() => peer.ws.terminate());
+  assert.equal(peer.records[0].terminalCreate, 1);
+  peer.ws.send(JSON.stringify({ type: 'activate', epoch: 0, out: 0, input: 0 })); await until(() => peer.records.some(v => v.type === 'active'));
+  peer.ws.send(JSON.stringify({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'new shell', terminalId: 'aux1', action: 'close' } }));
+  await until(() => peer.records.some(v => v.type === 'panel-result' && v.id === 1));
+  assert.equal(peer.records.find(v => v.type === 'panel-result' && v.id === 1).error.status, 400); assert.equal((await app.controls.listTerminals()).terminals.length, 1);
+  peer.ws.send(JSON.stringify({ type: 'panel', id: 2, epoch: 1, action: 'create-terminal', body: { name: 'new shell', terminalId: 'aux1' } }));
+  await until(() => peer.records.some(v => v.type === 'panel-result' && v.id === 2));
+  const result = peer.records.find(v => v.type === 'panel-result' && v.id === 2); assert.equal(result.ok, true); assert.equal(result.value.created, 'aux1');
+  const created = result.value.terminals.find(v => v.id === result.value.created); assert.equal(created.name, 'new shell');
+  peer.ws.send(JSON.stringify({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: created.id, terminalToken: created.token } }));
+  await until(() => peer.records.some(v => v.type === 'switched')); await until(() => app.terminalConnections === 2);
+  peer.ws.send(JSON.stringify({ type: 'panel', id: 3, epoch: 2, action: 'create-terminal', body: { name: 'over capacity' } }));
+  await until(() => peer.records.some(v => v.type === 'panel-result' && v.id === 3));
+  assert.equal(peer.records.find(v => v.type === 'panel-result' && v.id === 3).error.outcome, 'rejected');
+  assert.equal((await app.controls.listTerminals()).terminals.length, 2); assert.deepEqual(app.terminalInputs, []); assert.equal(app.managementStats.restarts, 0);
+});
 test('stream paths enforce authentication, Origin, viewer ownership and CSRF before starting an upstream', async t => {
   const app = await fixture({ seamless: true }); t.after(() => app.close());
   assert.equal(await denied(path(app), { origin: app.config.origin }), 401);

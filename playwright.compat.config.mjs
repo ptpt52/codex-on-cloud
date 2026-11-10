@@ -4,7 +4,7 @@ import base from './playwright.config.mjs';
 const launch = name => process.env[name] ? { executablePath: process.env[name] } : {};
 export default defineConfig({
   ...base,
-  testMatch: ['compatibility.spec.mjs', 'reverse-forward.spec.mjs', 'direct-panel.spec.mjs', 'relay-switch.spec.mjs', 'browser-preferences.spec.mjs', 'forward-hints.spec.mjs', 'service-rtc.spec.mjs', 'service-files.spec.mjs', 'latency.spec.mjs', 'mode-standby.spec.mjs', 'mode-standby-recovery.spec.mjs', 'connection-trace.spec.mjs', 'connection-notice.spec.mjs', 'network-resilience.spec.mjs', 'compact-toolbar.spec.mjs', 'terminal-tab-overflow.spec.mjs', 'terminal-actions.spec.mjs', 'mobile-edges.spec.mjs', 'file-upload.spec.mjs', 'file-list.spec.mjs'],
+  testMatch: ['compatibility.spec.mjs', 'reverse-forward.spec.mjs', 'direct-panel.spec.mjs', 'relay-switch.spec.mjs', 'terminal-create-stream.spec.mjs', 'browser-preferences.spec.mjs', 'forward-hints.spec.mjs', 'service-rtc.spec.mjs', 'service-files.spec.mjs', 'latency.spec.mjs', 'mode-standby.spec.mjs', 'mode-standby-recovery.spec.mjs', 'connection-trace.spec.mjs', 'connection-notice.spec.mjs', 'network-resilience.spec.mjs', 'compact-toolbar.spec.mjs', 'terminal-tab-overflow.spec.mjs', 'terminal-actions.spec.mjs', 'mobile-edges.spec.mjs', 'file-upload.spec.mjs', 'file-list.spec.mjs'],
   outputDir: 'test-results/compatibility',
   use: { ...base.use, launchOptions: {}, trace: 'retain-on-failure' },
   projects: [
