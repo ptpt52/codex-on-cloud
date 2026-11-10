@@ -5,11 +5,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import http from 'node:http';
 import { root, maintenanceSettings } from '../native/config.mjs';
-import { cloudflareAPI } from './cloudflare-client.mjs';
+import { cloudflareAPI, cloudflareTokenFile } from './cloudflare-client.mjs';
 import { createNodeActivation, readActivationProfile } from './node-activation.mjs';
 
 export const activationHelp = `用法：npm run native:activate -- [选项]
-首次接入：--domain 固定域名 --zone 区域 --api-token-file 私有令牌文件
+首次接入：--domain 固定域名 --zone 区域
+  --api-token-file FILE  可选，默认 secrets/cf_token；已接入节点沿用保存的路径
 后续切换：npm run native:activate
   --status           只核对本节点是否为当前入口，不修改DNS或服务
   --resolve-unknown  明确接受当前DNS结果，解除本机待核对记录，不重发切换
@@ -42,8 +43,8 @@ export async function activateCommand(args) {
   if (process.platform !== 'linux' || process.getuid() === 0) throw Error('请由Linux部署用户运行');
   if (values.status && values['resolve-unknown']) throw Error('状态核对与解除记录不能同时使用');
   const stored = await readActivationProfile(root);
-  const tokenFile = values['api-token-file'] ? resolve(values['api-token-file']) : stored?.tokenFile;
-  if (!tokenFile) throw Error('首次接入需要 --domain、--zone、--api-token-file');
+  const tokenFile = cloudflareTokenFile(values['api-token-file'], { fallback: stored?.tokenFile });
+  if (!values.status && !values['resolve-unknown'] && !stored && (!values.domain || !values.zone)) throw Error('首次接入需要 --domain、--zone；CF API Token默认读取 secrets/cf_token');
   const api = await cloudflareAPI(tokenFile, { privateFile: true }), config = maintenanceSettings();
   const exec = promisify(execFile);
   const service = async args => { try { return (await exec('systemctl', ['--user', ...args], { timeout: 5000, maxBuffer: 8192 })).stdout.trim(); } catch { return ''; } };

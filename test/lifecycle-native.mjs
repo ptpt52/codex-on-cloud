@@ -20,7 +20,14 @@ const start = (file, args) => {
   child.diagnostic = ''; child.stderr.on('data', bytes => { child.diagnostic = (child.diagnostic + bytes.toString()).slice(-4096); });
   children.push(child); return child;
 };
-async function eventually(probe) { for (let n = 0; n < 100; n++) { try { if (await probe()) return; } catch {} await new Promise(r => setTimeout(r, 50)); } throw Error('isolated lifecycle check timed out\n' + children.filter(child => child.exitCode !== null).map(child => child.diagnostic).join('\n')); }
+async function eventually(probe, label = 'isolated lifecycle condition') {
+  const deadline = performance.now() + 20000; let lastError;
+  while (performance.now() < deadline) {
+    try { if (await probe()) return; } catch (error) { lastError = error.message; }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  throw Error(label + ' timed out' + (lastError ? '\n' + lastError : '') + '\n' + children.map(child => `pid=${child.pid} exit=${child.exitCode} signal=${child.signalCode}\n${child.diagnostic}`).join('\n'));
+}
 const secret = 'synthetic_lifecycle_secret', runtime = join(root, 'run'), socket = join(runtime, 'tmux.sock');
 const clientConfig = { managerSocket: join(runtime, 'manager.sock'), agentSecret: secret };
 try {
@@ -43,7 +50,7 @@ try {
   start('Xvfb', [env.DISPLAY, '-screen', '0', '1280x1280x24', '-nolisten', 'tcp', '-auth', env.XAUTHORITY, '-noreset']);
   await eventually(async () => (await run('xdotool', ['getdisplaygeometry'])) === '1280 1280');
   start('dbus-run-session', ['--', 'xfwm4', '--compositor=off']);
-  await eventually(async () => (await run('xprop', ['-root', '_NET_SUPPORTING_WM_CHECK'])).includes('window id'));
+  await eventually(async () => (await run('xprop', ['-root', '_NET_SUPPORTING_WM_CHECK'])).includes('window id'), 'window manager publication');
   await run('tmux', ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'codex', 'sleep', '120']);
   const pane = await run('tmux', ['-S', socket, 'list-panes', '-F', '#{pane_pid}']);
   const worker = start(process.execPath, [join(root, 'native/desktop-worker.mjs')]);

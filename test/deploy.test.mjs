@@ -166,6 +166,14 @@ test('system packages and linger require their explicit flags, and failed steps 
   assert.ok(failed.calls.every(c=>!c.args.includes('start')));assert.equal(failed.healthy,false);
 });
 
+test('public deployment uses secrets/cf_token without requiring an explicit token argument or logging its value', async t => {
+  const h = await harness(t); await mkdir(join(h.root, 'secrets'), { mode: 0o700 });
+  const token = 'synthetic_conventional_cf_token', file = join(h.root, 'secrets/cf_token'); await writeFile(file, token, { mode: 0o600 });
+  await deploy(options(['--domain', 'desktop.example.com', '--zone', 'example.com']), h.context);
+  assert.ok(h.calls.find(call => call.args[0] === 'scripts/provision-cloudflare.mjs').args.includes(file));
+  assert.equal(JSON.stringify([h.calls, h.logs]).includes(token), false); assert.equal(h.healthy, true);
+});
+
 test('explicit public deployment passes token file as an argument, builds after origin setup and restarts only an existing panel',async t=>{
   const h=await harness(t,{active:['codex-cloud-desktop.service','codex-cloud-panel.service']});
   const file=join(h.root,'api token $(literal).txt'),secret='fake_test_api_token_never_log';await writeFile(file,secret);

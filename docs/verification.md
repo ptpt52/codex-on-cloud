@@ -1117,3 +1117,13 @@ Checks #53 的 WebKit 安装依赖用时 14m05s，三种设备规格共用一个
 首次验收把随查看连接关闭而回收的 `codex-view-main` 临时占位会话也算作任务，导致断言失败；核对 `desktop/web-terminal.py` 的查看器恢复逻辑后，仅排除该类占位会话并重新执行只读验收，通过且没有再次重启面板。没有登录、认领或向生产终端发送输入，现有页面需手动刷新加载新资源。详细私有部署报告保存在 `/tmp/codex-node-deploy.pW3C0b/report.json`。
 
 推送后 Actions [42750838891](https://github.com/ptpt52/codex-on-cloud/actions/runs/42750838891) 的 backend 和 portal 已通过，浏览器矩阵仍运行；native 在 lifecycle 的窗口管理器等待处超时，terminal 在文件服务先就绪后立即检查 tmux socket 时遇到 ENOENT。两项原生测试失败尚未整改，不把本机上线验证视为远端全量 CI 通过，也不声称已经验证真实 Cloudflare 跨节点激活。
+
+## 2026-11-10：Actions 启动竞态与默认 CF Token 路径
+
+针对 `5dec714` 的两项原生失败，在隔离测试 PATH 中分别给 xfwm4 启动增加 6 秒延迟、给 tmux start-server 增加 0.5 秒延迟，原测试均复现对应超时／ENOENT。lifecycle 等待改为有界 20 秒并保留运行中子进程诊断；纯终端先独立等待文件服务，再实际查询私有 tmux 的主 shell 就绪，仍检查 socket 权限和宿主互斥。相同延迟下两项真实隔离套件均通过，纯终端的独立 transient systemd 变体也通过，没有修改生产等待策略。
+
+`308fa58` 的完整 Chromium 回归还在 mode-confirmation 规格失败：确认框出现后，测试立即快进 iframe 的重试时钟，异步 postMessage 尚未送达时可能提前发起探测。现在等待 iframe 实际收到 busy 状态再快进，不再用固定 100ms 墙钟睡眠。手机／电脑该文件共 10 项通过，生产浏览器实现未修改。
+
+按用户约定，`deploy`、`native:publish` 和首次 `native:activate` 默认读取项目内被忽略的 `secrets/cf_token`，要求当前用户私有、最多 4 KiB；显式文件参数及已保存的节点路径仍兼容。新增默认路径实际读取、覆盖优先级、宽权限／超大 Token 拒绝和部署参数传递检查，使用临时合成 Token 与模拟 Cloudflare API，没有使用生产 Token 或修改 DNS。315 项脚本语法、460 项 Node、24 项 Python 通过。
+
+网页节点选择仅完成仓库结构与官方 Cloudflare 能力分析，方案见 cloudflare.md；本轮没有新增远程激活 HTTP 接口、Worker 控制服务或节点代理，也没有重启生产服务。以上为推送前验证，新的远端 Actions 结果需按提交另行确认。

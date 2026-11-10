@@ -1,8 +1,12 @@
 import { parseEnv } from 'node:util';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { settings, root as projectRoot } from '../native/config.mjs';
 import { portalRead } from './portal-files.mjs';
 import { createCloudflarePublication } from './cloudflare-publication.mjs';
+
+export function cloudflareTokenFile(explicit, { root = projectRoot, fallback } = {}) {
+  return resolve(explicit || fallback || join(root, 'secrets', 'cf_token'));
+}
 
 export async function cloudflareAPI(tokenFile, { request = fetch, privateFile = false } = {}) {
   const token = (await portalRead(tokenFile, 4096, privateFile)).trim();
@@ -19,7 +23,7 @@ export async function cloudflareAPI(tokenFile, { request = fetch, privateFile = 
   return api;
 }
 export async function publicationClient(values, { root = projectRoot, deploymentLease, operationId, request = fetch } = {}) {
-  const api = await cloudflareAPI(values['api-token-file'], { request });
+  const api = await cloudflareAPI(cloudflareTokenFile(values['api-token-file'], { root }), { request, privateFile: true });
   const env = parseEnv(await portalRead(join(root, '.env'), 65536, true));
   if (env.SHARED_ENTRY === '1' && (values.rename || values.domain !== new URL(env.PUBLIC_ORIGIN).hostname)) throw Error('共享入口节点不能通过普通发布改名，请使用 native:activate 管理固定入口');
   const config = settings({ ...env, ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}) });

@@ -81,7 +81,14 @@ try {
     agentSecret = (await readFile(join(root, 'secrets', 'agent_secret'), 'utf8')).trim();
     await mkdir(runtime,{recursive:true,mode:0o700});await writeFile(join(runtime,'terminal.pid'),'',{mode:0o600});
     host = launch('native/terminal-host.mjs'); files = launch('native/file-agent.mjs');
-    await until(async () => { try { return (await (await fetch('http://127.0.0.1:' + fileAgentPort + '/health', { headers: { authorization: 'Bearer ' + agentSecret }, signal: AbortSignal.timeout(1000) })).json()).ready === true; } catch { return false; } }, 'terminal host or file service did not start');
+    await until(async () => { try { return (await (await fetch('http://127.0.0.1:' + fileAgentPort + '/health', { headers: { authorization: 'Bearer ' + agentSecret }, signal: AbortSignal.timeout(1000) })).json()).ready === true; } catch { return false; } }, 'file service did not start');
+    // File health describes the independent helper, not the task host. Wait
+    // for the actual shell before inspecting its socket or testing its lease.
+    await until(async () => {
+      if (host.spawnFailure || host.exitCode !== null || host.signalCode !== null) throw Error('terminal host exited before readiness\n' + host.output);
+      try { await exec('tmux', ['-S', join(runtime, 'tmux.sock'), 'has-session', '-t', '=codex'], { env, timeout: 1000, maxBuffer: 4096 }); return true; }
+      catch { return false; }
+    }, 'terminal host did not create its private shell');
     assert.equal((await lstat(join(runtime, 'tmux.sock'))).mode & 0o777, 0o600);
     await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
     assert.equal((await lstat(join(runtime,'terminal.lock'))).size,0);

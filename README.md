@@ -46,15 +46,14 @@ npm run deploy -- --check
 
 完成后本机访问 `http://localhost:36080`，账号密码见 `secrets/credentials.txt`。面板保持回环监听；若部署在远程服务器上，可用 SSH 本地端口转发后访问 localhost，或配置下面的公网入口。安装器不会自动打开防火墙或将面板改为公网监听。
 
-有 Cloudflare 托管域名时，把具备所需权限的 API token 存为仅含 token 的文件，增加以下参数即可复用现有发布脚本配置域名、Tunnel 和 HTTPS 入口（[授权准备](docs/cloudflare.md)）：
+有 Cloudflare 托管域名时，把具备所需权限的 API token 存为 `secrets/cf_token`（仅含 token、权限 0600），增加以下参数即可复用现有发布脚本配置域名、Tunnel 和 HTTPS 入口（[授权准备](docs/cloudflare.md)）：
 
 ```bash
 npm run deploy -- --install-deps --enable-linger \
-  --domain desktop.example.com --zone example.com \
-  --api-token-file /path/to/cloudflare-api-token
+  --domain desktop.example.com --zone example.com
 ```
 
-公网配置会重启已运行的网页面板，已有端口映射需要重新配对，桌面与 Codex 任务保留。API token 不进入命令行内容或日志；安装器只把文件路径交给发布脚本。若已配置 HTTPS 与 Tunnel token，重复部署也会启用该 Tunnel。公网入口配置和系统软件包安装仍需主机网络可用。
+默认读取项目内被 Git 忽略的 `secrets/cf_token`，可用 `--api-token-file FILE` 指定其他位置。公网配置会重启已运行的网页面板，已有端口映射需要重新配对，桌面与 Codex 任务保留。API token 不进入命令行内容或日志；安装器只把文件路径交给发布脚本。若已配置 HTTPS 与 Tunnel token，重复部署也会启用该 Tunnel。公网入口配置和系统软件包安装仍需主机网络可用。
 
 需要提供端口映射助手下载时，可再加 `--build-forward`，使用已有的固定 Go 1.26.4 构建四平台助手；普通网页桌面部署不需要 Go。全部参数见 `npm run deploy -- --help`。下面保留分步安装与维护说明。
 
@@ -326,7 +325,7 @@ npm run native:cloudflared
 它下载官方 `2026.10.0` 程序并校验 SHA-256，保存到 `data/host-tools/usr/bin`。有 API Token 时可直接创建专用 Tunnel 和域名：
 
 ```bash
-npm run native:publish -- --domain home-codex.x-wrt.dev --zone x-wrt.dev --api-token-file /tmp/cf_token
+npm run native:publish -- --domain home-codex.x-wrt.dev --zone x-wrt.dev
 ```
 
 脚本需要账户 Tunnel 编辑、目标区域 Zone 读取和 DNS 编辑权限，不覆盖无关记录。也可手动配置 Tunnel、HTTPS 域名并把 Tunnel 运行 token 写入 `secrets/tunnel_token`。随后启动：

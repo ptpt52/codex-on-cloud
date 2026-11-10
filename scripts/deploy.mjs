@@ -10,7 +10,7 @@ import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
 import { configureWSLNetwork } from './wsl-network.mjs';
 import { randomBytes } from 'node:crypto';
 import { acquireDeploymentLease } from './deployment-lease.mjs';
-import { publicationClient } from './cloudflare-client.mjs';
+import { publicationClient, cloudflareTokenFile } from './cloudflare-client.mjs';
 
 // Keep the version guard reachable even when older Node lacks util.parseEnv.
 const { parseArgs, parseEnv } = util;
@@ -28,8 +28,9 @@ WSL 镜像网络自动配置 hostAddressLoopback 并备份；重启 WSL 需自�
   --enable-linger          使用 sudo loginctl 启用无人登录时的开机自启
   --skip-wsl-network       保留 Windows WSL 网络配置，不执行自动检查或修改
   --origin URL             新部署的访问根地址；已有 .env 保持不变
-  --domain HOST --zone ZONE --api-token-file FILE
+  --domain HOST --zone ZONE [--api-token-file FILE]
                            配置 Cloudflare 公网入口；会重启已运行的面板
+                           API Token默认读取 secrets/cf_token（0600）
   --build-forward          构建四平台端口映射助手，需要已有 Go 1.26.4
   --help                   显示帮助
 保留已有密码和配置，不安装或修改 Codex，不重启桌面。`;
@@ -43,7 +44,7 @@ export function options(args) {
   if (values.help) return values;
   if (values.mode) deploymentMode(values.mode);
   const publication = [values.domain, values.zone, values['api-token-file']];
-  if (publication.some(Boolean) && !publication.every(Boolean)) throw new Error('公网部署需同时填写 --domain、--zone 和 --api-token-file');
+  if (publication.some(Boolean) && (!values.domain || !values.zone)) throw new Error('公网部署需同时填写 --domain、--zone；API Token默认读取 secrets/cf_token');
   if (values.domain && (!/^[a-z0-9.-]+$/i.test(values.domain) || !/^[a-z0-9.-]+$/i.test(values.zone) || !values.domain.toLowerCase().endsWith('.' + values.zone.toLowerCase()))) throw new Error('--domain 需为 --zone 下的子域名');
   if (values.origin) {
     const url = new URL(values.origin);
@@ -120,6 +121,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   if (platform !== 'linux') throw new Error('服务端需要 Linux 和 systemd；Mac/Windows 可运行端口映射助手');
   if (uid === 0) throw new Error('请以普通用户运行安装命令；只有显式选择的系统依赖和开机自启步骤使用 sudo');
   if (Number(nodeVersion.split('.')[0]) < 22) throw new Error('需要 Node.js 22+；安装器不会替换现有 Node 或 Codex');
+  if (values.domain) values = { ...values, 'api-token-file': cloudflareTokenFile(values['api-token-file'], { root }) };
   let existingMode, existingEnv = {};
   try { existingEnv = parseEnv(await boundedFile(join(root, '.env'), 65536)); existingMode = deploymentMode(existingEnv.DEPLOY_MODE); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }

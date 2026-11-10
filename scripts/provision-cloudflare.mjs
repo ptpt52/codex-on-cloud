@@ -7,7 +7,7 @@ const { values } = parseArgs({ options: {
 } });
 try {
   const domain = values.domain?.toLowerCase(), zone = values.zone?.toLowerCase();
-  if (!domain || !zone || !domain.endsWith('.' + zone) || !/^[a-z0-9.-]+$/.test(domain) || !/^[a-z0-9.-]+$/.test(zone) || !values['api-token-file'] || ['prepare-only', 'commit-only', 'rollback'].filter(key => values[key]).length > 1) throw Error('需要 --domain、--zone、--api-token-file；发布阶段选项不能同时使用');
+  if (!domain || !zone || !domain.endsWith('.' + zone) || !/^[a-z0-9.-]+$/.test(domain) || !/^[a-z0-9.-]+$/.test(zone) || ['prepare-only', 'commit-only', 'rollback'].filter(key => values[key]).length > 1) throw Error('需要 --domain、--zone（API Token默认 secrets/cf_token）；发布阶段选项不能同时使用');
   if (process.getuid() === 0) throw Error('请以普通用户运行');
   const publication = await publicationClient(values);
   if (values.rollback) { await publication.rollback({ domain, zone }); console.log('公网发布回退检查完成；原任务保留。'); }

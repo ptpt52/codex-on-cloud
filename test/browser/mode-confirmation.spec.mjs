@@ -96,8 +96,16 @@ test('an accepted pending input disables mode changes and cannot queue a later s
 test('mode confirmation postpones automatic direct promotion without opening a text terminal', async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, webrtc: true }); let offers = 0;
   try {
+    await page.addInitScript(() => window.addEventListener('message', event => {
+      if (event.source === parent && event.origin === location.origin && event.data?.type === 'codex-desktop-options') window.modeTestBusy = event.data.busy === true;
+    }));
     await page.clock.install(); await page.route('**/api/desktop/rtc', route => ++offers === 1 ? route.fulfill({ status: 503, json: { error: '首次直连不可用' } }) : route.continue());
-    await login(page, app); await page.locator('#terminal-mode').click(); await page.clock.fastForward(16000); await page.waitForTimeout(100);
+    await login(page, app); await page.locator('#terminal-mode').click();
+    const viewer = page.frames().find(frame => frame.url().includes('/desktop/index.html'));
+    // postMessage crosses event loops. Wait for the iframe to receive the
+    // confirmation's busy state before advancing its virtual retry clock.
+    await expect.poll(() => viewer.evaluate(() => window.modeTestBusy)).toBe(true);
+    await page.clock.fastForward(16000);
     await expect(page.locator('#action-confirmation')).toBeVisible(); expect(offers).toBe(1); expect(app.vncConnections).toBe(1); expect(app.terminalConnections).toBe(0);
     await page.locator('#cancel-confirmation').click();
     await page.frames().find(frame => frame.url().includes('/desktop/index.html')).evaluate(() => window.dispatchEvent(new Event('online')));
