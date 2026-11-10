@@ -115,9 +115,10 @@ function panelEnvironment(before, connection, caFile) {
   text = replaceEnv(text, 'ENTRY_BASE_PATH', connection.path);
   text = replaceEnv(text, 'SELFHOST_NODE_CONFIG_FILE', './data/selfhost-node/connection.json');
   text = replaceEnv(text, 'SHARED_ENTRY', '0');
+  text = replaceEnv(text, 'NODE_ID', connection.nodeId);
   text = replaceEnv(text, 'SELFHOST_CA_FILE', caFile ? './data/selfhost-node/frps-ca.pem' : '');
   const parsed = parseEnv(text);
-  if (parsed.PUBLIC_ORIGIN !== connection.origin || parsed.ENTRY_BASE_PATH !== connection.path || parsed.SELFHOST_NODE_CONFIG_FILE !== './data/selfhost-node/connection.json' || parsed.SHARED_ENTRY !== '0') throw Error('Panel 环境配置存在冲突，未修改');
+  if (parsed.PUBLIC_ORIGIN !== connection.origin || parsed.ENTRY_BASE_PATH !== connection.path || parsed.SELFHOST_NODE_CONFIG_FILE !== './data/selfhost-node/connection.json' || parsed.SHARED_ENTRY !== '0' || parsed.NODE_ID !== connection.nodeId) throw Error('Panel 环境配置存在冲突，未修改');
   return text;
 }
 

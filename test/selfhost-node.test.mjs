@@ -38,6 +38,7 @@ test('join stores only the node credential, generates bounded frpc and systemd f
   assert.deepEqual(h.calls.slice(0, 3), [['systemctl', '--user', 'restart', 'codex-cloud-panel.service'], ['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', '--now', 'codex-cloud-selfhost-node.service']]);
   const env = await readFile(join(h.root, '.env'), 'utf8');
   assert.match(env, /PUBLIC_ORIGIN=https:\/\/desk\.example\.test/); assert.match(env, /ENTRY_BASE_PATH=\/node\/node-a\//); assert.match(env, /SHARED_ENTRY=0/);
+  assert.match(env, new RegExp('^NODE_ID=' + result.connection.nodeId + '$', 'm'));
   assert.match(env, /SELFHOST_CA_FILE=\n/);
   assert.match(await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8'), /工作台：https:\/\/desk\.example\.test/);
   const backup = JSON.parse(await readFile(join(h.root, 'data', 'selfhost-node', 'panel-backup.json'), 'utf8'));
@@ -66,6 +67,7 @@ test('joining a different center requires an explicit replacement and imported C
   assert.equal(backup.envBefore.includes('PUBLIC_ORIGIN=https://old.example.test'), true);
   await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => new Response('{"ok":true}', { status: 200 }) });
   assert.match(await readFile(join(h.root, '.env'), 'utf8'), /PUBLIC_ORIGIN=https:\/\/old\.example\.test/);
+  assert.match(await readFile(join(h.root, '.env'), 'utf8'), /^NODE_ID=c{32}$/m);
 });
 
 test('a version 1 Panel backup is migrated using the prior node identity', async t => {
@@ -94,6 +96,7 @@ test('existing Cloudflare or Gateway state requires explicit takeover and leave 
   await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => new Response('{"ok":true}', { status: 200 }) });
   assert.equal(await readFile(join(h.root, '.env'), 'utf8'), beforeEnv);
   assert.equal(await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8'), beforeCredentials);
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), beforeEnv);
   assert.equal(await readFile(gatewayPath, 'utf8'), gateway);
 });
 
