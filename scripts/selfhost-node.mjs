@@ -34,10 +34,10 @@ async function secret(prompt) {
 
 try {
   const command = process.argv[2] || 'help', { values } = parseArgs({ args: process.argv.slice(3), options: {
-    server: { type: 'string' }, slug: { type: 'string' }, replace: { type: 'boolean' }, 'switch-existing': { type: 'boolean' }, 'ca-file': { type: 'string' }, help: { type: 'boolean' },
+    server: { type: 'string' }, slug: { type: 'string' }, replace: { type: 'boolean' }, 'switch-existing': { type: 'boolean' }, recover: { type: 'boolean' }, 'ca-file': { type: 'string' }, help: { type: 'boolean' },
   } });
   if (values.help || command === 'help') {
-    console.log(`用法：\n  npm run server:join -- [--server https://desk.example.com] [--slug node-a]\n  npm run server:leave\n  npm run server:status\n  npm run server:doctor\n\njoin 的授权 key 只从隐藏终端或标准输入读取，不能作为命令行参数传入。\n--ca-file 用于中心证书不来自系统信任库的导入证书场景。\n--replace 允许用新 key 替换本机已有的其他中心或路径配置。\n--switch-existing 允许接管已有 Cloudflare/Gateway 发布；server:leave 会恢复原 Panel 配置。`);
+    console.log(`用法：\n  npm run server:join -- [--server https://desk.example.com] [--slug node-a]\n  npm run server:leave [--recover]\n  npm run server:status\n  npm run server:doctor\n\njoin 的授权 key 只从隐藏终端或标准输入读取，不能作为命令行参数传入。\n--ca-file 用于中心证书不来自系统信任库的导入证书场景。\n--replace 允许用新 key 替换本机已有的其他中心或路径配置。\n--switch-existing 允许接管已有 Cloudflare/Gateway 发布；server:leave 会恢复原 Panel 配置。\n--recover 处理上次 join 回滚未完全确认的记录。`);
   } else if (command === 'join') {
     if (process.platform !== 'linux') throw Error('节点接入当前只支持 Linux/Ubuntu');
     const native = maintenanceSettings(), server = values.server || await line('中心服务器地址：'), slug = values.slug || await line('节点路径 slug：');
@@ -46,7 +46,7 @@ try {
     console.log(`中继服务：${result.unit}`);
     for (const warning of result.warnings) console.log(`警告：${warning}`);
   } else if (command === 'leave') {
-    const result = await leaveNode({ root });
+    const result = await leaveNode({ root, recover: values.recover === true });
     console.log(`已停止并清理本机节点中继：${result.origin}${result.slug ? '/node/' + result.slug + '/' : ''}`);
     if (result.warning) console.log(`提示：${result.warning}`);
   } else if (command === 'status') {

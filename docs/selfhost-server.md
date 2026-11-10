@@ -189,6 +189,8 @@ npm run server:join -- \
 
 `server:leave` 先确认 frpc 已停止，再释放中心租约并恢复 Panel；停止或恢复失败时保留接入配置与备份，修复问题后可直接重试。中心网络不可达时会明确警告，并在本地中继确认停止后完成离线清理。
 
+`server:join` 使用部署锁，并先完成 frpc、CA 和本地条件检查，再申请中心授权。正式接入失败时会逆序停止服务、恢复 Panel 和文件、调用中心 leave；若回滚或中心释放仍未确认，会保留私有 `data/selfhost-node/join-recovery.json`，`server:doctor` 会报告该状态。故障排除后运行 `npm run server:leave -- --recover` 完成收尾。
+
 诊断与退出：
 
 ```bash

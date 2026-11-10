@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { frpcConfig, joinNode, leaveNode, nodeStatus, serviceUnit } from '../selfhost/node.mjs';
+import { frpcConfig, joinNode, leaveNode, nodeDoctor, nodeStatus, serviceUnit } from '../selfhost/node.mjs';
 
 const key = 'coc_' + 'a'.repeat(43), credential = 'cocn_' + 'b'.repeat(43);
 
@@ -13,7 +13,7 @@ async function setup(t) {
   await mkdir(join(root, 'secrets'), { recursive: true, mode: 0o700 });
   await writeFile(join(root, '.env'), 'DEPLOY_MODE=terminal\nPUBLIC_ORIGIN=https://old.example.test\nSHARED_ENTRY=1\nNODE_ID=' + 'c'.repeat(32) + '\n', { mode: 0o600 });
   await writeFile(join(root, 'secrets', 'credentials.txt'), '工作台：https://old.example.test\n用户名：admin\n', { mode: 0o600 });
-  const run = async (file, args) => { calls.push([file, ...args]); return { ok: true, stdout: args.includes('--value') ? 'yes' : '', stderr: '' }; };
+  const run = async (file, args) => { calls.push([file, ...args]); return { ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-active') ? 'active' : '', stderr: '' }; };
   const joined = {
     name: '现场节点 A', entryBasePath: '/node/node-a/', credential, proxyHost: 'desk.example.test', turnEndpoint: 'https://desk.example.test/api/turn-credentials',
     frp: { serverAddr: 'desk.example.test', serverPort: 7000, tlsServerName: 'desk.example.test', token: 'frp_secret_token_1234' },
@@ -151,4 +151,62 @@ test('leave allows offline center cleanup only after frpc stops and returns a wa
   assert.equal(result.left, true); assert.match(result.warning, /网络不可达/);
   await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'connection.json')));
   await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'panel-backup.json')));
+});
+
+test('join prepares frpc before requesting central authorization and leaves no half-enrollment when service startup fails', async t => {
+  const h = await setup(t), originalEnv = await readFile(join(h.root, '.env'), 'utf8');
+  let joins = 0, leaves = 0, installed = 0;
+  const request = async url => { if (url.endsWith('/api/join')) { joins++; return new Response(JSON.stringify(h.joined), { status: 200 }); } if (url.endsWith('/api/leave')) { leaves++; return new Response('{"ok":true}', { status: 200 }); } throw Error('unexpected URL'); };
+  const run = async (_file, args) => ({ ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-active') ? 'inactive' : '', stderr: '' });
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run, install: async () => { installed++; return '/opt/frpc'; }, promptKey: async () => key }), /未进入 active 状态.*已回滚/);
+  assert.equal(installed, 1); assert.equal(joins, 1); assert.equal(leaves, 1);
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), originalEnv);
+  for (const path of [join(h.root, 'data', 'selfhost-node', 'connection.json'), join(h.root, 'data', 'selfhost-node', 'panel-backup.json'), join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service')]) await assert.rejects(access(path));
+});
+
+test('join rolls Panel and center state back when Panel restart fails', async t => {
+  const h = await setup(t), originalEnv = await readFile(join(h.root, '.env'), 'utf8'); let panelRestarts = 0, leaves = 0;
+  const request = async url => { if (url.endsWith('/api/join')) return new Response(JSON.stringify(h.joined), { status: 200 }); if (url.endsWith('/api/leave')) { leaves++; return new Response('{"ok":true}', { status: 200 }); } throw Error('unexpected URL'); };
+  const run = async (_file, args) => {
+    if (args.includes('restart') && args.includes('codex-cloud-panel.service')) { panelRestarts++; return panelRestarts === 1 ? { ok: false, stderr: 'panel start failed' } : { ok: true, stdout: '', stderr: '' }; }
+    return { ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-active') ? 'active' : '', stderr: '' };
+  };
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run, install: async () => '/opt/frpc', promptKey: async () => key }), /Panel 重启失败.*已回滚/);
+  assert.equal(panelRestarts, 2); assert.equal(leaves, 1);
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), originalEnv);
+  await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'connection.json')));
+});
+
+test('join never contacts the center when local frpc preparation fails', async t => {
+  const h = await setup(t); let requests = 0;
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request: async () => { requests++; throw Error('should not run'); }, run: h.run, install: async () => { throw Error('download failed'); }, promptKey: async () => key }), /download failed/);
+  assert.equal(requests, 0);
+});
+
+test('failed center release preserves a recovery record that can be retried safely', async t => {
+  const h = await setup(t), originalEnv = await readFile(join(h.root, '.env'), 'utf8'); let leaveStatus = 500, leaves = 0;
+  const request = async url => {
+    if (url.endsWith('/api/join')) return new Response(JSON.stringify(h.joined), { status: 200 });
+    if (url.endsWith('/api/leave')) { leaves++; return leaveStatus === 200 ? new Response('{"ok":true}', { status: 200 }) : new Response('{"error":"temporary"}', { status: leaveStatus }); }
+    throw Error('unexpected URL');
+  };
+  const inactive = async (_file, args) => ({ ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-active') ? 'inactive' : '', stderr: '' });
+  const error = await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run: inactive, install: async () => '/opt/frpc', promptKey: async () => key }).catch(value => value);
+  assert.match(error.message, /回滚未完全确认/); assert.equal(error.outcome, 'unknown'); assert.equal(leaves, 1);
+  const recoveryPath = join(h.root, 'data', 'selfhost-node', 'join-recovery.json');
+  await access(recoveryPath);
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), originalEnv);
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key }), /server:leave --recover/);
+  assert.equal((await nodeDoctor({ root: h.root, run: h.run, request: async () => { throw Error('offline'); } })).issues.some(issue => issue.includes('server:leave --recover')), true);
+
+  leaveStatus = 200;
+  const recovered = await leaveNode({ root: h.root, configHome: h.configHome, recover: true, run: h.run, request });
+  assert.equal(recovered.recovered, true);
+  await assert.rejects(access(recoveryPath));
+  assert.equal((await nodeStatus({ root: h.root, run: h.run })).joined, false);
 });

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseEnv, promisify } from 'node:util';
 import { readStateFile, removeStateFile, writeStateFile } from '../scripts/state-files.mjs';
+import { acquireDeploymentLease } from '../scripts/deployment-lease.mjs';
 import { installFrpc } from './frpc.mjs';
 import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, entryBasePath, slug } from './protocol.mjs';
 
@@ -139,6 +140,21 @@ const panelPaths = root => ({
   backup: pathFor(root, 'panel-backup.json'),
 });
 
+const recoveryPath = root => pathFor(root, 'join-recovery.json');
+
+function validateRecovery(value) {
+  if (!value || value.version !== 1 || !Number.isSafeInteger(value.at) || value.at <= 0 || typeof value.error !== 'string' || value.error.length > 2048 || !value.before || typeof value.before !== 'object' || Array.isArray(value.before)) throw Error('节点接入恢复记录无效');
+  const connection = validateConnection(value.connection);
+  for (const key of ['connection', 'config', 'unit', 'ca']) if (value.before[key] !== null && (typeof value.before[key] !== 'string' || Buffer.byteLength(value.before[key]) > 262144)) throw Error('节点接入恢复文件快照无效');
+  return { version: 1, at: value.at, error: value.error, connection, before: { connection: value.before.connection, config: value.before.config, unit: value.before.unit, ca: value.before.ca } };
+}
+
+async function readRecovery(root) {
+  const text = await optional(recoveryPath(root), 256 * 1024);
+  if (text === null) return null;
+  try { return { text, value: validateRecovery(JSON.parse(text)) }; } catch (error) { throw Error('节点接入恢复记录无法读取：' + error.message); }
+}
+
 async function panelState(root) {
   const paths = panelPaths(root), env = await optional(paths.env, 65536), credentials = await optional(paths.credentials, 4096), gatewayBefore = await optional(paths.gateway, 4096);
   if (env === null) throw Error('本机尚未完成 Panel 初始化，请先运行 npm run setup 或现有部署流程');
@@ -186,15 +202,20 @@ async function configurePanel(root, connection, { switchExisting = false, replac
   if (backupChanged) await writeStateFile(current.paths.backup, json(backup), { expected: backupText });
   if (current.env !== backup.envBefore && current.env !== previousEnvAfter && current.env !== backup.envAfter) throw Error('Panel 环境配置在接入过程中被修改，未覆盖');
   if (current.credentials !== backup.credentialsBefore && current.credentials !== previousCredentialsAfter && current.credentials !== backup.credentialsAfter) throw Error('Panel 登录说明在接入过程中被修改，未覆盖');
-  if (current.env !== backup.envAfter) await writeStateFile(current.paths.env, backup.envAfter, { expected: current.env });
-  if (backup.credentialsAfter !== null && current.credentials !== backup.credentialsAfter) await writeStateFile(current.paths.credentials, backup.credentialsAfter, { expected: current.credentials });
+  let changed = backupText === null;
+  if (current.env !== backup.envAfter) { await writeStateFile(current.paths.env, backup.envAfter, { expected: current.env }); changed = true; }
+  if (backup.credentialsAfter !== null && current.credentials !== backup.credentialsAfter) { await writeStateFile(current.paths.credentials, backup.credentialsAfter, { expected: current.credentials }); changed = true; }
   if (current.gatewayBefore !== null) {
     const gateway = await optional(current.paths.gateway, 4096);
-    if (gateway !== null) await removeStateFile(current.paths.gateway, { expected: gateway });
+    if (gateway !== null) { await removeStateFile(current.paths.gateway, { expected: gateway }); changed = true; }
   }
   const restarted = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
-  if (!restarted.ok) throw Error('Panel 重启失败，接入备份已保留：' + (restarted.stderr || restarted.stdout || restarted.code));
-  return backup;
+  if (!restarted.ok) {
+    let rollback = '';
+    if (changed) try { await restorePanel(root, { run }); } catch (error) { rollback = '；Panel 回滚失败：' + error.message; }
+    throw Error('Panel 重启失败：' + (restarted.stderr || restarted.stdout || restarted.code) + rollback);
+  }
+  return { backup, changed };
 }
 
 async function preflightPanel(root, switchExisting) {
@@ -234,7 +255,24 @@ function servicePath(configHome = process.env.XDG_CONFIG_HOME || join(homedir(),
   return join(configHome, 'systemd', 'user', NODE_SERVICE);
 }
 
-export async function joinNode({
+async function restoreFile(path, before, limit = 262144) {
+  const current = await optional(path, limit);
+  if (before === null) { if (current !== null) await removeStateFile(path, { expected: current }); }
+  else if (current !== before) await writeStateFile(path, before, { expected: current });
+}
+
+async function releaseCentral(connection, request) {
+  const response = await request(connection.origin + '/api/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: 1, slug: connection.slug, credential: connection.credential, nodeId: connection.nodeId }), redirect: 'error', signal: AbortSignal.timeout(10000) });
+  if (!response.ok && response.status !== 401) { const value = await response.json().catch(() => ({})); throw Error(value.error || '中心释放节点失败'); }
+}
+
+export async function joinNode(options = {}) {
+  if (!options.root) throw Error('节点部署目录未配置');
+  const lease = await acquireDeploymentLease(options.root);
+  try { return await joinNodeLocked(options); } finally { await lease.release(); }
+}
+
+async function joinNodeLocked({
   root, server, slug: wantedSlug, mode = 'desktop', panelPort, caFile, replace = false, switchExisting = false,
   request = fetch, run = command, install = installFrpc, promptKey, configHome,
 } = {}) {
@@ -242,10 +280,21 @@ export async function joinNode({
   let existing = null;
   if (existingText !== null) { try { existing = validateConnection(JSON.parse(existingText)); } catch (error) { throw Error('已有节点接入配置无效，未覆盖：' + error.message); } }
   if (existing && !replace && (existing.origin !== serverOrigin || existing.slug !== nodeSlug)) throw Error('本机已接入其他中心或节点路径；请先 server:leave，或显式使用 --replace');
+  if (await readRecovery(root)) throw Error('存在未完成的中继回滚，请先运行 server:leave --recover');
   await preflightPanel(root, switchExisting);
   const same = existing?.origin === serverOrigin && existing.slug === nodeSlug, body = { version: 1, slug: nodeSlug, node: { id: same ? existing.nodeId : randomBytes(16).toString('hex'), mode } };
   if (same) body.credential = existing.credential;
   else { const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key; }
+  const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), connectionPath = pathFor(root, 'connection.json'), unit = servicePath(configHome);
+  const caPath = caFile ? pathFor(root, 'frps-ca.pem') : undefined;
+  const caBytes = caFile ? await readFile(caFile) : null;
+  if (caBytes && (caBytes.length < 100 || caBytes.length > 256 * 1024)) throw Error('CA 文件大小无效');
+  const before = {
+    connection: existingText,
+    config: await optional(config, 262144),
+    unit: await optional(unit, 65536),
+    ca: caPath ? await optional(caPath, 262144) : null,
+  };
   const response = await request(serverOrigin + '/api/join', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000) });
   let joined;
   try { joined = await response.json(); } catch { throw Error('中心接入响应格式无效'); }
@@ -253,32 +302,42 @@ export async function joinNode({
   const connection = validateConnection({ version: 1, origin: serverOrigin, slug: nodeSlug, name: joined.name, path: joined.entryBasePath, nodeId: body.node.id, mode, credential: joined.credential, proxyHost: joined.proxyHost || joined.frp?.tlsServerName, turnEndpoint: joined.turnEndpoint || null, frp: joined.frp });
   if (connection.path !== entryBasePath(nodeSlug) || !/^cocn_[A-Za-z0-9_-]{43}$/.test(connection.credential)) throw Error('中心接入响应与节点身份不一致');
 
-  const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), unit = servicePath(configHome);
-  let caPath;
-  if (caFile) {
-    const bytes = await readFile(caFile);
-    if (bytes.length < 100 || bytes.length > 256 * 1024) throw Error('CA 文件大小无效');
-    caPath = pathFor(root, 'frps-ca.pem');
+  let panelChanged = false;
+  try {
     await mkdir(pathFor(root, ''), { recursive: true, mode: 0o700 });
-    await writeStateFile(caPath, bytes.toString(), { expected: await optional(caPath, 256 * 1024) });
+    if (caBytes) await writeStateFile(caPath, caBytes.toString(), { expected: before.ca });
+    await writeStateFile(connectionPath, json(connection), { expected: before.connection });
+    await writeStateFile(config, frpcConfig(connection, { panelPort, caFile: caPath }), { expected: before.config });
+    const panel = await configurePanel(root, connection, { switchExisting, replace, previousConnection: existing, caFile: caPath, run });
+    panelChanged = panel.changed;
+    await mkdir(join(unit, '..'), { recursive: true, mode: 0o700 });
+    await writeStateFile(unit, serviceUnit({ frpc, config }), { expected: before.unit });
+    for (const [tool, args] of [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', NODE_SERVICE]]]) {
+      const result = await run(tool, args); if (!result.ok) throw Error(tool + ' 执行失败：' + (result.stderr || result.stdout || result.code || 'unknown'));
+    }
+    const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]);
+    if (!active.ok || active.stdout !== 'active') throw Error('节点中继服务未进入 active 状态');
+    const warnings = [];
+    const linger = await run('loginctl', ['show-user', process.env.USER || '', '-p', 'Linger', '--value']);
+    if (!linger.ok || linger.stdout !== 'yes') {
+      const enabled = process.env.USER ? await run('loginctl', ['enable-linger', process.env.USER]) : { ok: false };
+      if (!enabled.ok) warnings.push('未能启用 systemd user linger；SSH 全退出后中继可能停止，请由管理员执行 loginctl enable-linger ' + (process.env.USER || '<用户>'));
+    }
+    return { connection, warnings, unit, config, frpc };
+  } catch (error) {
+    const rollback = [], recovery = { version: 1, at: Date.now(), error: error.message, connection, before };
+    try { await writeStateFile(recoveryPath(root), json(recovery), { expected: null }); } catch (failure) { rollback.push('恢复记录：' + failure.message); }
+    await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
+    if (panelChanged) try { await restorePanel(root, { run }); } catch (failure) { rollback.push('Panel：' + failure.message); }
+    for (const [path, text, limit] of [[unit, before.unit, 65536], [config, before.config, 262144], [connectionPath, before.connection, 16384], [caPath, before.ca, 262144]]) {
+      if (!path) continue;
+      try { await restoreFile(path, text, limit); } catch (failure) { rollback.push(path + '：' + failure.message); }
+    }
+    try { await releaseCentral(connection, request); } catch (failure) { rollback.push('中心：' + failure.message); }
+    const suffix = rollback.length ? '；回滚未完全确认（' + rollback.join('；') + '）' : '；中心授权和本地变更已回滚';
+    if (!rollback.length) { const text = await optional(recoveryPath(root), 256 * 1024); if (text !== null) await removeStateFile(recoveryPath(root), { expected: text }); }
+    throw Object.assign(Error(error.message + suffix), { outcome: rollback.length ? 'unknown' : 'rejected' });
   }
-  await mkdir(pathFor(root, ''), { recursive: true, mode: 0o700 });
-  await writeStateFile(pathFor(root, 'connection.json'), json(connection), { expected: existingText });
-  await writeStateFile(config, frpcConfig(connection, { panelPort, caFile: caPath }), { expected: await optional(config, 262144) });
-  await configurePanel(root, connection, { switchExisting, replace, previousConnection: existing, caFile: caPath, run });
-  await mkdir(join(unit, '..'), { recursive: true, mode: 0o700 });
-  await writeStateFile(unit, serviceUnit({ frpc, config }), { expected: await optional(unit, 65536) });
-
-  const warnings = [];
-  for (const [tool, args] of [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', '--now', NODE_SERVICE]]]) {
-    const result = await run(tool, args); if (!result.ok) throw Error(tool + ' 执行失败：' + (result.stderr || result.stdout || result.code || 'unknown'));
-  }
-  const linger = await run('loginctl', ['show-user', process.env.USER || '', '-p', 'Linger', '--value']);
-  if (!linger.ok || linger.stdout !== 'yes') {
-    const enabled = process.env.USER ? await run('loginctl', ['enable-linger', process.env.USER]) : { ok: false };
-    if (!enabled.ok) warnings.push('未能启用 systemd user linger；SSH 全退出后中继可能停止，请由管理员执行 loginctl enable-linger ' + (process.env.USER || '<用户>'));
-  }
-  return { connection, warnings, unit, config, frpc };
 }
 
 export async function nodeStatus({ root, run = command } = {}) {
@@ -288,8 +347,10 @@ export async function nodeStatus({ root, run = command } = {}) {
 }
 
 export async function nodeDoctor({ root, run = command, request = fetch } = {}) {
-  const connection = await readNodeConnection(root); if (!connection) return { ok: false, issues: ['尚未执行 server:join'], warnings: [] };
+  const recovery = await readRecovery(root), connection = await readNodeConnection(root);
+  if (!connection) return { ok: false, issues: [recovery ? '存在未完成的中继回滚，请运行 server:leave --recover' : '尚未执行 server:join'], warnings: [] };
   const issues = [], warnings = [], health = await request(connection.origin + '/healthz', { signal: AbortSignal.timeout(5000) }).then(response => response.ok).catch(() => false);
+  if (recovery) issues.push('存在未完成的中继回滚，请运行 server:leave --recover');
   if (!health) issues.push('中心健康检查失败');
   const service = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]), panel = await run('systemctl', ['--user', 'is-active', 'codex-cloud-panel.service']);
   if (service.stdout !== 'active') issues.push('中继服务未运行');
@@ -299,7 +360,31 @@ export async function nodeDoctor({ root, run = command, request = fetch } = {}) 
   return { ok: issues.length === 0, origin: connection.origin, path: connection.path, service: service.stdout || 'inactive', panel: panel.stdout || 'inactive', health, issues, warnings };
 }
 
-export async function leaveNode({ root, request = fetch, run = command, configHome } = {}) {
+export async function leaveNode(options = {}) {
+  if (!options.root) throw Error('节点部署目录未配置');
+  const lease = await acquireDeploymentLease(options.root);
+  try { return await (options.recover ? recoverNodeLocked(options) : leaveNodeLocked(options)); } finally { await lease.release(); }
+}
+
+async function recoverNodeLocked({ root, request = fetch, run = command, configHome } = {}) {
+  const recovery = await readRecovery(root);
+  if (!recovery) throw Error('没有待恢复的节点接入记录');
+  const value = recovery.value, stopped = await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
+  if (!stopped.ok) throw Error('无法确认节点中继已停止，恢复记录已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
+  await releaseCentral(value.connection, request);
+  await restorePanel(root, { run });
+  const targets = [
+    [servicePath(configHome), value.before.unit, 65536],
+    [pathFor(root, 'frpc.toml'), value.before.config, 262144],
+    [pathFor(root, 'connection.json'), value.before.connection, 16384],
+    [pathFor(root, 'frps-ca.pem'), value.before.ca, 262144],
+  ];
+  for (const [path, text, limit] of targets) await restoreFile(path, text, limit);
+  await removeStateFile(recoveryPath(root), { expected: recovery.text });
+  return { recovered: true, origin: value.connection.origin, slug: value.connection.slug };
+}
+
+async function leaveNodeLocked({ root, request = fetch, run = command, configHome } = {}) {
   const connection = await readNodeConnection(root); if (!connection) throw Error('本机尚未接入自建中心');
   const stopped = await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
   if (!stopped.ok) throw Error('无法确认节点中继已停止，本机接入配置已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
