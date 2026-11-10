@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import https from 'node:https';
 import { lstat, mkdir, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -103,6 +104,19 @@ WantedBy=default.target
 }
 
 async function optional(path, limit = 16384) { try { return await readStateFile(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }
+
+function httpsHealth(origin, serverName, ca) {
+  return new Promise((resolve, reject) => {
+    const target = new URL('/healthz', origin);
+    const request = https.request(target, { method: 'GET', ca, servername: serverName, headers: { host: target.host, accept: 'application/json' }, rejectUnauthorized: true, timeout: 5000 }, response => {
+      const chunks = []; let size = 0;
+      response.on('data', chunk => { size += chunk.length; if (size > 4096) response.destroy(Error('健康响应超过限制')); else chunks.push(chunk); });
+      response.on('end', () => { try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8')); resolve(response.statusCode === 200 && value?.ok === true); } catch { reject(Error('中心健康响应格式无效')); } });
+      response.on('error', reject);
+    });
+    request.on('timeout', () => request.destroy(Error('中心健康检查超时'))); request.on('error', reject); request.end();
+  });
+}
 
 function replaceEnv(text, key, value) {
   if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw Error('Panel 环境配置值无效');
@@ -346,10 +360,21 @@ export async function nodeStatus({ root, run = command } = {}) {
   return { joined: true, origin: connection.origin, slug: connection.slug, path: connection.path, mode: connection.mode, service: active.stdout || 'inactive', panel: panel.stdout || 'inactive' };
 }
 
-export async function nodeDoctor({ root, run = command, request = fetch } = {}) {
+export async function nodeDoctor({ root, run = command, request = fetch, secureHealth = httpsHealth } = {}) {
   const recovery = await readRecovery(root), connection = await readNodeConnection(root);
   if (!connection) return { ok: false, issues: [recovery ? '存在未完成的中继回滚，请运行 server:leave --recover' : '尚未执行 server:join'], warnings: [] };
-  const issues = [], warnings = [], health = await request(connection.origin + '/healthz', { signal: AbortSignal.timeout(5000) }).then(response => response.ok).catch(() => false);
+  const issues = [], warnings = [];
+  let ca;
+  try {
+    const text = await optional(pathFor(root, 'frps-ca.pem'), 256 * 1024);
+    if (text !== null) {
+      if (text.length < 100 || !text.includes('-----BEGIN CERTIFICATE-----')) throw Error('节点 CA 文件内容无效');
+      ca = text;
+    }
+  } catch (error) { issues.push('节点 CA 文件无效：' + error.message); }
+  const health = issues.length ? false : new URL(connection.origin).protocol === 'https:'
+    ? await secureHealth(connection.origin, connection.frp.tlsServerName, ca).catch(() => false)
+    : await request(connection.origin + '/healthz', { signal: AbortSignal.timeout(5000) }).then(response => response.ok).catch(() => false);
   if (recovery) issues.push('存在未完成的中继回滚，请运行 server:leave --recover');
   if (!health) issues.push('中心健康检查失败');
   const service = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]), panel = await run('systemctl', ['--user', 'is-active', 'codex-cloud-panel.service']);

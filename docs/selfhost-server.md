@@ -91,6 +91,8 @@ sudo ./scripts/selfhost-server.sh install \
 
 导入模式会校验证书域名、证书与私钥是否匹配，不启用 :80 跳转。证书续期由证书来源负责；更新 PEM 后重跑安装命令即可。节点若使用私有 CA，接入时指定 `--ca-file`。
 
+`server:doctor` 使用同一 CA 并通过 `servername` 严格验证中心 HTTPS，不会为了诊断关闭证书校验；CA 缺失、损坏或权限过宽都会明确报告。
+
 可选 UFW：
 
 ```bash

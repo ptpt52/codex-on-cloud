@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import https from 'node:https';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { frpcConfig, joinNode, leaveNode, nodeDoctor, nodeStatus, serviceUnit } from '../selfhost/node.mjs';
@@ -209,4 +212,24 @@ test('failed center release preserves a recovery record that can be retried safe
   assert.equal(recovered.recovered, true);
   await assert.rejects(access(recoveryPath));
   assert.equal((await nodeStatus({ root: h.root, run: h.run })).joined, false);
+});
+
+test('doctor verifies self-signed centers with the enrolled CA instead of disabling TLS checks', async t => {
+  const h = await setup(t), certDir = join(h.root, 'certs'); await mkdir(certDir, { recursive: true });
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(certDir, 'key.pem'), '-out', join(certDir, 'cert.pem'), '-subj', '/CN=desk.example.test', '-addext', 'subjectAltName=DNS:desk.example.test'], { stdio: 'ignore' });
+  const server = https.createServer({ key: await readFile(join(certDir, 'key.pem')), cert: await readFile(join(certDir, 'cert.pem')) }, (_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const nodeDir = join(h.root, 'data', 'selfhost-node'); await mkdir(nodeDir, { recursive: true, mode: 0o700 });
+  const connection = { version: 1, origin: `https://127.0.0.1:${server.address().port}`, slug: 'node-a', name: 'A', path: '/node/node-a/', nodeId: 'a'.repeat(32), mode: 'terminal', credential,
+    proxyHost: 'desk.example.test', turnEndpoint: null, frp: { serverAddr: 'desk.example.test', serverPort: 7000, tlsServerName: 'desk.example.test', token: 'frp_secret_token_1234' } };
+  await writeFile(join(nodeDir, 'connection.json'), JSON.stringify(connection, null, 2) + '\n', { mode: 0o600 });
+  const untrusted = await nodeDoctor({ root: h.root, run: h.run });
+  assert.equal(untrusted.ok, false); assert(untrusted.issues.includes('中心健康检查失败'));
+  const caPath = join(nodeDir, 'frps-ca.pem'); await writeFile(caPath, await readFile(join(certDir, 'cert.pem')), { mode: 0o600 });
+  const trusted = await nodeDoctor({ root: h.root, run: h.run });
+  assert.equal(trusted.ok, true);
+  await writeFile(caPath, await readFile(join(certDir, 'cert.pem')), { mode: 0o644 });
+  await chmod(caPath, 0o644);
+  const unsafe = await nodeDoctor({ root: h.root, run: h.run });
+  assert.equal(unsafe.ok, false); assert(unsafe.issues.some(issue => issue.includes('节点 CA 文件无效')));
 });
