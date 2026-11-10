@@ -81,7 +81,7 @@ npm run gateway:join -- \
 - **更新节点**：运行 `npm run deploy`，省略 `--domain`；网关成员拒绝旧 DNS 发布／接管以及不兼容的 `--origin`。
 - **更新网关**：重新 `gateway:build`，确认发布到原账户和 Worker，再执行上面的 deploy／secret 命令。构建不自动部署。
 - **接入中断**：核对 `data/gateway-join.json`，修复网络后明确重跑相同接入命令；复用同一节点身份，不自动重试。人工改动会被保留。
-- **撤销未完成接入**：运行 `npm run gateway:join -- --abort`。已经向远端发送过登记时，先核对远端；仍登记的节点需先在网页切到其他节点并移除。
+- **撤销未完成接入**：仅在 `data/gateway-join.json` 仍存在时使用 `npm run gateway:join -- --abort`。已经向远端发送过登记时，先核对远端；仍登记的节点需先在网页切到其他节点并移除。成功接入后的独立入口恢复见[迁移维护流程](gateway-migration.md#成功接入后恢复独立入口)。
 - **切换回复丢失**：页面只读核对当前路由，不再提交；核对成功后手动进入。
 - **移除节点**：先切到其他节点再移除登记，不删除机器上的任务、文件或 Tunnel。
 

@@ -39,6 +39,7 @@ npm run native:status
 
 - 原 DNS 记录的完整名称、类型、内容、代理状态、TTL 和备注。
 - 原 Tunnel 的 ingress 列表、Tunnel ID、私有 socket 路径和健康连接状态。
+- 迁移前 `.env` 的 `PUBLIC_ORIGIN` 和 `ALLOWED_HOSTS`，用于恢复独立入口。
 - panel、桌面／终端宿主、actions、manager、files 和 Tunnel 服务的主 PID 与启动时间。
 - 是否存在 `data/cloudflare-publication.json`、`data/cloudflare-activation.json` 或其他待核对迁移记录。
 - 是否存在 `data/gateway-join.json`。存在时表示已有接入需要继续，不能另起一套身份。
@@ -134,7 +135,7 @@ npm run gateway:join -- \
 {"registered":true,"nodeId":"...","origin":"https://desk.example.com","backendOrigin":"https://node-a-backend.example.com"}
 ```
 
-登记本身不修改默认节点。完成后可只读核对本机身份，不输出 secret：
+登记本身不修改默认节点。成功返回后会删除 `data/gateway-join.json`；此后 `--abort` 不再可用，恢复独立入口按[成功接入后的恢复](#成功接入后恢复独立入口)操作。完成后可只读核对本机身份，不输出 secret：
 
 ```sh
 node --input-type=module -e 'import{readGatewayConnection}from"./native/gateway-config.mjs";const c=readGatewayConnection(process.cwd());console.log({origin:c.origin,backendOrigin:c.backendOrigin,nodeId:c.nodeId,name:c.name,registered:Boolean(c.registeredAt)})'
@@ -188,17 +189,67 @@ node --input-type=module -e 'import{readGatewayConnection}from"./native/gateway-
 
 ## 故障回滚
 
-先判断迁移停在哪一步，再选择回滚动作。不要直接删除 `data/gateway-node.json` 或覆盖 `data/gateway-join.json`。
+先检查本机是否还存在 `data/gateway-join.json`，再区分未完成接入与成功接入。网关中出现登记不代表本机已完成，响应丢失时恢复记录仍可能存在。
+
+### 未完成接入的撤销
+
+以下流程只适用于 `data/gateway-join.json` 仍存在的情况。不要直接删除节点配置或覆盖恢复记录。
 
 | 阶段 | 回滚方式 |
 | --- | --- |
 | 仅完成 `--prepare-only`，尚未登记 | 确认远端没有该节点后运行 `npm run gateway:join -- --abort`；命令恢复本机文件并重载 panel |
-| 登记请求已发送但结果未知 | 先在 `/__nodes/` 和恢复记录中核对；确认未登记后才执行 abort 或继续 |
-| 已登记但未设为当前节点 | 先在选择页移除节点，再执行 `gateway:join -- --abort` |
-| 已设为当前节点 | 先切回其他健康节点，再移除本迁移节点，然后执行 abort |
-| 已删除旧 CNAME／ingress | 先重建原 DNS 和 ingress，再完成上述节点移除与本机 abort |
+| 登记请求已发送但结果未知 | 先在 `/__nodes/` 核对对应节点 ID；撤销前确保远端登记已移除，继续接入时沿用同一身份 |
+| 远端已登记，但本机恢复记录仍在 | 当前节点先切回其他健康节点，再移除此登记，最后执行 `npm run gateway:join -- --abort` |
+| 已删除旧 CNAME／ingress | 先恢复原 DNS 和 ingress，再按对应阶段撤销本机准备 |
 
-`gateway:join -- --abort` 只恢复本次接入仍能匹配的本机文件。若期间人工改过 `.env`、凭据或节点配置，命令会拒绝覆盖，应先核对差异。原独立入口的 DNS 和 ingress 在最终清理前应一直保留。
+`--abort` 会核对远端登记状态，只恢复仍能匹配的本机文件。若期间人工改过 `.env`、凭据或节点配置，命令会拒绝覆盖，应先核对差异。
+
+### 成功接入后恢复独立入口
+
+本机已成功返回 `registered: true`、且 `data/gateway-join.json` 已不存在时，没有自动退出命令。此时执行 `--abort` 会报“没有待撤销的网关接入记录”，不能用于恢复入口。按以下顺序维护：
+
+1. **先验证独立入口**：若已清理旧 DNS／ingress，先恢复它们，仍指向原 Tunnel 和私有 socket。保持 `PUBLIC_ORIGIN` 为网关地址，将旧入口精确 Host 加入 `ALLOWED_HOSTS`，按需重启 panel；通过 `https://old.example.com` 登录，确认宿主、文件和任务正常。此时也可以继续保留双入口，不必退出网关。
+2. **再移除远端登记**：若该节点正在承载网关默认入口，先切到其他健康节点，再移除登记。无法切走时停在此处，保留登记与双入口，不执行后续本机退出步骤。确认该节点已从远端目录移除后再继续。
+3. **恢复本机入口**：确认没有其他部署、接入或域名维护同时运行，只停止面板：
+
+   ```sh
+   systemctl --user stop codex-cloud-panel.service
+   ```
+
+   在私有编辑器中将 `.env` 的 `PUBLIC_ORIGIN` 改回记录的独立入口，例如 `https://old.example.com`；保留现有 `NODE_ID`、`SHARED_ENTRY=1` 和所需的精确 Host 列表。独立入口仍可使用这份节点身份，不生成新 ID。将 `secrets/credentials.txt` 的“工作台”地址同步改回，账号密码保持原值。
+
+4. **归档本机网关配置**：在节点部署目录执行下方命令。它持有部署锁，拒绝未完成接入和覆盖已有归档，再按预期内容移出活动配置；不会操作 Tunnel 或任务宿主。
+
+   ```sh
+   node --input-type=module - <<'JS'
+   import { acquireDeploymentLease } from './scripts/deployment-lease.mjs';
+   import { readStateFile, writeStateFile, removeStateFile } from './scripts/state-files.mjs';
+   const lease = await acquireDeploymentLease(process.cwd());
+   const valid = () => lease.check();
+   try {
+     try {
+       await readStateFile('data/gateway-join.json', 262144, true);
+       throw Error('仍有未完成接入，请按未完成接入流程处理');
+     } catch (error) { if (error.code !== 'ENOENT') throw error; }
+     const path = 'data/gateway-node.json';
+     const text = await readStateFile(path, 4096, true);
+     await writeStateFile('data/gateway-node.retired.json', text, { expected: null, valid });
+     await removeStateFile(path, { expected: text, valid });
+   } finally { await lease.release(); }
+   JS
+   ```
+
+   只保留一份 `data/gateway-node.retired.json`，最多 4 KiB、权限 0600，含原节点代理凭据，不公开或提交 Git。同名归档已存在时先私下核对，不盲目覆盖。归档失败且活动配置仍在时，先将 `PUBLIC_ORIGIN` 恢复为网关地址，再启动 panel，继续使用已验证的独立域名；不要强行启动不匹配的配置。
+
+5. **启动并验收**：
+
+   ```sh
+   systemctl --user start codex-cloud-panel.service
+   npm run native:status
+   curl -fsS --max-time 15 https://old.example.com/readyz
+   ```
+
+   重新打开独立入口登录，确认原任务、文件和功能。通过后才清理不再使用的新后端 DNS／ingress；保留原 Tunnel、Tunnel token、任务宿主和文件服务。面板重载仍需要重新配对端口映射。
 
 ## 常见问题
 
