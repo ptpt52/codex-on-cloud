@@ -1,7 +1,8 @@
 import http from 'node:http';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readStateFile } from '../scripts/state-files.mjs';
 import { createAuth, cookieToken, sessionCookie } from '../panel/auth.mjs';
 import { SelfhostRegistry } from './registry.mjs';
 import { selfhostError } from './protocol.mjs';
@@ -39,7 +40,14 @@ async function jsonBody(req, limit) {
 async function assets() {
   const result = new Map(); let total = 0;
   for (const [route, [name, type]] of ASSETS) {
-    const bytes = Buffer.from(await readStateFile(join(PUBLIC, name), 512 * 1024));
+    const handle = await open(join(PUBLIC, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let bytes;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 512 * 1024 || stat.mode & 0o022) throw Error('中心前端资源权限或大小无效');
+      bytes = await handle.readFile();
+      if (bytes.length !== stat.size || bytes.length > 512 * 1024) throw Error('中心前端资源正在修改或超过限制');
+    } finally { await handle.close(); }
     total += bytes.length; if (total > 1024 * 1024) throw Error('中心前端资源超过 1 MiB');
     result.set(route, { bytes, type });
   }
@@ -63,9 +71,10 @@ export async function createSelfhostCenter({
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
   const failures = new Map(), joins = new Map();
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
+  const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
   let closing = false, timer;
 
-  const hostAllowed = req => allowedHosts.has(String(req.headers.host || '').toLowerCase());
+  const hostAllowed = req => allowedHosts.has(String(req.headers.host || '').toLowerCase()) || loopback(req.socket.remoteAddress) && internalHosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => req.headers.origin === parsed.origin;
   const session = req => auth.get(cookieToken(req.headers.cookie, authConfig));
   const requireSession = req => {

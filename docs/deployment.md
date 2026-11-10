@@ -21,6 +21,7 @@
 | SSH 转发 | 不需要 CF，需要 SSH 可达 | 与本机相同 | 转发后访问 localhost |
 | Cloudflare 单节点 | 自己的域名、区域和 Tunnel | 增加 cloudflared | 该节点自己的 HTTPS 域名 |
 | 固定域名网关 | 自己的固定域名、Worker、DO；每节点有独立后端域名和 Tunnel | 每节点 cloudflared，加云端网关 | 同一域名，`/__nodes/` 选择节点 |
+| 独立公网服务器 | 一个公网 IPv4 和一个域名，不使用 Cloudflare | 中心服务器运行 Caddy、frps、coturn；节点运行 frpc | 同一域名，`/node/<slug>/` 直接访问各节点 |
 
 固定网关适用于多节点，也可以先接入一台再增加机器。桌面节点和纯终端节点可以混用；任务和文件各自留在原机器。只需要一台机器时，单节点 Tunnel 即可，不要求部署 Worker。
 
@@ -82,6 +83,10 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 
 再按[网关步骤](gateway.md)将 `desk.example.com` 部署为固定入口，并分别执行 `gateway:join`。每台机器保存自己的 Tunnel token 和接入凭据；日常网页切换不使用 CF 管理 Token。已有 Cloudflare 单节点部署要改为网关节点时，不要重新部署或复用固定入口主机名，按[独立域名迁移 SOP](gateway-migration.md)增加私有后端并在验收后撤下旧入口。
 
+### 独立公网服务器 + 多节点
+
+准备一台 Ubuntu 24.04、公网 IPv4 和域名，按[独立公网服务器部署](selfhost-server.md)安装中心。节点已有本机 Panel 后执行 `server:join`，通过 `/node/<slug>/` 接入。已有 Cloudflare/Gateway 状态默认不会被接管；显式使用 `--switch-existing` 时先保存 Panel 恢复记录，`server:leave` 可恢复原入口配置。
+
 ## 4. 按需添加功能
 
 | 功能 | 可以搭配哪些组合 | 如何选择 | 新增要求 |
@@ -108,6 +113,6 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 - 无 systemd 的托管容器没有通用安装器；需自行配置进程托管、凭据、持久卷与重启策略。历史容器记录位于[归档](archive/README.md)，不等同于受支持的安装组合。
 - 每套部署使用自己的仓库目录、Linux 用户、密钥和 CF 资源。默认 systemd 服务名固定，同一 Linux 用户不要运行多套实例。
 - 网关默认 Worker 名为 `codex-cloud-gateway`。不同 CF 账户互不影响；同账户需要多套网关时，每次构建后须在各自的私有 `data/gateway-build/wrangler.json` 中将 `name` 改为对应的独立名称，再发布。具体限制见[网关步骤](gateway.md#2-发布到自己的-cf-账户)。
-- 当前没有集成 TURN、自有 VPS 中继或 Docker 一键部署；这些不列为可用组合。
+- 自有 VPS 使用 Caddy、frps、coturn 和 systemd，不使用 Docker；公网入口见[独立公网服务器部署](selfhost-server.md)。
 
 配置细项见[配置参考](deployment-config.md)，日常更新与排障见[维护指南](operations.md)。

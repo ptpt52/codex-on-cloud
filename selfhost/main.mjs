@@ -38,5 +38,6 @@ try {
   });
 } catch (error) {
   console.error('中心启动失败：' + error.message);
+  if (process.env.SELFHOST_DEBUG === '1' && error.stack) console.error(error.stack);
   process.exitCode = 1;
 }

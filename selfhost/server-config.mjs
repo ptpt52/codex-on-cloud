@@ -1,4 +1,4 @@
-export const SELFHOST_VERSIONS = Object.freeze({ node: '24.22.2', caddy: '2.11.9', frp: '0.72.0', coturn: '4.6.1-1build4', certbot: '2.9.0-1' });
+export const SELFHOST_VERSIONS = Object.freeze({ node: '24.22.2', caddy: '2.6.2', caddyPackage: '2.6.2-6ubuntu0.24.04.3', frp: '0.72.0', coturn: '4.6.1-1build4', certbot: '2.9.0-1' });
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/i;
 
 export function serverDomain(value) {
@@ -30,13 +30,24 @@ http://${domain} {
 `;
 }
 
-export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080 } = {}) {
+export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [] } = {}) {
   domain = serverDomain(domain);
+  if (!Array.isArray(adminCidrs) || adminCidrs.some(cidr => typeof cidr !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-fA-F:]+\/\d{1,3}$/.test(cidr))) throw Error('管理页访问 CIDR 无效');
+  const adminGuard = adminCidrs.length ? `
+	@outsideAdmin {
+		not path /node /node/*
+		not remote_ip ${adminCidrs.join(' ')}
+	}
+	handle @outsideAdmin {
+		respond 403
+	}
+` : '';
   return `{
 	admin off
 	servers {
 		protocols h1 h2
 	}
+	${redirectHttp ? '' : 'auto_https disable_redirects'}
 }
 
 https://${domain} {
@@ -49,6 +60,7 @@ https://${domain} {
 		Referrer-Policy "same-origin"
 		-Server
 	}
+${adminGuard}
 
 	handle /internal/* {
 		respond 404
@@ -286,6 +298,7 @@ WantedBy=multi-user.target
 export function certbotHook(domain, { configDirectory = '/etc/codex-selfhost' } = {}) {
   domain = serverDomain(domain);
   return `#!/bin/sh
+# Managed by codex-selfhost. Removed when switching to imported PEM certificates.
 set -eu
 install -d -o root -g codex-selfhost -m 0750 ${configDirectory}/tls
 install -o root -g codex-selfhost -m 0640 /etc/letsencrypt/live/${domain}/fullchain.pem ${configDirectory}/tls/fullchain.pem

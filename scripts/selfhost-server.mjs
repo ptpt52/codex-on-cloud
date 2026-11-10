@@ -3,6 +3,8 @@ import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, open, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { resolve4 } from 'node:dns/promises';
+import https from 'node:https';
+import net from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -14,12 +16,42 @@ import {
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
+const ARCHITECTURES = {
+  x64: { node: 'x64', nodeSha: '48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75', frp: 'amd64', frpArchiveSha: 'daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804', frpsSha: '4ad311e0630cf12945041143b926f515458836e896ff93c253d43c98cf304b89' },
+  arm64: { node: 'arm64', nodeSha: 'eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8', frp: 'arm64', frpArchiveSha: '02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf', frpsSha: '07d0a010dc60ba759d857365307a89dce1df215c5cdddee92ce355140461bf18' },
+};
 
 async function command(file, args, options = {}) {
   try { const value = await exec(file, args, { timeout: options.timeout || 120000, maxBuffer: options.maxBuffer || 1024 * 1024, env: { ...process.env, DEBIAN_FRONTEND: 'noninteractive' } }); return { ok: true, stdout: value.stdout.trim(), stderr: value.stderr.trim() }; }
   catch (error) { return { ok: false, code: error.code, stdout: String(error.stdout || '').trim(), stderr: String(error.stderr || '').trim() }; }
 }
 async function requiredCommand(file, args, options) { const result = await command(file, args, options); if (!result.ok) throw Error(`${file} ${args[0] || ''} 失败：${result.stderr || result.stdout || result.code}`); return result; }
+
+async function waitCheck(check, label, timeout = 30000) {
+  const deadline = Date.now() + timeout; let last;
+  while (Date.now() < deadline) {
+    try { if (await check()) return; } catch (error) { last = error; }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw Error('等待 ' + label + ' 超时' + (last ? '：' + last.message : ''));
+}
+async function listenTcp(port) {
+  await waitCheck(() => new Promise(resolve => { const socket = net.createConnection(port, '127.0.0.1'); socket.once('connect', () => { socket.destroy(); resolve(true); }); socket.once('error', () => resolve(false)); }), 'TCP ' + port);
+}
+async function localHttpsHealth(domain) {
+  await waitCheck(() => new Promise(resolve => {
+    const request = https.request({ host: '127.0.0.1', port: 443, servername: domain, path: '/healthz', method: 'GET', headers: { host: domain }, rejectUnauthorized: false, timeout: 3000 }, response => {
+      const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('end', () => { try { resolve(response.statusCode === 200 && JSON.parse(Buffer.concat(chunks)).ok === true); } catch { resolve(false); } });
+    });
+    request.on('timeout', () => request.destroy()); request.on('error', () => resolve(false)); request.end();
+  }), 'HTTPS /healthz');
+}
+
+function validCidr(value, version) {
+  if (typeof value !== 'string') return false;
+  const [address, prefix, extra] = value.split('/');
+  return extra === undefined && net.isIP(address) === version && /^\d{1,3}$/.test(prefix || '') && Number(prefix) >= 0 && Number(prefix) <= (version === 4 ? 32 : 128);
+}
 
 async function safeWrite(path, value, mode, uid = 0, gid = 0) {
   await mkdir(dirname(path), { recursive: true, mode: 0o750 });
@@ -34,12 +66,18 @@ async function safeWrite(path, value, mode, uid = 0, gid = 0) {
 
 const sha = (algorithm, bytes) => createHash(algorithm).update(bytes).digest('hex');
 async function download(url, algorithm, expected, maximum = 128 * 1024 * 1024) {
-  const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(120000) });
-  if (!response.ok) throw Error('下载失败（HTTP ' + response.status + '）：' + url);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > maximum) throw Error('下载文件超过大小上限：' + url);
-  if (sha(algorithm, bytes) !== expected) throw Error('下载校验失败：' + url);
-  return bytes;
+  let last;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(300000) });
+      if (!response.ok) throw Error('HTTP ' + response.status);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > maximum) throw Error('文件超过大小上限');
+      if (sha(algorithm, bytes) !== expected) throw Error('校验不一致');
+      return bytes;
+    } catch (error) { last = error; if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 1000)); }
+  }
+  throw Error('下载失败（尝试 3 次）：' + url + '：' + last.message);
 }
 
 async function installArchive({ bytes, archiveName, members, source, destination, verify, tarFlag = '-xzf' }) {
@@ -50,30 +88,67 @@ async function installArchive({ bytes, archiveName, members, source, destination
     await requiredCommand('tar', [tarFlag, archive, '-C', unpack, ...members], { timeout: 60000 });
     const target = join(unpack, source);
     const content = await readFile(target); verify(content);
-    await chmod(target, 0o755); await rename(target, destination);
+    await chmod(target, 0o755); await chown(target, 0, 0); await rename(target, destination);
   } finally { await unlink(archive).catch(() => {}); await rm(unpack, { recursive: true, force: true }); }
 }
 
-async function installBinaries() {
+async function installBinaries({ caddyFile, frpsFile } = {}) {
+  const arch = ARCHITECTURES[process.arch]; if (!arch) throw Error('中心安装仅支持 x86_64 或 arm64');
   await mkdir(join(ROOT, 'bin'), { recursive: true, mode: 0o755 });
-  const nodeArchive = await download(`https://nodejs.org/dist/v${SELFHOST_VERSIONS.node}/node-v${SELFHOST_VERSIONS.node}-linux-x64.tar.xz`, 'sha256', '48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75');
-  await installArchive({ bytes: nodeArchive, archiveName: 'node.tar.xz', members: [`node-v${SELFHOST_VERSIONS.node}-linux-x64/bin/node`], source: `node-v${SELFHOST_VERSIONS.node}-linux-x64/bin/node`, destination: join(ROOT, 'bin', 'node'), verify: () => {}, tarFlag: '-xJf' });
-  const caddyArchive = await download(`https://github.com/caddyserver/caddy/releases/download/v${SELFHOST_VERSIONS.caddy}/caddy_${SELFHOST_VERSIONS.caddy}_linux_amd64.tar.gz`, 'sha512', '0e85544340290a16ce4bfb76fe7d65e9de1bf3a6e67f5ccfff30b30d27ea4c73e078077b7bf3e58ae60b6b12e44327705287059c775bca5782e8ee85ea7edd75');
-  await installArchive({ bytes: caddyArchive, archiveName: 'caddy.tar.gz', members: ['caddy'], source: 'caddy', destination: join(ROOT, 'bin', 'caddy'), verify: () => {} });
-  const frpArchive = await download(`https://github.com/fatedier/frp/releases/download/v${SELFHOST_VERSIONS.frp}/frp_${SELFHOST_VERSIONS.frp}_linux_amd64.tar.gz`, 'sha256', 'daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804');
-  await installArchive({ bytes: frpArchive, archiveName: 'frp.tar.gz', members: [`frp_${SELFHOST_VERSIONS.frp}_linux_amd64/frps`], source: `frp_${SELFHOST_VERSIONS.frp}_linux_amd64/frps`, destination: join(ROOT, 'bin', 'frps'), verify: bytes => { if (sha('sha256', bytes) !== '4ad311e0630cf12945041143b926f515458836e896ff93c253d43c98cf304b89') throw Error('frps 二进制校验失败'); } });
+  const matches = async (file, args, expected) => { const result = await command(file, args); if (result.ok && result.stdout.includes(expected)) return true; const exists = await command('test', ['-e', file]); if (exists.ok) throw Error('已有 ' + file + ' 与固定版本 ' + expected + ' 不一致，拒绝覆盖'); return false; };
+  const hasNode = await matches(join(ROOT, 'bin', 'node'), ['--version'], 'v' + SELFHOST_VERSIONS.node);
+  const hasFrps = await matches(join(ROOT, 'bin', 'frps'), ['--version'], SELFHOST_VERSIONS.frp);
+  if (!hasNode) {
+  const nodeArchive = await download(`https://nodejs.org/dist/v${SELFHOST_VERSIONS.node}/node-v${SELFHOST_VERSIONS.node}-linux-${arch.node}.tar.xz`, 'sha256', arch.nodeSha);
+  await installArchive({ bytes: nodeArchive, archiveName: 'node.tar.xz', members: [`node-v${SELFHOST_VERSIONS.node}-linux-${arch.node}/bin/node`], source: `node-v${SELFHOST_VERSIONS.node}-linux-${arch.node}/bin/node`, destination: join(ROOT, 'bin', 'node'), verify: () => {}, tarFlag: '-xJf' });
+  }
+  if (!hasFrps) {
+    if (frpsFile) {
+      const bytes = await readFile(frpsFile); if (sha('sha256', bytes) !== arch.frpsSha) throw Error('导入 frps 二进制与固定版本校验不一致');
+      await safeWrite(join(ROOT, 'bin', 'frps'), bytes, 0o755); await chown(join(ROOT, 'bin', 'frps'), 0, 0);
+    } else {
+      const frpArchive = await download(`https://github.com/fatedier/frp/releases/download/v${SELFHOST_VERSIONS.frp}/frp_${SELFHOST_VERSIONS.frp}_linux_${arch.frp}.tar.gz`, 'sha256', arch.frpArchiveSha);
+      await installArchive({ bytes: frpArchive, archiveName: 'frp.tar.gz', members: [`frp_${SELFHOST_VERSIONS.frp}_linux_${arch.frp}/frps`], source: `frp_${SELFHOST_VERSIONS.frp}_linux_${arch.frp}/frps`, destination: join(ROOT, 'bin', 'frps'), verify: bytes => { if (sha('sha256', bytes) !== arch.frpsSha) throw Error('frps 二进制校验失败'); } });
+    }
+  }
+  const sourceCaddy = caddyFile || '/usr/bin/caddy';
+  const caddyVersion = await command(sourceCaddy, ['version']);
+  if (!caddyVersion.ok || !caddyVersion.stdout.includes(SELFHOST_VERSIONS.caddy)) throw Error('Caddy 版本必须为固定版本 ' + SELFHOST_VERSIONS.caddy);
+  const caddyBytes = await readFile(sourceCaddy);
+  if (caddyBytes.length > 128 * 1024 * 1024) throw Error('Caddy 二进制超过 128 MiB');
+  await safeWrite(join(ROOT, 'bin', 'caddy'), caddyBytes, 0o755);
+  for (const name of ['node', 'caddy', 'frps']) { await chown(join(ROOT, 'bin', name), 0, 0); await chmod(join(ROOT, 'bin', name), 0o755); }
 }
 
 async function copyApplication() {
-  await mkdir(join(ROOT, 'app'), { recursive: true, mode: 0o755 });
-  await cp(join(project, 'selfhost'), join(ROOT, 'app', 'selfhost'), { recursive: true, force: true, dereference: false });
-  await mkdir(join(ROOT, 'app', 'panel'), { recursive: true, mode: 0o755 });
-  await cp(join(project, 'panel', 'auth.mjs'), join(ROOT, 'app', 'panel', 'auth.mjs'), { force: true });
-  await mkdir(join(ROOT, 'app', 'scripts'), { recursive: true, mode: 0o755 });
-  await cp(join(project, 'scripts', 'state-files.mjs'), join(ROOT, 'app', 'scripts', 'state-files.mjs'), { force: true });
-  await mkdir(join(ROOT, 'app', 'native'), { recursive: true, mode: 0o755 });
-  await cp(join(project, 'native', 'file-lock.mjs'), join(ROOT, 'app', 'native', 'file-lock.mjs'), { force: true });
-  await cp(join(project, 'package.json'), join(ROOT, 'app', 'package.json'), { force: true });
+  const app = join(ROOT, 'app'), previous = join(ROOT, 'app.previous'), next = join(ROOT, 'app.next-' + process.pid);
+  await rm(next, { recursive: true, force: true }); await mkdir(next, { recursive: true, mode: 0o755 });
+  await cp(join(project, 'selfhost'), join(next, 'selfhost'), { recursive: true, force: true, dereference: false });
+  await mkdir(join(next, 'panel'), { recursive: true, mode: 0o755 });
+  await cp(join(project, 'panel', 'auth.mjs'), join(next, 'panel', 'auth.mjs'), { force: true });
+  await mkdir(join(next, 'scripts'), { recursive: true, mode: 0o755 });
+  await cp(join(project, 'scripts', 'state-files.mjs'), join(next, 'scripts', 'state-files.mjs'), { force: true });
+  await mkdir(join(next, 'native'), { recursive: true, mode: 0o755 });
+  await cp(join(project, 'native', 'file-lock.mjs'), join(next, 'native', 'file-lock.mjs'), { force: true });
+  await cp(join(project, 'native', 'file_lock.py'), join(next, 'native', 'file_lock.py'), { force: true });
+  await cp(join(project, 'package.json'), join(next, 'package.json'), { force: true });
+  await requiredCommand('chmod', ['-R', 'u=rwX,go=rX', next]); await requiredCommand('chown', ['-R', 'root:root', next]);
+  let moved = false;
+  try {
+    if ((await command('test', ['-d', app])).ok) { await rm(previous, { recursive: true, force: true }); await rename(app, previous); moved = true; }
+    await rename(next, app);
+  } catch (error) { if (moved && !(await command('test', ['-e', app])).ok) await rename(previous, app); throw error; }
+}
+
+async function rollbackApplication() {
+  const app = join(ROOT, 'app'), previous = join(ROOT, 'app.previous'), failed = join(ROOT, 'app.failed');
+  if (!(await command('test', ['-d', previous])).ok) throw Error('没有可回滚的上一版中心应用');
+  await rm(failed, { recursive: true, force: true }); await rename(app, failed); await rename(previous, app);
+  const envText = await readFile(join(ETC, 'server.env'), 'utf8'), domain = envText.match(/^SELFHOST_PUBLIC_HOST=(.+)$/m)?.[1];
+  if (!domain) throw Error('中心域名配置丢失，未重启回滚应用');
+  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service']) await requiredCommand('systemctl', ['restart', unit]);
+  await localHttpsHealth(domain);
+  return { rolledBack: true, domain };
 }
 
 async function ensureUser() {
@@ -90,21 +165,49 @@ async function ensureDirectory(path, mode, uid, gid) {
   await chmod(path, mode); await chown(path, uid, gid);
 }
 
-async function configure({ domain, email, publicIp, configureUfw = false, sshCidr }) {
+async function installImportedCertificate({ domain, certFile, keyFile }) {
+  if (!certFile || !keyFile) throw Error('导入证书时必须同时提供 --cert-file 和 --key-file');
+  const certificate = await readFile(certFile), key = await readFile(keyFile);
+  if (certificate.length < 100 || certificate.length > 1024 * 1024 || key.length < 100 || key.length > 256 * 1024) throw Error('导入证书或私钥大小无效');
+  const certText = certificate.toString(), keyText = key.toString();
+  if (!certText.includes('-----BEGIN CERTIFICATE-----') || !/(?:-----BEGIN (?:RSA |EC |)PRIVATE KEY-----)/.test(keyText)) throw Error('导入文件不是 PEM 证书或私钥');
+  const host = await command('openssl', ['x509', '-in', certFile, '-noout', '-checkhost', domain]);
+  if (!host.ok || !host.stdout.includes('does match')) throw Error('导入证书不匹配中心域名 ' + domain);
+  const certPublic = await requiredCommand('openssl', ['x509', '-in', certFile, '-pubkey', '-noout']);
+  const keyPublic = await requiredCommand('openssl', ['pkey', '-in', keyFile, '-pubout']);
+  if (certPublic.stdout !== keyPublic.stdout) throw Error('导入证书与私钥不匹配');
+  const serviceGid = Number((await requiredCommand('id', ['-g', SERVICE])).stdout), turnGid = Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout);
+  await safeWrite(join(ETC, 'tls', 'fullchain.pem'), certText, 0o640, 0, serviceGid);
+  await safeWrite(join(ETC, 'tls', 'privkey.pem'), keyText, 0o640, 0, serviceGid);
+  await safeWrite(join(ETC, 'tls', 'turn-fullchain.pem'), certText, 0o640, 0, turnGid);
+  await safeWrite(join(ETC, 'tls', 'turn-privkey.pem'), keyText, 0o640, 0, turnGid);
+}
+
+async function configure({ domain, email, publicIp, certFile, keyFile, caddyFile, frpsFile, configureUfw = false, sshCidr, adminCidr }) {
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心安装必须以 root 运行');
   if (configureUfw && !sshCidr) throw Error('配置 UFW 时必须用 --ssh-cidr 指定允许 SSH 的运维网段');
-  domain = serverDomain(domain); email = serverEmail(email);
+  domain = serverDomain(domain);
+  const adminCidrs = adminCidr ? String(adminCidr).split(',').map(value => value.trim()).filter(Boolean) : [];
+  if (adminCidrs.length > 16) throw Error('管理页访问 CIDR 最多 16 个');
+  if (adminCidrs.some(value => !validCidr(value, 4) && !validCidr(value, 6))) throw Error('管理页访问 CIDR 无效');
+  if (sshCidr && !validCidr(sshCidr, 4) && !validCidr(sshCidr, 6)) throw Error('SSH CIDR 无效');
+  if (net.isIP(publicIp) !== 4) throw Error('公网 IP 必须是 IPv4 地址');
+  if (!!certFile !== !!keyFile) throw Error('导入证书时必须同时提供 --cert-file 和 --key-file');
+  if (!certFile) email = serverEmail(email);
   const addresses = await resolve4(domain, { ttl: true }).catch(() => []);
   if (!addresses.some(item => item.address === publicIp)) throw Error(`DNS 尚未将 ${domain} 指向 ${publicIp}；未更改服务器`);
   await requiredCommand('apt-get', ['update'], { timeout: 300000 });
-  await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ca-certificates', 'curl', 'tar', 'xz-utils', `certbot=${SELFHOST_VERSIONS.certbot}`, `coturn=${SELFHOST_VERSIONS.coturn}`], { timeout: 300000 });
+  await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ca-certificates', 'curl', 'tar', 'xz-utils', `caddy=${SELFHOST_VERSIONS.caddyPackage}`, `certbot=${SELFHOST_VERSIONS.certbot}`, `coturn=${SELFHOST_VERSIONS.coturn}`], { timeout: 300000 });
   await command('systemctl', ['disable', '--now', 'coturn']);
+  await command('systemctl', ['disable', '--now', 'caddy']);
   const { uid, gid } = await ensureUser();
   for (const [path, mode, owner, group] of [[ROOT, 0o755, 0, 0], [join(ROOT, 'bin'), 0o755, 0, 0], [ETC, 0o750, 0, gid], [DATA, 0o750, uid, gid], [join(DATA, 'acme'), 0o755, 0, 0], [join(DATA, 'center'), 0o700, uid, gid], [join(ETC, 'tls'), 0o750, 0, gid]]) await ensureDirectory(path, mode, owner, group);
-  await installBinaries(); await copyApplication(); await requiredCommand('chown', ['-R', 'root:root', join(ROOT, 'app')]);
+  await installBinaries({ caddyFile, frpsFile }); await copyApplication();
   for (const [file, bytes] of [['admin_password', randomBytes(32).toString('hex') + '\n'], ['frp_token', randomBytes(32).toString('hex') + '\n'], ['frps_admin_password', randomBytes(24).toString('hex') + '\n'], ['turn_secret', randomBytes(32).toString('hex') + '\n']]) {
-    try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o640, 0, gid); }
+    try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o600, uid, gid); }
   }
+  for (const file of ['admin_password', 'frp_token', 'turn_secret']) { await chmod(join(ETC, file), 0o600); await chown(join(ETC, file), uid, gid); }
+  await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), 0, 0);
   const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
   await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
   await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);
@@ -113,21 +216,28 @@ async function configure({ domain, email, publicIp, configureUfw = false, sshCid
   await safeWrite('/etc/systemd/system/codex-selfhost-frps.service', frpsUnit({ root: ROOT, configDirectory: ETC }), 0o644);
   await safeWrite('/etc/systemd/system/codex-selfhost-caddy.service', caddyUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
   await safeWrite('/etc/systemd/system/codex-selfhost-coturn.service', coturnUnit({ configDirectory: ETC }), 0o644);
-  const hook = '/etc/letsencrypt/renewal-hooks/deploy/codex-selfhost'; await mkdir(dirname(hook), { recursive: true, mode: 0o755 }); await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
-  await safeWrite(join(ETC, 'Caddyfile'), caddyAcmeConfig(domain, join(DATA, 'acme')), 0o644);
-  await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
   await requiredCommand('systemctl', ['daemon-reload']);
-  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['enable', '--now', unit]);
-  const certificate = join('/etc/letsencrypt/live', domain, 'fullchain.pem');
-  if (!(await command('test', ['-f', certificate])).ok) {
-    await requiredCommand('systemctl', ['start', 'codex-selfhost-caddy.service']);
-    await requiredCommand('certbot', ['certonly', '--webroot', '--webroot-path', join(DATA, 'acme'), '--domain', domain, '--non-interactive', '--agree-tos', '--email', email, '--deploy-hook', hook], { timeout: 300000 });
+  const hook = '/etc/letsencrypt/renewal-hooks/deploy/codex-selfhost';
+  if (certFile) {
+    await installImportedCertificate({ domain, certFile, keyFile });
+    const existingHook = await readFile(hook, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (existingHook?.includes('# Managed by codex-selfhost.') || existingHook?.includes('systemctl restart codex-selfhost-frps.service')) await unlink(hook);
+  } else {
+    await mkdir(dirname(hook), { recursive: true, mode: 0o755 }); await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
+    await safeWrite(join(ETC, 'Caddyfile'), caddyAcmeConfig(domain, join(DATA, 'acme')), 0o644);
+    await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
+    for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
+    const certificate = join('/etc/letsencrypt/live', domain, 'fullchain.pem');
+    if (!(await command('test', ['-f', certificate])).ok) await requiredCommand('certbot', ['certonly', '--webroot', '--webroot-path', join(DATA, 'acme'), '--domain', domain, '--non-interactive', '--agree-tos', '--email', email, '--deploy-hook', hook], { timeout: 300000 });
+    await requiredCommand(hook, [], { timeout: 60000 });
   }
-  await requiredCommand(hook, [], { timeout: 60000 });
-  await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, frpHttpPort: 18080 }), 0o644);
+  await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, frpHttpPort: 18080, redirectHttp: !certFile, adminCidrs }), 0o644);
   await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
-  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['enable', '--now', unit]);
-  await requiredCommand('systemctl', ['restart', 'codex-selfhost-caddy.service']);
+  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
+  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
+  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['restart', unit]);
+  await localHttpsHealth(domain);
+  for (const port of [7000, 3478, 5349]) await listenTcp(port);
   if (configureUfw) {
     await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ufw'], { timeout: 120000 });
     for (const rule of [['allow', 'from', sshCidr, 'to', 'any', 'port', '22', 'proto', 'tcp'], ['allow', '80/tcp'], ['allow', '443/tcp'], ['allow', '7000/tcp'], ['allow', '3478/tcp'], ['allow', '3478/udp'], ['allow', '5349/tcp'], ['allow', '49160:49223/udp']]) await requiredCommand('ufw', rule);
@@ -147,10 +257,11 @@ async function status() {
 try {
   if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const commandName = process.argv[2] || 'status', { values } = parseArgs({ args: process.argv.slice(3), options: {
-      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, help: { type: 'boolean' },
+      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'cert-file': { type: 'string' }, 'key-file': { type: 'string' }, 'caddy-file': { type: 'string' }, 'frps-file': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, 'admin-cidr': { type: 'string' }, help: { type: 'boolean' },
     } });
-    if (values.help) console.log('用法：sudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --email 证书通知邮箱 --public-ip 服务器公网IPv4 [--configure-ufw --ssh-cidr 运维网段]\n或 ./scripts/selfhost-server.sh status\n安装固定版本 Node/Caddy/frps/coturn/Certbot，配置中心管理页、/node/<slug>/ 和 systemd；默认不修改防火墙。');
-    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'] }), null, 2));
+    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2 --configure-ufw --ssh-cidr 运维网段\n或 ./scripts/selfhost-server.sh status\n安装固定版本 Node/Caddy/frps/coturn/Certbot，配置中心管理页、/node/<slug>/ 和 systemd；默认不修改防火墙。');
+    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
+    else if (commandName === 'rollback') { if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心回滚必须以 root 运行'); console.log(JSON.stringify(await rollbackApplication(), null, 2)); }
     else if (commandName === 'status') console.log(JSON.stringify(await status(), null, 2));
     else throw Error('未知命令：' + commandName);
   }

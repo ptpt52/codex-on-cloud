@@ -91,6 +91,12 @@ test('the frp plugin endpoint cannot be reached through a non-loopback socket co
   assert.equal((await response.json()).reject, true);
 });
 
+test('frps may call the plugin with the loopback listener Host under a production domain origin', async t => {
+  const h = await setup(t);
+  const response = await fetch(`http://127.0.0.1:${h.port}/internal/frp-plugin?version=0.1.0&op=Login`, { method: 'POST', headers: { host: `127.0.0.1:${h.port}`, 'content-type': 'application/json' }, body: JSON.stringify({ version: '0.1.0', op: 'Login', content: { metas: {} } }) });
+  assert.equal(response.status, 200); assert.equal((await response.json()).reject, true);
+});
+
 test('TURN credentials are short-lived, session-bound and signed with the coturn shared secret', async t => {
   const h = await setup(t, { turnSecret: 'turn_shared_secret_very_long_123' }); await h.login();
   const created = await (await h.request('/api/keys', { method: 'POST', body: { name: 'TURN 节点', slug: 'turn-a', expiresAt: null } })).json();
