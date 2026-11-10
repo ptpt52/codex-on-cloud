@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import WebSocket from 'ws';
 import { gatewayHTTPFixture } from './gateway-http-fixture.mjs';
 import { gatewayProxyHeaders } from '../gateway/protocol.mjs';
 
@@ -30,4 +31,19 @@ test('gateway identity headers confer no trust over loopback TCP, a wrong backen
   const wrongHost = await raw({ socketPath: app.tunnelSocket, path: '/readyz', headers: { ...headers, host: new URL(gateway.origin).host } }); assert.equal(wrongHost.status, 403);
   const absent = await raw({ socketPath: app.tunnelSocket, path: '/readyz', headers: { host: new URL(node.backendOrigin).host } }); assert.equal(absent.status, 400);
   const accepted = await raw({ socketPath: app.tunnelSocket, path: '/readyz', headers }); assert.equal(accepted.status, 200); assert.equal(JSON.parse(accepted.text).nodeId, node.id);
+});
+
+test('gateway preserves WebSocket authentication, Origin and stale-node denials without reporting a backend outage', async t => {
+  const gateway = await gatewayHTTPFixture(); t.after(() => gateway.close()); const app = await gateway.add(3); await gateway.select(app.gatewayEntry.id);
+  for (const [node, origin, expected] of [[app.gatewayEntry.id, gateway.origin, 401], ['f'.repeat(32), gateway.origin, 409], [app.gatewayEntry.id, 'http://untrusted.invalid', 403]]) {
+    const status = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(gateway.origin.replace(/^http/, 'ws') + '/session/connect?node=' + node, { origin, handshakeTimeout: 5000 });
+      const timer = setTimeout(() => { socket.terminate(); reject(Error('WebSocket denial timed out')); }, 6000);
+      socket.on('error', () => {});
+      socket.once('open', () => { clearTimeout(timer); socket.terminate(); reject(Error('Unauthenticated upgrade accepted')); });
+      socket.once('unexpected-response', (_request, response) => { clearTimeout(timer); response.resume(); socket.terminate(); resolve(response.statusCode); });
+    });
+    assert.equal(status, expected);
+  }
+  assert.deepEqual(app.inputCalls, []); assert.equal(app.managementStats.restarts, 0);
 });

@@ -1145,3 +1145,17 @@ DO 保存最多 64 个节点、16 个授权码、8 个会话与 128 KiB 状态�
 `test:gateway:worker` 使用 wrangler 4.158.0 内实际 workerd／SQLite、真实 HTTP／WebSocket 和 Node 面板私有 Unix 接入，通过动态登记、独立认证、原子选择、64 KiB 上传下载、切换后旧 WebSocket 保持、旧下载拒绝及 runtime 重启后路由／会话恢复。终端、文件、管理宿主为夹具；没有访问实际 Cloudflare 账户。该测试已加入 portal CI job，并增加锁定的面板测试依赖安装。actionlint 1.7.11 的工作流检查通过；本机旧 shellcheck 不支持其 `--norc`，故本地 actionlint 关闭 shellcheck 子检查，CI 保持原完整检查。
 
 本轮未运行 WebKit、真实 iPad、Xvfb／x11vnc／Codex 桌面或真实 Cloudflare Custom Domain／Tunnel 转发验收，没有更改生产 DNS、持久配置或重启生产服务。代码尚未提交或推送，不能把本地结果视为新提交的远端 Actions 成功。
+
+## 2026-11-10：固定网关上线与线上审核补修
+
+按用户要求，功能提交 `4f768d1` 已推送 `origin/master`。实际部署独立 `codex-cloud-gateway` Worker、SQLite DO 和登录密码哈希，保留原 `codex-cloud-portal`。为已有 Tunnel 增加 `home-backend.x-wrt.dev`，经私有入口及真实 Cloudflare 后端验证后，使用临时选择页路由完成节点登记和默认路由选择，再将 `home-codex.x-wrt.dev` 的旧 CNAME 迁移为 Worker Custom Domain；临时路由已删除，默认节点为 home。首次直接接管请求被 Cloudflare 以 409 拒绝，读回确认旧 DNS 未变后，改用官方的先移除 CNAME、再绑定域名流程完成迁移。
+
+本机 DNS 曾缓存新后端的旧通配解析；Cloudflare 和 Google 公共解析均已返回正确边缘地址。保留真实后端 Host、SNI 与证书验证，通过现有域名的正确边缘地址核对后端，未修改主机 DNS 设置。云端 Worker 随后独立通过真实 Tunnel 完成登记和就绪检查，不依赖本机解析绕行。
+
+实际公网 HTTP 审核确认 healthz／readyz 就绪，前端 revision 与本机相同；选择页独立登录，匿名目录／诊断／映射读取为 401，内部 route 路径为 404，错误 Origin／CSRF 为 403，旧节点请求为 409。私有入口错误 Host 为 400，回环 TCP 伪造网关凭据为 403。Worker 只有密码哈希和 DO 绑定，没有 CF 管理 Token。管理员会话未满时新建独立验证登录，只读取当前身份、诊断和文件目录，均为 200，随后退出；不认领桌面、不挤占用户登录、不发送终端输入。实际 Chrome 电脑、手机及平板模拟访问线上选择页均通过登录、节点就绪、接入码列表和退出，页面无横向溢出或 JavaScript 异常。
+
+线上审核发现一项 P2：WebSocket 握手拒绝没有附带节点身份头，网关因此将正常的 401／403／409 拒绝显示为 502。面板拒绝回复现已补充 `X-Codex-Node-Id`，保留网关的上游身份校验；没有放宽认证、Host、Origin 或节点绑定。HTTP／WebSocket 夹具补齐真实拒绝头转发，新增回归覆盖未登录、错误 Origin 和旧节点，并在真实 workerd 验证未登录握手返回 401。
+
+补修后的 331 项语法、484 项 Node、24 项 Python、12 项 Chromium 手机／电脑网关规格和实际 workerd／SQLite 均通过。前一次功能验证中的 80 项相关浏览器回归和 24 项 Chrome／Firefox 兼容矩阵仍为单独执行记录。原生 desktop、actions、manager、Tunnel PID 及五个实际任务 pane／PID 在网关部署前后保持；面板重载关闭的 `codex-view-*` 为临时查看器，不作为任务进程计算。迁移前快照与线上审核结果仅保存在被忽略的 `data/gateway-rollout.json`，0600、最多 256 KiB，不含管理 Token 或登录凭据。
+
+首次资源配置使用私有 `secrets/cf_token`；节点的运行时登记和网页切换使用自身接入凭据，不读取该 Token。实际公网验收已完成上述范围，没有为了验收创建第二台虚构节点、切断生产后端、认领真实 Codex 终端或注入任务输入。跨机器切换及真实移动设备的验收需要其他机器完成独立接入；不以夹具测试替代这些生产场景。远端 Actions 应按对应提交单独核对。

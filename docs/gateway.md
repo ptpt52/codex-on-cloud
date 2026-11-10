@@ -142,4 +142,6 @@ npm run gateway:join -- --abort
 
 核心状态机测试使用模拟 DO 存储和探测；浏览器使用真实 HTTP／WebSocket／WebRTC 以及模拟终端、文件和管理上游。`npm run test:gateway:worker` 使用固定 Wrangler 内的真实 workerd、SQLite、HTTP／WebSocket 和面板私有入口，验证上传下载、保持旧 WebSocket、路由与会话重启恢复，终端／文件宿主仍为夹具。
 
-这些测试不调用生产 Cloudflare API，不改变 DNS，不运行真实 Xvfb／x11vnc／Codex 任务。生产 Custom Domain、证书、Tunnel、Access 策略及实际跨机器网络需要首次部署时逐项核对；本轮没有迁移生产固定域名。最终本地测试结果见[验证记录](verification.md)。
+这些夹具测试不调用生产 Cloudflare API，不改变 DNS，不运行真实 Xvfb／x11vnc／Codex 任务。生产 Custom Domain、证书、Tunnel、Access 策略及实际跨机器网络需要首次部署时逐项核对。`home-codex.x-wrt.dev` 已另外完成实际迁移，当前登记并选择 home，使用 `home-backend.x-wrt.dev` 作为永久后端；其他机器需独立完成接入。上线及审核结果见[验证记录](verification.md)。
+
+本次维护另保留一份私有 `data/gateway-rollout.json`，最多 256 KiB，记录迁移前的 DNS／Tunnel 配置、阶段及不含登录凭据的审核结果；日常网关路由和节点切换不读取此文件。

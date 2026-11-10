@@ -198,7 +198,7 @@ npm run native:activate -- --resolve-unknown
 
 此前分析过由网页触发目标机器 `native:activate` 的 DNS 方案；当前实现采用固定 Worker 转发，因此无需每节点控制 helper 或 Cloudflare 管理 Token。首次创建 Worker、永久后端域名及迁移固定入口仍需要 Cloudflare 账户权限；各节点 `secrets/tunnel_token` 继续用于运行自己的 Tunnel。
 
-切换影响所有浏览器的后续默认入口，保留原任务和已有连接，HTTP／WebSocket 仍校验节点身份、登录、Host、Origin 与 CSRF。已接入网关的节点会阻止旧发布／激活命令抢占域名。初始化命令、现有 CNAME 迁移顺序、接入恢复和资源边界见[网关部署说明](gateway.md)。生产域名尚未按此方案迁移。
+切换影响所有浏览器的后续默认入口，保留原任务和已有连接，HTTP／WebSocket 仍校验节点身份、登录、Host、Origin 与 CSRF。已接入网关的节点会阻止旧发布／激活命令抢占域名。初始化命令、现有 CNAME 迁移顺序、接入恢复和资源边界见[网关部署说明](gateway.md)。`home-codex.x-wrt.dev` 已迁移到固定网关，当前登记并选择 home 节点。
 
 ## 修改本项目节点域名
 

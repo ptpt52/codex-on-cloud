@@ -21,7 +21,7 @@ export async function gatewayHTTPFixture({ webrtc = false, origin: publicOrigin 
       const remote = new WebSocket(request.url.replace(/^http/, 'ws'), protocols, { headers, perMessageDeflate: false, handshakeTimeout: 5000 }); peers.add(remote);
       remote.on('close', () => peers.delete(remote)); remote.on('error', reject);
       remote.once('open', () => resolve({ status: 101, webSocket: remote }));
-      remote.once('unexpected-response', (_req, response) => { response.resume(); remote.terminate(); resolve(new Response('', { status: response.statusCode })); });
+      remote.once('unexpected-response', (_req, response) => { response.resume(); remote.terminate(); resolve(new Response('', { status: response.statusCode, headers: Object.fromEntries(Object.entries(response.headers).filter(([, value]) => typeof value === 'string')) })); });
     });
   };
   const main = http.createServer(async (req, res) => {
@@ -65,7 +65,7 @@ export async function gatewayHTTPFixture({ webrtc = false, origin: publicOrigin 
         socket.write('HTTP/1.1 101 Switching Protocols\r\n' + Object.entries(response.headers).map(([key, value]) => key + ': ' + value).join('\r\n') + '\r\n\r\n');
         if (received.length) socket.write(received); if (head.length) remote.write(head); remote.pipe(socket).pipe(remote); socket.on('error', () => remote.destroy()); remote.on('error', () => socket.destroy()); socket.on('close', () => remote.destroy()); remote.on('close', () => socket.destroy());
       });
-      upstream.on('response', response => { response.resume(); socket.end(`HTTP/1.1 ${response.statusCode} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); });
+      upstream.on('response', response => { response.resume(); const identity = response.headers['x-codex-node-id']; socket.end(`HTTP/1.1 ${response.statusCode} Rejected\r\n${identity ? 'X-Codex-Node-Id: ' + identity + '\r\n' : ''}Connection: close\r\nContent-Length: 0\r\n\r\n`); });
       upstream.on('error', () => socket.destroy()); upstream.end();
     });
     backend.listen(0, '127.0.0.1'); await once(backend, 'listening'); servers.push(backend);

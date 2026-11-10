@@ -720,7 +720,7 @@ export async function createPanel(config) {
   server.headersTimeout = 15_000;
   server.maxHeadersCount = 64;
   async function upgrade(req, socket, head) {
-    const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\n${config.nodeId ? 'X-Codex-Node-Id: ' + config.nodeId + '\r\n' : ''}Connection: close\r\nContent-Length: 0\r\n\r\n`);
     try { gatewayIdentity(req); } catch { return deny(403); }
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403);
     const forwardURL = new URL(req.url, 'http://internal');

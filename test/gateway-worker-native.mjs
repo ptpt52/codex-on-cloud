@@ -37,6 +37,11 @@ try {
   }
   const select = async node => { const state = await (await control('nodes')).json(); const result = await control('switch', 'POST', { nodeId: node.id, revision: state.revision, operation: crypto.randomUUID().replaceAll('-', '') }); assert.equal(result.status, 200, await result.text()); };
   await select(a.gatewayEntry);
+  const deniedUpgrade = await new Promise((resolve, reject) => {
+    const anonymous = new WebSocket('ws://127.0.0.1:' + port + '/session/connect?node=' + a.gatewayEntry.id, { origin, handshakeTimeout: 5000 });
+    anonymous.on('error', reject); anonymous.once('open', () => { anonymous.terminate(); reject(Error('Unauthenticated upgrade accepted')); });
+    anonymous.once('unexpected-response', (_request, response) => { response.resume(); anonymous.terminate(); resolve(response.statusCode); });
+  }); assert.equal(deniedUpgrade, 401);
   const page = await runtime.dispatchFetch(origin); assert.equal(page.status, 200); assert((await page.text()).includes('name="gateway-entry"'));
   const nodeHeaders = app => ({ host: new URL(origin).host, origin, 'x-codex-node': app.gatewayEntry.id });
   const panelLogin = async app => {
