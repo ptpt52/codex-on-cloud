@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>节点入口 · Codex on Cloud</title><link rel="stylesheet" href="/__nodes/gateway.css"><script src="/__nodes/gateway.js" type="module"></script></head>
+<body><main>
+  <header><div><span class="eyebrow">Codex on Cloud</span><h1>节点入口</h1><p class="muted">同一个网址，选择当前要使用的机器。</p></div><button id="logout" class="secondary" hidden>退出网关</button></header>
+  <p id="boot-status" class="muted" role="status">正在核对网关登录…</p>
+  <section id="login" class="card" hidden><h2>登录节点网关</h2><p class="muted">使用网关密码。进入机器后，仍需使用该节点自己的登录。</p><form id="login-form"><label for="password">网关密码</label><input id="password" type="password" autocomplete="current-password" required maxlength="128"><button id="login-submit" type="submit">登录</button></form><p id="login-error" class="error" role="alert"></p></section>
+  <section id="workspace" hidden>
+    <div class="card current"><div><span class="eyebrow">当前默认入口</span><h2 id="active-name">尚未选择</h2><p id="summary" class="muted"></p></div><a id="enter" class="button" href="/" hidden>进入当前节点 →</a></div>
+    <p id="status" role="status" aria-live="polite"></p>
+    <div class="section-heading"><h2>已接入的节点</h2><button id="refresh" class="secondary">刷新状态</button></div>
+    <div id="nodes" class="nodes"></div>
+    <div class="pagination"><button id="previous" class="secondary" hidden>上一页</button><span id="page" class="muted"></span><button id="next" class="secondary" hidden>下一页</button></div>
+    <details class="card" id="enrollment"><summary>接入新节点</summary><p class="muted">创建接入码，保存到新节点的私有文件 secrets/gateway_code，再运行 gateway:join。每台机器先配置自己的 Tunnel 后端域名。</p><form id="code-form"><label for="code-name">接入码名称</label><input id="code-name" maxlength="48" required placeholder="例如：我的开发设备"><button id="create-code" type="submit">创建接入码</button></form><div id="new-code" hidden><label for="code-value">新接入码</label><textarea id="code-value" readonly rows="4" spellcheck="false"></textarea><button id="copy-code" class="secondary">复制接入码</button><p class="muted">接入码关闭页面后不再显示；可在下方撤销。</p></div><ul id="codes"></ul></details>
+    <p class="muted footnote">切换影响后续访问的默认节点。原机器上的任务继续运行，已有直连不会自动迁移。</p>
+  </section>
+  <dialog id="confirmation" aria-labelledby="confirmation-title"><h2 id="confirmation-title"></h2><p id="confirmation-description"></p><div class="dialog-actions"><button id="cancel" class="secondary">取消</button><button id="accept">确认</button></div></dialog>
+</main></body></html>

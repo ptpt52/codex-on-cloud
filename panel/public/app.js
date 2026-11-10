@@ -464,6 +464,7 @@ function canManageTerminals() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function renderInputControls() {
+  $('gateway-switch-button').hidden = !document.querySelector('meta[name="gateway-entry"]') || permissions.role === 'temporary';
   const disabled = inputBusy || inputComposing || frameComposing || !canInput();
   for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
   if (disabled) shortcutMenu.close();
@@ -1857,10 +1858,17 @@ accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions
   lockEnabled: () => permissions.screenLockEnabled, claim, changed: updateAccess, activity: () => { renderInputControls(); scheduleViewport(); }, toast });
 forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online',
   capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
+function canLeaveNode() { return !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
+$('gateway-switch-button').addEventListener('click', () => {
+  if (!loggedIn || permissions.role === 'temporary' || !document.querySelector('meta[name="gateway-entry"]')) return;
+  if (!canLeaveNode()) return toast('请等待输入、配置或文件传输完成后再切换。', true);
+  if (!rememberDraft()) return toast('草稿尚未保存，请先复制当前文字。', true);
+  pageLeaving = true; syncScreenLock(); location.assign('/__nodes/');
+});
 nodeUI = createNodeUI({ api,
   allowed: () => loggedIn && !accessExpired && permissions.role !== 'temporary',
   canConfigure: () => loggedIn && owned && !accessExpired && permissions.role !== 'temporary' && !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController,
-  canLeave: () => !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy,
+  canLeave: canLeaveNode,
   saveDraft: rememberDraft,
   changed: () => { renderInputControls(); sendDisplayPreferences(); scheduleViewport(); },
   leave: origin => { pageLeaving = true; syncScreenLock(); location.assign(origin + '/'); },

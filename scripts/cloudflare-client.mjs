@@ -23,6 +23,7 @@ export async function cloudflareAPI(tokenFile, { request = fetch, privateFile = 
   return api;
 }
 export async function publicationClient(values, { root = projectRoot, deploymentLease, operationId, request = fetch } = {}) {
+  try { await portalRead(join(root, 'data/gateway-node.json'), 4096, true); throw Error('固定网关节点不能通过普通发布更改入口，请从 /__nodes/ 切换'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const api = await cloudflareAPI(cloudflareTokenFile(values['api-token-file'], { root }), { request, privateFile: true });
   const env = parseEnv(await portalRead(join(root, '.env'), 65536, true));
   if (env.SHARED_ENTRY === '1' && (values.rename || values.domain !== new URL(env.PUBLIC_ORIGIN).hostname)) throw Error('共享入口节点不能通过普通发布改名，请使用 native:activate 管理固定入口');

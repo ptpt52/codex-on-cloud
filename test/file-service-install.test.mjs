@@ -11,7 +11,7 @@ async function installer(t, { port = '36902', migration = false, flock = true } 
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = join(root, 'bin'), service = join(root, '.config/systemd/user');
   for (const path of [bin, service, join(root, 'secrets')]) await mkdir(path, { recursive: true });
-  for (const path of ['native', 'scripts', 'panel']) await cp(resolve(path), join(root, path), { recursive: true, filter: name => !name.includes('__pycache__') });
+  for (const path of ['native', 'scripts', 'panel', 'gateway']) await cp(resolve(path), join(root, path), { recursive: true, filter: name => !name.includes('__pycache__') });
   await writeFile(join(root, 'secrets/panel_password'), 'synthetic-test-password');
   for (const name of ['tmux', 'python3', ...(flock ? ['flock'] : [])]) await writeFile(join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   await writeFile(join(bin, 'systemctl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/calls"\nif [ "$2" = is-active ]; then [ "$4" = codex-cloud-terminal.service ]; else exit 0; fi\n', { mode: 0o700 });

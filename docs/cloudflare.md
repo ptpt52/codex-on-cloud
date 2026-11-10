@@ -192,26 +192,13 @@ npm run native:activate -- --resolve-unknown
 
 新增持久状态只有每节点一份 `data/cloudflare-node.json`（最多 8 KiB，含身份与令牌文件路径）和一份 `data/cloudflare-activation.json`（最多 256 KiB，含本机配置快照及本次操作），均 0600、被 Git 忽略；临时文件与空租约沿用已有有界写入工具，不保存节点列表、历史队列或流量日志。已退出且不再使用的机器，其独立 Tunnel 可由账户管理员在 Cloudflare 控制台明确删除；命令不自动删除其他节点的资源。
 
-## 网页显示节点列表并切换共享入口：可行性
+## 网页显示节点列表并切换共享入口
 
-可以实现，但现有门户列表只保存不同服务器网址；`panel/public/node-directory.js` 要求每个 origin 唯一，`node-ui.js` 的切换动作也是网页跳转。共享域名的多台物理机器不能直接按相同网址加入该列表。当前激活记录只在各机器本地保存，也没有可供网页完整读取的共享节点目录。
+已实现[固定域名网关](gateway.md)：固定域名绑定独立 Cloudflare Worker，每台机器使用独立 Tunnel 和永久后端域名。登录 `/__nodes/` 动态登记、分页查看、检查就绪并切换节点；日常切换只原子更新 Durable Object 中的默认路由，不读取 `secrets/cf_token` 或修改 DNS。当前节点离线时，选择页仍可访问。
 
-建议为同一域名保留独立的节点选择路径，例如 `https://home-codex.x-wrt.dev/__nodes/`，由 Cloudflare Worker 提供，工作台仍使用原 Tunnel。Worker Routes 支持按 hostname 和路径匹配，在已有代理 DNS 前执行；只为选择页保留路径即可，不必改造桌面／终端／文件的转发。[Worker Routes](https://developers.cloudflare.com/workers/configuration/routing/routes/)
+此前分析过由网页触发目标机器 `native:activate` 的 DNS 方案；当前实现采用固定 Worker 转发，因此无需每节点控制 helper 或 Cloudflare 管理 Token。首次创建 Worker、永久后端域名及迁移固定入口仍需要 Cloudflare 账户权限；各节点 `secrets/tunnel_token` 继续用于运行自己的 Tunnel。
 
-推荐流程：
-
-1. 节点首次接入后，用独立接入凭据向控制服务登记自己的稳定 nodeId、名称和 Tunnel 身份，随后主动建立控制连接并报告就绪状态；新增机器无需改固定列表。
-2. 选择页登录后显示当前节点、在线／离线和最近就绪时间。用户选择在线目标并确认，服务端只接受已登记的 nodeId，不接受任意命令、文件路径或任意探测网址。
-3. 控制服务一次只接受一个切换，把固定的“激活本机”动作交给目标节点；目标节点读取本地 `secrets/cf_token`，复用现有私有入口／Tunnel 就绪检查和一次性 DNS 提交流程。Token 不返回浏览器，控制 Worker 也不需要保存节点的 Cloudflare 管理 Token。
-4. 读回实际 DNS 标记并确认新节点后，提示保存草稿、刷新工作台。未知结果保留待核对状态，先查询，不自动重发切换或回滚。原节点的任务继续运行，已有直连不迁移、不重放输入。
-
-把选择页独立于当前机器的好处是：当前节点离线时，仍可打开同一域名的 `__nodes/` 选择其他在线节点。只在本机面板加按钮也能做基础切换，但面板离线时该按钮与列表都无法访问，因此不适合作为唯一入口。这里是基于 Worker 路由方式的架构判断，尚未实际部署验证。
-
-可复用现有门户 Worker／Durable Object 的登录和存储方式，另建按物理 nodeId 区分的注册数据；DO 提供事务和强一致存储，适合原子认领唯一的待切换操作。[Durable Objects 存储](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/)。外部 DNS API 写入仍不属于该存储事务，必须持久记录操作身份并在中断后读回核对。未来 CLI 正常激活也应经过同一控制服务串行化；现有直接改 DNS 的 CLI 不能与网页并发写入时声称原子互斥。
-
-实施时需要新增一个独立于桌面和面板生命周期的节点控制 helper，固定动作、每节点最多一个连接／一次激活，无无限队列。注册表应分页并设总记录与字节上限，过期心跳只标记离线，不删除任务或远程唤醒机器。页面和切换接口保留独立登录、Host／Origin／CSRF 检查，临时账号不获得切换权；节点凭据和 Token 继续留在各自私有状态中。
-
-这种共享入口切换影响所有后续访问，不是每个浏览器独立的默认节点。目前只完成可行性分析，没有新增网页激活接口、控制 helper 或 Worker 路由，也没有更改生产 DNS。
+切换影响所有浏览器的后续默认入口，保留原任务和已有连接，HTTP／WebSocket 仍校验节点身份、登录、Host、Origin 与 CSRF。已接入网关的节点会阻止旧发布／激活命令抢占域名。初始化命令、现有 CNAME 迁移顺序、接入恢复和资源边界见[网关部署说明](gateway.md)。生产域名尚未按此方案迁移。
 
 ## 修改本项目节点域名
 

@@ -7,6 +7,7 @@ import http from 'node:http';
 import { root, maintenanceSettings } from '../native/config.mjs';
 import { cloudflareAPI, cloudflareTokenFile } from './cloudflare-client.mjs';
 import { createNodeActivation, readActivationProfile } from './node-activation.mjs';
+import { readGatewayConnection } from '../native/gateway-config.mjs';
 
 export const activationHelp = `用法：npm run native:activate -- [选项]
 首次接入：--domain 固定域名 --zone 区域
@@ -42,6 +43,7 @@ export async function activateCommand(args) {
   if (values.help) { console.log(activationHelp); return; }
   if (process.platform !== 'linux' || process.getuid() === 0) throw Error('请由Linux部署用户运行');
   if (values.status && values['resolve-unknown']) throw Error('状态核对与解除记录不能同时使用');
+  if (readGatewayConnection(root)) throw Error('本机已接入固定网关，请从 /__nodes/ 选择节点；无需 CF 管理 Token 或 DNS 激活');
   const stored = await readActivationProfile(root);
   const tokenFile = cloudflareTokenFile(values['api-token-file'], { fallback: stored?.tokenFile });
   if (!values.status && !values['resolve-unknown'] && !stored && (!values.domain || !values.zone)) throw Error('首次接入需要 --domain、--zone；CF API Token默认读取 secrets/cf_token');

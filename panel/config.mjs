@@ -6,6 +6,7 @@ import { stunURL } from './rtc-network.mjs';
 import { desktopEnvironment } from '../native/desktop-controls.mjs';
 import { terminalEnvironment } from '../native/deployment-mode.mjs';
 import { forwardPorts } from './forward.mjs';
+import { readGatewayConnection } from '../native/gateway-config.mjs';
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -36,11 +37,13 @@ export function readConfig(env = environment()) {
   if (env.NODE_ID !== undefined && !/^[a-f0-9]{32}$/.test(env.NODE_ID)) throw new Error('NODE_ID 必须为 32 位小写十六进制节点身份');
   if (env.SHARED_ENTRY !== undefined && !['0', '1'].includes(env.SHARED_ENTRY)) throw new Error('SHARED_ENTRY 必须为 0 或 1');
   if (env.SHARED_ENTRY === '1' && !env.NODE_ID) throw new Error('共享入口需要固定 NODE_ID');
+  const gatewayNode = readGatewayConnection(native.root);
+  if (gatewayNode && (gatewayNode.origin !== origin.origin || gatewayNode.nodeId !== env.NODE_ID || env.SHARED_ENTRY !== '1')) throw new Error('网关节点配置与 PUBLIC_ORIGIN / NODE_ID 不一致，请完成 gateway:join 准备');
   const webrtcAddress = env.WEBRTC_ENABLED === '0' ? undefined : rtcAddress(env.WEBRTC_LAN_ADDRESS);
   const webrtcIPv6 = env.WEBRTC_IPV6 !== '0';
   return {
     mode: native.mode,
-    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1',
+    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1', gatewayNode,
     host: '127.0.0.1', port, origin: origin.origin,
     agentPort: native.agentPort, fileAgentPort: native.fileAgentPort, tunnelMetricsPort: native.tunnelMetricsPort,
     forwardPorts: forwardPorts(env.TCP_FORWARD_PORTS), forwardDownloadDir: join(native.root, 'data', 'forward-client'),

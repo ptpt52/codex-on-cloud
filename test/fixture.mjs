@@ -15,7 +15,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, publicOrigin = '' } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -202,7 +202,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const managerSocket = join(directory, 'manager.sock');
   manager.listen(managerSocket); await once(manager, 'listening');
   const config = {
-    uiRoot, uiValidate: false, mode, nodeId, sharedEntry, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
+    uiRoot, uiValidate: false, mode, nodeId, sharedEntry, gatewayNode, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
     forwardPorts, forwardDownloadDir, forwardPeerFactory, agentPort: upstream.address().port,
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
@@ -254,8 +254,11 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   };
   const panel = await createPanel(config);
   panel.server.listen(port, '127.0.0.1'); await once(panel.server, 'listening');
-  config.origin = `http://127.0.0.1:${panel.server.address().port}`;
+  const bindingOrigin = `http://127.0.0.1:${panel.server.address().port}`;
+  config.origin = publicOrigin || bindingOrigin;
   config.hosts.add(new URL(config.origin).host);
+  const tunnelSocket = join(directory, 'tunnel.sock');
+  if (gatewayNode) await panel.startTunnel(tunnelSocket);
   let cookie = '', csrf = '';
   const viewer = '11111111-1111-4111-8111-111111111111';
   async function request(path, { method = 'GET', body, headers = {}, raw } = {}) {
@@ -272,7 +275,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalViews, terminalHistoryReads, terminalGeometry,
+    panel, config, directory, bindingOrigin, tunnelSocket, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalViews, terminalHistoryReads, terminalGeometry,
     get terminalConnections() { return terminalConnections; },
     get terminalChildren() { return [...terminalChildren]; },
     disconnectTerminals() { for (const child of [...terminalChildren]) child.kill(); },

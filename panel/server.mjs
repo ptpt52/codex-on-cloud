@@ -72,7 +72,7 @@ function reply(res, status, data, headers = {}) {
 }
 
 export async function createPanel(config) {
-  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '' });
+  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode });
   const cookieToken = header => readCookieToken(header, config);
   const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
   const access = await createAccessControl(config);
@@ -84,6 +84,19 @@ export async function createPanel(config) {
   const unlockFailures = new Map();
   const tunnelRequests = new WeakSet();
   const clientKey = req => loginClient(req, tunnelRequests.has(req));
+  function gatewayIdentity(req) {
+    const header = req.headers['x-codex-gateway-secret'];
+    if (header === undefined && !Object.keys(req.headers).some(key => key.startsWith('x-codex-gateway-'))) return;
+    const gateway = config.gatewayNode;
+    if (!gateway || !tunnelRequests.has(req) || String(req.headers.host).toLowerCase() !== new URL(gateway.backendOrigin).host ||
+      req.headers['x-codex-gateway-origin'] !== config.origin || req.headers['x-codex-gateway-node'] !== config.nodeId || !equal(header, gateway.secret)) throw new HttpError(403, '网关接入验证失败');
+    // Only the authenticated gateway on the private ingress can restore the
+    // public Host. The browser Origin and CSRF token remain untouched.
+    req.headers.host = new URL(config.origin).host;
+    const client = req.headers['x-codex-gateway-client'];
+    if (typeof client === 'string' && net.isIP(client)) req.headers['cf-connecting-ip'] = client; else delete req.headers['cf-connecting-ip'];
+    for (const name of Object.keys(req.headers)) if (name.startsWith('x-codex-gateway-')) delete req.headers[name];
+  }
   let stopTunnel, tunnelStarting = false;
   const sockets = new Map();
   const streamStates = new Map(); // At most one stream per mode for an opted-in owner, otherwise one total.
@@ -270,6 +283,8 @@ export async function createPanel(config) {
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader('x-frame-options', 'SAMEORIGIN');
     if (config.secureCookies) res.setHeader('strict-transport-security', HSTS);
+    if (config.nodeId) res.setHeader('x-codex-node-id', config.nodeId);
+    gatewayIdentity(req);
     if (!hostAllowed(req)) throw new HttpError(400, '访问域名未配置，请检查 PUBLIC_ORIGIN / ALLOWED_HOSTS');
     if (config.secureCookies && tunnelRequests.has(req) && visitorScheme(req.headers['cf-visitor']) === 'http') {
       const target = new URL(req.url, config.origin);
@@ -706,6 +721,7 @@ export async function createPanel(config) {
   server.maxHeadersCount = 64;
   async function upgrade(req, socket, head) {
     const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    try { gatewayIdentity(req); } catch { return deny(403); }
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403);
     const forwardURL = new URL(req.url, 'http://internal');
     if (forwardURL.pathname.startsWith('/forward/')) {
@@ -812,7 +828,7 @@ export async function createPanel(config) {
     const ingress = http.createServer((req, res) => { tunnelRequests.add(req); handleRequest(req, res); });
     ingress.requestTimeout = server.requestTimeout; ingress.headersTimeout = server.headersTimeout;
     ingress.maxHeadersCount = server.maxHeadersCount; ingress.maxConnections = 256;
-    ingress.on('upgrade', (req, socket, head) => { void upgrade(req, socket, head).catch(() => socket.destroy()); });
+    ingress.on('upgrade', (req, socket, head) => { tunnelRequests.add(req); void upgrade(req, socket, head).catch(() => socket.destroy()); });
     try {
       const stop = await listenPrivateHTTP(ingress, path);
       if (closing) { await stop(); throw Error('面板正在关闭'); }

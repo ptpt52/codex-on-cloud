@@ -1127,3 +1127,21 @@ Checks #53 的 WebKit 安装依赖用时 14m05s，三种设备规格共用一个
 按用户约定，`deploy`、`native:publish` 和首次 `native:activate` 默认读取项目内被忽略的 `secrets/cf_token`，要求当前用户私有、最多 4 KiB；显式文件参数及已保存的节点路径仍兼容。新增默认路径实际读取、覆盖优先级、宽权限／超大 Token 拒绝和部署参数传递检查，使用临时合成 Token 与模拟 Cloudflare API，没有使用生产 Token 或修改 DNS。315 项脚本语法、460 项 Node、24 项 Python 通过。
 
 网页节点选择仅完成仓库结构与官方 Cloudflare 能力分析，方案见 cloudflare.md；本轮没有新增远程激活 HTTP 接口、Worker 控制服务或节点代理，也没有重启生产服务。以上为推送前验证，新的远端 Actions 结果需按提交另行确认。
+
+## 2026-11-10：固定 Worker 网关与无需管理 Token 的网页切换
+
+按用户选择实现第一种方案：固定域名绑定独立 Worker，每台机器使用永久后端域名和独立 Tunnel；`/__nodes/` 提供独立登录、动态目录、接入码与就绪检查后的原子切换。运行时不读取 `cf_token`、不调用 Cloudflare 管理 API、不更新 DNS，不新增节点控制 daemon。首次 Cloudflare 资源和域名迁移仍需账户权限，步骤见[网关说明](gateway.md)。
+
+DO 保存最多 64 个节点、16 个授权码、8 个会话与 128 KiB 状态，分页 16 条，限定探测／登记并发和单次切换租约；过期结果不能覆盖新选择。HTTP 请求与回复流式转发，WebSocket 101 保留原连接，切换不重发写请求。面板只有在私有 Unix ingress 收到准确后端 Host、节点身份与代理凭据时才恢复 canonical Host，原 Origin、CSRF、用户认证和 HTTP／WebSocket 节点绑定保持。其他节点 Cookie 与网关 Cookie 不发给目标节点。
+
+新增 `gateway:setup`、`gateway:build`、`gateway:join`。接入与旧域名维护共用真实部署租约，持久准备记录有界且私有；回复丢失不自动重发，显式继续复用节点身份，已确认登记只收尾。本机配置有人工变化则停止；`--abort` 条件恢复准备前内容，发送过登记时先只读核对远端，仍登记时拒绝撤销。旧 DNS 发布／激活及不兼容的部署参数会提前拒绝网关节点。
+
+最终 331 项脚本语法、483 项 Node 和 24 项 Python 均通过。核心状态机使用模拟存储／探测；接入与恢复使用实际私有临时文件和 Linux 内核租约。首次全量 Node 中部署隔离副本缺少新 gateway 模块，补齐所有相关源码复制清单后，全量复测通过。实际隔离 `test:terminal-only` 通过，验证锁定依赖安装、真实 tmux／PTY、私有 socket、服务重启保留任务与关闭竞态，不使用生产会话。
+
+新网关规格在实际 Chrome 电脑／手机／平板触控模拟及 Firefox 电脑共 24 项通过，涵盖 A→B→A 的独立登录与同 pane 草稿、当前节点离线仍能选择、目标离线拒绝、HTTP 文件流与旧链接拒绝、回复丢失只读核对、取消确认与接入码撤销、终端和文件 WebRTC。复核中修正文件浮层覆盖工具入口的测试操作，以及控制页先显示登录再恢复会话导致 Firefox 输入竞态；控制页现在先完成会话检查，失败场景在 Firefox 重复三次通过后再跑完整矩阵。浏览器上游终端／文件／管理为夹具，HTTP／WebSocket／WebRTC 与浏览器引擎真实，触控是模拟。
+
+最终 `npm run test:browser` 在 Chromium 手机／电脑通过 80 项回归，包含新网关以及既有门户、端口映射、文件直连、共享入口和终端创建流程；没有跳过或失败。上述 24 项兼容矩阵为另外执行的定向检查，未宣称再次运行全部浏览器规格。
+
+`test:gateway:worker` 使用 wrangler 4.158.0 内实际 workerd／SQLite、真实 HTTP／WebSocket 和 Node 面板私有 Unix 接入，通过动态登记、独立认证、原子选择、64 KiB 上传下载、切换后旧 WebSocket 保持、旧下载拒绝及 runtime 重启后路由／会话恢复。终端、文件、管理宿主为夹具；没有访问实际 Cloudflare 账户。该测试已加入 portal CI job，并增加锁定的面板测试依赖安装。actionlint 1.7.11 的工作流检查通过；本机旧 shellcheck 不支持其 `--norc`，故本地 actionlint 关闭 shellcheck 子检查，CI 保持原完整检查。
+
+本轮未运行 WebKit、真实 iPad、Xvfb／x11vnc／Codex 桌面或真实 Cloudflare Custom Domain／Tunnel 转发验收，没有更改生产 DNS、持久配置或重启生产服务。代码尚未提交或推送，不能把本地结果视为新提交的远端 Actions 成功。

@@ -94,6 +94,7 @@ export function createNodeActivation({ root, socketPath, api, services, ready = 
     return { domain: stage.profile.domain, nodeId: stage.profile.nodeId, active: true, published: true, reachable };
   }
   async function prepare(values) {
+    if (await optional(join(root, 'data/gateway-node.json'), 4096) !== null || await optional(join(root, 'data/gateway-join.json'), ACTIVATION_LIMITS.pending) !== null) throw Error('本机使用固定网关，请在 /__nodes/ 切换；不再通过 DNS 激活');
     if (await optional(join(root, 'data/cloudflare-publication.json'), ACTIVATION_LIMITS.pending) !== null) throw Error('已有普通公网发布待完成，请先按原目标完成或回退，再切换共享入口');
     const prior = await loadPending();
     if (prior.value) {

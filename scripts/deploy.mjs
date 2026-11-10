@@ -11,6 +11,7 @@ import { configureWSLNetwork } from './wsl-network.mjs';
 import { randomBytes } from 'node:crypto';
 import { acquireDeploymentLease } from './deployment-lease.mjs';
 import { publicationClient, cloudflareTokenFile } from './cloudflare-client.mjs';
+import { readGatewayConnection } from '../native/gateway-config.mjs';
 
 // Keep the version guard reachable even when older Node lacks util.parseEnv.
 const { parseArgs, parseEnv } = util;
@@ -121,6 +122,13 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   if (platform !== 'linux') throw new Error('服务端需要 Linux 和 systemd；Mac/Windows 可运行端口映射助手');
   if (uid === 0) throw new Error('请以普通用户运行安装命令；只有显式选择的系统依赖和开机自启步骤使用 sudo');
   if (Number(nodeVersion.split('.')[0]) < 22) throw new Error('需要 Node.js 22+；安装器不会替换现有 Node 或 Codex');
+  if (values.domain) {
+    try { await boundedFile(join(root, 'data/gateway-node.json'), 4096); throw Error('本机使用固定网关，更新本机请省略 --domain；切换请使用 /__nodes/'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  if (values.origin) {
+    const gateway = readGatewayConnection(root);
+    if (gateway && values.origin !== gateway.origin) throw Error('本机使用固定网关，不能通过 --origin 改绑入口');
+  }
   if (values.domain) values = { ...values, 'api-token-file': cloudflareTokenFile(values['api-token-file'], { root }) };
   let existingMode, existingEnv = {};
   try { existingEnv = parseEnv(await boundedFile(join(root, '.env'), 65536)); existingMode = deploymentMode(existingEnv.DEPLOY_MODE); }
@@ -146,6 +154,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
     log('环境检查通过。未安装依赖、修改配置、启动或重启服务。'); return;
   }
   const oppositeHost = mode === 'terminal' ? 'codex-cloud-desktop.service' : 'codex-cloud-terminal.service';
+  try { await boundedFile(join(root, 'data/gateway-join.json'), 262144); throw Error('网关接入尚未完成，请先重跑 gateway:join 核对'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   try {
     await boundedFile(join(root, 'data/cloudflare-activation.json'), 262144);
     throw Error('共享入口切换待核对，请先用 native:activate -- --status 或 --resolve-unknown 处理，再部署');

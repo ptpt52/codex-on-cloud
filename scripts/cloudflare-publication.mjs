@@ -226,6 +226,7 @@ export function createCloudflarePublication({ root, socketPath, api: request, re
     let shared, held;
     try {
       if (deploymentLease) deploymentLease.check(); else shared = await acquireDeploymentLease(root);
+      if (await optional(join(root, 'data/gateway-node.json'), 4096) !== null || await optional(join(root, 'data/gateway-join.json'), LIMIT) !== null) throw Error('固定网关节点不通过 DNS 发布，请完成网关接入并使用 /__nodes/ 切换');
       if (await optional(join(root, 'data/cloudflare-activation.json'), LIMIT) !== null) throw Error('共享入口切换待核对，请先用 native:activate -- --status 或 --resolve-unknown 处理');
       held = await acquireFileLock(pendingPath + '.operation-lock'); lease = held; whole = deploymentLease || shared;
       const result = await action(...args); valid(); return result;

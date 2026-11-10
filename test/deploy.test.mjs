@@ -97,6 +97,26 @@ test('deployment preserves a pending shared-entry activation before setup or ser
   await assert.rejects(readFile(join(h.root, '.env')), { code: 'ENOENT' });
 });
 
+test('deployment protects unfinished gateway enrollment and prevents DNS publication for fixed gateways before mutation', async t => {
+  for (const [name, args, error] of [
+    ['gateway-join.json', ['--install-deps'], /网关接入尚未完成/],
+    ['gateway-node.json', ['--domain', 'desk.example.test', '--zone', 'example.test'], /固定网关/],
+  ]) {
+    const h = await harness(t); await mkdir(join(h.root, 'data'), { mode: 0o700 });
+    const file = join(h.root, 'data', name); await writeFile(file, '{}', { mode: 0o600 });
+    await assert.rejects(deploy(options(args), h.context), error);
+    assert.ok(h.calls.every(call => call.capture)); assert.equal(await readFile(file, 'utf8'), '{}');
+    await assert.rejects(readFile(join(h.root, '.env')), { code: 'ENOENT' });
+  }
+});
+
+test('a completed gateway node rejects an incompatible deployment origin before setup or service changes', async t => {
+  const h = await harness(t); await mkdir(join(h.root, 'data'), { mode: 0o700 });
+  await writeFile(join(h.root, 'data/gateway-node.json'), JSON.stringify({ version: 1, origin: 'https://desk.example.test', backendOrigin: 'https://node.example.test', nodeId: '1'.repeat(32), name: '节点', secret: 'a'.repeat(64), registeredAt: 1 }), { mode: 0o600 });
+  await assert.rejects(deploy(options(['--origin', 'https://other.example.test']), h.context), /固定网关/);
+  assert.equal(h.calls.length, 0); await assert.rejects(readFile(join(h.root, '.env')), { code: 'ENOENT' });
+});
+
 test('missing user bus stops before initialization rather than reporting a working deployment',async t=>{
   const h=await harness(t,{bus:''});await assert.rejects(deploy({},h.context),/systemd 用户服务/);assert.equal(h.calls.length,1);
 });
@@ -244,7 +264,7 @@ test('readiness refuses an absent dedicated FILE_AGENT_PORT despite a healthy ho
 
 test('default deployment readiness uses the persisted origin and helper port despite stale task environment variables', async t => {
   const root = await mkdtemp(join(tmpdir(), 'codex-health-env-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  for(const folder of ['native','panel','scripts'])await cp(resolve(folder),join(root,folder),{recursive:true,filter:path=>!path.includes('__pycache__')});
+  for(const folder of ['native','panel','scripts','gateway'])await cp(resolve(folder),join(root,folder),{recursive:true,filter:path=>!path.includes('__pycache__')});
   await symlink(resolve('node_modules'),join(root,'node_modules'));await mkdir(join(root,'secrets'));
   for(const name of ['agent_secret','panel_password'])await writeFile(join(root,'secrets',name),'synthetic_health_secret',{mode:0o600});
   const requests=[];

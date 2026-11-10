@@ -57,7 +57,7 @@ try {
   await Promise.race([(async () => {
     for (const path of [root, home, bin]) await mkdir(path, { recursive: true, mode: 0o700 });
     await writeFile(join(home, '.bashrc'), 'export DBUS_SESSION_BUS_ADDRESS=unix:path=/user-shell-bus\n', { mode: 0o600 });
-    for (const folder of ['native', 'desktop', 'panel', 'scripts']) await cp(resolve(folder), join(root, folder), { recursive: true, filter: file => !file.includes('__pycache__') });
+    for (const folder of ['native', 'desktop', 'panel', 'scripts', 'gateway']) await cp(resolve(folder), join(root, folder), { recursive: true, filter: file => !file.includes('__pycache__') });
     for (const file of ['package.json', 'package-lock.json']) await cp(resolve(file), join(root, file));
     // Force a missing-executable error even on development hosts with Codex.
     await writeFile(join(bin, 'codex'), '#!/no-such-codex-test-interpreter\n', { mode: 0o700 });

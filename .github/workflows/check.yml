@@ -31,10 +31,16 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: Install the pinned local Workers runtime
         run: npm install --prefix "$RUNNER_TEMP/codex-portal-tools" --no-save --ignore-scripts --no-audit --no-fund wrangler@4.158.0
+      - name: Install pinned panel test dependencies
+        run: npm ci
       - name: Actual workerd and persistent SQLite portal
         env:
           PORTAL_WORKER_TOOLS: ${{ runner.temp }}/codex-portal-tools
         run: npm run test:portal:worker
+      - name: Actual workerd gateway, HTTP, WebSocket and persistent selection
+        env:
+          PORTAL_WORKER_TOOLS: ${{ runner.temp }}/codex-portal-tools
+        run: npm run test:gateway:worker
   terminal:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
