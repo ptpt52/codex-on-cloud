@@ -119,3 +119,36 @@ test('leave releases the center grant and removes only generated node files', as
   await assert.rejects(access(join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service')));
   assert.equal((await nodeStatus({ root: h.root, run: h.run })).joined, false);
 });
+
+test('leave preserves all enrollment state when frpc cannot be confirmed stopped', async t => {
+  const h = await setup(t), joined = async () => new Response(JSON.stringify(h.joined), { status: 200 });
+  const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request: joined, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
+  await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
+  let released = 0;
+  const failed = async (_file, args) => args.includes('disable') ? { ok: false, stderr: 'stop failed' } : { ok: true, stdout: 'active', stderr: '' };
+  await assert.rejects(leaveNode({ root: h.root, configHome: h.configHome, run: failed, request: async () => { released++; return new Response('{"ok":true}', { status: 200 }); } }), /无法确认节点中继已停止/);
+  assert.equal(released, 0);
+  await access(join(h.root, 'data', 'selfhost-node', 'connection.json'));
+  await access(join(h.root, 'data', 'selfhost-node', 'panel-backup.json'));
+  await access(join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service'));
+});
+
+test('leave keeps recovery state when the restored Panel fails to restart', async t => {
+  const h = await setup(t), joined = async () => new Response(JSON.stringify(h.joined), { status: 200 });
+  const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request: joined, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
+  await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
+  const failedRestart = async (_file, args) => args.includes('restart') ? { ok: false, stderr: 'restart failed' } : { ok: true, stdout: 'active', stderr: '' };
+  await assert.rejects(leaveNode({ root: h.root, configHome: h.configHome, run: failedRestart, request: async () => new Response('{"ok":true}', { status: 200 }) }), /Panel 原配置已恢复/);
+  await access(join(h.root, 'data', 'selfhost-node', 'connection.json'));
+  await access(join(h.root, 'data', 'selfhost-node', 'panel-backup.json'));
+});
+
+test('leave allows offline center cleanup only after frpc stops and returns a warning', async t => {
+  const h = await setup(t), joined = async () => new Response(JSON.stringify(h.joined), { status: 200 });
+  const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request: joined, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
+  await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' });
+  const result = await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => { throw Error('offline'); } });
+  assert.equal(result.left, true); assert.match(result.warning, /网络不可达/);
+  await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'connection.json')));
+  await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'panel-backup.json')));
+});

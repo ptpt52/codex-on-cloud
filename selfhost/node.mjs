@@ -218,9 +218,9 @@ async function restorePanel(root, { run = command } = {}) {
     if (current !== null && current !== backup.gatewayBefore) throw Error('Gateway 配置在自建接入后被修改，未覆盖');
     if (current === null) await writeStateFile(paths.gateway, backup.gatewayBefore, { expected: null });
   }
-  await removeStateFile(paths.backup, { expected: backupText });
   const result = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
   if (!result.ok) throw Error('Panel 原配置已恢复，但服务重启失败：' + (result.stderr || result.stdout || result.code));
+  await removeStateFile(paths.backup, { expected: backupText });
   return true;
 }
 
@@ -301,11 +301,12 @@ export async function nodeDoctor({ root, run = command, request = fetch } = {}) 
 
 export async function leaveNode({ root, request = fetch, run = command, configHome } = {}) {
   const connection = await readNodeConnection(root); if (!connection) throw Error('本机尚未接入自建中心');
+  const stopped = await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
+  if (!stopped.ok) throw Error('无法确认节点中继已停止，本机接入配置已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
   const response = await request(connection.origin + '/api/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: 1, slug: connection.slug, credential: connection.credential, nodeId: connection.nodeId }), redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => null);
   if (response && !response.ok && response.status !== 401) { const value = await response.json().catch(() => ({})); throw Error(value.error || '中心释放节点失败'); }
-  await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
   await restorePanel(root, { run });
   const unit = servicePath(configHome), unitText = await optional(unit, 65536); if (unitText !== null) await removeStateFile(unit, { expected: unitText });
   for (const name of ['connection.json', 'frpc.toml', 'frps-ca.pem']) { const path = pathFor(root, name), text = await optional(path, 262144); if (text !== null) await removeStateFile(path, { expected: text }); }
-  return { left: true, origin: connection.origin, slug: connection.slug, warning: response?.status === 401 ? '中心认为节点已经离线；本地配置已清理' : '' };
+  return { left: true, origin: connection.origin, slug: connection.slug, warning: !response ? '中心网络不可达；本地中继已停止并清理，中心租约会按超时释放' : response.status === 401 ? '中心认为节点已经离线；本地配置已清理' : '' };
 }
