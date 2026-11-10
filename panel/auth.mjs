@@ -123,5 +123,5 @@ export function cookieToken(header = '', config = {}) {
 }
 
 export function sessionCookie(token, config, expired = false) {
-  return `${sessionCookieName(config)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${expired ? 0 : Math.floor(config.sessionMs / 1000)}${config.secureCookies ? '; Secure' : ''}`;
+  return `${sessionCookieName(config)}=${token}; Path=${config.entryBasePath || '/'}; HttpOnly; SameSite=Strict; Max-Age=${expired ? 0 : Math.floor(config.sessionMs / 1000)}${config.secureCookies ? '; Secure' : ''}`;
 }

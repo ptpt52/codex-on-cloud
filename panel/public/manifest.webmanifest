@@ -1,13 +1,13 @@
 {
-  "id": "/",
+  "id": "__ENTRY_BASE_PATH__",
   "name": "Codex on Cloud",
   "short_name": "Codex Cloud",
   "description": "你的远程开发桌面",
   "lang": "zh-CN",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "__ENTRY_BASE_PATH__",
+  "scope": "__ENTRY_BASE_PATH__",
   "display": "standalone",
   "theme_color": "#231815",
   "background_color": "#f5f5f5",
-  "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
+  "icons": [{"src": "__ENTRY_BASE_PATH__icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]
 }

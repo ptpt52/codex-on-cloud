@@ -17,6 +17,7 @@ import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 import { createInputNotices } from './input-notices.js';
 import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
+import { entryPath } from './entry-path.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -493,7 +494,7 @@ function syncRelayLatency() {
   // heartbeat. A tiny uncached read measures that route without desktop input.
   void (async () => {
     try {
-      const response = await fetch('/healthz', { credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal });
+      const response = await fetch(entryPath('/healthz'), { credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal });
       if (!response.ok || (await response.json()).ok !== true) throw Error('往返检测未完成');
       if (relayProbeController === controller && needsRelayProbe()) relayLatency.set(performance.now() - startedAt);
     } catch { if (relayProbeController === controller) relayLatency.clear(); }
@@ -684,7 +685,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (upload !== undefined) Object.assign(headers, uploadHeaders(upload));
-  const response = await fetch(path, { method, credentials: 'same-origin', headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual', signal });
+  const response = await fetch(entryPath(path), { method, credentials: 'same-origin', headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual', signal });
   if (response.type === 'opaqueredirect') {
     if (!signal?.aborted) expireAccess();
     throw new Error('外层访问验证已过期，请刷新页面完成验证');
@@ -956,9 +957,9 @@ function frameUrl(mode = displayPreferences.mode, epoch = frameEpoch, terminal =
   if (standbyEnabled()) query.set('standby', '1');
   if (mode === 'terminal') {
     query.set('terminalId', terminal.id); query.set('terminalToken', terminal.token);
-    return `/terminal/index.html?${query}`;
+    return entryPath(`/terminal/index.html?${query}`);
   }
-  return `/desktop/index.html?${query}`;
+  return entryPath(`/desktop/index.html?${query}`);
 }
 function openFrame() {
   if (frameLoaded || !owned) return;
@@ -1862,7 +1863,7 @@ $('gateway-switch-button').addEventListener('click', () => {
   pageLeaving = true; syncScreenLock(); location.assign(gatewayEntry);
 });
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
-if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register(entryPath('/sw.js')).catch(() => {});
 
 // Only announce updates; active input and streams stay on their loaded version.
 let uiCheckTimer;
@@ -1870,7 +1871,7 @@ async function checkUIVersion() {
   clearTimeout(uiCheckTimer);
   if (document.hidden) return;
   try {
-    const response = await fetch('/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    const response = await fetch(entryPath('/ui-version'), { cache: 'no-store', signal: AbortSignal.timeout(4000) });
     if (response.ok) {
       const { revision } = await response.json(), loaded = document.querySelector('meta[name="ui-revision"]')?.content;
       const note = $('ui-update-note'); if (note) note.hidden = !loaded || revision === loaded;

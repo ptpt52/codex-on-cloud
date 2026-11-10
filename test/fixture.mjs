@@ -15,7 +15,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, publicOrigin = '' } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, publicOrigin = '', entryBasePath = '/' } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -202,7 +202,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const managerSocket = join(directory, 'manager.sock');
   manager.listen(managerSocket); await once(manager, 'listening');
   const config = {
-    uiRoot, uiValidate: false, mode, nodeId, sharedEntry, gatewayNode, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
+    uiRoot, uiValidate: false, mode, nodeId, sharedEntry, gatewayNode, entryBasePath, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
     forwardPorts, forwardDownloadDir, forwardPeerFactory, agentPort: upstream.address().port,
     dataDir: directory, username: 'admin', password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
@@ -261,12 +261,17 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   if (gatewayNode) await panel.startTunnel(tunnelSocket);
   let cookie = '', csrf = '';
   const viewer = '11111111-1111-4111-8111-111111111111';
-  async function request(path, { method = 'GET', body, headers = {}, raw } = {}) {
+  function entryPath(path) {
+    if (entryBasePath === '/') return path;
+    return path.startsWith(entryBasePath) || path === entryBasePath.slice(0, -1) ? path : entryBasePath.slice(0, -1) + path;
+  }
+  async function rawRequest(path, { method = 'GET', body, headers = {}, raw } = {}) {
     return fetch(config.origin + path, {
       method, headers: { origin: config.origin, cookie, 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...(nodeId ? { 'x-codex-node': nodeId } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: 'manual',
     });
   }
+  async function request(path, options) { return rawRequest(entryPath(path), options); }
   async function login() {
     const response = await request('/api/login', { method: 'POST', body: { username: 'admin', password } });
     cookie = response.headers.get('set-cookie').split(';')[0];
@@ -275,7 +280,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   }
   async function claim(id = viewer) { return request('/api/desktop/claim', { method: 'POST', body: { viewer: id } }); }
   return {
-    panel, config, directory, bindingOrigin, tunnelSocket, received, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalViews, terminalHistoryReads, terminalGeometry,
+    panel, config, directory, bindingOrigin, tunnelSocket, received, entryPath, rawRequest, inputCalls, clipboardReads, clipboardText, controls, files, viewer, request, login, claim, managementStats, terminalInputs, terminalSizes, terminalViews, terminalHistoryReads, terminalGeometry,
     get terminalConnections() { return terminalConnections; },
     get terminalChildren() { return [...terminalChildren]; },
     disconnectTerminals() { for (const child of [...terminalChildren]) child.kill(); },

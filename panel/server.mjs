@@ -31,6 +31,7 @@ import { attachServiceFiles } from './service-files.mjs';
 import { createUIAssets } from './ui-assets.mjs';
 import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
+import { stripEntryPath } from './entry-path.mjs';
 
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -70,7 +71,8 @@ function reply(res, status, data, headers = {}) {
 }
 
 export async function createPanel(config) {
-  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode, gatewayOrigin: config.gatewayNode?.origin || '' });
+  const entryBasePath = config.entryBasePath || '/';
+  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode, gatewayOrigin: config.gatewayNode?.origin || '', entryBasePath });
   const cookieToken = header => readCookieToken(header, config);
   const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
   const access = await createAccessControl(config);
@@ -289,6 +291,15 @@ export async function createPanel(config) {
       return res.end();
     }
     const url = new URL(req.url, 'http://internal');
+    if (entryBasePath !== '/') {
+      if (url.pathname === entryBasePath.slice(0, -1)) {
+        res.writeHead(308, { location: entryBasePath + url.search, 'cache-control': 'no-store' });
+        return res.end();
+      }
+      const internalPath = stripEntryPath(url.pathname, entryBasePath);
+      if (internalPath === null) throw new HttpError(404, '资源不存在');
+      url.pathname = internalPath;
+    }
     const path = url.pathname;
     if (path.startsWith('/api/') && !scopedNode(req, url)) return reply(res, 409, { error: '入口已切换到其他节点，请保存草稿后刷新页面。', code: 'node_changed', outcome: 'rejected' });
     if (path === '/ui-version' && req.method === 'GET') return reply(res, 200, { revision: assets.revision });
@@ -698,6 +709,11 @@ export async function createPanel(config) {
     try { gatewayIdentity(req); } catch { return deny(403); }
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403);
     const forwardURL = new URL(req.url, 'http://internal');
+    if (entryBasePath !== '/') {
+      const internalPath = stripEntryPath(forwardURL.pathname, entryBasePath);
+      if (internalPath === null) return deny(404);
+      forwardURL.pathname = internalPath;
+    }
     if (forwardURL.pathname.startsWith('/forward/')) {
       if (closing || forwardURL.search) return deny(400);
       return forwarding.upgrade(req, socket, head, forwardURL.pathname);
@@ -706,7 +722,7 @@ export async function createPanel(config) {
     const session = sessionOf(req);
     if (!session) return deny(401);
     if (!isOwner(req, session, forwardURL.searchParams.get('viewer'))) return deny(session.role === 'temporary' ? 403 : access.screenEnabled ? 423 : 409);
-    const url = new URL(req.url, 'http://internal');
+    const url = forwardURL;
     const terminalMode = url.pathname === '/terminal/connect';
     const streamMode = url.pathname === '/session/connect';
     if (config.mode === 'terminal' && (url.pathname === '/desktop/websockify' || streamMode && url.searchParams.get('mode') === 'desktop')) return deny(501);

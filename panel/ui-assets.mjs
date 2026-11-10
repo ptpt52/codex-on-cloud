@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { normalizeEntryBasePath } from './entry-path.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 export const UI_LIMITS = Object.freeze({ file: 4 * 1024 * 1024, total: 16 * 1024 * 1024, generations: 4 });
@@ -10,6 +11,7 @@ export const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/access-ui.js', ['access-ui.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/entry-path.js', ['entry-path.js', 'text/javascript; charset=utf-8']],
   ['/node-scope.js', ['node-scope.js', 'text/javascript; charset=utf-8']],
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
   ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
@@ -85,8 +87,9 @@ async function checkScripts(raw) {
     child.stdin.end(JSON.stringify(sources));
   });
 }
-export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '', gateway = false, gatewayOrigin = '' } = {}) {
+export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '', gateway = false, gatewayOrigin = '', entryBasePath = '/' } = {}) {
   if (nodeId && !/^[a-f0-9]{32}$/.test(nodeId)) throw Error('前端节点身份无效');
+  entryBasePath = normalizeEntryBasePath(entryBasePath);
   if (gatewayOrigin) {
     const origin = new URL(gatewayOrigin);
     if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw Error('前端网关地址无效');
@@ -107,13 +110,15 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
       if (nodeId) hash.update('node:' + nodeId);
       if (gateway) hash.update('gateway:v1');
       if (gatewayOrigin) hash.update('gateway-origin:' + gatewayOrigin);
+      if (entryBasePath !== '/') hash.update('entry-base:' + entryBasePath);
       for (const [route, asset] of raw) hash.update(route).update(asset.bytes);
       const revision = hash.digest('hex').slice(0, 24);
       if (current?.revision === revision) return { revision, changed: false };
       if (validate) await checkScripts(raw);
       // Reject a deployment still writing files; publish only a complete snapshot.
       for (const [route, [name]] of ASSETS) if (!(await boundedRead(new URL(name, root))).equals(raw.get(route).bytes)) throw Error('资源仍在修改，未发布；请完成文件更新后重试');
-      const imports = Object.fromEntries([...raw.keys()].filter(route => route.endsWith('.js') && route !== '/sw.js').map(route => [route, route + '?ui=' + revision]));
+      const publicAssetPath = route => entryBasePath === '/' ? route : route === '/' ? entryBasePath : entryBasePath.slice(0, -1) + route;
+      const imports = Object.fromEntries([...raw.keys()].filter(route => route.endsWith('.js') && route !== '/sw.js').map(route => [route, publicAssetPath(route) + '?ui=' + revision]));
       const importMap = JSON.stringify({ imports });
       const scriptHash = createHash('sha256').update(importMap).digest('base64');
       const prepared = new Map();
@@ -125,13 +130,14 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
           html = html.replace(/\b(src|href)=("|')([^"']+)\2/g, (match, attr, quote, value) => {
             const url = new URL(value, 'http://ui.local' + route);
             if (url.origin !== 'http://ui.local' || !raw.has(url.pathname) || url.pathname === '/sw.js') return match;
-            url.searchParams.set('ui', revision); return attr + '=' + quote + url.pathname + url.search + url.hash + quote;
+            url.searchParams.set('ui', revision); return attr + '=' + quote + publicAssetPath(url.pathname) + url.search + url.hash + quote;
           });
           const gatewayEntry = gateway ? (gatewayOrigin ? new URL('/__nodes/', gatewayOrigin).href : '/__nodes/') : '';
-          html = html.replace(/<head(?:\s[^>]*)?>/i, '<head><meta name="ui-revision" content="' + revision + '">' + (nodeId ? '<meta name="node-id" content="' + nodeId + '">' : '') + (gateway ? '<meta name="gateway-entry" content="' + gatewayEntry + '">' : '') + '<script type="importmap">' + importMap + '</script>');
+          html = html.replace(/<head(?:\s[^>]*)?>/i, '<head><meta name="ui-revision" content="' + revision + '"><meta name="entry-base-path" content="' + entryBasePath + '">' + (nodeId ? '<meta name="node-id" content="' + nodeId + '">' : '') + (gateway ? '<meta name="gateway-entry" content="' + gatewayEntry + '">' : '') + '<script type="importmap">' + importMap + '</script>');
           bytes = Buffer.from(html);
         }
-        if (route === '/sw.js') bytes = Buffer.from(bytes.toString().replace('__UI_REVISION__', revision));
+        if (route === '/manifest.webmanifest') bytes = Buffer.from(bytes.toString().replaceAll('__ENTRY_BASE_PATH__', entryBasePath));
+        if (route === '/sw.js') bytes = Buffer.from(bytes.toString().replaceAll('__UI_REVISION__', revision).replaceAll('__ENTRY_BASE_PATH__', entryBasePath));
         prepared.set(route, { ...asset, bytes });
       }
       const version = { revision, assets: prepared, scriptHash };

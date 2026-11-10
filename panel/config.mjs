@@ -7,6 +7,7 @@ import { desktopEnvironment } from '../native/desktop-controls.mjs';
 import { terminalEnvironment } from '../native/deployment-mode.mjs';
 import { forwardPorts } from './forward.mjs';
 import { readGatewayConnection } from '../native/gateway-config.mjs';
+import { normalizeEntryBasePath } from './entry-path.mjs';
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -24,6 +25,7 @@ export function readConfig(env = environment()) {
   if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
     throw new Error('PUBLIC_ORIGIN 必须是完整的 HTTP(S) 根地址');
   }
+  const entryBasePath = normalizeEntryBasePath(env.ENTRY_BASE_PATH);
   const agentUrl = `http://127.0.0.1:${native.agentPort}`;
   const hosts = new Set([origin.host.toLowerCase()]);
   for (const host of (env.ALLOWED_HOSTS || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean)) {
@@ -43,7 +45,7 @@ export function readConfig(env = environment()) {
   const webrtcIPv6 = env.WEBRTC_IPV6 !== '0';
   return {
     mode: native.mode,
-    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1', gatewayNode,
+    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1', gatewayNode, entryBasePath,
     host: '127.0.0.1', port, origin: origin.origin,
     agentPort: native.agentPort, fileAgentPort: native.fileAgentPort, tunnelMetricsPort: native.tunnelMetricsPort,
     forwardPorts: forwardPorts(env.TCP_FORWARD_PORTS), forwardDownloadDir: join(native.root, 'data', 'forward-client'),
