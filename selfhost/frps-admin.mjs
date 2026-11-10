@@ -13,6 +13,8 @@ export function frpsProxyProbe({ endpoint, username = 'admin', password, request
     if (Buffer.byteLength(text) > MAX_BODY) throw Error('frps 管理响应超过大小上限');
     let value; try { value = JSON.parse(text); } catch { throw Error('frps 管理响应格式无效'); }
     if (!value || typeof value.status !== 'string') throw Error('frps 管理响应缺少代理状态');
-    return value.status === 'online';
+    if (value.status === 'online') return true;
+    if (value.status === 'offline') return false;
+    throw Error('frps 管理响应状态未知');
   };
 }
