@@ -17,7 +17,7 @@ function freePort() {
 
 async function setup(t) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-center-')), port = await freePort(), origin = `http://127.0.0.1:${port}`, closed = [];
-  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
+  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
   t.after(async () => { await center.close(); await rm(directory, { recursive: true, force: true }); });
   let cookie = '', csrf = '';
@@ -60,7 +60,7 @@ test('join, frp plugin authorization, disconnect and revoke form one bounded nod
   assert.equal(joinedResponse.status, 200);
   const joined = await joinedResponse.json();
   assert.equal(joined.entryBasePath, '/node/node-a/'); assert.equal(joined.origin, h.origin);
-  assert.deepEqual(joined.frp, { serverAddr: 'desk.example.test', serverPort: 7000, tlsServerName: 'desk.example.test' });
+  assert.deepEqual(joined.frp, { serverAddr: 'desk.example.test', serverPort: 7000, tlsServerName: 'desk.example.test', token: 'frp_test_token_very_long_123' });
   assert.equal((await h.request('/api/join', { method: 'POST', authenticated: false, body: { version: 1, slug: 'node-a', credential: joined.credential, node: { id: 'a'.repeat(32), mode: 'terminal' } } })).status, 409);
 
   const metas = { credential: joined.credential, slug: 'node-a', nodeId: 'a'.repeat(32), mode: 'terminal' };
@@ -72,6 +72,9 @@ test('join, frp plugin authorization, disconnect and revoke form one bounded nod
   assert.deepEqual(h.closed, [{ slug: 'node-a', reason: 'disconnected_by_admin' }]);
   assert.equal((await (await h.request('/api/keys')).json()).keys[0].status, 'offline');
 
+  assert.equal((await h.request('/api/join', { method: 'POST', authenticated: false, body: { version: 1, slug: 'node-a', credential: joined.credential, node: { id: 'a'.repeat(32), mode: 'terminal' } } })).status, 200);
+  assert.equal((await h.request('/api/leave', { method: 'POST', authenticated: false, body: { version: 1, slug: 'node-a', credential: joined.credential, nodeId: 'a'.repeat(32) } })).status, 200);
+  assert.equal(h.closed.at(-1).reason, 'node_left');
   assert.equal((await h.request('/api/join', { method: 'POST', authenticated: false, body: { version: 1, slug: 'node-a', credential: joined.credential, node: { id: 'a'.repeat(32), mode: 'terminal' } } })).status, 200);
   assert.equal((await h.request('/api/keys/' + created.id, { method: 'DELETE', body: {} })).status, 200);
   assert.equal((await h.request('/api/join', { method: 'POST', authenticated: false, body: { version: 1, slug: 'node-a', credential: joined.credential, node: { id: 'a'.repeat(32), mode: 'terminal' } } })).status, 401);

@@ -15,7 +15,7 @@ async function freePort() {
 
 test('central management page creates a one-time key and lists its fixed node path', async ({ page }) => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-ui-')), port = await freePort(), origin = `http://127.0.0.1:${port}`;
-  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test' });
+  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpToken: 'frp_test_token_very_long_123' });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
   try {
     await page.goto(origin);

@@ -51,11 +51,12 @@ const ip = req => (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 export async function createSelfhostCenter({
   origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
-  closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
+  frpToken, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
 } = {}) {
   const parsed = new URL(origin);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw Error('中心 PUBLIC_ORIGIN 必须是 HTTP(S) 根地址');
   if (!password || typeof password !== 'string' || password.length < 16 || password.length > 512) throw Error('中心管理员密码长度无效');
+  if (!frpToken || typeof frpToken !== 'string' || frpToken.length < 16 || frpToken.length > 512 || /[\r\n\0]/.test(frpToken)) throw Error('frp 接入密钥长度无效');
   const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center', entryBasePath: '/' };
   const auth = await createAuth(authConfig), web = await assets();
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
@@ -85,6 +86,9 @@ export async function createSelfhostCenter({
   async function plugin(req, res) {
     if (!loopback(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
     const url = new URL(req.url, 'http://internal'), body = await jsonBody(req, PLUGIN_LIMIT), content = body.content || {};
+    if (process.env.SELFHOST_PLUGIN_DEBUG === '1') {
+      console.error('[selfhost-plugin]', JSON.stringify({ op: url.searchParams.get('op'), keys: Object.keys(content), proxy: content.proxy_name, type: content.proxy_type, domains: content.custom_domains, locations: content.locations, metaKeys: content.metas ? Object.keys(content.metas) : content.user?.metas ? Object.keys(content.user.metas) : [], runId: content.run_id || content.user?.run_id || '' }));
+    }
     const allowed = await (async () => {
       if (url.searchParams.get('op') === 'Login') return registry.authorizeLogin({ metas: content.metas, runId: content.run_id, source: content.client_address });
       if (url.searchParams.get('op') === 'NewProxy') return registry.authorizeProxy({ metas: content.user?.metas, runId: content.user?.run_id, name: content.proxy_name, type: content.proxy_type, host: content.custom_domains?.[0], locations: content.locations });
@@ -120,7 +124,11 @@ export async function createSelfhostCenter({
       rate(joins, ip(req), 60, 60_000);
       const body = await jsonBody(req, 8192);
       const joined = await registry.join({ ...body, source: ip(req) });
-      return reply(res, 200, { ...joined, origin: parsed.origin, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName } });
+      return reply(res, 200, { ...joined, origin: parsed.origin, proxyHost: publicHost, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName, token: frpToken } });
+    }
+    if (path === '/api/leave' && req.method === 'POST') {
+      rate(joins, ip(req), 60, 60_000);
+      return reply(res, 200, await registry.leave(await jsonBody(req, 4096)));
     }
 
     const asset = web.get(path);

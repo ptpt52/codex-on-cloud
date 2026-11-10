@@ -166,6 +166,17 @@ export class SelfhostRegistry {
     });
   }
 
+  async leave(input = {}) {
+    return this.mutate(({ value, sessions, now, close }) => {
+      const nodeSlug = slug(input.slug), item = value.keys.find(key => key.slug === nodeSlug);
+      if (!item) throw selfhostError(401, '节点授权不存在');
+      const owner = this.credentialOwner(value, input.credential);
+      if (!owner || owner.id !== item.id || !sessions.has(nodeSlug)) throw selfhostError(401, '节点接入凭据无效或已经离线');
+      sessions.delete(nodeSlug); close.push({ slug: nodeSlug, reason: 'node_left' }); this.audit(value, 'node_left', item, now);
+      return { value: { ok: true }, close };
+    });
+  }
+
   loginMeta(metas) {
     if (!metas || typeof metas !== 'object' || Array.isArray(metas)) return null;
     const values = ['credential', 'slug', 'nodeId'];
@@ -174,7 +185,7 @@ export class SelfhostRegistry {
   }
 
   async authorizeLogin({ metas, runId, source = '' } = {}) {
-    const meta = this.loginMeta(metas); if (!meta || typeof runId !== 'string' || !runId) return false;
+    const meta = this.loginMeta(metas); if (!meta || runId !== undefined && typeof runId !== 'string') return false;
     return this.mutate(({ value, sessions, now, close }) => {
       const item = this.credentialOwner(value, meta.credential);
       if (!item || item.slug !== meta.slug) return { value: false, close };
@@ -185,8 +196,8 @@ export class SelfhostRegistry {
         session = { slug: item.slug, keyId: item.id, credentialHash: item.credentialHash, nodeId: meta.nodeId, mode: meta.mode, source, status: 'connecting', connectedAt: now, authenticatedAt: null, onlineAt: null, lastSeenAt: now, graceUntil: null, runId: '' };
         sessions.set(item.slug, session);
       }
-      if (!NODE_ID.test(meta.nodeId) || session.nodeId !== meta.nodeId || session.status === 'online' || session.status === 'authenticated' && session.runId && session.runId !== runId) return { value: false, close };
-      session.status = 'authenticated'; session.authenticatedAt = now; session.lastSeenAt = now; session.runId = runId; session.source = source.slice(0, 128); session.graceUntil = null;
+      if (!NODE_ID.test(meta.nodeId) || session.nodeId !== meta.nodeId || session.status === 'online' || session.status === 'authenticated') return { value: false, close };
+      session.status = 'authenticated'; session.authenticatedAt = now; session.lastSeenAt = now; session.runId = runId || ''; session.source = source.slice(0, 128); session.graceUntil = null;
       this.audit(value, 'frp_login', item, now); return { value: true, close };
     });
   }
@@ -195,6 +206,7 @@ export class SelfhostRegistry {
     const meta = this.loginMeta(metas); if (!meta || typeof runId !== 'string') return false;
     return this.mutate(({ value, sessions, now, close }) => {
       const item = this.credentialOwner(value, meta.credential), session = item && sessions.get(item.slug);
+      if (session?.status === 'authenticated' && !session.runId) session.runId = runId;
       const allowed = !!item && this.keyStatus(item, now) === 'ready' && item.slug === meta.slug && session && session.nodeId === meta.nodeId && session.runId === runId && session.status === 'authenticated' && name === proxyName(item.slug) && type === 'http' && host === this.host && Array.isArray(locations) && locations.length === 1 && locations[0] === entryBasePath(item.slug);
       if (!allowed) return { value: false, close };
       session.status = 'online'; session.onlineAt = session.onlineAt || now; session.lastSeenAt = now; this.audit(value, 'node_online', item, now); return { value: true, close };
@@ -205,7 +217,9 @@ export class SelfhostRegistry {
     const meta = this.loginMeta(metas); if (!meta || typeof runId !== 'string') return false;
     await this.queue;
     const item = this.credentialOwner(this.value, meta.credential), session = item && this.sessions.get(item.slug), now = this.now();
-    if (!item || this.keyStatus(item, now) !== 'ready' || !session || session.nodeId !== meta.nodeId || session.runId !== runId || session.status === 'grace') return false;
+    if (!item || this.keyStatus(item, now) !== 'ready' || !session || session.nodeId !== meta.nodeId || session.status === 'grace') return false;
+    if (session.status === 'authenticated' && !session.runId) session.runId = runId;
+    if (session.runId !== runId) return false;
     session.lastSeenAt = now; return true;
   }
 

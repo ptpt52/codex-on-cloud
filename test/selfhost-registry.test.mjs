@@ -61,7 +61,7 @@ test('frp login and proxy authorization require the exact node, host, proxy and 
   const { registry } = await setup(t), key = await registry.createKey({ name: '节点 A', slug: 'node-a' });
   const joined = await registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'desktop' } });
   const metas = metadata(joined.credential, key.slug, 'a'.repeat(32));
-  assert.equal(await registry.authorizeLogin({ metas, runId: 'run-a' }), true);
+  assert.equal(await registry.authorizeLogin({ metas, runId: '' }), true);
   const proxy = { metas, runId: 'run-a', name: 'node-node-a', type: 'http', host: 'desk.example.test', locations: ['/node/node-a/'] };
   assert.equal(await registry.authorizeProxy({ ...proxy, host: 'evil.example.test' }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, locations: ['/node/node-a'] }), false);
