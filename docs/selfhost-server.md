@@ -71,6 +71,14 @@ sudo ./scripts/selfhost-server.sh install \
 
 默认使用 Certbot HTTP-01。服务器需要能从公网访问 TCP 80 和 TCP 443。
 
+TURN 首版固定使用 IPv4。安装器从默认路由自动识别本机私网 IPv4；云上 NAT 或特殊路由可显式传入：
+
+```bash
+--private-ip 172.16.0.10
+```
+
+这不关闭浏览器与节点之间的 IPv6 ICE 直连；只有需要 TURN relay 的纯 IPv6 或 IPv6 入站受阻场景不受此首版支持，会回退到 HTTPS/WSS。
+
 也可导入已有 PEM 证书：
 
 ```bash

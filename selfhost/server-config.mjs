@@ -135,15 +135,18 @@ SELFHOST_TURN_REALM=${domain}
 `;
 }
 
-export function coturnConfig({ domain, publicIp, secret, tlsDirectory = '/etc/codex-selfhost/tls' }) {
+export function coturnConfig({ domain, publicIp, privateIp, secret, tlsDirectory = '/etc/codex-selfhost/tls' }) {
   domain = serverDomain(domain);
   if (typeof publicIp !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(publicIp) || publicIp.split('.').some(value => Number(value) > 255)) throw Error('TURN 公网 IPv4 无效');
+  if (typeof privateIp !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(privateIp) || privateIp.split('.').some(value => Number(value) > 255)) throw Error('TURN 私网 IPv4 无效');
   if (typeof secret !== 'string' || secret.length < 32 || /[\r\n\0]/.test(secret)) throw Error('TURN shared secret 无效');
-  return `listening-port=3478
+  return `listening-ip=0.0.0.0
+relay-ip=${privateIp}
+listening-port=3478
 tls-listening-port=5349
 realm=${domain}
 server-name=${domain}
-external-ip=${publicIp}
+external-ip=${publicIp === privateIp ? publicIp : publicIp + '/' + privateIp}
 fingerprint
 lt-cred-mech
 use-auth-secret

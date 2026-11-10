@@ -56,7 +56,10 @@ test('generated environment and renewal hook contain no embedded credentials', (
 });
 
 test('coturn uses short-lived auth secrets, the requested relay range and private-peer denial', () => {
-  const config = coturnConfig({ domain: 'desk.example.com', publicIp: '192.0.2.10', secret: 's'.repeat(64) });
+  const config = coturnConfig({ domain: 'desk.example.com', publicIp: '192.0.2.10', privateIp: '10.0.0.10', secret: 's'.repeat(64) });
+  assert.match(config, /listening-ip=0\.0\.0\.0/);
+  assert.match(config, /relay-ip=10\.0\.0\.10/);
+  assert.match(config, /external-ip=192\.0\.2\.10\/10\.0\.0\.10/);
   assert.match(config, /min-port=49160\nmax-port=49223/);
   assert.match(config, /use-auth-secret\nstatic-auth-secret=/);
   assert.match(config, /denied-peer-ip=10\.0\.0\.0-10\.255\.255\.255/);

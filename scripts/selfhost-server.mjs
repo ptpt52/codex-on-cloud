@@ -47,6 +47,19 @@ async function localHttpsHealth(domain) {
   }), 'HTTPS /healthz');
 }
 
+async function privateIPv4(configured) {
+  if (configured && net.isIP(configured) !== 4) throw Error('私网 IPv4 地址无效');
+  let address = configured;
+  if (!address) {
+    const route = await requiredCommand('ip', ['-4', 'route', 'get', '1.1.1.1']);
+    address = route.stdout.match(/\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})\b/)?.[1];
+    if (net.isIP(address) !== 4) throw Error('无法自动识别 TURN 私网 IPv4，请使用 --private-ip');
+  }
+  const addresses = await requiredCommand('ip', ['-4', '-o', 'addr', 'show']);
+  if (!addresses.stdout.split('\n').some(line => line.includes(` inet ${address}/`))) throw Error('TURN 私网 IPv4 未分配在本机：' + address);
+  return address;
+}
+
 function validCidr(value, version) {
   if (typeof value !== 'string') return false;
   const [address, prefix, extra] = value.split('/');
@@ -183,7 +196,7 @@ async function installImportedCertificate({ domain, certFile, keyFile }) {
   await safeWrite(join(ETC, 'tls', 'turn-privkey.pem'), keyText, 0o640, 0, turnGid);
 }
 
-async function configure({ domain, email, publicIp, certFile, keyFile, caddyFile, frpsFile, configureUfw = false, sshCidr, adminCidr }) {
+async function configure({ domain, email, publicIp, privateIp, certFile, keyFile, caddyFile, frpsFile, configureUfw = false, sshCidr, adminCidr }) {
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心安装必须以 root 运行');
   if (configureUfw && !sshCidr) throw Error('配置 UFW 时必须用 --ssh-cidr 指定允许 SSH 的运维网段');
   domain = serverDomain(domain);
@@ -192,6 +205,7 @@ async function configure({ domain, email, publicIp, certFile, keyFile, caddyFile
   if (adminCidrs.some(value => !validCidr(value, 4) && !validCidr(value, 6))) throw Error('管理页访问 CIDR 无效');
   if (sshCidr && !validCidr(sshCidr, 4) && !validCidr(sshCidr, 6)) throw Error('SSH CIDR 无效');
   if (net.isIP(publicIp) !== 4) throw Error('公网 IP 必须是 IPv4 地址');
+  const localIpv4 = await privateIPv4(privateIp);
   if (!!certFile !== !!keyFile) throw Error('导入证书时必须同时提供 --cert-file 和 --key-file');
   if (!certFile) email = serverEmail(email);
   const addresses = await resolve4(domain, { ttl: true }).catch(() => []);
@@ -211,7 +225,7 @@ async function configure({ domain, email, publicIp, certFile, keyFile, caddyFile
   const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
   await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
   await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);
-  await safeWrite(join(ETC, 'turnserver.conf'), coturnConfig({ domain, publicIp, secret: turnSecret }), 0o640, 0, (await requiredCommand('id', ['-g', 'turnserver'])).stdout ? Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout) : gid);
+  await safeWrite(join(ETC, 'turnserver.conf'), coturnConfig({ domain, publicIp, privateIp: localIpv4, secret: turnSecret }), 0o640, 0, (await requiredCommand('id', ['-g', 'turnserver'])).stdout ? Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout) : gid);
   await safeWrite('/etc/systemd/system/codex-selfhost-center.service', centerUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
   await safeWrite('/etc/systemd/system/codex-selfhost-frps.service', frpsUnit({ root: ROOT, configDirectory: ETC }), 0o644);
   await safeWrite('/etc/systemd/system/codex-selfhost-caddy.service', caddyUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
@@ -257,10 +271,10 @@ async function status() {
 try {
   if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const commandName = process.argv[2] || 'status', { values } = parseArgs({ args: process.argv.slice(3), options: {
-      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'cert-file': { type: 'string' }, 'key-file': { type: 'string' }, 'caddy-file': { type: 'string' }, 'frps-file': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, 'admin-cidr': { type: 'string' }, help: { type: 'boolean' },
+      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'private-ip': { type: 'string' }, 'cert-file': { type: 'string' }, 'key-file': { type: 'string' }, 'caddy-file': { type: 'string' }, 'frps-file': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, 'admin-cidr': { type: 'string' }, help: { type: 'boolean' },
     } });
-    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2 --configure-ufw --ssh-cidr 运维网段\n或 ./scripts/selfhost-server.sh status\n安装固定版本 Node/Caddy/frps/coturn/Certbot，配置中心管理页、/node/<slug>/ 和 systemd；默认不修改防火墙。');
-    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
+    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选：--private-ip TURN私网IPv4；不填时按默认路由自动识别\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2 --configure-ufw --ssh-cidr 运维网段\n或 ./scripts/selfhost-server.sh status\nTURN 首版固定使用 IPv4；IPv6 直连仍由浏览器与节点 ICE 独立协商。默认不修改防火墙。');
+    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], privateIp: values['private-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
     else if (commandName === 'rollback') { if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心回滚必须以 root 运行'); console.log(JSON.stringify(await rollbackApplication(), null, 2)); }
     else if (commandName === 'status') console.log(JSON.stringify(await status(), null, 2));
     else throw Error('未知命令：' + commandName);
