@@ -68,7 +68,10 @@ test('frp login and proxy authorization require the exact node, host, proxy and 
   assert.equal(await registry.authorizeProxy({ ...proxy, name: 'other' }), false);
   assert.equal(await registry.authorizeProxy(proxy), true);
   assert.equal(await registry.authorizeLogin({ metas, runId: 'run-b' }), false);
+  assert.equal(await registry.authorizeLogin({ metas, runId: 'run-b', proxyOnline: async () => true }), false);
   assert.equal(await registry.authorizePing({ metas, runId: 'run-a' }), true);
+  assert.equal(await registry.authorizeLogin({ metas, runId: 'run-b', proxyOnline: async () => false }), true);
+  assert.equal(await registry.authorizeProxy({ ...proxy, runId: 'run-b' }), true);
 });
 
 test('revocation immediately removes the session, invalidates its credential and requests a tunnel close', async t => {

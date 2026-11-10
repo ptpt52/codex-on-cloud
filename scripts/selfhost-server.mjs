@@ -221,7 +221,7 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
     try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o600, uid, gid); }
   }
   for (const file of ['admin_password', 'frp_token', 'turn_secret']) { await chmod(join(ETC, file), 0o600); await chown(join(ETC, file), uid, gid); }
-  await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), 0, 0);
+  await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), uid, gid);
   const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
   await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
   await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);

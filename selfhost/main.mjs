@@ -13,6 +13,7 @@ try {
   const secretDirectory = process.env.SELFHOST_SECRET_DIR || '/etc/codex-selfhost';
   const password = (await readStateFile(join(secretDirectory, 'admin_password'), 512, true)).trim();
   const frpToken = (await readStateFile(join(secretDirectory, 'frp_token'), 512, true)).trim();
+  const frpsAdminPassword = (await readStateFile(join(secretDirectory, 'frps_admin_password'), 512, true)).trim();
   const turnSecret = (await readStateFile(process.env.SELFHOST_TURN_SECRET_FILE || join(secretDirectory, 'turn_secret'), 512, true)).trim();
   const center = await createSelfhostCenter({
     origin,
@@ -27,6 +28,7 @@ try {
     frpToken,
     turnSecret,
     turnRealm: process.env.SELFHOST_TURN_REALM || required('SELFHOST_PUBLIC_HOST'),
+    frpsAdmin: { endpoint: process.env.SELFHOST_FRPS_ADMIN_URL || 'http://127.0.0.1:17500', username: 'admin', password: frpsAdminPassword },
   });
   await new Promise((resolve, reject) => { center.server.once('error', reject); center.server.listen(Number(required('SELFHOST_CENTER_PORT')), '127.0.0.1', resolve); });
   console.log(`Codex self-host center listening on 127.0.0.1:${process.env.SELFHOST_CENTER_PORT}`);

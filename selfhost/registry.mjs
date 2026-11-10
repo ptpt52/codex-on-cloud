@@ -44,7 +44,7 @@ export class SelfhostRegistry {
     const operation = this.queue.then(async () => {
       const value = structuredClone(this.value);
       const sessions = new Map([...this.sessions].map(([key, session]) => [key, { ...session }]));
-      const result = action({ value, sessions, now: this.now(), close: [] });
+      const result = await action({ value, sessions, now: this.now(), close: [] });
       const text = JSON.stringify(value) + '\n';
       if (Buffer.byteLength(text) > SELFHOST_LIMITS.stateBytes) throw selfhostError(413, '中心状态超过容量上限');
       await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -196,9 +196,9 @@ export class SelfhostRegistry {
     return { credential: metas.credential, slug: metas.slug, nodeId: metas.nodeId, mode: ['desktop', 'terminal'].includes(metas.mode) ? metas.mode : 'desktop' };
   }
 
-  async authorizeLogin({ metas, runId, source = '' } = {}) {
+  async authorizeLogin({ metas, runId, source = '', proxyOnline } = {}) {
     const meta = this.loginMeta(metas); if (!meta || runId !== undefined && typeof runId !== 'string') return false;
-    return this.mutate(({ value, sessions, now, close }) => {
+    return this.mutate(async ({ value, sessions, now, close }) => {
       const item = this.credentialOwner(value, meta.credential);
       if (!item || item.slug !== meta.slug) return { value: false, close };
       if (this.keyStatus(item, now) !== 'ready') return { value: false, close };
@@ -207,6 +207,11 @@ export class SelfhostRegistry {
         if (this.liveSessions(close, now).size >= SELFHOST_LIMITS.nodes) return { value: false, close };
         session = { slug: item.slug, keyId: item.id, credentialHash: item.credentialHash, nodeId: meta.nodeId, mode: meta.mode, source, status: 'connecting', connectedAt: now, authenticatedAt: null, onlineAt: null, lastSeenAt: now, graceUntil: null, runId: '' };
         sessions.set(item.slug, session);
+      }
+      if (session.status === 'online') {
+        if (!proxyOnline || await proxyOnline(proxyName(item.slug))) return { value: false, close };
+        session.status = 'connecting'; session.runId = ''; session.onlineAt = null; session.graceUntil = null; session.lastSeenAt = now;
+        this.audit(value, 'node_recovered', item, now);
       }
       if (!NODE_ID.test(meta.nodeId) || session.nodeId !== meta.nodeId || session.status === 'online' || session.status === 'authenticated') return { value: false, close };
       session.status = 'authenticated'; session.authenticatedAt = now; session.lastSeenAt = now; session.runId = runId || ''; session.source = source.slice(0, 128); session.graceUntil = null;

@@ -8,6 +8,7 @@ import { SelfhostRegistry } from './registry.mjs';
 import { selfhostError } from './protocol.mjs';
 import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
 import { clientAddress, loopbackAddress } from './client-address.mjs';
+import { frpsProxyProbe } from './frps-admin.mjs';
 
 const PUBLIC = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = new Map([
@@ -59,6 +60,7 @@ export async function createSelfhostCenter({
   origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
   frpToken, turnSecret, turnRealm = publicHost, turnTtlMs = TURN_TTL_MS, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
+  frpsAdmin,
 } = {}) {
   const parsed = new URL(origin);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw Error('中心 PUBLIC_ORIGIN 必须是 HTTP(S) 根地址');
@@ -67,6 +69,7 @@ export async function createSelfhostCenter({
   const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center', entryBasePath: '/' };
   const auth = await createAuth(authConfig), web = await assets();
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
+  const proxyOnline = frpsAdmin ? frpsProxyProbe(frpsAdmin) : undefined;
   const failures = new Map(), joinRequests = new Map(), turnRequests = new Map();
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
@@ -98,7 +101,7 @@ export async function createSelfhostCenter({
       console.error('[selfhost-plugin]', JSON.stringify({ op: url.searchParams.get('op'), keys: Object.keys(content), proxy: content.proxy_name, type: content.proxy_type, domains: content.custom_domains, locations: content.locations, metaKeys: content.metas ? Object.keys(content.metas) : content.user?.metas ? Object.keys(content.user.metas) : [], runId: content.run_id || content.user?.run_id || '' }));
     }
     const allowed = await (async () => {
-      if (url.searchParams.get('op') === 'Login') return registry.authorizeLogin({ metas: content.metas, runId: content.run_id, source: content.client_address });
+      if (url.searchParams.get('op') === 'Login') return registry.authorizeLogin({ metas: content.metas, runId: content.run_id, source: content.client_address, proxyOnline });
       if (url.searchParams.get('op') === 'NewProxy') return registry.authorizeProxy({ metas: content.user?.metas, runId: content.user?.run_id, name: content.proxy_name, type: content.proxy_type, host: content.custom_domains?.[0], locations: content.locations });
       if (url.searchParams.get('op') === 'Ping') return registry.authorizePing({ metas: content.user?.metas, runId: content.user?.run_id });
       if (url.searchParams.get('op') === 'CloseProxy') { await registry.closeProxy({ metas: content.user?.metas, runId: content.user?.run_id }); return true; }
