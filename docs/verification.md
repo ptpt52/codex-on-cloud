@@ -1107,3 +1107,13 @@ Checks #53 的 WebKit 安装依赖用时 14m05s，三种设备规格共用一个
 314 项脚本语法、457 项 Node、24 项 Python 检查通过。上线前复核补齐 Cloudflare 未备注记录的 `comment: null` 处理，增加原节点启用及重复激活的回归，重新通过全量 Node 与语法检查。四种共享入口场景在实际 Chromium 电脑／手机／平板模拟和 Firefox 电脑共 16 项通过，覆盖 A→B→A 的独立登录及相同 pane/PID 的草稿隔离、旧页面拒绝改名、HTTP 上传和下载／旧链接拒绝，以及各节点独立终端和文件 WebRTC。既有文件、端口映射、服务直连、新开终端、终端菜单和前端发布回归共 100 项通过、2 项按设备条件跳过。新增激活测试通过模拟 Cloudflare API 和服务操作验证动态加入七台机器、复用 Tunnel、断线恢复、并发干预及配置修改保护，使用实际私有临时文件和内核部署租约。
 
 浏览器测试使用实际 HTTP／WebSocket／WebRTC 和模拟终端／管理／文件上游；触控为浏览器模拟。本轮未执行真实 Cloudflare DNS 激活、目标机器服务切换、固定版本 cloudflared 安装、WebKit 或原生 Xvfb／x11vnc／Codex 部署检查，不能将夹具通过视为这些环境已验证。功能尚未提交或推送，没有修改生产 DNS、持久配置或重启生产服务；十个原有未跟踪 patch 文件保持原样。
+
+## 2026-11-10：动态节点切换功能推送及本机部署（5dec714）
+
+按用户要求，功能提交 `5dec714` 已推送 `origin/master`。实际 `npm run deploy -- --check` 通过，持有现有部署租约后仅重启 panel，files 按已安装的 PartOf 关系关联重启。没有运行完整依赖安装、重装 unit、激活 DNS 或首次共享入口初始化；现有域名和 Cookie 模式保持，`native:activate` 命令及新后台支持已可使用，首次接入仍需指定域名、区域和私有 API Token 文件。
+
+本机与公网 HTTPS 的 healthz／readyz 均就绪，前端版本从 `6397afde6d9a88ecd932d228` 更新为 `f78d61fe235f42f084e4176e`；首页版本标记、app.js 和 node-scope.js 内容核对通过。匿名诊断返回 401，错误 Host 返回 400，HSTS 保持。panel PID 从 907 更新为 11774，files 从 905 更新为 11772，均 active，自动重启计数未增加；desktop 4028、actions 4029、manager 4031、Tunnel 4397 的 PID 和启动时间保持。五个持久 tmux 会话的 pane ID／PID 保持，`.env`、密码、内部密钥、运行令牌、凭据信息、Cloudflare 部署归属、桌面设置和访问配置摘要保持。
+
+首次验收把随查看连接关闭而回收的 `codex-view-main` 临时占位会话也算作任务，导致断言失败；核对 `desktop/web-terminal.py` 的查看器恢复逻辑后，仅排除该类占位会话并重新执行只读验收，通过且没有再次重启面板。没有登录、认领或向生产终端发送输入，现有页面需手动刷新加载新资源。详细私有部署报告保存在 `/tmp/codex-node-deploy.pW3C0b/report.json`。
+
+推送后 Actions [42750838891](https://github.com/ptpt52/codex-on-cloud/actions/runs/42750838891) 的 backend 和 portal 已通过，浏览器矩阵仍运行；native 在 lifecycle 的窗口管理器等待处超时，terminal 在文件服务先就绪后立即检查 tmux socket 时遇到 ENOENT。两项原生测试失败尚未整改，不把本机上线验证视为远端全量 CI 通过，也不声称已经验证真实 Cloudflare 跨节点激活。
