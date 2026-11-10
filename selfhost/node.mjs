@@ -318,7 +318,8 @@ async function joinNodeLocked({
   if (await readRecovery(root)) throw Error('存在未完成的中继回滚，请先运行 server:leave --recover');
   await preflightPanel(root, switchExisting);
   const same = existing?.origin === serverOrigin && existing.slug === nodeSlug, body = { version: 1, slug: nodeSlug, node: { id: same ? existing.nodeId : randomBytes(16).toString('hex'), mode } };
-  const previousRelay = existing && !same ? await relayState(run) : null;
+  const previousRelay = existing ? await relayState(run) : null;
+  const replacingRelay = !!previousRelay && !same;
   if (same) body.credential = existing.credential;
   else { const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key; }
   const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), connectionPath = pathFor(root, 'connection.json'), unit = servicePath(configHome);
@@ -331,7 +332,7 @@ async function joinNodeLocked({
     unit: await optional(unit, 65536),
     ca: caPath ? await optional(caPath, 262144) : null,
   };
-  if (previousRelay) {
+  if (replacingRelay) {
     const stopped = await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
     if (!stopped.ok) throw Error('无法停止现有节点中继，未修改接入配置：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
   }
@@ -344,7 +345,7 @@ async function joinNodeLocked({
     connection = validateConnection({ version: 1, origin: serverOrigin, slug: nodeSlug, name: joined.name, path: joined.entryBasePath, nodeId: body.node.id, mode, credential: joined.credential, proxyHost: joined.proxyHost || joined.frp?.tlsServerName, turnEndpoint: joined.turnEndpoint || null, frp: joined.frp });
     if (connection.path !== entryBasePath(nodeSlug) || !/^cocn_[A-Za-z0-9_-]{43}$/.test(connection.credential)) throw Error('中心接入响应与节点身份不一致');
   } catch (error) {
-    const failures = await restoreRelay(previousRelay, run);
+    const failures = await restoreRelay(replacingRelay ? previousRelay : null, run);
     if (failures.length) throw Object.assign(Error(error.message + '；旧中继恢复失败（' + failures.join('；') + '）'), { outcome: 'unknown' });
     throw error;
   }

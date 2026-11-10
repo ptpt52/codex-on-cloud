@@ -97,6 +97,28 @@ test('a rejected replacement restores the previous relay service and connection 
   assert.match(await readFile(join(h.root, '.env'), 'utf8'), /ENTRY_BASE_PATH=\/node\/node-a\//);
 });
 
+test('a failed same-node refresh restores the active prior relay', async t => {
+  const h = await setup(t); let relayActive = false, nodeStarts = 0;
+  const run = async (_file, args) => {
+    h.calls.push([_file, ...args]);
+    if (args.includes('disable')) relayActive = false;
+    if (args.includes('restart') && args.includes('codex-cloud-selfhost-node.service')) {
+      nodeStarts++;
+      if (nodeStarts === 2) return { ok: false, stdout: '', stderr: 'refresh failed' };
+      relayActive = true;
+    }
+    return { ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-enabled') ? 'enabled' : args.includes('is-active') ? relayActive ? 'active' : 'inactive' : '', stderr: '' };
+  };
+  const request = async () => new Response(JSON.stringify(h.joined), { status: 200 });
+  const common = { root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run, install: async () => '/opt/frpc', promptKey: async () => key };
+  await joinNode(common);
+  const connection = await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8');
+  await assert.rejects(joinNode(common), /回滚/);
+  assert.equal(relayActive, true);
+  assert.equal(await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8'), connection);
+  await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'join-recovery.json')));
+});
+
 test('a version 1 Panel backup is migrated using the prior node identity', async t => {
   const h = await setup(t), request = async () => new Response(JSON.stringify(h.joined), { status: 200 });
   const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
