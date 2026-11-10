@@ -61,9 +61,10 @@ test('frp login and proxy authorization require the exact node, host, proxy and 
   const { registry } = await setup(t), key = await registry.createKey({ name: '节点 A', slug: 'node-a' });
   const joined = await registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'desktop' } });
   const metas = metadata(joined.credential, key.slug, 'a'.repeat(32));
+  assert.equal(await registry.authorizeLogin({ metas: metadata(joined.credential, key.slug, 'invalid'), runId: 'bad-run' }), false);
   assert.equal(await registry.authorizeLogin({ metas, runId: '' }), true);
   const proxy = { metas, runId: 'run-a', name: 'node-node-a', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/node-a/'] };
-  assert.equal(await registry.authorizeProxy({ ...proxy, customDomains: ['evil.example.test'] }), false);
+  assert.equal(await registry.authorizeProxy({ ...proxy, runId: 'wrong-run', customDomains: ['evil.example.test'] }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, customDomains: ['desk.example.test', 'evil.example.test'] }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, subdomain: 'extra' }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, httpUser: 'private' }), false);
@@ -71,6 +72,7 @@ test('frp login and proxy authorization require the exact node, host, proxy and 
   assert.equal(await registry.authorizeProxy({ ...proxy, locations: ['/node/node-a'] }), false);
   assert.equal(await registry.authorizeProxy({ ...proxy, name: 'other' }), false);
   assert.equal(await registry.authorizeProxy(proxy), true);
+  assert.equal((await registry.list())[0].status, 'online');
   assert.equal(await registry.authorizeLogin({ metas, runId: 'run-b' }), false);
   assert.equal(await registry.authorizeLogin({ metas, runId: 'run-b', proxyOnline: async () => true }), false);
   assert.equal(await registry.authorizePing({ metas, runId: 'run-a' }), true);
