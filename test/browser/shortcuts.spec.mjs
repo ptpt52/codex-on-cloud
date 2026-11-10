@@ -151,7 +151,7 @@ test('the public offline shell includes shortcut modules and never caches authen
     await expect(page.locator('#login-view')).toBeVisible();
     await expect(page.locator('[data-shortcut]')).toHaveCount(39); await expect(page.locator('#shortcuts-button')).toBeDisabled();
     const { paths, names, revisions } = await page.evaluate(async () => {
-      const names = (await caches.keys()).filter(name => name.startsWith('codex-cloud-shell-'));
+      const names = (await caches.keys()).filter(name => name.startsWith('codex-cloud-shell:') || name.startsWith('codex-cloud-shell-'));
       const cache = await caches.open(names[0]);
       const urls = (await cache.keys()).map(request => new URL(request.url));
       return { names, paths: urls.map(url => url.pathname), revisions: urls.map(url => url.searchParams.get('ui')) };
