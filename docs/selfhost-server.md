@@ -199,6 +199,8 @@ npm run server:leave
 
 ## TURN
 
+每个节点在 `/node/<slug>/` scope 注册独立 Service Worker；缓存 key 包含入口 scope，安装、激活和旧版本清理只操作本节点缓存，不删除其他节点或无关项目的缓存。
+
 中心管理服务只为已在线节点签发短期 TURN 凭据，最长 1 小时：
 
 - `turn:<domain>:3478?transport=udp`
