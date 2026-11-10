@@ -30,7 +30,7 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | `DEPLOY_MODE` | `desktop` / `terminal`，默认 desktop | 新部署选项。已有部署不能靠改文件在线转换；安装器拒绝自动切换，需单独迁移 |
 | `MAX_TERMINALS` | 4；1–8，包含主终端 | 重启 manager、panel；不重启任务宿主 |
 | `PUBLIC_ORIGIN` | `http://localhost:36080`；HTTP(S) 根地址 | 重启 panel；公网入口还需同步 Cloudflare 路由/DNS，网关节点需保持固定入口一致 |
-| `ALLOWED_HOSTS` | 空；额外 Host 列表，可带端口，逗号分隔 | 重启 panel；不支持通配符，主入口 Host 已自动允许 |
+| `ALLOWED_HOSTS` | 空；额外精确 Host 列表，不带协议，可带端口，逗号分隔 | 重启 panel；不支持通配符，主入口 Host 已自动允许。HTTPS 主入口下，列表内的 HTTPS 同源请求也可登录；网关节点可借此保留独立域名，但不要加入私有 backend Host |
 | `ADMIN_USER` | `admin` | 重启 panel；密码另走密码管理流程 |
 | `PANEL_PORT` | 36080；1024–65535 | 重启 panel，并更新本机允许入口；新 Tunnel 使用私有 Unix socket，无需随 TCP 端口修改；旧 TCP 上游需同步 |
 | `AGENT_PORT` | 36902；1024–65535 | 兼容旧助手端口；新安装文件服务默认使用此值，显式 FILE_AGENT_PORT 优先 |

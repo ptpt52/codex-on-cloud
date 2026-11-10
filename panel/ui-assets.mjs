@@ -85,8 +85,13 @@ async function checkScripts(raw) {
     child.stdin.end(JSON.stringify(sources));
   });
 }
-export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '', gateway = false } = {}) {
+export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '', gateway = false, gatewayOrigin = '' } = {}) {
   if (nodeId && !/^[a-f0-9]{32}$/.test(nodeId)) throw Error('前端节点身份无效');
+  if (gatewayOrigin) {
+    const origin = new URL(gatewayOrigin);
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw Error('前端网关地址无效');
+    gatewayOrigin = origin.origin;
+  }
   const versions = new Map(); let current, busy = false;
   async function reload() {
     if (busy) throw Error('前端更新正在进行，请稍后重试');
@@ -101,6 +106,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
       const hash = createHash('sha256');
       if (nodeId) hash.update('node:' + nodeId);
       if (gateway) hash.update('gateway:v1');
+      if (gatewayOrigin) hash.update('gateway-origin:' + gatewayOrigin);
       for (const [route, asset] of raw) hash.update(route).update(asset.bytes);
       const revision = hash.digest('hex').slice(0, 24);
       if (current?.revision === revision) return { revision, changed: false };
@@ -121,7 +127,8 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
             if (url.origin !== 'http://ui.local' || !raw.has(url.pathname) || url.pathname === '/sw.js') return match;
             url.searchParams.set('ui', revision); return attr + '=' + quote + url.pathname + url.search + url.hash + quote;
           });
-          html = html.replace(/<head(?:\s[^>]*)?>/i, '<head><meta name="ui-revision" content="' + revision + '">' + (nodeId ? '<meta name="node-id" content="' + nodeId + '">' : '') + (gateway ? '<meta name="gateway-entry" content="/__nodes/">' : '') + '<script type="importmap">' + importMap + '</script>');
+          const gatewayEntry = gateway ? (gatewayOrigin ? new URL('/__nodes/', gatewayOrigin).href : '/__nodes/') : '';
+          html = html.replace(/<head(?:\s[^>]*)?>/i, '<head><meta name="ui-revision" content="' + revision + '">' + (nodeId ? '<meta name="node-id" content="' + nodeId + '">' : '') + (gateway ? '<meta name="gateway-entry" content="' + gatewayEntry + '">' : '') + '<script type="importmap">' + importMap + '</script>');
           bytes = Buffer.from(html);
         }
         if (route === '/sw.js') bytes = Buffer.from(bytes.toString().replace('__UI_REVISION__', revision));

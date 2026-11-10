@@ -70,7 +70,7 @@ function reply(res, status, data, headers = {}) {
 }
 
 export async function createPanel(config) {
-  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode });
+  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode, gatewayOrigin: config.gatewayNode?.origin || '' });
   const cookieToken = header => readCookieToken(header, config);
   const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
   const access = await createAccessControl(config);
@@ -120,7 +120,7 @@ export async function createPanel(config) {
     try {
       const url = new URL(origin);
       if (url.origin !== origin || url.host.toLowerCase() !== String(req.headers.host).toLowerCase()) return false;
-      return origin === config.origin || (!config.secureCookies && url.protocol === 'http:' && hostAllowed(req));
+      return origin === config.origin || (url.protocol === (config.secureCookies ? 'https:' : 'http:') && hostAllowed(req));
     } catch { return false; }
   };
   const sessionOf = req => auth.get(cookieToken(req.headers.cookie));

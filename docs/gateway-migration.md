@@ -22,6 +22,7 @@
 - 新后端主机名属于网关的 `backendZone`，且尚未被其他 DNS 记录、Worker、Access 应用或 Tunnel ingress 占用。
 - 已从网关选择页取得接入码，并只保存到节点的私有 `secrets/gateway_code`。
 - 不使用固定网关作为节点后端，也不用原独立域名作为固定网关。
+- 如要同时保留独立域名，将其精确 Host 加入 `.env` 的 `ALLOWED_HOSTS`。不要带 `https://`、路径或通配符，也不要加入私有 backend Host。
 
 固定网关的初始化和发布见[固定域名网页切换节点](gateway.md)。已有独立部署不需要重新运行带 `--domain` 的 `npm run deploy`。
 
@@ -71,6 +72,14 @@ npm run gateway:join -- \
 ```
 
 这一步会生成本机节点身份，写入带大小上限的 `data/gateway-join.json`，并调整 `.env` 中的 `PUBLIC_ORIGIN`、`NODE_ID` 和 `SHARED_ENTRY`。它不会登记到远端，也不会修改 DNS 或默认路由。
+
+`PUBLIC_ORIGIN` 始终保留网关地址。若还需要通过原独立域名访问，`ALLOWED_HOSTS` 在接入前后都保留该精确 Host；例如：
+
+```sh
+ALLOWED_HOSTS=old.example.com
+```
+
+多个 Host 用逗号分隔。只有同一个 Host 的 HTTPS Origin 才会被接受，登录、写请求、CSRF 和 WebSocket 校验不会因增加别名而关闭。
 
 准备后不要修改 `.env`、`secrets/credentials.txt`、`data/gateway-node.json` 或待恢复记录。若已有接入需要继续，重跑相同目标，不要生成新节点 ID。
 
@@ -153,14 +162,27 @@ node --input-type=module -e 'import{readGatewayConnection}from"./native/gateway-
 
 建议先用原节点承载默认入口，直到已验证新节点。若迁移节点是网关中唯一的节点，不要在没有其他节点可回退时将其设为当前入口后直接删除旧入口。
 
-## 6. 撤下旧独立入口
+## 6. 保留或撤下旧入口
 
-完成登录和实际功能验收后，再从 Cloudflare 撤下原独立入口：
+完成登录和实际功能验收后，选择一种入口策略。
+
+**同时保留独立域名和网关入口：**
+
+1. 保持 `PUBLIC_ORIGIN=https://desk.example.com` 不变，把 `old.example.com` 保留在 `ALLOWED_HOSTS`。
+2. 保留 `old.example.com` 的代理 CNAME 和同一 Tunnel ingress。
+3. 重启 panel 使配置生效；桌面／终端任务不会因此重启，已有内存端口映射需要重新配对。
+4. 分别从 `https://old.example.com` 和 `https://desk.example.com` 登录验证。两个 Host 的浏览器 Cookie 相互独立，可使用同一节点账号密码。
+5. 独立域名页面中的“切换入口节点”会跳转到固定网关，不依赖旧域名提供 `/__nodes/`。
+
+不要把私有 `node-a-backend.example.com` 加入 `ALLOWED_HOSTS`，也不要把它作为普通浏览器入口。独立域名和 gateway backend 必须保持为不同的 Tunnel 主机名。
+
+**撤下独立域名，只保留网关入口：**
 
 1. 删除 `old.example.com` 的旧代理 CNAME。
 2. 从原 Tunnel ingress 删除 `old.example.com` 规则。
-3. 保留 `node-a-backend.example.com` 的 CNAME 和 ingress。
-4. 保留 Tunnel、Tunnel token、panel、宿主和文件服务。
+3. 从 `ALLOWED_HOSTS` 删除 `old.example.com` 并重启 panel。
+4. 保留 `node-a-backend.example.com` 的 CNAME 和 ingress。
+5. 保留 Tunnel、Tunnel token、panel、宿主和文件服务。
 
 清理后，浏览器只使用 `https://desk.example.com`，节点后端只供网关使用。不要运行 `npm run native:publish` 或带 `--domain` 的普通发布来修改网关成员；这些命令会被拒绝。
 
@@ -184,6 +206,9 @@ node --input-type=module -e 'import{readGatewayConnection}from"./native/gateway-
 | --- | --- |
 | 新后端返回 nginx 404 | CNAME 或 ingress 尚未指向原 Tunnel；不要继续登记 |
 | 新后端返回 400／403 | 后端不是普通浏览器入口；检查 Host、节点身份、网关 secret 和 PUBLIC_ORIGIN 是否一致 |
+| 独立域名返回 400 | 将精确 Host 加入 `ALLOWED_HOSTS` 后重启 panel；不要填协议、路径或通配符 |
+| 独立域名登录或写请求 403 | 核对浏览器 Origin 与当前 Host 完全一致，且该 Host 在 `ALLOWED_HOSTS` 中 |
+| 独立域名的节点切换按钮打不开 | 更新 panel 前端与后端；页面应使用节点身份中的固定网关地址跳转 |
 | `本机尚未加载网关身份` | 检查 panel 日志和 `.env`，再用同一命令继续；不要绕过私有入口检查 |
 | `/__nodes/` 没有新节点 | 未登记或探测失败；先核对 Tunnel、后端和恢复记录，不重复创建身份 |
 | 登记后网关返回 502／503 | 检查后端 CNAME、ingress、Tunnel 健康连接及节点就绪状态 |

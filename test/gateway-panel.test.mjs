@@ -47,6 +47,23 @@ test('gateway identity headers confer no trust over loopback TCP, a wrong backen
   const accepted = await raw({ socketPath: app.tunnelSocket, path: '/readyz', headers }); assert.equal(accepted.status, 200); assert.equal(JSON.parse(accepted.text).nodeId, node.id);
 });
 
+test('a gateway node can retain a separately allowlisted HTTPS origin without weakening gateway authentication', async t => {
+  const gateway = await gatewayHTTPFixture(); t.after(() => gateway.close()); const app = await gateway.add(4), node = app.gatewayEntry;
+  const alias = 'https://old.example.test', host = new URL(alias).host;
+  app.config.hosts.add(host); app.config.secureCookies = true;
+  const base = { host, 'cf-visitor': '{"scheme":"https"}', 'cf-connecting-ip': '192.0.2.4', origin: alias, 'x-codex-node': node.id, 'content-type': 'application/json' };
+  const page = await raw({ socketPath: app.tunnelSocket, path: '/', headers: base });
+  assert.equal(page.status, 200); assert.match(page.text, new RegExp(`name="gateway-entry" content="${gateway.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/__nodes/"`));
+  const login = await raw({ socketPath: app.tunnelSocket, method: 'POST', path: '/api/login', headers: base }, JSON.stringify({ username: 'admin', password: app.config.password }));
+  assert.equal(login.status, 200); assert.match(login.headers['set-cookie'][0], /; Secure(?:;|$)/);
+  const cookie = login.headers['set-cookie'][0].split(';')[0], { csrf } = JSON.parse(login.text);
+  assert.equal((await raw({ socketPath: app.tunnelSocket, path: '/api/me', headers: { ...base, cookie } })).status, 200);
+  assert.equal((await raw({ socketPath: app.tunnelSocket, path: '/api/logout', method: 'POST', headers: { ...base, cookie, origin: 'https://other.example.test', 'x-csrf-token': csrf } }, '{}')).status, 403);
+  assert.equal((await raw({ socketPath: app.tunnelSocket, path: '/api/logout', method: 'POST', headers: { ...base, cookie, 'x-csrf-token': csrf } }, '{}')).status, 200);
+  assert.equal((await raw({ socketPath: app.tunnelSocket, path: '/api/me', headers: { ...base, host: 'not-allowed.example.test' } })).status, 400);
+  assert.deepEqual(app.inputCalls, []); assert.equal(app.managementStats.restarts, 0);
+});
+
 test('gateway preserves WebSocket authentication, Origin and stale-node denials without reporting a backend outage', async t => {
   const gateway = await gatewayHTTPFixture(); t.after(() => gateway.close()); const app = await gateway.add(3); await gateway.select(app.gatewayEntry.id);
   for (const [node, origin, expected] of [[app.gatewayEntry.id, gateway.origin, 401], ['f'.repeat(32), gateway.origin, 409], [app.gatewayEntry.id, 'http://untrusted.invalid', 403]]) {

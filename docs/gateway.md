@@ -87,7 +87,7 @@ npm run gateway:join -- \
 
 ## 从独立域名迁移
 
-如果机器已经通过 `https://old.example.com` 独立访问，现在要成为现有 `https://desk.example.com` 网关的节点，按[独立域名迁移 SOP](gateway-migration.md)执行。迁移会为原 Tunnel 增加独立后端、保留旧入口到验收完成，并使用同一节点身份完成登记；不会迁移任务或重新部署工作台。
+如果机器已经通过 `https://old.example.com` 独立访问，现在要成为现有 `https://desk.example.com` 网关的节点，按[独立域名迁移 SOP](gateway-migration.md)执行。迁移会为原 Tunnel 增加独立后端，并可使用同一节点身份完成登记；不会迁移任务或重新部署工作台。旧入口可在验收后撤下，也可把精确主机名加入 `ALLOWED_HOSTS`，同时保留独立域名和网关访问。
 
 如果固定网关自己的浏览器主机名目前仍直接指向某台 Tunnel，迁移还需要把该主机名从 CNAME 改成 Worker Custom Domain。Cloudflare 不允许在已有 CNAME 的主机名直接创建 Custom Domain。[官方限制与迁移](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。先保留旧记录、Tunnel ingress 和私有 socket，再按实际 API／控制台状态完成域名接管；绑定失败时可恢复保留的旧记录，不要并行运行 DNS 接管命令。
 

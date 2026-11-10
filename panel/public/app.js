@@ -1855,10 +1855,11 @@ forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: (
   capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
 function canLeaveNode() { return !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
 $('gateway-switch-button').addEventListener('click', () => {
-  if (!loggedIn || permissions.role === 'temporary' || !document.querySelector('meta[name="gateway-entry"]')) return;
+  const gatewayEntry = document.querySelector('meta[name="gateway-entry"]')?.content;
+  if (!loggedIn || permissions.role === 'temporary' || !gatewayEntry) return;
   if (!canLeaveNode()) return toast('请等待输入、配置或文件传输完成后再切换。', true);
   if (!rememberDraft()) return toast('草稿尚未保存，请先复制当前文字。', true);
-  pageLeaving = true; syncScreenLock(); location.assign('/__nodes/');
+  pageLeaving = true; syncScreenLock(); location.assign(gatewayEntry);
 });
 try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
