@@ -27,6 +27,7 @@
     "server:leave": "node scripts/selfhost-node.mjs leave",
     "server:status": "node scripts/selfhost-node.mjs status",
     "server:doctor": "node scripts/selfhost-node.mjs doctor",
+    "selfhost:server": "node scripts/selfhost-server.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
     "test:desktop": "python3 -m unittest discover -s test -p '*_test.py'",
