@@ -80,7 +80,7 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
   --domain node-b.example.com --zone example.com
 ```
 
-再按[网关步骤](gateway.md)将 `desk.example.com` 部署为固定入口，并分别执行 `gateway:join`。每台机器保存自己的 Tunnel token 和接入凭据；日常网页切换不使用 CF 管理 Token。
+再按[网关步骤](gateway.md)将 `desk.example.com` 部署为固定入口，并分别执行 `gateway:join`。每台机器保存自己的 Tunnel token 和接入凭据；日常网页切换不使用 CF 管理 Token。已有 Cloudflare 单节点部署要改为网关节点时，不要重新部署或复用固定入口主机名，按[独立域名迁移 SOP](gateway-migration.md)增加私有后端并在验收后撤下旧入口。
 
 ## 4. 按需添加功能
 

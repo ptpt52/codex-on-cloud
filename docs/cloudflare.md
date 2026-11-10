@@ -1,6 +1,6 @@
 # 使用自己的 Cloudflare 接入
 
-两种工作区模式都能使用本页流程。示例采用 `desk.example.com` 和区域 `example.com`，请替换为自己账户内的域名。需要网页切换多节点时，先为每台机器使用独立的 `node-a.example.com` 等后端域名，再配置[固定网关](gateway.md)。
+两种工作区模式都能使用本页流程。示例采用 `desk.example.com` 和区域 `example.com`，请替换为自己账户内的域名。需要网页切换多节点时，先为每台机器使用独立的 `node-a.example.com` 等后端域名，再配置[固定网关](gateway.md)。已有独立 Cloudflare 入口要并入现有网关时，按[独立域名迁移 SOP](gateway-migration.md)操作，不要直接改写固定入口的 DNS。
 
 ## 凭据与权限
 

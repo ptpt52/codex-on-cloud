@@ -60,7 +60,7 @@ npm run deploy -- --domain desk.example.com --zone example.com
 
 自动配置会创建专用 Tunnel 和 HTTPS 入口。Token 权限、手动接入已有 Tunnel 的方式见[Cloudflare 接入](docs/cloudflare.md)。
 
-需要多个节点共用一个浏览器地址时，增加[固定域名网关](docs/gateway.md)。网页从 `/__nodes/` 切换节点，日常切换不使用 CF 管理 Token，也不修改 DNS。
+需要多个节点共用一个浏览器地址时，增加[固定域名网关](docs/gateway.md)。网页从 `/__nodes/` 切换节点，日常切换不使用 CF 管理 Token，也不修改 DNS。已有独立域名要并入现有网关时，按[网关节点迁移 SOP](docs/gateway-migration.md)保留旧入口、增加节点后端，验收后再撤下旧入口。
 
 ## 使用与维护
 

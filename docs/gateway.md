@@ -15,7 +15,7 @@
 
 所有地址都需替换。后端必须不同于固定入口，并位于配置的 `backendZone` 中。接入后后端域名只供网关转发，浏览器使用固定入口登录。
 
-推荐为固定入口选择尚未使用的主机名。每台机器先按[单节点接入](cloudflare.md)部署所选工作区模式和独立 Tunnel；选择固定入口不会改变机器的部署模式。
+推荐为固定入口选择尚未使用的主机名。每台机器先按[单节点接入](cloudflare.md)部署所选工作区模式和独立 Tunnel；选择固定入口不会改变机器的部署模式。已经通过独立域名运行的部署不需要重新安装，按[独立域名迁移 SOP](gateway-migration.md)接入现有网关。
 
 ## 1. 初始化网关
 
@@ -85,16 +85,11 @@ npm run gateway:join -- \
 - **切换回复丢失**：页面只读核对当前路由，不再提交；核对成功后手动进入。
 - **移除节点**：先切到其他节点再移除登记，不删除机器上的任务、文件或 Tunnel。
 
-## 复用已有固定域名
+## 从独立域名迁移
 
-如果 `desk.example.com` 目前直接指向某台 Tunnel，需要一次迁移：
+如果机器已经通过 `https://old.example.com` 独立访问，现在要成为现有 `https://desk.example.com` 网关的节点，按[独立域名迁移 SOP](gateway-migration.md)执行。迁移会为原 Tunnel 增加独立后端、保留旧入口到验收完成，并使用同一节点身份完成登记；不会迁移任务或重新部署工作台。
 
-1. 先为原 Tunnel 增加独立 `node-a.example.com` 后端，保留原路由，使用同一私有 Unix socket。
-2. 在原节点运行上述 `gateway:join`，加 `--prepare-only`，然后重启面板加载身份；此阶段不登记、不改 DNS。
-3. 初始化并构建网关。在 Cloudflare 保留旧记录内容后，移除固定主机名的旧 CNAME，再部署 Custom Domain 和密码哈希；迁移期间入口可能短暂不可用。
-4. 在选择页生成接入码，保存到原节点，重跑同一 `gateway:join` 完成登记并选择。
-
-Cloudflare 不允许在已有 CNAME 的主机名直接创建 Custom Domain。[官方限制与迁移](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。绑定失败时核对实际状态，可在控制台恢复保留的旧 CNAME；不要并行运行 DNS 接管命令。
+如果固定网关自己的浏览器主机名目前仍直接指向某台 Tunnel，迁移还需要把该主机名从 CNAME 改成 Worker Custom Domain。Cloudflare 不允许在已有 CNAME 的主机名直接创建 Custom Domain。[官方限制与迁移](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。先保留旧记录、Tunnel ingress 和私有 socket，再按实际 API／控制台状态完成域名接管；绑定失败时可恢复保留的旧记录，不要并行运行 DNS 接管命令。
 
 ## 与 Access 组合
 
