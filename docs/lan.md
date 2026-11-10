@@ -1,6 +1,6 @@
 # IPv4 局域网与公网 IPv6 加密直连
 
-浏览器继续访问 `https://home-codex.x-wrt.dev`。无需另备本地 HTTPS 证书、修改路由器 DNS 或安装客户端 CA：网页和连接协商使用现有 HTTPS 入口，noVNC 的画面与原生键鼠字节通过 WebRTC DataChannel 直连主机。
+浏览器继续访问自己配置的入口，例如 `https://desk.example.com`。无需为直连另备本地 HTTPS 证书、修改路由器 DNS 或安装客户端 CA：网页和连接协商使用现有入口，noVNC 的画面与原生键鼠字节通过 WebRTC DataChannel 直连主机。
 
 ```text
 浏览器 ── HTTPS：登录、协商、管理 API ── Cloudflare / Tunnel ── 面板回环接口

@@ -1,70 +1,34 @@
-# 纯网页终端部署
+# 纯网页终端模式
 
-新部署支持 `--mode terminal`，只运行网页终端及其后台，不启动虚拟桌面。默认 `--mode desktop` 保留原有完整桌面行为。模式保存在 `.env` 的 `DEPLOY_MODE`，未配置的旧部署按桌面模式处理；重复部署沿用已有选择。
+`--mode terminal` 在新部署中省去图形栈，保留网页终端、多终端、历史、文件中转和 TCP 映射。它可组合本机／SSH、单节点 Tunnel 或固定网关入口，见[部署组合](deployment.md)。
 
 ## 安装
 
-准备普通 Linux 用户、可用的 systemd 用户服务、Node.js 22+，然后运行（不要求安装 Codex CLI）：
+准备普通 Linux 用户、systemd 用户服务和 Node.js 22+：
 
 ```sh
-git clone https://github.com/ptpt52/codex-on-cloud.git
-cd codex-on-cloud
 npm run deploy -- --mode terminal --install-deps --enable-linger
 ```
 
-系统依赖已齐时可省略 `--install-deps`。`--enable-linger` 用于无人登录时的开机自启，需要 sudo；系统安装步骤也需要 sudo，其余操作以普通用户执行。只检查终端模式的依赖可用 `npm run deploy -- --mode terminal --check`，不会转换已有配置、安装软件或改变服务。
+依赖已齐时省略 `--install-deps`。系统包为 tmux、Python 和 util-linux，npm 安装使用锁文件并省略开发依赖与 noVNC。Codex CLI 可选，安装器不安装或登录 Codex。
 
-WSL 镜像网络下，正常部署自动补齐 Windows `.wslconfig` 中的 `hostAddressLoopback=true` 并备份；`--check` 只检测，缺少时提示运行正常部署。配置需保存任务后重启 WSL 生效，部署不会终止 WSL。Windows 重启后先启动对应发行版，再由用户服务恢复终端后台；完整说明及本次问题复盘见 [WSL 部署与直连排障](wsl.md)。
+本机访问 `http://localhost:36080`，登录信息位于 `secrets/credentials.txt`。域名参数和 Token 准备见[Cloudflare](cloudflare.md)，网页多节点入口见[固定网关](gateway.md)，Windows 主机见[WSL](wsl.md)。
 
-本机入口为 `http://localhost:36080`，登录信息只保存到 `secrets/credentials.txt`，不打印密码。面板和内部文件助手仍只监听回环。远程访问继续使用 SSH 本地端口转发，或原有 `--domain / --zone / --api-token-file` Cloudflare 部署参数。端口映射助手构建仍为可选的 `--build-forward`，只有构建助手才需要 Go。
+## 与桌面模式的区别
 
-安装器不安装、登录或修改 Codex，不改写用户 Codex 配置。首次只打开 shell；用户自行运行 Codex，重连不提交提示、输入或审批。
-
-无 systemd 的托管容器需要另行配置进程管理；本次 Cloady / Void Linux 的运行方式、维护命令和重启限制见 [Cloady 部署说明](cloady.md)。
-
-## 省去的组件
-
-| 内容 | 桌面模式 | 纯终端模式 |
+| 内容 | 桌面 | 纯终端 |
 | --- | --- | --- |
-| 运行基础 | Node.js、Codex、tmux、Python、Bash、systemd 用户服务 | Node.js、tmux、Python、Bash、util-linux/flock、systemd 用户服务；Codex 可选 |
-| 图形系统 | Xvfb、x11vnc、XFCE、Xterm | 不安装、不启动 |
-| 桌面输入与选区 | xdotool、xclip、xauth、X11 工具 | 不安装、不调用 |
-| 桌面字体与 D-Bus 图形会话 | fontconfig、中文字体、独立图形 D-Bus 会话 | 不安装、不启动 |
-| 网页桌面库 | noVNC | 跳过安装 |
-| 开发测试依赖 | 默认 npm ci 安装 | 跳过安装 |
-| 常驻项目服务 | desktop、actions、files、manager、panel | terminal、files、manager、panel |
-| 公网入口 | 可选 Tunnel | 相同 |
+| XFCE／Xvfb／x11vnc／Xterm | 安装并运行 | 不安装、不启动 |
+| 网页终端、终端管理、历史 | 支持 | 支持 |
+| 文件、网络直连／回退、TCP 映射 | 支持 | 支持 |
+| 远程桌面剪贴板、桌面分辨率 | 支持 | 不适用 |
+| 任务宿主 | `codex-cloud-desktop.service` | `codex-cloud-terminal.service` |
+| 其余核心服务 | actions、manager、files、panel | manager、files、panel |
 
-轻量模式按锁文件执行 `npm ci --omit=dev --omit=optional`；noVNC 固定版本改为可选依赖，完整桌面安装仍包含它。网页终端所需的 xterm.js、WebSocket、WebRTC 和认证模块保留。系统包安装列表仅为 `tmux python3`，Node 和系统基础组件需预先具备，Codex 可选。独立文件助手不调用 Codex；manager 查询版本失败时仅显示空版本，纯终端任务继续可用；桌面安装检查仍要求 Codex 可用。主要节省来自整套图形系统、字体与常驻图形进程；没有给出未经量测的内存或安装体积百分比。
+登录直接进入终端，不读取旧浏览器的桌面模式选择。原终端 shell 由私有 tmux 持有，网页和面板只提供观看、输入及管理。
 
-## 功能与生命周期
+## 生命周期
 
-登录后直接进入网页终端，忽略浏览器以前保存的桌面模式；隐藏桌面切换、分辨率设置和系统远程剪贴板入口。终端选字/历史复制、本机粘贴、独立 Enter、组合键、字号和宽度适配、由 `MAX_TERMINALS` 配置的终端名额、文件传输、WSS/WebRTC 及双向 TCP 映射继续可用。
+关闭网页、重连或更新 panel／manager 不主动结束原 shell。明确结束终端、停止／重启 terminal 宿主或重启主机会影响任务。所有用户终端关闭后，宿主仍保留；只有明确新开才创建新 shell，不自动重新提交旧工作。
 
-`codex-cloud-terminal.service` 只持有私有 tmux 服务；回环文件助手由独立 `codex-cloud-files.service` 持有，失败或重启不会终止 shell。manager 管理固定终端名额并独立探测宿主健康，panel 负责认证与浏览器连接。关闭网页、刷新、重连、重启 panel 或 manager 不结束原 shell。主终端和辅助终端都可通过“结束终端”二次确认后结束；仅关闭当前查看的目标后切到末尾唯一的“新开终端”占位，显示“已关闭”；关闭其他目标时保持当前终端、观看连接与草稿。点击占位复用第一个空闲名额新建 shell，也可切换到其他运行中的终端；不保留多份关闭标签。电脑标签、手机当前终端按钮及会话列表提供“×”快捷关闭，均先二次确认。新 shell 使用新身份和空草稿，不自动恢复原任务或发送旧草稿。全部终端关闭后后台仍保留，只有明确新开才创建用户 shell。
-
-任务数量在 `.env` 通过 `MAX_TERMINALS` 配置，默认 4、范围 1–8，包含主终端。修改后重启 manager 和 panel；降低上限保留已有终端，禁止超额新建。配置清单与生效范围见[部署配置](deployment-config.md)。额外只有一个固定、不接收网页输入的 `codex-host` 保活会话，防止所有用户终端退出后 tmux 由管理器重新创建而改变服务归属。私有运行目录为0700，tmux socket与物理桌面分开；宿主只保留一份0600、至多256字节的空`terminal.lock`，固定inode不删除。现有历史、消息、缓冲、上传和映射上限保持，未新增任务队列、录制或输入日志。
-
-宿主使用util-linux的`flock`在继承的同一文件描述符上取得锁，随后工具退出，由Node自身持续持锁；无常驻锁助手，不依赖文件服务或Python能否启动。宿主退出或SIGKILL后内核释放锁。`--install-deps`会确保util-linux已安装，doctor检查flock；不下载或升级额外应用。旧版最多32字节的`terminal.pid`仅用于迁移：活跃PID保守拒绝，空记录或确认过期记录必须等私有tmux不活跃后才回收。活跃tmux始终拒绝接管或创建新任务，不按锁文件年龄猜测归属。升级应先结束旧宿主启动流程，不能混跑两代锁协议；已有任务保存前不要为了加载此修复重启宿主。
-
-Ubuntu 等发行版的 tmux 带有 systemd 集成，默认会将窗格任务移入独立的 `tmux-spawn-*.scope`。终端宿主只为自己的私有 tmux 服务进程禁用用户 D-Bus 连接，并在创建任何窗格前清除 shell 环境中的该覆盖，使保活、主终端和辅助任务留在宿主服务的 cgroup 内。用户 shell 仍可从自己的 `~/.bashrc` 配置 D-Bus；无需更换系统 tmux、安装额外依赖或修改系统 D-Bus。
-
-显式停止或重启 terminal 服务、主机重启会结束其中的任务。terminal 服务不自动重建任务；panel 继续采用已有的有限故障恢复策略。端口映射内存授权仍随 panel 重启失效，需重新配对。
-
-已有桌面部署不会自动切换为纯终端；请求不同模式或检测到另一种宿主服务仍在运行时，安装器会停止转换，保留当前任务。此功能用于选择新部署形态，不会删除现有图形包，也不会修改当前运行实例的模式。
-
-## 验证
-
-```sh
-npm run check
-npm test
-npm run test:desktop
-npm run test:terminal-only
-CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/terminal-deployment.spec.mjs
-```
-
-`test:terminal-only` 在临时目录按生产依赖安装，确认没有 noVNC 或 Playwright；运行真实 tmux、Bash、PTY、Python 文件助手、manager 和 panel，并以会失败的图形命令替身确认不调用 X11。它检查文件传输、名额边界、窗口关闭、面板/管理器重启后的任务身份及 shell 环境、主终端显式重开和宿主停止清理。测试通过指向不存在解释器的 Codex 替身模拟未安装环境，不启动真实任务；不安装 systemd unit、不改生产配置。
-
-浏览器用例使用真实页面、xterm.js 与加密传输，管理和终端上游为 fixture。它们与真实 PTY、真实 systemd 安装及真实 Codex 使用分别记账，不能互相替代。
-
-本机具备 systemd 用户管理器时，可额外运行 `TERMINAL_TEST_SYSTEMD=1 npm run test:terminal-only`。它只创建唯一命名的临时测试服务，验证 tmux、保活和主/辅助任务确实属于终端宿主的 cgroup，用户 D-Bus 环境不受覆盖，停止整个 panel/manager 测试 cgroup 后原任务仍保留。另检查停止宿主可清理忽略 HUP/TERM 的任务，以及宿主被 SIGKILL 后的 cgroup 清理；不会安装或停止生产 unit。
+模式在首次部署时确定，已有桌面不能在线转换成纯终端。终端数默认 4、最多 8，调整方法见[配置参考](deployment-config.md#终端数量)。恢复、锁和服务关系见[生命周期](reliability.md)，隔离测试见[验证说明](verification.md)。

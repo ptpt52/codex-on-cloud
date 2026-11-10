@@ -78,8 +78,6 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 本机维护使用 `scripts/state-files.mjs` 读写有界状态文件，单次输出最多 256 KiB，采用内核租约、预期内容复核及原子提交。磁盘上的 `.portal-lock` 和 `.portal-next-v2` 是沿用的锁／暂存后缀；保留它们是为了让升级前后的写入者继续共享同一锁，不代表仍有独立门户功能。不要删除活跃锁 inode 或把这些运行文件加入 Git。
 
-本次独立门户下线保存了一份私有 `data/retired-portal.json` 维护记录，最多 256 KiB，含旧目录元数据、资源身份和下线核对结果，不包含登录密码或 API Token；应用不读取该记录。
-
 浏览器字号、缩放、宽度适配、网页历史行数、亮屏选择和面板折叠属于当前浏览器，详见 [浏览器偏好](browser-preferences.md)。终端选择和草稿属于当前标签页。连接诊断、控制权、实际亮屏锁和在线状态属于运行状态。
 
 “连接状态”里的服务器 IP / 浏览器端 IP 直连提示也属于当前浏览器；它们随已认证协商发给服务端，作为额外 ICE 候选使用，不写 `.env`，不替换自动发现或部署时选择的监听地址。

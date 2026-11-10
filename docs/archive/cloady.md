@@ -1,3 +1,5 @@
+> 历史归档：本文记录特定时间、环境或未实施方案，不是当前部署指南。请从[文档目录](../README.md)选择部署方式。
+
 # Cloady 免费容器的纯终端部署
 
 可以在 Cloady 的 Void Linux 容器中运行本项目的 `terminal` 模式，不安装 Codex CLI、图形桌面或 noVNC。容器不是带 systemd 的虚拟机；仓库的 `npm run deploy` / `native:install` 仍面向 systemd 用户服务，不能直接用于此模板。本次容器通过单独配置的 runit 服务运行原有后台，没有伪造 Codex 命令或修改 Codex 配置。
@@ -43,4 +45,4 @@ cat /var/lib/codex-cloud/app/secrets/credentials.txt
 
 ## 升级到独立文件服务
 
-上面的四项 runit 服务记录的是既有部署。新版 terminal 宿主不再自行启动 Python 助手；容器不能只更新代码再重启 terminal。先增加一项独立 files 服务，以同一普通用户、同一项目工作目录和原环境运行固定命令 `node native/file-agent.mjs`；按现有 manager 的策略限制每分钟最多三次恢复，日志继续使用128 KiB两份轮转。为 files 配置独立空闲的 `FILE_AGENT_PORT`（例如36904），panel 使用同一值；保留旧 terminal 及其关键助手，再更新 manager/panel，检查 `/readyz` 的 host/files 均为 true。files 必须加入本机启动、状态与停止脚本。该容器专用脚本尚需管理员在实际部署中同步维护，本轮代码修复没有操作远端实例。新 Tunnel 可改用同一用户私有 runtime 下的 `tunnel.sock`，具体见 [Cloudflare 部署](cloudflare.md)。
+上面的四项 runit 服务记录的是既有部署。新版 terminal 宿主不再自行启动 Python 助手；容器不能只更新代码再重启 terminal。先增加一项独立 files 服务，以同一普通用户、同一项目工作目录和原环境运行固定命令 `node native/file-agent.mjs`；按现有 manager 的策略限制每分钟最多三次恢复，日志继续使用128 KiB两份轮转。为 files 配置独立空闲的 `FILE_AGENT_PORT`（例如36904），panel 使用同一值；保留旧 terminal 及其关键助手，再更新 manager/panel，检查 `/readyz` 的 host/files 均为 true。files 必须加入本机启动、状态与停止脚本。该容器专用脚本尚需管理员在实际部署中同步维护，本轮代码修复没有操作远端实例。新 Tunnel 可改用同一用户私有 runtime 下的 `tunnel.sock`，具体见 [Cloudflare 部署](../cloudflare.md)。

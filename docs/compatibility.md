@@ -56,4 +56,4 @@ npm run test:compat -- --project=firefox-desktop
 
 Linux WebKit 及移动设备模拟不等于真实 iOS Safari 验收；注入 composition/visualViewport 事件也不等于实际中文输入法和软键盘验收。iPhone、iPad 的实际输入法、系统选区菜单和剪贴板授权仍需对应真机确认。
 
-本次 Android 反馈确认了上述中文输入、旋转与键盘、历史复制、Shift 方向键和全屏交互。iPhone/iPad 仍未真机验收；首帧与分辨率同步的新保护由自动化及隔离原生检查验证。持续检查配置及覆盖边界见[自动检查](ci.md)。
+自动化触控与视口模拟不等于手机系统验收。部署者应对自己的 Android、iPhone／iPad 或其他目标设备完成上述检查，尤其是软键盘、系统剪贴板和后台恢复。持续检查配置及覆盖边界见[自动检查](ci.md)。
