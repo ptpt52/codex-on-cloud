@@ -13,6 +13,7 @@ import {
   SELFHOST_VERSIONS, caddyAcmeConfig, caddyConfig, caddyUnit, centerEnvironment, centerUnit,
   certbotHook, coturnConfig, coturnUnit, frpsConfig, frpsUnit, serverDomain, serverEmail,
 } from '../selfhost/server-config.mjs';
+import { resolveAdminCidrs, serverSettings } from '../selfhost/server-settings.mjs';
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
@@ -200,9 +201,10 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心安装必须以 root 运行');
   if (configureUfw && !sshCidr) throw Error('配置 UFW 时必须用 --ssh-cidr 指定允许 SSH 的运维网段');
   domain = serverDomain(domain);
-  const adminCidrs = adminCidr ? String(adminCidr).split(',').map(value => value.trim()).filter(Boolean) : [];
-  if (adminCidrs.length > 16) throw Error('管理页访问 CIDR 最多 16 个');
-  if (adminCidrs.some(value => !validCidr(value, 4) && !validCidr(value, 6))) throw Error('管理页访问 CIDR 无效');
+  const settingsPath = join(ETC, 'server-settings.json');
+  const settingsText = await readFile(settingsPath, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const existingCaddy = await readFile(join(ETC, 'Caddyfile'), 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const adminCidrs = resolveAdminCidrs({ provided: adminCidr, settingsText, caddyText: existingCaddy });
   if (sshCidr && !validCidr(sshCidr, 4) && !validCidr(sshCidr, 6)) throw Error('SSH CIDR 无效');
   if (net.isIP(publicIp) !== 4) throw Error('公网 IP 必须是 IPv4 地址');
   const localIpv4 = await privateIPv4(privateIp);
@@ -224,6 +226,7 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), uid, gid);
   const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
   await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
+  await safeWrite(settingsPath, serverSettings(adminCidrs), 0o600, 0, 0);
   await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);
   await safeWrite(join(ETC, 'turnserver.conf'), coturnConfig({ domain, publicIp, privateIp: localIpv4, secret: turnSecret }), 0o640, 0, (await requiredCommand('id', ['-g', 'turnserver'])).stdout ? Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout) : gid);
   await safeWrite('/etc/systemd/system/codex-selfhost-center.service', centerUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
@@ -265,7 +268,9 @@ async function status() {
   for (const name of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) units[name] = (await command('systemctl', ['is-active', name])).stdout || 'inactive';
   const domain = (await readFile(join(ETC, 'server.env'), 'utf8').catch(() => '')).match(/^SELFHOST_PUBLIC_HOST=(.+)$/m)?.[1] || '';
   const cert = domain ? await command('openssl', ['x509', '-enddate', '-noout', '-in', join(ETC, 'tls', 'fullchain.pem')]) : { stdout: '' };
-  return { units, domain, certificate: cert.stdout.replace('notAfter=', '') || null };
+  const settingsText = await readFile(join(ETC, 'server-settings.json'), 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  const caddyText = await readFile(join(ETC, 'Caddyfile'), 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  return { units, domain, certificate: cert.stdout.replace('notAfter=', '') || null, adminCidrs: resolveAdminCidrs({ settingsText, caddyText }) };
 }
 
 try {
@@ -273,7 +278,7 @@ try {
     const commandName = process.argv[2] || 'status', { values } = parseArgs({ args: process.argv.slice(3), options: {
       domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'private-ip': { type: 'string' }, 'cert-file': { type: 'string' }, 'key-file': { type: 'string' }, 'caddy-file': { type: 'string' }, 'frps-file': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, 'admin-cidr': { type: 'string' }, help: { type: 'boolean' },
     } });
-    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选：--private-ip TURN私网IPv4；不填时按默认路由自动识别\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2 --configure-ufw --ssh-cidr 运维网段\n或 ./scripts/selfhost-server.sh status\nTURN 首版固定使用 IPv4；IPv6 直连仍由浏览器与节点 ICE 独立协商。默认不修改防火墙。');
+    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选：--private-ip TURN私网IPv4；不填时按默认路由自动识别\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2（或 none 清除） --configure-ufw --ssh-cidr 运维网段\n未传 --admin-cidr 时沿用已保存或旧 Caddyfile 中的管理网段。\n或 ./scripts/selfhost-server.sh status\nTURN 首版固定使用 IPv4；IPv6 直连仍由浏览器与节点 ICE 独立协商。默认不修改防火墙。');
     else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], privateIp: values['private-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
     else if (commandName === 'rollback') { if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心回滚必须以 root 运行'); console.log(JSON.stringify(await rollbackApplication(), null, 2)); }
     else if (commandName === 'status') console.log(JSON.stringify(await status(), null, 2));

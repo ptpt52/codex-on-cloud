@@ -24,6 +24,7 @@ test('Caddy routes node paths through auth and frps while keeping internals priv
   assert(!config.includes('disable_redirects'));
   assert.match(caddyConfig('desk.example.com', { redirectHttp: false }), /auto_https disable_redirects/);
   assert.match(caddyConfig('desk.example.com', { adminCidrs: ['198.51.100.0/24'] }), /not remote_ip 198\.51\.100\.0\/24/);
+  assert.match(caddyConfig('desk.example.com', { adminCidrs: ['198.51.100.0/24'] }), /127\.0\.0\.1\/32 ::1\/128/);
   assert.match(caddyAcmeConfig('desk.example.com', '/var/lib/codex-selfhost/acme'), /handle \/\.well-known\/acme-challenge/);
 });
 

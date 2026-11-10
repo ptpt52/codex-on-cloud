@@ -33,10 +33,11 @@ http://${domain} {
 export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [] } = {}) {
   domain = serverDomain(domain);
   if (!Array.isArray(adminCidrs) || adminCidrs.some(cidr => typeof cidr !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-fA-F:]+\/\d{1,3}$/.test(cidr))) throw Error('管理页访问 CIDR 无效');
+  const effectiveAdminCidrs = [...new Set([...adminCidrs, '127.0.0.1/32', '::1/128'])];
   const adminGuard = adminCidrs.length ? `
 	@outsideAdmin {
 		not path /node /node/*
-		not remote_ip ${adminCidrs.join(' ')}
+		not remote_ip ${effectiveAdminCidrs.join(' ')}
 	}
 	handle @outsideAdmin {
 		respond 403

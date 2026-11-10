@@ -112,6 +112,8 @@ sudo ./scripts/selfhost-server.sh install \
   --admin-cidr 198.51.100.0/24,192.0.2.10/32
 ```
 
+管理白名单会保存到 `/etc/codex-selfhost/server-settings.json`。后续更新、证书重配或重复安装未传 `--admin-cidr` 时继续沿用；只有显式传入 `--admin-cidr none` 才清空白名单。
+
 查看服务状态：
 
 ```bash
