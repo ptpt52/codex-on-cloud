@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, lstatSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { environment, settings } from '../native/config.mjs';
 import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { stunURL } from './rtc-network.mjs';
@@ -9,6 +9,15 @@ import { forwardPorts } from './forward.mjs';
 import { readGatewayConnection } from '../native/gateway-config.mjs';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 import { readSelfhostNode } from './selfhost-config.mjs';
+
+function selfhostCa(root, value) {
+  if (!value) return undefined;
+  const base = resolve(root), file = resolve(base, value);
+  if (file !== base && !file.startsWith(base + sep)) throw new Error('SELFHOST_CA_FILE 必须位于部署目录内');
+  const info = lstatSync(file), bytes = readFileSync(file);
+  if (!info.isFile() || info.isSymbolicLink() || bytes.length > 256 * 1024 || info.mode & 0o022 || !bytes.toString().includes('BEGIN CERTIFICATE')) throw new Error('SELFHOST_CA_FILE 必须是有界的 PEM 文件');
+  return bytes;
+}
 
 function secret(env, name) {
   const file = env[`${name}_FILE`];
@@ -28,6 +37,7 @@ export function readConfig(env = environment()) {
   }
   const entryBasePath = normalizeEntryBasePath(env.ENTRY_BASE_PATH);
   const selfhostNode = readSelfhostNode(native.root, env);
+  const selfhostCaBundle = selfhostCa(native.root, env.SELFHOST_CA_FILE);
   if (selfhostNode && (selfhostNode.origin !== origin.origin || selfhostNode.path !== entryBasePath)) throw new Error('自建节点配置与 PUBLIC_ORIGIN / ENTRY_BASE_PATH 不一致');
   const agentUrl = `http://127.0.0.1:${native.agentPort}`;
   const hosts = new Set([origin.host.toLowerCase()]);
@@ -48,7 +58,7 @@ export function readConfig(env = environment()) {
   const webrtcIPv6 = env.WEBRTC_IPV6 !== '0';
   return {
     mode: native.mode,
-    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1', gatewayNode, entryBasePath, selfhostNode,
+    nodeId: env.NODE_ID || '', sharedEntry: env.SHARED_ENTRY === '1', gatewayNode, entryBasePath, selfhostNode, selfhostCaBundle,
     host: '127.0.0.1', port, origin: origin.origin,
     agentPort: native.agentPort, fileAgentPort: native.fileAgentPort, tunnelMetricsPort: native.tunnelMetricsPort,
     forwardPorts: forwardPorts(env.TCP_FORWARD_PORTS), forwardDownloadDir: join(native.root, 'data', 'forward-client'),

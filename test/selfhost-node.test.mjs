@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { frpcConfig, joinNode, leaveNode, nodeStatus, serviceUnit } from '../selfhost/node.mjs';
@@ -10,6 +10,9 @@ const key = 'coc_' + 'a'.repeat(43), credential = 'cocn_' + 'b'.repeat(43);
 async function setup(t) {
   const root = await mkdtemp(join(tmpdir(), 'codex-selfhost-node-')), configHome = join(root, 'config'), calls = [];
   t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'secrets'), { recursive: true, mode: 0o700 });
+  await writeFile(join(root, '.env'), 'DEPLOY_MODE=terminal\nPUBLIC_ORIGIN=https://old.example.test\nSHARED_ENTRY=1\nNODE_ID=' + 'c'.repeat(32) + '\n', { mode: 0o600 });
+  await writeFile(join(root, 'secrets', 'credentials.txt'), '工作台：https://old.example.test\n用户名：admin\n', { mode: 0o600 });
   const run = async (file, args) => { calls.push([file, ...args]); return { ok: true, stdout: args.includes('--value') ? 'yes' : '', stderr: '' }; };
   const joined = {
     name: '现场节点 A', entryBasePath: '/node/node-a/', credential, proxyHost: 'desk.example.test', turnEndpoint: 'https://desk.example.test/api/turn-credentials',
@@ -32,13 +35,17 @@ test('join stores only the node credential, generates bounded frpc and systemd f
   const unit = await readFile(join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service'), 'utf8');
   assert(!connectionText.includes(key)); assert(!config.includes(key)); assert.match(config, /useSystemCa = true/);
   assert.match(config, /locations = \["\/node\/node-a\/"\]/); assert.match(config, /metadatas\.credential/); assert.match(unit, /Restart=on-failure/);
-  assert.deepEqual(h.calls.slice(0, 2), [['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', '--now', 'codex-cloud-selfhost-node.service']]);
+  assert.deepEqual(h.calls.slice(0, 3), [['systemctl', '--user', 'restart', 'codex-cloud-panel.service'], ['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', '--now', 'codex-cloud-selfhost-node.service']]);
+  const env = await readFile(join(h.root, '.env'), 'utf8');
+  assert.match(env, /PUBLIC_ORIGIN=https:\/\/desk\.example\.test/); assert.match(env, /ENTRY_BASE_PATH=\/node\/node-a\//); assert.match(env, /SHARED_ENTRY=0/);
+  assert.match(env, /SELFHOST_CA_FILE=\n/);
+  assert.match(await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8'), /工作台：https:\/\/desk\.example\.test/);
 
   let secondPrompt = false;
   await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
     request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => { secondPrompt = true; return key; } });
   assert.equal(secondPrompt, false); assert.equal(submitted.body.credential, credential); assert.equal(submitted.body.key, undefined);
-  assert.deepEqual(await nodeStatus({ root: h.root, run: async () => ({ ok: true, stdout: 'active', stderr: '' }) }), { joined: true, origin: 'https://desk.example.test', slug: 'node-a', path: '/node/node-a/', mode: 'terminal', service: 'active' });
+  assert.deepEqual(await nodeStatus({ root: h.root, run: async () => ({ ok: true, stdout: 'active', stderr: '' }) }), { joined: true, origin: 'https://desk.example.test', slug: 'node-a', path: '/node/node-a/', mode: 'terminal', service: 'active', panel: 'active' });
 });
 
 test('joining a different center requires an explicit replacement and imported CA paths are private inputs', async t => {
@@ -48,6 +55,22 @@ test('joining a different center requires an explicit replacement and imported C
   await assert.rejects(joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b' }), /server:leave/);
   await joinNode({ ...common, server: 'https://other.example.test', slug: 'node-b', replace: true });
   assert.match(await readFile(join(h.root, 'data', 'selfhost-node', 'connection.json'), 'utf8'), /other\.example\.test/);
+});
+
+test('existing Cloudflare or Gateway state requires explicit takeover and leave restores every prior file', async t => {
+  const h = await setup(t), gatewayPath = join(h.root, 'data', 'gateway-node.json'), gateway = JSON.stringify({ version: 1, origin: 'https://old.example.test' }, null, 2) + '\n';
+  await mkdir(join(h.root, 'data'), { recursive: true, mode: 0o700 });
+  await writeFile(gatewayPath, gateway, { mode: 0o600 });
+  const request = async (_url, options) => { const body = JSON.parse(options.body); return new Response(JSON.stringify({ ...h.joined, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 }); };
+  const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
+  const beforeEnv = await readFile(join(h.root, '.env'), 'utf8'), beforeCredentials = await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8');
+  await assert.rejects(joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a' }), /switch-existing/);
+  await joinNode({ ...common, server: 'https://desk.example.test', slug: 'node-a', switchExisting: true });
+  await assert.rejects(access(gatewayPath));
+  await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => new Response('{"ok":true}', { status: 200 }) });
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), beforeEnv);
+  assert.equal(await readFile(join(h.root, 'secrets', 'credentials.txt'), 'utf8'), beforeCredentials);
+  assert.equal(await readFile(gatewayPath, 'utf8'), gateway);
 });
 
 test('frpc output keeps the public Host, exact slash-boundary, node mode and verified TLS identity', () => {

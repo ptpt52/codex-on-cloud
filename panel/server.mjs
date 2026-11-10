@@ -118,7 +118,7 @@ export async function createPanel(config) {
     if (!config.webrtc || !node?.turnEndpoint) return null;
     if (turnCache && turnCache.expiresAt > Date.now() + 60_000) return turnCache;
     if (turnPending) return turnPending;
-    turnPending = requestTurnCredentials({ endpoint: node.turnEndpoint, node }).then(value => turnCache = value).catch(() => null).finally(() => { turnPending = null; });
+    turnPending = requestTurnCredentials({ endpoint: node.turnEndpoint, node, ca: config.selfhostCaBundle }).then(value => turnCache = value).catch(() => null).finally(() => { turnPending = null; });
     return turnPending;
   };
   const rtcConfig = async () => {

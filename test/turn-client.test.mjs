@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import https from 'node:https';
 import { once } from 'node:events';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { requestTurnCredentials, validateTurnResponse } from '../panel/turn-client.mjs';
 import { rtcOffer } from '../panel/rtc-network.mjs';
 import { rtcIceServers } from '../panel/public/rtc-ice.js';
@@ -52,4 +57,15 @@ test('panel returns fresh TURN ICE configuration to authenticated pages', async 
   const login = await app.login(), me = await (await app.request('/api/me')).json();
   assert.equal(login.csrf.length > 0, true); assert.deepEqual(me.rtcIceServers, iceServers); assert(me.rtcIceExpiresAt > Date.now());
   const state = await (await app.request('/api/state')).json(); assert.deepEqual(state.rtc.rtcIceServers, iceServers);
+});
+
+test('TURN client can pin an imported center CA without disabling certificate verification', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'turn-ca-'));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(directory, 'key.pem'), '-out', join(directory, 'cert.pem'), '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
+  const server = https.createServer({ key: await readFile(join(directory, 'key.pem')), cert: await readFile(join(directory, 'cert.pem')) }, (_req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ expiresAt: now + 3600000, ttlMs: 3600000, iceServers })); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const endpoint = `https://127.0.0.1:${server.address().port}/api/turn-credentials`, node = { slug: 'node-a', nodeId: 'a'.repeat(32), credential: 'cocn_' + 'b'.repeat(43) };
+  t.after(async () => { await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); await rm(directory, { recursive: true, force: true }); });
+  await assert.rejects(requestTurnCredentials({ endpoint, node }), /fetch failed|certificate/);
+  assert.deepEqual((await requestTurnCredentials({ endpoint, node, ca: await readFile(join(directory, 'cert.pem')) })).iceServers, iceServers);
 });
