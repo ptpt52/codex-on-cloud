@@ -14,6 +14,7 @@ test('center domain and certificate email are strict command-line inputs', () =>
 
 test('Caddy routes node paths through auth and frps while keeping internals private', () => {
   const config = caddyConfig('desk.example.com');
+  assert.match(config, /servers \{\n\t\tprotocols h1 h2/);
   assert.match(config, /handle \/internal\/\* \{\n\t\trespond 404/);
   assert.match(config, /forward_auth 127\.0\.0\.1:36180/);
   assert.match(config, /path=\{(?:http\.request\.uri\.path|http\.request\.uri)\}/);
@@ -58,4 +59,5 @@ test('coturn uses short-lived auth secrets, the requested relay range and privat
   assert.match(config, /denied-peer-ip=10\.0\.0\.0-10\.255\.255\.255/);
   assert.match(config, /denied-peer-ip=127\.0\.0\.0-127\.255\.255\.255/);
   assert.match(coturnUnit(), /User=turnserver/);
+  assert.match(coturnUnit(), /SupplementaryGroups=codex-selfhost/);
 });

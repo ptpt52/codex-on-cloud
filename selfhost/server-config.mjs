@@ -34,6 +34,9 @@ export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', 
   domain = serverDomain(domain);
   return `{
 	admin off
+	servers {
+		protocols h1 h2
+	}
 }
 
 https://${domain} {
@@ -171,6 +174,7 @@ StartLimitBurst=8
 Type=simple
 User=turnserver
 Group=turnserver
+SupplementaryGroups=codex-selfhost
 ExecStart=/usr/bin/turnserver -c ${configDirectory}/turnserver.conf
 Restart=on-failure
 RestartSec=5

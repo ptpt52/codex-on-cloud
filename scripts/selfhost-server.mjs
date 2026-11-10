@@ -90,15 +90,17 @@ async function ensureDirectory(path, mode, uid, gid) {
   await chmod(path, mode); await chown(path, uid, gid);
 }
 
-async function configure({ domain, email, publicIp }) {
+async function configure({ domain, email, publicIp, configureUfw = false, sshCidr }) {
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心安装必须以 root 运行');
+  if (configureUfw && !sshCidr) throw Error('配置 UFW 时必须用 --ssh-cidr 指定允许 SSH 的运维网段');
   domain = serverDomain(domain); email = serverEmail(email);
   const addresses = await resolve4(domain, { ttl: true }).catch(() => []);
   if (!addresses.some(item => item.address === publicIp)) throw Error(`DNS 尚未将 ${domain} 指向 ${publicIp}；未更改服务器`);
   await requiredCommand('apt-get', ['update'], { timeout: 300000 });
   await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ca-certificates', 'curl', 'tar', 'xz-utils', `certbot=${SELFHOST_VERSIONS.certbot}`, `coturn=${SELFHOST_VERSIONS.coturn}`], { timeout: 300000 });
+  await command('systemctl', ['disable', '--now', 'coturn']);
   const { uid, gid } = await ensureUser();
-  for (const [path, mode] of [[ROOT, 0o755], [join(ROOT, 'bin'), 0o755], [ETC, 0o750], [DATA, 0o750], [join(DATA, 'acme'), 0o755], [join(DATA, 'center'), 0o700], [join(ETC, 'tls'), 0o750]]) await ensureDirectory(path, mode, path === DATA || path === join(DATA, 'center') ? uid : 0, path === DATA || path === join(DATA, 'center') ? gid : 0);
+  for (const [path, mode, owner, group] of [[ROOT, 0o755, 0, 0], [join(ROOT, 'bin'), 0o755, 0, 0], [ETC, 0o750, 0, gid], [DATA, 0o750, uid, gid], [join(DATA, 'acme'), 0o755, 0, 0], [join(DATA, 'center'), 0o700, uid, gid], [join(ETC, 'tls'), 0o750, 0, gid]]) await ensureDirectory(path, mode, owner, group);
   await installBinaries(); await copyApplication(); await requiredCommand('chown', ['-R', 'root:root', join(ROOT, 'app')]);
   for (const [file, bytes] of [['admin_password', randomBytes(32).toString('hex') + '\n'], ['frp_token', randomBytes(32).toString('hex') + '\n'], ['frps_admin_password', randomBytes(24).toString('hex') + '\n'], ['turn_secret', randomBytes(32).toString('hex') + '\n']]) {
     try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o640, 0, gid); }
@@ -126,6 +128,11 @@ async function configure({ domain, email, publicIp }) {
   await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
   for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['enable', '--now', unit]);
   await requiredCommand('systemctl', ['restart', 'codex-selfhost-caddy.service']);
+  if (configureUfw) {
+    await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ufw'], { timeout: 120000 });
+    for (const rule of [['allow', 'from', sshCidr, 'to', 'any', 'port', '22', 'proto', 'tcp'], ['allow', '80/tcp'], ['allow', '443/tcp'], ['allow', '7000/tcp'], ['allow', '3478/tcp'], ['allow', '3478/udp'], ['allow', '5349/tcp'], ['allow', '49160:49223/udp']]) await requiredCommand('ufw', rule);
+    await requiredCommand('ufw', ['--force', 'enable']);
+  }
   return { domain, root: ROOT, config: ETC, data: DATA, versions: SELFHOST_VERSIONS };
 }
 
@@ -140,10 +147,10 @@ async function status() {
 try {
   if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const commandName = process.argv[2] || 'status', { values } = parseArgs({ args: process.argv.slice(3), options: {
-      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, help: { type: 'boolean' },
+      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, help: { type: 'boolean' },
     } });
-    if (values.help) console.log('用法：sudo npm run selfhost:server -- install --domain 节点中心域名 --email 证书通知邮箱 --public-ip 服务器公网IPv4\n或 npm run selfhost:server -- status\n安装固定版本 Node/Caddy/frps/Certbot，配置中心管理页、/node/<slug>/ 和 systemd；默认不修改防火墙。');
-    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'] }), null, 2));
+    if (values.help) console.log('用法：sudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --email 证书通知邮箱 --public-ip 服务器公网IPv4 [--configure-ufw --ssh-cidr 运维网段]\n或 ./scripts/selfhost-server.sh status\n安装固定版本 Node/Caddy/frps/coturn/Certbot，配置中心管理页、/node/<slug>/ 和 systemd；默认不修改防火墙。');
+    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'] }), null, 2));
     else if (commandName === 'status') console.log(JSON.stringify(await status(), null, 2));
     else throw Error('未知命令：' + commandName);
   }
