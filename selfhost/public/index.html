@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17211b">
+  <title>节点中继管理</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="login-view" class="login-view" hidden>
+    <form id="login-form" class="login-panel">
+      <div class="mark">CN</div>
+      <h1>节点中继管理</h1>
+      <p id="login-message" class="muted">使用中心管理员密码登录。</p>
+      <label for="username">管理员</label>
+      <input id="username" name="username" autocomplete="username" value="admin" maxlength="100" required>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="512" required>
+      <button type="submit" class="primary">登录</button>
+    </form>
+  </main>
+
+  <main id="center-view" class="center-view" hidden>
+    <header class="topbar">
+      <div><span class="mark small">CN</span><strong>节点中继</strong><span class="host" id="center-host"></span></div>
+      <div class="top-actions"><span id="connection-state" class="status neutral">状态加载中</span><button id="logout" class="quiet">退出</button></div>
+    </header>
+    <section class="summary" aria-label="中心状态">
+      <div><span>在线节点</span><strong id="online-count">0</strong><small id="online-limit">上限 64</small></div>
+      <div><span>恢复窗口</span><strong id="grace-count">0</strong><small>60 秒</small></div>
+      <div><span>有效授权</span><strong id="active-count">0</strong><small id="total-count">共 0 个</small></div>
+      <button id="new-key" class="primary" type="button">创建授权</button>
+    </section>
+    <section class="keys-section">
+      <div class="section-heading"><div><h2>授权与节点</h2><p id="list-message" class="muted">每个授权固定绑定一个访问路径。</p></div><button id="refresh" class="quiet" type="button">刷新</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>节点</th><th>访问路径</th><th>授权</th><th>连接</th><th>最近活动</th><th>操作</th></tr></thead>
+          <tbody id="key-list"></tbody>
+        </table>
+        <p id="empty" class="empty" hidden>尚未创建授权。</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="key-dialog" aria-labelledby="key-dialog-title">
+    <form id="key-form" method="dialog">
+      <div class="dialog-heading"><h2 id="key-dialog-title">创建节点授权</h2><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <label for="key-name">显示名称</label><input id="key-name" maxlength="80" placeholder="例如：深圳测试机" required>
+      <label for="key-slug">访问路径</label><div class="slug-field"><span>/node/</span><input id="key-slug" maxlength="48" pattern="[a-z0-9-]{1,48}" placeholder="shenzhen-test" required autocomplete="off" spellcheck="false"><span>/</span></div>
+      <label class="check-row"><input id="key-never-expires" type="checkbox" checked> 无限期</label>
+      <div id="expiry-field" hidden><label for="key-expiry">到期时间</label><input id="key-expiry" type="datetime-local"></div>
+      <p id="key-form-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button value="cancel" class="quiet">取消</button><button id="create-key" class="primary" value="default">创建</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="secret-dialog" aria-labelledby="secret-title">
+    <div class="dialog-heading"><h2 id="secret-title">授权 key 仅显示一次</h2><button id="secret-close" class="icon-button" type="button" aria-label="关闭">×</button></div>
+    <p>关闭后无法再次读取。请立即交给节点执行接入命令。</p>
+    <code id="secret-value"></code>
+    <div class="dialog-actions"><span id="copy-state" class="muted" role="status"></span><button id="copy-secret" class="primary" type="button">复制 key</button></div>
+  </dialog>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p>
+      <div class="dialog-actions"><button value="cancel" class="quiet">取消</button><button id="confirm-action" value="default" class="danger">确认</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
