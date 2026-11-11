@@ -9,6 +9,7 @@ import { selfhostError } from './protocol.mjs';
 import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
 import { clientAddress, loopbackAddress } from './client-address.mjs';
 import { frpsProxyProbe } from './frps-admin.mjs';
+import { HELP_PAGE_CSP, readHelpPage } from './help-page.mjs';
 
 const PUBLIC = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = new Map([
@@ -42,8 +43,9 @@ async function jsonBody(req, limit) {
   } catch { throw selfhostError(400, 'JSON 格式无效'); }
 }
 
-async function assets() {
+async function assets(helpFile) {
   const result = new Map(); let total = 0;
+  const help = helpFile ? await readHelpPage(helpFile, { optional: true }) : null;
   for (const [route, [name, type]] of ASSETS) {
     const handle = await open(join(PUBLIC, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let bytes;
@@ -54,8 +56,10 @@ async function assets() {
       if (bytes.length !== stat.size || bytes.length > 512 * 1024) throw Error('中心前端资源正在修改或超过限制');
     } finally { await handle.close(); }
     total += bytes.length; if (total > 1024 * 1024) throw Error('中心前端资源超过 1 MiB');
+    if (route === '/') bytes = Buffer.from(bytes.toString('utf8').replace('<!-- custom-help-entry -->', help ? '<a id="help-entry" class="quiet home-admin" href="/help/">使用帮助</a>' : ''));
     result.set(route, { bytes, type });
   }
+  if (help) result.set('/help/', { bytes: help, type: 'text/html; charset=utf-8', csp: HELP_PAGE_CSP });
   return result;
 }
 
@@ -63,14 +67,14 @@ export async function createSelfhostCenter({
   origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
   frpToken, turnSecret, turnRealm = publicHost, turnTtlMs = TURN_TTL_MS, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
-  frpsAdmin, turnRelay,
+  frpsAdmin, turnRelay, helpFile,
 } = {}) {
   const parsed = new URL(origin);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw Error('中心 PUBLIC_ORIGIN 必须是 HTTP(S) 根地址');
   if (!password || typeof password !== 'string' || password.length < 16 || password.length > 512) throw Error('中心管理员密码长度无效');
   if (!frpToken || typeof frpToken !== 'string' || frpToken.length < 16 || frpToken.length > 512 || /[\r\n\0]/.test(frpToken)) throw Error('frp 接入密钥长度无效');
   const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center_admin', entryBasePath: '/admin/', sessionRevision: 'codex-selfhost-admin-v2' };
-  const auth = await createAuth(authConfig), web = await assets();
+  const web = await assets(helpFile), auth = await createAuth(authConfig);
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
   const proxyOnline = frpsAdmin ? frpsProxyProbe(frpsAdmin) : undefined;
   const failures = new Map(), joinRequests = new Map(), turnRequests = new Map(), publicRequests = new Map();
@@ -167,11 +171,14 @@ export async function createSelfhostCenter({
     if (path === '/admin' && req.method === 'GET') {
       res.writeHead(308, { location: '/admin/', 'cache-control': 'no-store' }); return res.end();
     }
+    if (path === '/help' && web.has('/help/') && req.method === 'GET') {
+      res.writeHead(308, { location: '/help/', 'cache-control': 'no-store' }); return res.end();
+    }
     // Revoke the legacy root cookie; the new revision also invalidates its stored sessions.
     if (path === '/' || path.startsWith('/admin/')) res.setHeader('set-cookie', sessionCookie('', { ...authConfig, nodeId: 'center', entryBasePath: '/' }, true));
     const asset = web.get(path);
     if (asset && req.method === 'GET') {
-      res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+      res.setHeader('content-security-policy', asset.csp || "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       res.writeHead(200, { 'content-type': asset.type, 'content-length': asset.bytes.length, 'cache-control': 'no-store' });
       return res.end(asset.bytes);
     }

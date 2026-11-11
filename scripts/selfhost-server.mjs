@@ -14,6 +14,7 @@ import {
 } from '../selfhost/server-config.mjs';
 import { resolveAdminCidrs, serverSettings } from '../selfhost/server-settings.mjs';
 import { probeLocalHttps, validateServerCertificate } from '../selfhost/certificates.mjs';
+import { readHelpPage } from '../selfhost/help-page.mjs';
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
@@ -195,9 +196,10 @@ async function installImportedCertificate({ domain, certText, keyText }) {
   await safeWrite(join(ETC, 'tls', 'turn-privkey.pem'), keyText, 0o640, 0, turnGid);
 }
 
-async function configure({ domain, email, publicIp, privateIp, certFile, keyFile, caddyFile, frpsFile, configureUfw = false, sshCidr, adminCidr }) {
+async function configure({ domain, email, publicIp, privateIp, certFile, keyFile, caddyFile, frpsFile, helpFile, configureUfw = false, sshCidr, adminCidr }) {
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心安装必须以 root 运行');
   if (configureUfw && !sshCidr) throw Error('配置 UFW 时必须用 --ssh-cidr 指定允许 SSH 的运维网段');
+  const helpPage = helpFile ? await readHelpPage(resolve(helpFile)) : null;
   domain = serverDomain(domain);
   const settingsPath = join(ETC, 'server-settings.json');
   const settingsText = await readFile(settingsPath, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
@@ -218,6 +220,7 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   const { uid, gid } = await ensureUser();
   for (const [path, mode, owner, group] of [[ROOT, 0o755, 0, 0], [join(ROOT, 'bin'), 0o755, 0, 0], [ETC, 0o750, 0, gid], [DATA, 0o750, uid, gid], [join(DATA, 'acme'), 0o755, 0, 0], [join(DATA, 'center'), 0o700, uid, gid], [join(ETC, 'tls'), 0o750, 0, gid]]) await ensureDirectory(path, mode, owner, group);
   await installBinaries({ caddyFile, frpsFile }); await copyApplication();
+  if (helpPage) await safeWrite(join(ETC, 'help.html'), helpPage, 0o640, 0, gid);
   for (const [file, bytes] of [['admin_password', randomBytes(32).toString('hex') + '\n'], ['frp_token', randomBytes(32).toString('hex') + '\n'], ['frps_admin_password', randomBytes(24).toString('hex') + '\n'], ['turn_secret', randomBytes(32).toString('hex') + '\n']]) {
     try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o600, uid, gid); }
   }
@@ -278,10 +281,10 @@ async function status() {
 try {
   if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const commandName = process.argv[2] || 'status', { values } = parseArgs({ args: process.argv.slice(3), options: {
-      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'private-ip': { type: 'string' }, 'cert-file': { type: 'string' }, 'key-file': { type: 'string' }, 'caddy-file': { type: 'string' }, 'frps-file': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, 'admin-cidr': { type: 'string' }, help: { type: 'boolean' },
+      domain: { type: 'string' }, email: { type: 'string' }, 'public-ip': { type: 'string' }, 'private-ip': { type: 'string' }, 'cert-file': { type: 'string' }, 'key-file': { type: 'string' }, 'caddy-file': { type: 'string' }, 'frps-file': { type: 'string' }, 'help-file': { type: 'string' }, 'configure-ufw': { type: 'boolean' }, 'ssh-cidr': { type: 'string' }, 'admin-cidr': { type: 'string' }, help: { type: 'boolean' },
     } });
-    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选：--private-ip TURN私网IPv4；不填时按默认路由自动识别\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2（或 none 清除） --configure-ufw --ssh-cidr 运维网段\n未传 --admin-cidr 时沿用已保存或旧 Caddyfile 中的管理网段。\n或 ./scripts/selfhost-server.sh status\nTURN 首版固定使用 IPv4；IPv6 直连仍由浏览器与节点 ICE 独立协商。默认不修改防火墙。');
-    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], privateIp: values['private-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
+    if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选：--private-ip TURN私网IPv4；不填时按默认路由自动识别\n可选帮助页：--help-file /path/help.html（复制到配置目录，省略时保留已有页面）\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2（或 none 清除） --configure-ufw --ssh-cidr 运维网段\n未传 --admin-cidr 时沿用已保存或旧 Caddyfile 中的管理网段。\n或 ./scripts/selfhost-server.sh status\nTURN 首版固定使用 IPv4；IPv6 直连仍由浏览器与节点 ICE 独立协商。默认不修改防火墙。');
+    else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], privateIp: values['private-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], helpFile: values['help-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
     else if (commandName === 'rollback') { if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心回滚必须以 root 运行'); console.log(JSON.stringify(await rollbackApplication(), null, 2)); }
     else if (commandName === 'status') console.log(JSON.stringify(await status(), null, 2));
     else throw Error('未知命令：' + commandName);

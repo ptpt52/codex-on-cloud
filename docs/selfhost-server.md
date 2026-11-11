@@ -200,6 +200,21 @@ https://<domain>/admin/
 
 中心只信任回环 Caddy 写入的 `X-Forwarded-For` 客户端地址；管理员登录、节点接入和 TURN 刷新分别按客户端限流，不会互相消耗或让一个外部地址锁住其他管理员。
 
+### 自定义帮助页
+
+可为本次部署准备一个 UTF-8 HTML 文件，安装时增加 `--help-file /path/to/help.html`。安装器会将其复制到 `/etc/codex-selfhost/help.html`（root 所有、组 codex-selfhost、0640），首页自动显示“使用帮助”，公开地址为 `https://<domain>/help/`。帮助页应包含返回首页的链接 `<a href="/">返回首页</a>`。
+
+文件独立于应用目录，重复安装时省略 `--help-file` 会保留现有帮助页。也可单独更新，无需重新安装其他服务：
+
+```bash
+sudo install -o root -g codex-selfhost -m 0640 /path/to/help.html /etc/codex-selfhost/help.html
+sudo systemctl restart codex-selfhost-center.service
+```
+
+未配置该文件时不显示帮助入口，`/help/` 返回 404。删除文件并重启中心服务可停用。文件在中心启动时加载，必须是非空普通文件、非符号链接、不可由组或其他用户写入，最多 512 KiB；无效文件会使启动失败并报告错误。
+
+帮助页无需登录，不得包含真实密钥、密码或内部工作区内容；部署专用教程放在仓库外，不提交 Git。支持自包含 HTML、内嵌 CSS、data 图片和普通链接；独立 CSP 沙箱禁止脚本、表单、外部资源和嵌入框架，不放宽首页或管理页的安全策略。
+
 ## 节点接入
 
 节点必须已经按现有方式完成本机 Panel 部署。在节点仓库根目录执行：

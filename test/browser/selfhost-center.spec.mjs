@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +20,7 @@ test('central management page creates a one-time key and lists its fixed node pa
   try {
     await context.addCookies([{ name: 'coc_session_center', value: 'legacy', url: origin }]);
     await page.goto(origin);
+    await expect(page.locator('#help-entry')).toHaveCount(0);
     await expect(page).toHaveURL(origin + '/');
     await page.locator('#admin-entry').click();
     await expect(page).toHaveURL(origin + '/admin/');
@@ -100,12 +101,30 @@ test('anonymous homepage lists online nodes, refreshes without login and keeps n
   } finally { await center.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-async function adminFixture() {
+async function adminFixture({ helpPage } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-admin-regression-')), port = await freePort(), origin = `http://127.0.0.1:${port}`;
-  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpToken: 'frp_test_token_very_long_123' });
+  const helpFile = join(directory, 'help.html');
+  if (helpPage !== undefined) await writeFile(helpFile, helpPage, { mode: 0o640 });
+  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', helpFile });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
   return { center, origin, close: async () => { await center.close(); await rm(directory, { recursive: true, force: true }); } };
 }
+
+test('homepage opens custom help on mobile and desktop while help scripts stay blocked', async ({ page }) => {
+  const h = await adminFixture({ helpPage: '<!doctype html><html lang="zh-CN"><title>部署教程</title><style>h1 { color: rgb(20, 80, 60); }</style><h1>使用帮助</h1><a href="/">返回首页</a><script>document.body.dataset.executed = "yes"; fetch("/admin/api/keys");</script></html>' });
+  const requests = [];
+  page.on('request', request => requests.push(new URL(request.url()).pathname));
+  try {
+    await page.goto(h.origin);
+    await expect(page.locator('#help-entry')).toBeVisible(); await expect(page.locator('#admin-entry')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.locator('#help-entry').click(); await expect(page).toHaveURL(h.origin + '/help/');
+    await expect(page.locator('h1')).toHaveText('使用帮助'); await expect(page.locator('h1')).toHaveCSS('color', 'rgb(20, 80, 60)');
+    await expect(page.locator('body')).not.toHaveAttribute('data-executed', 'yes'); expect(requests).not.toContain('/admin/api/keys');
+    await page.getByRole('link', { name: '返回首页' }).click(); await expect(page).toHaveURL(h.origin + '/');
+    await page.locator('#admin-entry').click(); await expect(page.locator('#login-view')).toBeVisible();
+  } finally { await h.close(); }
+});
 async function loginAdmin(page, origin) {
   await page.goto(origin + '/admin/'); await expect(page.locator('#login-view')).toBeVisible();
   await page.locator('#password').fill('center_password_very_long_123'); await page.locator('#login-form button[type="submit"]').click(); await expect(page.locator('#center-view')).toBeVisible();

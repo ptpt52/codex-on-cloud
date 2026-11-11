@@ -22,6 +22,7 @@ try {
     dataDir: join(stateDirectory, 'center'),
     stateFile: join(stateDirectory, 'state.json'),
     password,
+    helpFile: join(secretDirectory, 'help.html'),
     publicHost: required('SELFHOST_PUBLIC_HOST'),
     frpServerPort: Number(required('SELFHOST_FRP_SERVER_PORT')),
     frpTlsServerName: required('SELFHOST_FRP_TLS_NAME'),

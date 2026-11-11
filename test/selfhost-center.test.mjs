@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSelfhostCenter } from '../selfhost/center.mjs';
@@ -17,14 +18,16 @@ function freePort() {
   });
 }
 
-async function setup(t, { turnSecret, legacy = false } = {}) {
+async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-center-')), port = await freePort(), origin = `http://127.0.0.1:${port}`, closed = [];
+  const helpFile = join(directory, 'help.html');
+  if (helpPage !== undefined) await writeFile(helpFile, helpPage, { mode: 0o640 });
   let legacyToken;
   if (legacy) {
     const auth = await createAuth({ dataDir: join(directory, 'center'), username: 'admin', password: 'center_password_very_long_123', sessionMs: 60000 });
     legacyToken = (await auth.create()).token; await auth.close();
   }
-  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', turnSecret, closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
+  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', turnSecret, helpFile, closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
   t.after(async () => { await center.close(); await rm(directory, { recursive: true, force: true }); });
   let cookie = '', csrf = '';
@@ -174,7 +177,8 @@ test('the anonymous homepage and online list expose only routable node names, mo
   const page = await h.request('/', { authenticated: false });
   assert.equal(page.status, 200); assert.equal(page.headers.get('location'), null);
   assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
-  const html = await page.text(); assert.match(html, /href="\/admin\/"/); assert(!html.includes('password'));
+  const html = await page.text(); assert.match(html, /href="\/admin\/"/); assert(!html.includes('password')); assert(!html.includes('id="help-entry"'));
+  assert.equal((await h.request('/help/', { authenticated: false })).status, 404);
   for (const path of ['/home.js', '/styles.css']) assert.equal((await h.request(path, { authenticated: false })).status, 200);
   const response = await h.request('/api/public/nodes', { authenticated: false });
   assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -195,6 +199,27 @@ test('public list polling has a separate per-client bounded rate limit', async t
   }
   assert.equal((await h.request('/api/public/nodes', { authenticated: false, headers: { 'x-forwarded-for': '198.51.100.31' } })).status, 200);
   assert.equal((await h.login()).status, 200);
+});
+
+test('custom help is public and sandboxed without changing homepage or admin security', async t => {
+  const content = '<!doctype html><html lang="zh-CN"><h1>使用帮助</h1><a href="/">返回首页</a></html>';
+  const h = await setup(t, { helpPage: content });
+  const home = await h.request('/', { authenticated: false }); assert.match(await home.text(), /id="help-entry"[^>]*href="\/help\/"/);
+  const response = await h.request('/help/', { authenticated: false });
+  assert.equal(response.status, 200); assert.equal(await response.text(), content);
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('set-cookie'), null);
+  assert.match(response.headers.get('content-security-policy'), /^sandbox; default-src 'none'/);
+  assert.match(response.headers.get('x-content-type-options'), /nosniff/);
+  const redirect = await h.request('/help', { authenticated: false }); assert.equal(redirect.status, 308); assert.equal(redirect.headers.get('location'), '/help/');
+  for (const path of ['/help.html', '/help/admin_password', '/help/%2e%2e%2fadmin_password']) assert.equal((await h.request(path, { authenticated: false })).status, 404);
+  const invalidHost = await new Promise((resolve, reject) => {
+    http.get(h.origin + '/help/', { headers: { host: 'evil.example' } }, response => { response.resume(); resolve(response.statusCode); }).on('error', reject);
+  });
+  assert.equal(invalidHost, 400);
+  assert.equal((await h.request('/help/', { method: 'POST', body: {}, authenticated: false })).status, 404);
+  assert.equal((await h.request('/admin/api/keys', { authenticated: false })).status, 401);
 });
 
 test('overview and lifecycle writes retain authentication, origin and CSRF boundaries', async t => {
