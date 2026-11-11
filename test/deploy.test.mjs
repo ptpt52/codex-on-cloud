@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { deploy, options, checkHealth } from '../scripts/deploy.mjs';
 import { serviceUnits } from '../native/service-units.mjs';
 
-async function harness(t, { active = [], installed = true, failure = '', bus = 'degraded\n', healthError } = {}) {
+async function harness(t, { active = [], installed = true, failure = '', bus = 'degraded\n', healthError, goVersion = 'go version go1.26.4 linux/amd64' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'codex deploy 中文 '));
   t.after(() => rm(root,{recursive:true,force:true}));
   const calls = [], logs = [], wslCalls = [], events = []; let healthy = false;
@@ -25,6 +25,7 @@ async function harness(t, { active = [], installed = true, failure = '', bus = '
       if(args.includes('is-active'))return{status:active.includes(args.at(-1))||calls.some(c=>c.args.includes('start'))?0:3};
       if(command==='npm'&&args[0]==='ls')return{status:installed?0:1};
       if(args.includes(failure))return{status:1};
+      if(command==='go')return{status:goVersion?0:1,stdout:goVersion};
       if(args[0]==='scripts/setup.mjs'){
         await mkdir(join(root,'secrets'),{recursive:true});
         const mode = args.includes('--mode') ? args[args.indexOf('--mode') + 1] : 'desktop';
@@ -83,10 +84,60 @@ test('unsupported host, root and old Node are rejected before any subprocess or 
   await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
 });
 
+test('an installed legacy Node can show help and reaches the version guard before loading modern modules',async t=>{
+  const legacy=process.env.LEGACY_NODE_PATH||'/usr/bin/node',exec=promisify(execFile);
+  let version;
+  try{version=(await exec(legacy,['--version'])).stdout;}catch{return t.skip('No legacy Node executable');}
+  if(Number(version.trim().replace(/^v/,'').split('.')[0])>=22)return t.skip('Legacy Node is not installed');
+  const script=resolve('scripts/deploy.mjs');
+  assert.match((await exec(legacy,[script,'--help'])).stdout,/Node.js 22\+/);
+  await assert.rejects(exec(legacy,[script,'--check']),error=>{
+    assert.equal(error.code,1);assert.match(error.stderr,/需要 Node.js 22\+/);assert.doesNotMatch(error.stderr,/SyntaxError/);return true;
+  });
+});
+
 test('check-only tolerates a degraded user manager and performs no installs, setup, service or Cloudflare mutations',async t=>{
   const h=await harness(t);await deploy(options(['--check','--install-deps','--enable-linger','--build-forward']),h.context);
-  assert.deepEqual(h.calls.map(c=>c.args),[['--user','is-system-running'],['scripts/native.mjs','doctor']]);
+  assert.deepEqual(h.calls.map(c=>c.args),[['--user','is-system-running'],['version'],['scripts/native.mjs','doctor']]);
   assert.equal(h.healthy,false);await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
+});
+
+test('missing or wrong Go fails a requested helper build before installs, setup or service changes',async t=>{
+  for(const goVersion of ['', 'go version go1.25.0 linux/amd64']) {
+    const h=await harness(t,{goVersion});
+    await assert.rejects(deploy(options(['--mode','terminal','--install-deps','--build-forward']),h.context),/Go 1\.26\.4.*PATH/);
+    assert.ok(h.calls.every(c=>c.capture));assert.equal(h.healthy,false);
+    await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
+  }
+});
+
+test('helper build checks the local Go toolchain and installs its base packages before building',async t=>{
+  const h=await harness(t);
+  const run=h.context.run;
+  h.context.run=async(command,args,flags)=>{
+    if(command==='go')assert.equal(flags.env.GOTOOLCHAIN,'local');
+    return run(command,args,flags);
+  };
+  await deploy(options(['--mode','terminal','--install-deps','--build-forward']),h.context);
+  const go=h.calls.findIndex(c=>c.command==='go'),apt=h.calls.findIndex(c=>c.command==='sudo'&&c.args[1]==='install');
+  const build=h.calls.findIndex(c=>c.args[0]==='scripts/build-forward.mjs');
+  assert.ok(go<apt&&apt<build);assert.ok(h.calls[apt].args.includes('git'));assert.ok(h.calls[apt].args.includes('ca-certificates'));
+});
+
+test('deployment reports the node path and distinguishes task readiness from helper download readiness',async t=>{
+  const h=await harness(t); const origin='https://desk.example.test',path='/node/field-a/';
+  await writeFile(join(h.root,'.env'),'PUBLIC_ORIGIN='+origin+'/\nENTRY_BASE_PATH='+path+'\n');
+  await deploy({},h.context);
+  assert.ok(h.logs.some(line=>line.includes('入口：'+origin+path)));
+  assert.ok(h.logs.some(line=>line.includes('下载包尚未就绪')&&line.includes('npm run build:forward')));
+  const directory=join(h.root,'data','forward-client');await mkdir(directory,{recursive:true});
+  const files=['windows-amd64','windows-arm64','darwin-arm64','darwin-amd64'].map(arch=>({arch,name:arch.startsWith('windows')?'codex-cloud-forward-'+arch+'.exe':'codex-cloud-forward-macos-'+arch.split('-')[1]+'.zip',size:100,sha256:'a'.repeat(64),build:'test'}));
+  await writeFile(join(directory,'manifest.json'),JSON.stringify({version:1,server:origin+path,files}));
+  h.logs.length=0;h.calls.length=0;await deploy({},h.context);
+  assert.ok(h.logs.some(line=>line.includes('四个平台下载项已发布')&&line.includes('下载核对')));
+  await writeFile(join(directory,'manifest.json'),JSON.stringify({version:1,server:origin+'/',files}));
+  h.logs.length=0;h.calls.length=0;await deploy({},h.context);
+  assert.ok(h.logs.some(line=>line.includes('下载包尚未就绪')));
 });
 
 test('deployment preserves a pending shared-entry activation before setup or service mutations', async t => {

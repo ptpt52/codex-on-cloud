@@ -10,8 +10,8 @@ import { deploymentMode, modeServices } from '../native/deployment-mode.mjs';
 import { configureWSLNetwork } from './wsl-network.mjs';
 import { randomBytes } from 'node:crypto';
 import { acquireDeploymentLease } from './deployment-lease.mjs';
-import { publicationClient, cloudflareTokenFile } from './cloudflare-client.mjs';
 import { readGatewayConnection } from '../native/gateway-config.mjs';
+import { createForwardDownloads } from '../panel/forward-downloads.mjs';
 
 // Keep the version guard reachable even when older Node lacks util.parseEnv.
 const { parseArgs, parseEnv } = util;
@@ -25,14 +25,14 @@ export const help = `用法：npm run deploy -- [选项]
 WSL 镜像网络自动配置 hostAddressLoopback 并备份；重启 WSL 需自行保存任务后执行。
   --check                  只检查，不安装、不修改配置或服务
   --mode desktop|terminal  新部署选择桌面或纯网页终端；默认 desktop，已有模式保持
-  --install-deps           使用 sudo apt-get 按模式安装系统依赖（Ubuntu/Debian）
+  --install-deps           使用 sudo apt-get 按模式安装系统依赖（Ubuntu/Debian）；Node/Go 需单独准备
   --enable-linger          使用 sudo loginctl 启用无人登录时的开机自启
   --skip-wsl-network       保留 Windows WSL 网络配置，不执行自动检查或修改
   --origin URL             新部署的访问根地址；已有 .env 保持不变
   --domain HOST --zone ZONE [--api-token-file FILE]
                            配置 Cloudflare 公网入口；会重启已运行的面板
                            API Token默认读取 secrets/cf_token（0600）
-  --build-forward          构建四平台端口映射助手，需要已有 Go 1.26.4
+  --build-forward          构建四平台端口映射助手，先检查 Go 1.26.4；接入路径变化后需重新构建
   --help                   显示帮助
 保留已有密码和配置，不安装或修改 Codex，不重启桌面。`;
 
@@ -55,9 +55,9 @@ export function options(args) {
   return values;
 }
 
-async function execute(command, args, { cwd, capture = false, lease } = {}) {
+async function execute(command, args, { cwd, capture = false, lease, env } = {}) {
   if (capture) {
-    try { const result = await promisify(execFile)(command, args, {cwd, timeout:15000, maxBuffer:8192}); return {status:0, stdout:result.stdout}; }
+    try { const result = await promisify(execFile)(command, args, {cwd, env, timeout:15000, maxBuffer:8192}); return {status:0, stdout:result.stdout}; }
     catch (error) { return {status:typeof error.code === 'number' ? error.code : 1, stdout:error.stdout || ''}; }
   }
   if (lease?.runTerminal) return lease.runTerminal(command, args, { cwd, timeout: 1800000 });
@@ -116,12 +116,12 @@ export async function deploy(values, context = {}) {
   try { return await deployUnderLease(values, { ...context, lease, operationId: randomBytes(16).toString('hex') }); }
   finally { await lease.release(); }
 }
-async function deployUnderLease(values, { root = projectRoot, run = execute, health = checkHealth, log = console.log, lease, operationId, publicationFactory = publicationClient,
+async function deployUnderLease(values, { root = projectRoot, run = execute, health = checkHealth, log = console.log, lease, operationId, publicationFactory,
   platform = process.platform, uid = process.getuid?.(), username = userInfo().username, nodeVersion = process.versions.node,
   wslNetwork = configureWSLNetwork } = {}) {
   if (platform !== 'linux') throw new Error('服务端需要 Linux 和 systemd；Mac/Windows 可运行端口映射助手');
   if (uid === 0) throw new Error('请以普通用户运行安装命令；只有显式选择的系统依赖和开机自启步骤使用 sudo');
-  if (Number(nodeVersion.split('.')[0]) < 22) throw new Error('需要 Node.js 22+；安装器不会替换现有 Node 或 Codex');
+  if (Number(nodeVersion.split('.')[0]) < 22) throw new Error('需要 Node.js 22+；请按 docs/node-prerequisites.md 准备工具并检查 PATH。安装器不会替换现有 Node 或 Codex');
   if (values.domain) {
     try { await boundedFile(join(root, 'data/gateway-node.json'), 4096); throw Error('本机使用固定网关，更新本机请省略 --domain；切换请使用 /__nodes/'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -129,14 +129,18 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
     const gateway = readGatewayConnection(root);
     if (gateway && values.origin !== gateway.origin) throw Error('本机使用固定网关，不能通过 --origin 改绑入口');
   }
-  if (values.domain) values = { ...values, 'api-token-file': cloudflareTokenFile(values['api-token-file'], { root }) };
+  if (values.domain) {
+    const { publicationClient, cloudflareTokenFile } = await import('./cloudflare-client.mjs');
+    publicationFactory ||= publicationClient;
+    values = { ...values, 'api-token-file': cloudflareTokenFile(values['api-token-file'], { root }) };
+  }
   let existingMode, existingEnv = {};
   try { existingEnv = parseEnv(await boundedFile(join(root, '.env'), 65536)); existingMode = deploymentMode(existingEnv.DEPLOY_MODE); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const mode = deploymentMode(values.mode || existingMode);
   if (!values.check && existingMode && values.mode && existingMode !== mode) throw Error('已有部署模式不同，不会自动切换或停止任务；请在新部署中选择模式');
   const selectedServices = modeServices(mode);
-  const call = async (command, args, capture = false) => { lease?.check(); const result = await run(command, args, {cwd:root, capture, lease: capture ? undefined : lease}); lease?.check(); return result; };
+  const call = async (command, args, capture = false) => { lease?.check(); const result = await run(command, args, {cwd:root, capture, lease: capture ? undefined : lease, ...(command === 'go' ? { env: { ...process.env, GOTOOLCHAIN: 'local' } } : {})}); lease?.check(); return result; };
   const step = async (label, command, args) => { log(label); if ((await call(command, args)).status !== 0) throw new Error(label + '失败，请处理上述错误后重新运行'); };
   const native = (command) => step('服务：' + command, process.execPath, ['scripts/native.mjs', command, ...(values.check && values.mode ? ['--mode', mode] : [])]);
   const configureWSL = check => !values['skip-wsl-network'] && existingEnv.WEBRTC_ENABLED !== '0'
@@ -146,6 +150,10 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   if (values['api-token-file']) {
     const token = (await boundedFile(resolve(values['api-token-file']), 4096)).trim();
     if (!token || /[\s\0]/.test(token)) throw new Error('Cloudflare API token 文件需为单行 token');
+  }
+  if (values['build-forward']) {
+    const go = await call('go', ['version'], true);
+    if (go.status !== 0 || !/^go version go1\.26\.4 /.test(go.stdout || '')) throw new Error('构建端口映射助手需要 Go 1.26.4，当前 PATH 中没有可用的固定版本。请按 docs/node-prerequisites.md 准备 Node/Go 并检查 PATH；--install-deps 只安装基础系统包。尚未初始化或更改服务。');
   }
   if (values.check) {
     const wsl = await configureWSL(true);
@@ -166,7 +174,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   if (values['install-deps']) {
     if ((await call('apt-get', ['--version'], true)).status !== 0) throw new Error('--install-deps 仅支持有 apt-get 的 Ubuntu/Debian');
     await step('更新系统软件包索引', 'sudo', ['apt-get', 'update']);
-    await step('安装系统依赖', 'sudo', ['apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', '--no-remove', ...(mode === 'terminal' ? ['tmux', 'python3', 'util-linux'] : packages)]);
+    await step('安装系统依赖', 'sudo', ['apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', '--no-remove', ...(mode === 'terminal' ? ['tmux', 'python3', 'util-linux'] : packages), ...(values['build-forward'] ? ['git', 'ca-certificates'] : [])]);
   }
   if (!running) await step('安装锁定的项目依赖', 'npm', ['ci', ...(mode === 'terminal' ? ['--omit=dev', '--omit=optional'] : [])]);
   else log('保留运行中的服务和现有项目依赖。');
@@ -215,7 +223,10 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
     throw error;
   }
   const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
-  log(`部署完成，面板和${mode === 'terminal' ? '终端后台' : '桌面'}已就绪。入口：` + (env.PUBLIC_ORIGIN || 'http://localhost:36080'));
+  const entry = new URL(env.PUBLIC_ORIGIN || 'http://localhost:36080').origin + (env.ENTRY_BASE_PATH && env.ENTRY_BASE_PATH !== '/' ? env.ENTRY_BASE_PATH : '');
+  log(`部署完成，面板和${mode === 'terminal' ? '终端后台' : '桌面'}已就绪。入口：` + entry);
+  const downloads = await createForwardDownloads(join(root, 'data', 'forward-client'), { server: entry }).list();
+  log(downloads.length === 4 ? '端口映射助手：四个平台下载项已发布，请在网页“端口映射”中下载核对。' : '端口映射助手：下载包尚未就绪或不匹配当前入口。需要远程调试时，请完成最终节点接入后运行 npm run build:forward，再在网页“端口映射”中核对四项下载。');
   log('登录信息：' + join(root, 'secrets', 'credentials.txt') + '（密码不打印到日志）');
   if (wsl?.restartRequired) log('WSL 网络配置待生效：保存任务后重启 WSL，再刷新网页验证直连；wsl --shutdown 会结束所有 WSL 任务。');
   if (!env.PUBLIC_ORIGIN?.startsWith('https://')) log('本机访问使用 localhost；远程服务器可通过 SSH 本地端口转发访问，或按 README 配置 Cloudflare 公网入口。');
