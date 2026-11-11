@@ -43,6 +43,59 @@ async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
   return { center, directory, origin, port, closed, request, login, legacyToken, get cookie() { return cookie; }, get csrf() { return csrf; } };
 }
 
+for (const action of ['create', 'update', 'reissue', 'revoke', 'disconnect']) test(`logout rejects a delayed administrator ${action} request without changing registry state`, async t => {
+  const h = await setup(t); await h.login();
+  const key = await h.center.registry.createKey({ name: 'Original node', slug: 'original' });
+  const routes = {
+    create: ['POST', '/admin/api/keys', { name: 'Late node', slug: 'late' }],
+    update: ['PATCH', '/admin/api/keys/' + key.id, { name: 'Late rename' }],
+    reissue: ['POST', '/admin/api/keys/' + key.id + '/reissue', { neverExpires: true }],
+    revoke: ['DELETE', '/admin/api/keys/' + key.id, {}],
+    disconnect: ['POST', '/admin/api/nodes/original/disconnect', {}],
+  };
+  const before = await readFile(join(h.directory, 'center', 'state.json'), 'utf8');
+  const [method, path, body] = routes[action], text = JSON.stringify(body), started = once(h.center.server, 'request');
+  let pending;
+  const result = new Promise((resolve, reject) => {
+    pending = http.request(h.origin + path, { method, headers: { origin: h.origin, cookie: h.cookie, 'x-csrf-token': h.csrf, 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) } }, res => {
+      res.resume(); res.once('end', () => resolve(res.statusCode));
+    });
+    pending.once('error', reject); pending.write(text.slice(0, 1));
+  });
+  t.after(() => pending.destroy()); await started;
+  assert.equal((await h.request('/admin/api/logout', { method: 'POST', body: {} })).status, 200);
+  pending.end(text.slice(1));
+  assert.equal(await result, 401);
+  assert.equal(await readFile(join(h.directory, 'center', 'state.json'), 'utf8'), before);
+});
+
+test('administrator reads revalidate their session after waiting for registry work', async t => {
+  const h = await setup(t); await h.login();
+  let release; h.center.registry.queue = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const started = once(h.center.server, 'request'), response = h.request('/admin/api/overview'); await started;
+  await h.request('/admin/api/logout', { method: 'POST', body: {} }); release();
+  assert.equal((await response).status, 401);
+});
+
+test('logout rejects a complete administrator write queued behind other registry work', async t => {
+  const h = await setup(t); await h.login();
+  let release, entered; h.center.registry.queue = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const queued = new Promise(resolve => { entered = resolve; }), create = h.center.registry.createKey.bind(h.center.registry);
+  t.mock.method(h.center.registry, 'createKey', (...args) => { const result = create(...args); entered(); return result; });
+  const response = h.request('/admin/api/keys', { method: 'POST', body: { name: 'Queued node', slug: 'queued' } }); await queued;
+  await h.request('/admin/api/logout', { method: 'POST', body: {} }); release();
+  assert.equal((await response).status, 401); assert.deepEqual(await h.center.registry.list(), []);
+});
+
+test('center bounds password verification concurrency and accepts login after busy requests drain', async t => {
+  const h = await setup(t);
+  const responses = await Promise.all(Array.from({ length: 8 }, () => h.request('/admin/api/login', { method: 'POST', authenticated: false, body: { username: 'admin', password: 'center_password_very_long_123' } })));
+  assert(responses.some(response => response.status === 200));
+  assert(responses.some(response => response.status === 429));
+  for (const response of responses) assert([200, 429].includes(response.status));
+  assert.equal((await h.login()).status, 200);
+});
+
 test('central login, Host, Origin, CSRF and private state protect key management', async t => {
   const h = await setup(t);
   const page = await h.request('/admin/', { authenticated: false }); assert.equal(page.status, 200);

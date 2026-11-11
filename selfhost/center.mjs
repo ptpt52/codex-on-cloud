@@ -83,7 +83,7 @@ export async function createSelfhostCenter({
   const failures = new Map(), joinRequests = new Map(), turnRequests = new Map(), publicRequests = new Map();
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
-  let closing = false, timer;
+  let closing = false, timer, loginBusy = 0;
 
   const hostAllowed = req => allowedHosts.has(String(req.headers.host || '').toLowerCase()) || loopbackAddress(req.socket.remoteAddress) && internalHosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => req.headers.origin === parsed.origin;
@@ -143,10 +143,15 @@ export async function createSelfhostCenter({
     if (path === '/admin/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw selfhostError(403, '请求来源无效');
       const client = clientAddress(req); rate(failures, client, 8, 15 * 60_000);
-      const body = await jsonBody(req, 4096), valid = await auth.verify(canonicalLoginUsername(body.username, login), body.password);
+      const body = await jsonBody(req, 4096);
+      if (loginBusy >= 2) throw selfhostError(429, '正在验证密码，请稍后重试');
+      loginBusy++; let valid;
+      try { valid = await auth.verify(canonicalLoginUsername(body.username, login), body.password); }
+      finally { loginBusy--; }
       if (!valid) throw selfhostError(401, '管理员用户名或密码错误');
       failures.delete(client);
       const created = await auth.create({ role: 'admin' });
+      if (closing || res.destroyed || !auth.get(created.token)) throw selfhostError(401, '登录已失效，请重新登录');
       return reply(res, 200, { ok: true, csrf: created.session.csrf, username }, { 'set-cookie': [sessionCookie(created.token, authConfig), sessionCookie('', { ...authConfig, nodeId: 'center', entryBasePath: '/' }, true)] });
     }
     if (path === '/api/join' && req.method === 'POST') {
@@ -189,24 +194,35 @@ export async function createSelfhostCenter({
     if (!path.startsWith('/admin/')) throw selfhostError(404, '资源不存在');
     path = path.slice('/admin'.length);
     const current = requireSession(req);
+    // Recheck after a slow body, queued registry operation, and immediately
+    // before the atomic state commit. A prior check cannot authorize later work.
+    const valid = () => {
+      requireWrite(req);
+      if (closing || res.destroyed) throw selfhostError(409, '管理操作已取消');
+    };
+    const adminReply = (status, value) => { requireSession(req); return reply(res, status, value); };
+    const mutate = async (limit, action) => {
+      requireWrite(req, current); const body = await jsonBody(req, limit); valid();
+      return adminReply(200, await action(body, { valid }));
+    };
     if (path === '/api/me' && req.method === 'GET') return reply(res, 200, { username, csrf: current.csrf, host: parsed.host });
     if (path === '/api/logout' && req.method === 'POST') {
       requireWrite(req, current); await auth.revoke(cookieToken(req.headers.cookie, authConfig));
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', authConfig, true) });
     }
-    if (path === '/api/overview' && req.method === 'GET') return reply(res, 200, { ...await registry.snapshot(), username, csrf: current.csrf, host: parsed.host, turn: !!turnSecret });
-    if (path === '/api/status' && req.method === 'GET') return reply(res, 200, { ...await registry.status(), host: parsed.host, turn: !!turnSecret });
-    if (path === '/api/keys' && req.method === 'GET') return reply(res, 200, { revision: (await registry.status()).revision, keys: await registry.list() });
+    if (path === '/api/overview' && req.method === 'GET') return adminReply(200, { ...await registry.snapshot(), username, csrf: current.csrf, host: parsed.host, turn: !!turnSecret });
+    if (path === '/api/status' && req.method === 'GET') return adminReply(200, { ...await registry.status(), host: parsed.host, turn: !!turnSecret });
+    if (path === '/api/keys' && req.method === 'GET') { const { revision, keys } = await registry.snapshot(); return adminReply(200, { revision, keys }); }
     if (path === '/api/keys' && req.method === 'POST') {
-      requireWrite(req, current); const body = await jsonBody(req, 4096), value = await registry.createKey(body);
-      return reply(res, 201, value);
+      requireWrite(req, current); const body = await jsonBody(req, 4096); valid();
+      return adminReply(201, await registry.createKey(body, { valid }));
     }
     const reissue = path.match(/^\/api\/keys\/([a-f0-9]{32})\/reissue$/);
-    if (reissue && req.method === 'POST') { requireWrite(req, current); return reply(res, 200, await registry.reissueKey(reissue[1], await jsonBody(req, 4096))); }
+    if (reissue && req.method === 'POST') return mutate(4096, (body, options) => registry.reissueKey(reissue[1], body, options));
     const key = path.match(/^\/api\/keys\/([a-f0-9]{32})$/), node = path.match(/^\/api\/nodes\/([a-z0-9-]{1,48})\/disconnect$/);
-    if (key && req.method === 'PATCH') { requireWrite(req, current); return reply(res, 200, await registry.updateKey(key[1], await jsonBody(req, 4096))); }
-    if (key && req.method === 'DELETE') { requireWrite(req, current); return reply(res, 200, await registry.revoke(key[1], await jsonBody(req, 1024))); }
-    if (node && req.method === 'POST') { requireWrite(req, current); return reply(res, 200, await registry.disconnect(node[1], await jsonBody(req, 1024))); }
+    if (key && req.method === 'PATCH') return mutate(4096, (body, options) => registry.updateKey(key[1], body, options));
+    if (key && req.method === 'DELETE') return mutate(1024, (body, options) => registry.revoke(key[1], body, options));
+    if (node && req.method === 'POST') return mutate(1024, (body, options) => registry.disconnect(node[1], body, options));
     throw selfhostError(404, '资源不存在');
   }
 

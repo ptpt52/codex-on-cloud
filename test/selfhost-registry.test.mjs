@@ -17,6 +17,20 @@ async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
 
 const metadata = (credential, slug, nodeId) => ({ credential, slug, nodeId });
 
+test('registry authorization is checked again before publishing an asynchronous mutation', async t => {
+  const { registry, directory } = await setup(t);
+  await registry.createKey({ name: 'Original', slug: 'original' });
+  const before = await readFile(join(directory, 'state.json'), 'utf8');
+  let permitted = true, entered, release;
+  const started = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  const result = registry.mutate(async ({ value }) => { entered(); await gate; value.keys[0].name = 'Unauthorized change'; }, {
+    valid() { if (!permitted) throw Object.assign(Error('Session revoked'), { status: 401 }); },
+  });
+  await started; permitted = false; release(); await assert.rejects(result, { status: 401 });
+  assert.equal(await readFile(join(directory, 'state.json'), 'utf8'), before);
+  assert.equal((await registry.list())[0].name, 'Original');
+});
+
 test('the online owner can refresh configuration without resetting its live lease or admitting a second peer', async t => {
   const { registry } = await setup(t), key = await registry.createKey({ name: 'online', slug: 'online' }), node = { id: 'a'.repeat(32), mode: 'terminal' };
   const first = await registry.join({ version: 1, slug: key.slug, key: key.key, node });

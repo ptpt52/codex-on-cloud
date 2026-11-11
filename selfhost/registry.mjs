@@ -40,8 +40,9 @@ export class SelfhostRegistry {
     this.text = text; return this;
   }
 
-  mutate(action, { safety = false } = {}) {
+  mutate(action, { safety = false, valid = () => {} } = {}) {
     const operation = this.queue.then(async () => {
+      valid();
       const value = structuredClone(this.value);
       const sessions = new Map([...this.sessions].map(([key, session]) => [key, { ...session }]));
       const result = await action({ value, sessions, now: this.now(), close: [] });
@@ -55,7 +56,7 @@ export class SelfhostRegistry {
       }
       if (Buffer.byteLength(text) > limit) throw selfhostError(413, '中心状态容量不足，请清理或减少新增授权；撤销操作保留独立空间');
       await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
-      await writeStateFile(this.file, text, { expected: this.text });
+      await writeStateFile(this.file, text, { expected: this.text, valid });
       this.value = value; this.sessions = sessions; this.text = text;
       for (const item of result?.close || []) await this.onClose(item.slug, item.reason);
       return result?.value;
@@ -72,7 +73,7 @@ export class SelfhostRegistry {
 
   findKey(value, keyId) { return value.keys.find(item => item.id === keyId); }
 
-  async createKey(input = {}) {
+  async createKey(input = {}, options) {
     const name = displayName(input.name), nodeSlug = slug(input.slug), expiresAt = keyExpiration(input, this.now());
     return this.mutate(({ value, now, close }) => {
       this.checkRevision(value, input);
@@ -80,7 +81,7 @@ export class SelfhostRegistry {
       const token = this.random('coc_'), item = { id: tokenHash(token).slice(0, 32), slug: nodeSlug, name, keyHash: tokenHash(token), credentialHash: null, createdAt: now, expiresAt, revokedAt: null };
       value.keys.push(item); this.audit(value, 'key_created', item, now);
       return { value: { ...publicKey(item, null, now), key: token }, close };
-    });
+    }, options);
   }
 
   keyStatus(item, now) { return item.revokedAt ? 'revoked' : item.expiresAt !== null && item.expiresAt <= now ? 'expired' : 'ready'; }
@@ -132,7 +133,7 @@ export class SelfhostRegistry {
     if (input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision !== value.revision)) throw selfhostError(409, '节点信息已变化，请刷新列表后重新确认操作');
   }
 
-  async updateKey(keyId, input = {}) {
+  async updateKey(keyId, input = {}, options) {
     if (!Object.keys(input).some(key => ['name', 'expiresAt', 'neverExpires'].includes(key)) || Object.keys(input).some(key => !['name', 'expiresAt', 'neverExpires', 'revision'].includes(key))) throw selfhostError(400, '可修改显示名称和授权有效期，节点路径保持固定');
     return this.mutate(({ value, sessions, now, close }) => {
       this.checkRevision(value, input);
@@ -141,10 +142,10 @@ export class SelfhostRegistry {
       if (Object.hasOwn(input, 'expiresAt') || Object.hasOwn(input, 'neverExpires')) item.expiresAt = keyExpiration(input, now);
       this.audit(value, 'key_updated', item, now);
       return { value: publicKey(item, this.visibleSession(sessions.get(item.slug), now), now), close };
-    });
+    }, options);
   }
 
-  async reissueKey(keyId, input = {}) {
+  async reissueKey(keyId, input = {}, options) {
     if (typeof input.neverExpires !== 'boolean' || Object.keys(input).some(key => !['expiresAt', 'neverExpires', 'revision'].includes(key))) throw selfhostError(400, '重新授权需明确选择有效期');
     return this.mutate(({ value, sessions, now, close }) => {
       this.checkRevision(value, input);
@@ -154,7 +155,7 @@ export class SelfhostRegistry {
       if (sessions.delete(item.slug)) close.push({ slug: item.slug, reason: 'authorization_reissued' });
       this.audit(value, 'key_reissued', item, now);
       return { value: { ...publicKey(item, null, now), key: token }, close };
-    });
+    }, options);
   }
 
   async routeAllowed(nodeSlug) {
@@ -214,24 +215,24 @@ export class SelfhostRegistry {
     return this.mutate(draft => this.joinPlan(input, draft, this.now(), []));
   }
 
-  async revoke(keyId, input = {}) {
+  async revoke(keyId, input = {}, options) {
     return this.mutate(({ value, sessions, now, close }) => {
       this.checkRevision(value, input);
       const item = this.findKey(value, keyId); if (!item) throw selfhostError(404, '授权不存在');
       if (item.revokedAt) return { value: publicKey(item, sessions.get(item.slug), now), close };
       item.revokedAt = now; item.credentialHash = null; sessions.delete(item.slug); close.push({ slug: item.slug, reason: 'authorization_revoked' }); this.audit(value, 'key_revoked', item, now);
       return { value: publicKey(item, null, now), close };
-    }, { safety: true });
+    }, { ...options, safety: true });
   }
 
-  async disconnect(nodeSlug, input = {}) {
+  async disconnect(nodeSlug, input = {}, options) {
     return this.mutate(({ value, sessions, now, close }) => {
       this.checkRevision(value, input);
       const item = value.keys.find(key => key.slug === nodeSlug); if (!item) throw selfhostError(404, '节点授权不存在');
       if (!sessions.delete(nodeSlug)) throw selfhostError(409, '节点当前未接入');
       close.push({ slug: nodeSlug, reason: 'disconnected_by_admin' }); this.audit(value, 'node_disconnected', item, now);
       return { value: { ok: true }, close };
-    }, { safety: true });
+    }, { ...options, safety: true });
   }
 
   async leave(input = {}) {
