@@ -39,7 +39,7 @@ class CiAptTests(unittest.TestCase):
         self.assertEqual(source.read_text(), expected)
         CI_APT.prepare_apt(self.root)
         self.assertEqual(source.read_text(), expected)
-        self.assertEqual((self.root / "apt.conf.d/99-codex-ci-network").read_text(), CI_APT.APT_CONFIG)
+        self.assertTrue((self.root / "apt.conf.d/99-codex-ci-network").read_text().startswith(CI_APT.APT_CONFIG))
 
     def test_legacy_azure_and_http_sources_keep_options_and_third_party_repositories(self):
         source = self.root / "sources.list"
@@ -90,6 +90,26 @@ class CiAptTests(unittest.TestCase):
             self.assertFalse(CI_APT.archive_available(CI_APT.ARCHIVES[1]))
         with patch.object(CI_APT.subprocess, "run", side_effect=subprocess.TimeoutExpired("curl", 50)):
             self.assertFalse(CI_APT.archive_available(CI_APT.ARCHIVES[1]))
+
+    def test_effective_apt_sources_and_indexes_remain_pinned_if_runner_sources_change(self):
+        source = self.root / "sources.list"
+        original = "deb mirror+file:/etc/apt/apt-mirrors.txt noble main\n"
+        source.write_text(original)
+        archive = CI_APT.ARCHIVES[1]
+        CI_APT.prepare_apt(self.root, archive)
+        # Reproduce a source reset between prepare and Playwright's apt calls.
+        source.write_text(original)
+        config = str(self.root / "apt.conf.d/99-codex-ci-network")
+        result = subprocess.run(["apt-get", "-c", config, "--print-uris", "update"], check=True, capture_output=True, text=True, timeout=10)
+        self.assertIn(archive + "/dists/noble/InRelease", result.stdout)
+        self.assertIn(archive + "/dists/noble-security/InRelease", result.stdout)
+        self.assertNotIn("mirror+file", result.stdout)
+        self.assertNotIn("azure.archive", result.stdout)
+        dumped = subprocess.run(["apt-config", "-c", config, "dump"], check=True, capture_output=True, text=True, timeout=10).stdout
+        self.assertIn(str(self.root / "codex-ci-lists"), dumped)
+        generated = (self.root / "codex-ci.sources").read_text()
+        self.assertIn("Components: main restricted universe multiverse", generated)
+        self.assertIn("Signed-By: " + CI_APT.KEYRING, generated)
 
     def test_unknown_sources_fail_before_writing_network_configuration(self):
         source = self.root / "sources.list"

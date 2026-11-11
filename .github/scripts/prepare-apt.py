@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import json
 
 
 ARCHIVES = (
@@ -24,6 +25,8 @@ Acquire::Retries "2";
 Acquire::http::Timeout "30";
 Acquire::https::Timeout "30";
 APT::Update::Error-Mode "any";
+Dir::Cache::pkgcache "";
+Dir::Cache::srcpkgcache "";
 """
 
 
@@ -54,7 +57,7 @@ def choose_archive(probe=archive_available):
     raise RuntimeError("No reachable Ubuntu archive with a valid Ubuntu signature")
 
 
-def prepare_apt(apt_root, archive=ARCHIVES[0]):
+def prepare_apt(apt_root, archive=ARCHIVES[0], lists_root=None):
     if archive not in ARCHIVES:
         raise ValueError("Unsupported CI archive")
     sources = [apt_root / "sources.list"]
@@ -79,7 +82,33 @@ def prepare_apt(apt_root, archive=ARCHIVES[0]):
         raise RuntimeError("No supported Ubuntu apt sources found; refusing to continue")
     for path, updated in updates:
         path.write_text(updated)
-    (apt_root / "apt.conf.d" / "99-codex-ci-network").write_text(APT_CONFIG)
+    # Install commands must not switch back to the runner's mirror transport,
+    # or lose the freshly downloaded indexes to an image cleanup hook.
+    source = apt_root / "codex-ci.sources"
+    parts = apt_root / "codex-ci-sources.list.d"
+    parts.mkdir(exist_ok=True)
+    lists_root = lists_root or apt_root / "codex-ci-lists"
+    (lists_root / "partial").mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        "Types: deb\nURIs: " + archive + "\n"
+        "Suites: noble noble-updates noble-backports noble-security\n"
+        "Components: main restricted universe multiverse\nArchitectures: amd64\n"
+        "Signed-By: " + KEYRING + "\n"
+    )
+    configured = APT_CONFIG + "".join(
+        key + " " + json.dumps(str(path)) + ";\n" for key, path in (
+            ("Dir::Etc::sourcelist", source), ("Dir::Etc::sourceparts", parts),
+            ("Dir::State::lists", lists_root),
+        )
+    )
+    (apt_root / "apt.conf.d" / "99-codex-ci-network").write_text(configured)
+
+
+def verify_effective_sources(archive):
+    result = subprocess.run(["apt-get", "--print-uris", "update"], capture_output=True, text=True, check=True, timeout=15)
+    urls = re.findall(r"'([^']+)'", result.stdout)
+    if len(result.stdout) > 65536 or not urls or any(not url.startswith(archive + "/dists/") for url in urls):
+        raise RuntimeError("Effective apt sources differ from the verified CI archive")
 
 
 if __name__ == "__main__":
@@ -89,5 +118,6 @@ if __name__ == "__main__":
     if "ID=ubuntu" not in release or 'VERSION_ID="24.04"' not in release:
         raise SystemExit("Expected the pinned Ubuntu 24.04 runner")
     archive = choose_archive()
-    prepare_apt(Path("/etc/apt"), archive)
+    prepare_apt(Path("/etc/apt"), archive, Path("/var/lib/apt/codex-ci-lists"))
+    verify_effective_sources(archive)
     print("Prepared verified Ubuntu HTTPS archive and bounded apt retries: " + archive)
