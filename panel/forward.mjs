@@ -11,7 +11,7 @@ import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
 import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
 
-export const FORWARD_LIMITS = Object.freeze({ mappings: 4, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
+export const FORWARD_LIMITS = Object.freeze({ mappings: 4, managedMappings: 32, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
 const digest = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -85,7 +85,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (mappings.get(item.id) !== item) return;
     mappings.delete(item.id); clearTimeout(item.timer);
     disconnectStreams(item);
-    recent.unshift({ id: item.id, session: item.session, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item), code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
+    recent.unshift({ id: item.id, session: item.session, helperId: item.authorization.helperId, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item), code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
     recent.splice(FORWARD_LIMITS.recent);
     if (item.control) retire(item.control, code);
   }
@@ -114,26 +114,32 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     refresh();
     return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
       mappings: [...mappings.values()].filter(visible).map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
-        createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer },
+        createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer, ...(item.authorization.helperId ? { helperId: item.authorization.helperId, ruleId: item.authorization.ruleId } : {}) },
         hints: { ...item.hints }, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections,
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
       recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
-  function create(body, session, authorizationError, authorization = {}) {
-    refresh();
+  function normalize(body, policy = true) {
     let hints;
     try { hints = rtcHints(body?.hints); } catch (error) { throw fail(400, error.message); }
     if (body && Object.hasOwn(body, 'hints')) { body = { ...body }; delete body.hints; }
     const reversed = body?.direction === 'reverse', serial = reversed && body.protocol === 'serial' ? serialConfig(body.serial) : null;
     const fieldsValid = serial ? Object.keys(body).sort().join(',') === 'deviceName,direction,localPort,protocol,serial' : body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'deviceId', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
-    if (!fieldsValid || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || reversed && blockedPort(body.localPort)) throw fail(400, '监听端口需在 1024–65535 之间，不能占用工作台管理端口');
-    if (!serial && (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || !reversed && blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort))) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
+    if (!fieldsValid || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || policy && reversed && blockedPort(body.localPort)) throw fail(400, '监听端口需在 1024–65535 之间，不能占用工作台管理端口');
+    if (!serial && (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || policy && (!reversed && blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort)))) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
     const targetHost = serial ? undefined : forwardTargetHost(body.targetHost);
     const deviceName = reversed ? forwardDeviceName(body.deviceName ?? '本地设备') : undefined;
     if (reversed && (body.deviceId !== undefined && (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) || body.protocol !== undefined && !['ssh', 'telnet', 'tcp', 'serial'].includes(body.protocol))) throw fail(400, '设备标识或协议无效');
+    body = { ...body, ...(!serial ? { targetHost } : {}), ...(reversed ? { deviceName } : {}) };
+    return { body, hints, reversed, serial, targetHost, deviceName };
+  }
+  function validate(body, { policy = true } = {}) { const value = normalize(body, policy); return { ...value.body, hints: value.hints }; }
+  function create(body, session, authorizationError, authorization = {}) {
+    refresh();
+    const value = normalize(body), { hints, reversed, serial, targetHost, deviceName } = value; body = value.body;
     if (authorizationError()) throw fail(401, '登录授权已失效，请重新登录');
-    if (mappings.size >= FORWARD_LIMITS.mappings) throw fail(409, '最多保留 4 个映射，请先停止不用的映射');
+    if (mappings.size >= FORWARD_LIMITS.managedMappings || !authorization.helperId && [...mappings.values()].filter(item => !item.authorization.helperId).length >= FORWARD_LIMITS.mappings) throw fail(409, authorization.helperId ? '活动映射已达到 32 条上限，请先停用不用的规则' : '最多保留 4 个映射，请先停止不用的映射');
     if ([...mappings.values()].some(item => item.direction === (reversed ? 'reverse' : undefined) && item.localPort === body.localPort && (reversed || item.session === session))) throw fail(409, '该监听端口已有待配对或活动映射');
     const code = secret(), item = { id: randomBytes(16).toString('hex'), session, hints, authorizationError, authorization, createdAt: now(), pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
       localPort: body.localPort, targetHost, targetPort: serial ? undefined : body.targetPort, ...(serial ? { serial } : {}), ...(reversed ? { direction: 'reverse', deviceName, deviceId: body.deviceId, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
@@ -379,5 +385,5 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     controls.close(); streams.close();
     return Promise.allSettled([...listeners, ...[...peers].map(peer => peer.destroy())]);
   }
-  return { list, create, stop, updateHints, revoke, refresh, upgrade, close };
+  return { list, create, validate, stop, updateHints, revoke, refresh, upgrade, close };
 }
