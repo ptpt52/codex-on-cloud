@@ -33,16 +33,17 @@ async function delayed(app, path, value) {
   return { finish() { request.end(body.slice(1)); return response; }, close() { request.destroy(); } };
 }
 
-test('delayed paste, Enter and terminal requests are rejected after takeover, logout, expiry or reclaim', async () => {
+test('delayed paste, Enter and terminal requests are rejected after takeover, logout, expiry or reclaim', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
   for (const scenario of ['takeover', 'logout', 'expiry', 'reclaim']) {
-    const app = await fixture({ sessionMs: scenario === 'expiry' ? 300 : undefined });
+    const app = await fixture({ sessionMs: 60000 });
     try {
       for (const [path, body] of [['/api/paste', { text: 'mock only', target: 'terminal' }], ['/api/key', { key: 'Enter' }], ['/api/terminal', {}]]) {
-        await app.login(); await app.claim();
+        await app.login(); assert.equal((await app.claim()).status, 200);
         const pending = await delayed(app, path, body);
         try {
           if (scenario === 'logout') await app.request('/api/logout', { method: 'POST', body: {} });
-          else if (scenario === 'expiry') await new Promise(resolve => setTimeout(resolve, 330));
+          else if (scenario === 'expiry') now += app.config.sessionMs;
           else { await app.claim('22222222-2222-4222-8222-222222222222'); if (scenario === 'reclaim') await app.claim(); }
           const response = await pending.finish();
           assert.equal(response.status, ['logout', 'expiry'].includes(scenario) ? 401 : 409, `${scenario}: ${path}`);

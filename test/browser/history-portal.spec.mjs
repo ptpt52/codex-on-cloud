@@ -29,7 +29,7 @@ async function exposed(page, frame) {
     const button = await frame.locator('#' + id).boundingBox(); expect(panel.y + panel.height).toBeLessThanOrEqual(button.y);
   }
   const close = page.locator('#history-tools-close');
-  expect(await close.evaluate(el => { const r = el.getBoundingClientRect(); return el.ownerDocument.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el; })).toBe(true);
+  await expect.poll(() => close.evaluate(el => { const r = el.getBoundingClientRect(); return el.ownerDocument.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el; })).toBe(true);
 }
 
 test('find uses the page header on every screen and keeps history controls, text geometry, scroll and selection available', async ({ page }, info) => {
@@ -47,7 +47,11 @@ test('find uses the page header on every screen and keeps history controls, text
     await page.locator('#history-copy-selection').click(); await expect(page.locator('#history-find-state')).toContainText('已复制选区');
     expect((await frame.evaluate(() => window.portalCopies)).length).toBe(1);
     await exposed(page, frame); await page.screenshot({ path: `test-results/${info.project.name}-history-header.png` });
-    await frame.locator('#history-latest').click(); await expect(page.locator('#history-tools')).toHaveCount(0); await expect(archive).toBeHidden();
+    await frame.locator('#history-latest').click(); await expect(archive).toBeHidden();
+    await expect(page.locator('#history-tools')).toBeVisible(); await expect(page.locator('#history-query')).toHaveValue('ROW-12');
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled(); await exposed(page, frame); expect(await dimensions(frame)).toEqual(size);
+    await page.locator('#history-tools-close').click(); await expect(page.locator('#history-tools')).toHaveCount(0);
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
     expect(app.terminalInputs).toEqual([]); expect(app.terminalConnections).toBe(1); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });

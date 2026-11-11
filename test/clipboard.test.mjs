@@ -75,16 +75,17 @@ test('clipboard read is exclusive with inputs, desktop actions and other reads, 
   assert.equal(JSON.stringify(app.controls.status()).includes('private preview'), false);
 });
 
-test('clipboard contents are discarded when ownership, login or the claim generation changes during read', async () => {
+test('clipboard contents are discarded when ownership, login or the claim generation changes during read', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
   for (const scenario of ['takeover', 'reclaim', 'logout', 'expiry']) {
     const hold = gate(), started = gate();
-    const app = await fixture({ sessionMs: scenario === 'expiry' ? 300 : undefined, clipboardHook: async () => { started.release(); await hold.promise; } });
+    const app = await fixture({ sessionMs: 60000, clipboardHook: async () => { started.release(); await hold.promise; } });
     try {
-      await app.login(); await app.claim(); app.clipboardText.primary = 'never return this late text';
+      await app.login(); assert.equal((await app.claim()).status, 200); app.clipboardText.primary = 'never return this late text';
       const pending = app.request('/api/clipboard/read', { method: 'POST', body: { source: 'primary' } });
       await started.promise;
       if (scenario === 'logout') await app.request('/api/logout', { method: 'POST', body: {} });
-      else if (scenario === 'expiry') await new Promise(resolve => setTimeout(resolve, 330));
+      else if (scenario === 'expiry') now += app.config.sessionMs;
       else { await app.claim('22222222-2222-4222-8222-222222222222'); if (scenario === 'reclaim') await app.claim(); }
       hold.release(); const response = await pending;
       assert.equal(response.status, ['logout', 'expiry'].includes(scenario) ? 401 : 409, scenario);
