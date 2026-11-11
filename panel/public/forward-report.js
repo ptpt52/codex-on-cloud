@@ -16,7 +16,7 @@ export function forwardReport(data, now = Date.now()) {
   const code = value => CODES.has(value) ? value : '无/未知';
   const rows = ['Codex Cloud 映射诊断 v1', '采集时间：' + date(now), '地址、端口、设备名、映射标识及凭据均已省略。',
     'TCP 每映射并发上限：' + number(data.maxConnections) + '；串口单客户端；助手 20 条上限仅限制状态提示，不限制连接。',
-    '锁屏保留授权；来源登录退出/到期/撤销、明确停止及面板重启会结束映射。'];
+    '一次性配对：锁屏保留授权；来源登录退出/到期/撤销、明确停止及面板重启会结束映射。'];
   for (const [i, item] of (data.mappings || []).slice(0, 4).entries()) {
     const direct = item.direct || {}, target = item.targetStatus?.state;
     rows.push('映射 ' + (i + 1) + '：' + (item.direction === 'reverse' ? '服务器访问本地设备' : '本机访问服务器'),

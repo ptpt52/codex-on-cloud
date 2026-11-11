@@ -4,8 +4,9 @@ import { nodeLink } from './node-scope.js';
 import { forwardReport, forwardFaultArea } from './forward-report.js';
 import { rtcHints } from './rtc-hints.js';
 import { rtcRouteKind, rtcRouteLabel } from './rtc-stats.js';
+import { createForwardAgentsUI } from './forward-agents-ui.js';
 
-// The browser grants one short-lived capability; raw TCP bytes never enter it.
+// The browser manages desired rules or one-time grants; TCP bytes never enter it.
 export function createForwardUI({ api, allowed, hints = () => ({}), capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }),
   prepareDownloads = () => false, downloadClient = () => null, downloadRoute = () => null, saveDownload }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
@@ -15,6 +16,18 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   let devices = [], mappings = [], selectedDevice = '', pendingDelete = '', deviceSignature = '', connectionId = '';
   let policySignature = '', reportText = '';
   let downloadController, downloadMessage = '';
+  const agentsUI = createForwardAgentsUI({ api, allowed: () => allowed() && capabilities().manageDevices, visible: () => dialog.open && !document.hidden,
+    blocked: () => busy, setBusy: value => { busy = value; update(); }, changed: update, selectionChanged: () => { clearCode(); clearConnection(); selectedDevice = ''; update(); }, edit: config => {
+      clearCode(); clearConnection(); selectedDevice = '';
+      $('forward-direction').value = config.direction === 'reverse' ? 'reverse' : 'forward';
+      $('forward-local').value = config.localPort; $('forward-host').value = config.targetHost || '127.0.0.1'; $('forward-target').value = config.targetPort || 22;
+      $('forward-device-name').value = config.deviceName || ''; $('forward-protocol').value = config.protocol || 'tcp';
+      if (config.serial) {
+        $('forward-serial-path').value = config.serial.path; $('forward-serial-baud').value = config.serial.baud; $('forward-serial-bits').value = config.serial.dataBits;
+        $('forward-serial-parity').value = config.serial.parity; $('forward-serial-stop').value = config.serial.stopBits; $('forward-serial-dtr').checked = config.serial.dtr; $('forward-serial-rts').checked = config.serial.rts;
+      }
+      renderDirection();
+    } });
   function downloadStatus() {
     const path = { direct: '直连', relay: 'TURN 中继', unknown: '路径待确认' }[rtcRouteKind(downloadRoute())];
     $('forward-download-status').textContent = downloadMessage || (downloadClient() && globalThis.crypto?.subtle ? `助手下载：WebRTC 加密通道已就绪（${path}）` : '助手下载：HTTPS；WebRTC 就绪后优先使用');
@@ -150,7 +163,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   }
   function clearCode() { codeId = ''; codeExpires = 0; $('forward-code').value = ''; $('forward-pair').hidden = true; }
   function cancel() { generation++; controller?.abort(); controller = null; clearTimeout(timer); timer = null; busy = false; }
-  function reset() { clearReport(); cancelDownload(); cancel(); clearCode(); clearConnection(); devices = []; mappings = []; selectedDevice = ''; pendingStop = pendingDelete = ''; deviceSignature = ''; $('forward-device-list').replaceChildren(); if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
+  function reset() { clearReport(); cancelDownload(); cancel(); clearCode(); clearConnection(); agentsUI.reset(); devices = []; mappings = []; selectedDevice = ''; pendingStop = pendingDelete = ''; deviceSignature = ''; $('forward-device-list').replaceChildren(); if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
   function update() {
     const permission = capabilities(), signature = JSON.stringify(permission);
     if (policySignature && policySignature !== signature) {
@@ -166,7 +179,10 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     renderDirection(false);
     $('forward-button').disabled = !allowed();
     if (!allowed()) reset();
-    $('forward-create').disabled = !allowed() || busy || !room || !policyReady || !portsEnabled;
+    agentsUI.update();
+    $('forward-create').disabled = !allowed() || busy || !agentsUI.selected && !room || !policyReady || !portsEnabled || agentsUI.stale;
+    $('forward-create').textContent = agentsUI.selected ? agentsUI.editing ? '保存并应用规则' : '添加规则并应用' : '生成一次性配对码';
+    if (agentsUI.selected) $('forward-device-actions').hidden = true;
     $('forward-refresh').disabled = !allowed() || busy;
     $('forward-local').disabled = busy; $('forward-host').disabled = $('forward-target').disabled = busy || serialMode();
     $('forward-helper-ip').disabled = busy;
@@ -189,6 +205,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     } finally { clearTimeout(deadline); if (controller === abort) controller = null; }
   }
   function render(data) {
+    agentsUI.support(data.managedHelpersProtocol === 1);
     const directions = capabilities().directions;
     data = { ...data, mappings: data.mappings.filter(item => directions.includes(item.direction === 'reverse' ? 'reverse' : 'forward')),
       recent: (data.recent || []).filter(item => directions.includes(item.direction === 'reverse' ? 'reverse' : 'forward')) };
@@ -264,14 +281,15 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   async function load() {
     const current = generation;
     clearTimeout(timer); timer = null;
-    if (!allowed() || !dialog.open || document.hidden || busy || controller) return;
+    if (!allowed() || !dialog.open || document.hidden) return;
+    if (busy || controller) { timer = setTimeout(load, 3000); return; }
     const data = await request('/api/forward');
-    if (data) render(data);
-    if (generation === current && allowed() && dialog.open && !document.hidden && !busy) timer = setTimeout(load, 3000);
+    if (data) { render(data); void agentsUI.refresh(); }
+    if (generation === current && allowed() && dialog.open && !document.hidden) timer = setTimeout(load, 3000);
   }
   $('forward-button').addEventListener('click', () => { cancel(); clearCode(); policyReady = false; portsEnabled = false; update(); $('forward-status').textContent = ''; $('forward-mac-help').open = platform.os === 'darwin'; dialog.showModal(); prepareDownloads(); downloadStatus(); detectPlatform(); void load(); });
   $('forward-close').addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => { clearReport(); cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); });
+  dialog.addEventListener('close', () => { clearReport(); cancel(); clearCode(); clearConnection(); agentsUI.reset(); if (confirmation.open) confirmation.close(); });
   $('forward-direction').addEventListener('change', () => { clearCode(); clearConnection(); if (reversed() && $('forward-local').value === '2222') $('forward-local').value = '22001'; else if (!reversed() && $('forward-local').value === '22001') $('forward-local').value = '2222'; renderDirection(); });
   $('forward-protocol').addEventListener('change', () => { if (serialMode()) selectedDevice = ''; renderDirection(); void load(); if (['22', '23'].includes($('forward-target').value)) { if ($('forward-protocol').value === 'ssh') $('forward-target').value = '22'; if ($('forward-protocol').value === 'telnet') $('forward-target').value = '23'; } });
   $('forward-device-new').addEventListener('click', () => { selectedDevice = ''; renderDirection(); });
@@ -302,6 +320,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
         body.deviceId = selectedDevice;
       }
     }
+    if (agentsUI.selected) { delete body.deviceId; await agentsUI.save(body); void load(); return; }
     busy = true; clearTimeout(timer); update(); $('forward-status').textContent = '正在生成配对码…'; clearCode();
     const data = await request('/api/forward', { method: 'POST', body });
     if (generation !== current || !allowed() || !dialog.open) return;
@@ -336,14 +355,15 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     busy = false; update(); if (data) $('forward-status').textContent = deleting ? '设备条目已删除，现有授权保持不变。' : '映射已停止。'; void load();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { clearReport(); cancelDownload(); cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); }
+    if (document.hidden) { clearReport(); cancelDownload(); cancel(); clearCode(); clearConnection(); agentsUI.reset(); if (confirmation.open) confirmation.close(); }
     else if (dialog.open) { update(); void load(); }
   });
   window.addEventListener('pagehide', reset);
   async function copyReport() {
     if (!reportText || !allowed() || !dialog.open) return;
-    const text = reportText, current = generation;
-    const valid = () => generation === current && allowed() && dialog.open && reportText === text;
+    const content = () => (reportText + (agentsUI.report ? '\n\n' + agentsUI.report : '')).slice(0, 32768);
+    const text = content(), current = generation;
+    const valid = () => generation === current && allowed() && dialog.open && content() === text;
     $('forward-diagnostics-text').value = text; $('forward-diagnostics').hidden = false;
     try { await navigator.clipboard.writeText(text); if (valid()) $('forward-status').textContent = '脱敏报告已复制；未包含目标地址、设备名或任何凭据。'; }
     catch { if (valid()) { $('forward-diagnostics-text').focus(); $('forward-diagnostics-text').select(); $('forward-status').textContent = '请复制已选中的报告文字。'; } }
@@ -352,5 +372,5 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   $('forward-diagnostics-select')?.addEventListener('click', copyReport);
   $('forward-diagnostics-close')?.addEventListener('click', () => { $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; });
   renderDirection();
-  return { update, reset, get busy() { return busy || !!downloadController; } };
+  return { update, reset, get busy() { return busy || agentsUI.busy || !!downloadController; } };
 }

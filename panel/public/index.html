@@ -280,11 +280,22 @@
     <p id="forward-mac-notice" class="muted" hidden><strong>Mac 首次运行：</strong>若提示“Apple 无法验证”，进入“系统设置 → 隐私与安全性”，对 codex-cloud-forward 点击“仍要打开”，确认后重新运行 Start.command。完整步骤见下方说明。</p>
     <details id="forward-mac-help" class="forward-mac-help" hidden>
       <summary>Mac 首次运行 / Apple 无法验证时怎么办</summary>
-      <p>需要 macOS 12 或更新版本。解压 ZIP，双击 Start.command，在终端窗口粘贴配对码。本版尚未进行 Developer ID 签名及 Apple 公证，首次运行可能出现“Apple 无法验证 codex-cloud-forward”的提示。</p>
+      <p>需要 macOS 12 或更新版本。解压 ZIP，双击 Start.command，在终端窗口粘贴助手 key 或一次性配对码。本版尚未进行 Developer ID 签名及 Apple 公证，首次运行可能出现“Apple 无法验证 codex-cloud-forward”的提示。</p>
       <ol><li>确认下载来源并核对网页显示的 ZIP SHA256，然后尝试打开程序。出现验证提示时，点击“完成”或“取消”。</li><li>进入“系统设置 → 隐私与安全性”，向下滚动到“安全性”，找到刚被阻止的 codex-cloud-forward，点击“仍要打开”，并按系统提示确认。</li><li>重新双击 Start.command。如果提示阻止的是 Start.command，也需对该文件按上述步骤确认。</li></ol>
       <p>没有看到“仍要打开”时，先在解压文件夹中双击 codex-cloud-forward，再返回设置查看。按<a href="https://support.apple.com/zh-cn/102445" target="_blank" rel="noopener noreferrer">Apple 官方说明</a>确认此程序即可，无需关闭系统整体安全检查。也可在终端进入该文件夹运行 ./codex-cloud-forward。</p>
     </details>
+    <section id="forward-agent-section" class="forward-agent-section" hidden aria-labelledby="forward-agent-heading">
+      <h3 id="forward-agent-heading">常驻远程助手</h3>
+      <p class="muted">每台电脑运行一个助手，使用各自的长期 key 接入。选择助手后，可动态添加、编辑和停用多条规则；助手在线时自动应用，离线时保存配置。key 授权该节点访问助手可达的网络与串口，撤销后立即停止对应助手的映射。</p>
+      <form id="forward-agent-create-form" class="forward-form"><label for="forward-agent-name">助手名称<input id="forward-agent-name" maxlength="48" placeholder="例如：办公室电脑" autocomplete="off" required></label><button id="forward-agent-create" class="secondary" type="submit">创建助手 key</button></form>
+      <div id="forward-agent-key-box" class="forward-pair" hidden><label id="forward-agent-key-label" for="forward-agent-key">助手授权 key（仅本次显示，请私密保存）</label><textarea id="forward-agent-key" rows="3" readonly autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true"></textarea><button id="forward-agent-key-copy" class="secondary" type="button">复制 key</button><button id="forward-agent-key-close" class="quiet" type="button">收起并清除</button></div>
+      <p id="forward-agent-status" class="muted" role="status"></p>
+    </section>
     <form id="forward-form" class="forward-form">
+      <label id="forward-agent-select-label" class="forward-wide" for="forward-agent-select" hidden>下发到<select id="forward-agent-select"><option value="">一次性配对（兼容旧助手）</option></select></label>
+      <label id="forward-rule-name-label" for="forward-rule-name" hidden>规则名称<input id="forward-rule-name" maxlength="48" autocomplete="off" disabled></label>
+      <label id="forward-rule-enabled-label" hidden><input id="forward-rule-enabled" type="checkbox" checked>启用规则</label>
+      <p id="forward-rule-editing" class="muted forward-wide" hidden></p><button id="forward-rule-new" class="quiet" type="button" hidden>作为新规则</button>
       <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction"><option value="forward">本机访问服务器网络</option><option value="reverse">服务器 / Codex 访问本地设备</option></select></label>
       <div id="forward-device-fields" class="forward-device-fields forward-wide" hidden>
         <label for="forward-device-name">设备名称<input id="forward-device-name" maxlength="48" placeholder="例如：家中路由器" autocomplete="off"></label>
@@ -295,13 +306,14 @@
       <label for="forward-target">目标端口<input id="forward-target" type="number" min="1" max="65535" value="22" required></label>
     <fieldset class="forward-wide" id="forward-serial-fields" hidden disabled>
       <legend>本地助手上的串口</legend>
+      <label id="forward-serial-choice-label" for="forward-serial-choice" hidden>从助手串口列表选择<select id="forward-serial-choice"><option value="">也可在下方手动填写</option></select></label>
       <label for="forward-serial-path">设备名称<input id="forward-serial-path" type="text" maxlength="192" placeholder="COM3 或 /dev/cu.usbserial-xxx" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
       <label for="forward-serial-baud">波特率<select id="forward-serial-baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>460800</option><option>921600</option></select></label>
       <label for="forward-serial-bits">数据位<select id="forward-serial-bits"><option>5</option><option>6</option><option>7</option><option selected>8</option></select></label>
       <label for="forward-serial-parity">校验<select id="forward-serial-parity"><option value="none">无</option><option value="odd">奇校验</option><option value="even">偶校验</option></select></label>
       <label for="forward-serial-stop">停止位<select id="forward-serial-stop"><option>1</option><option>2</option></select></label>
       <label><input id="forward-serial-dtr" type="checkbox">DTR 高电平</label><label><input id="forward-serial-rts" type="checkbox">RTS 高电平</label>
-      <p class="muted">需要 0.7.0 助手，仅允许一个客户端，使用原始 TCP 接入，无硬件流控。打开串口时 DTR/RTS 可能短暂跳变并使设备复位。配置需由助手明确确认；运行助手 --list-serial 可列出名称。本版串口资料不加入设备目录。</p>
+      <p class="muted">每个串口仅允许一个客户端，使用原始 TCP，无硬件流控。打开串口时 DTR/RTS 可能跳变并使设备复位。常驻助手自动上报串口列表，也可手动填写；一次性配对仍需本机确认。两种方式均只在业务客户端接入后打开设备。</p>
     </fieldset>
       <label class="forward-wide" for="forward-helper-ip">助手端 IP（可选）<input id="forward-helper-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空继承连接状态中的浏览器端 IP"></label>
       <p class="muted forward-wide">服务器 IP 默认继承当前浏览器的直连地址提示。浏览器与助手在不同电脑时，可单独填写助手端 IP；仅补充探测地址，不改变设备目标。</p>
@@ -312,19 +324,23 @@
     <p id="forward-port-policy" class="muted" role="status"></p>
     <div id="forward-pair" class="forward-pair" hidden><label for="forward-code">粘贴到助手窗口的配对码（两分钟内有效）</label><input id="forward-code" readonly autocomplete="off" spellcheck="false" aria-label="一次性配对码"><button id="forward-copy" class="secondary" type="button">复制配对码</button></div>
     <p id="forward-status" class="muted" role="status"></p>
+    <div id="forward-agent-list" class="forward-list" hidden></div>
     <details id="forward-devices"><summary>本地设备目录</summary><p class="muted">最多 16 个设备，只保存名称、地址和端口，不保存密码或授权。选择设备后生成配对码，本地助手确认目标后才启用。</p><div id="forward-device-list" class="forward-list"></div></details>
     <div id="forward-list" class="forward-list"></div>
     <div id="forward-connection" class="forward-pair" hidden><label for="forward-connection-text">给 Codex 的连接信息（不含密码）</label><textarea id="forward-connection-text" rows="6" readonly spellcheck="false"></textarea><button id="forward-connection-copy" class="secondary" type="button">复制连接信息</button><button id="forward-connection-close" class="quiet" type="button">收起</button></div>
     <div id="forward-recent" class="forward-recent" aria-label="最近结束的映射"></div>
     <button id="forward-diagnostics-copy" class="secondary" type="button">复制诊断报告</button>
     <div id="forward-diagnostics" hidden><label for="forward-diagnostics-text">脱敏诊断报告（隐藏地址、设备名及凭据）</label><textarea id="forward-diagnostics-text" rows="8" readonly maxlength="32768"></textarea><button id="forward-diagnostics-select" class="secondary" type="button">复制报告文字</button><button id="forward-diagnostics-close" class="quiet" type="button">收起报告</button></div>
-    <p class="muted">锁屏保留已授权映射。退出创建映射的登录、登录到期或被撤销、明确停止及面板重启会结束映射。20 条上限仅限制助手状态提示次数，不限制连接。</p>
+    <p class="muted">常驻助手的 key 与网页登录独立，退出登录不撤销；节点重启后自动恢复保存的规则，旧 TCP 不重放。一次性配对沿用原登录授权和恢复窗口。</p>
     <button id="forward-refresh" class="secondary" type="button">刷新列表</button>
-    <p class="muted">监听端口仅绑定所在电脑或服务器的 127.0.0.1。刷新、关闭网页或切换模式保留映射。短暂断网后可于 30 秒内恢复授权，原 TCP 连接需由客户端重连，不重发设备命令。停止、退出原登录或授权过期后撤销；网页服务重启后需重新配对。</p>
+    <p class="muted">监听仅绑定 127.0.0.1。每台电脑一个常驻助手，可管理多条规则；每个节点最多 8 个助手、每助手 16 条保存规则、总共 32 条活动映射。一次性配对最多四条，来源登录失效或面板重启后需重新配对。修改、停用或删除一条规则会关闭它的连接，其他规则保留。</p>
   </dialog>
   <dialog id="forward-confirm" class="files-dialog action-confirmation" aria-labelledby="forward-confirm-title">
     <h2 id="forward-confirm-title">停止端口映射</h2><p id="forward-confirm-description" class="muted"></p>
     <div class="confirmation-actions"><button id="forward-cancel-stop" class="secondary" type="button" autofocus>取消</button><button id="forward-accept-stop" class="primary" type="button">确认停止</button></div>
+  </dialog>
+  <dialog id="forward-agent-confirm" class="files-dialog action-confirmation" aria-labelledby="forward-agent-confirm-title">
+    <h2 id="forward-agent-confirm-title"></h2><p id="forward-agent-confirm-description" class="muted"></p><div class="confirmation-actions"><button id="forward-agent-confirm-cancel" class="secondary" type="button" autofocus>取消</button><button id="forward-agent-confirm-accept" class="primary" type="button">确认</button></div>
   </dialog>
   <dialog id="files-dialog" class="files-dialog">
     <div class="dialog-heading"><div><span class="eyebrow">WORKSPACE TRANSFER</span><h2>文件中转</h2></div><button id="close-files" class="quiet" aria-label="关闭文件中转">✕</button></div>
