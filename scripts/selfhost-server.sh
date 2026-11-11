@@ -2,7 +2,13 @@
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then
-  printf '%s\n' '请使用 sudo 运行中心安装命令。' >&2
+  case "${1:-status}" in
+    install) printf '%s\n' '中心安装需要 root 权限，请使用 sudo ./scripts/selfhost-server.sh install。' >&2 ;;
+    status) printf '%s\n' '中心状态查询需要 root 权限，请使用 sudo ./scripts/selfhost-server.sh status。' >&2 ;;
+    rollback) printf '%s\n' '中心应用回滚需要 root 权限，请使用 sudo ./scripts/selfhost-server.sh rollback。' >&2 ;;
+    recover) printf '%s\n' '中心更新恢复需要 root 权限，请使用 sudo ./scripts/selfhost-server.sh recover。' >&2 ;;
+    *) printf '%s\n' '中心服务器管理需要 root 权限，请使用 sudo 运行。' >&2 ;;
+  esac
   exit 1
 fi
 

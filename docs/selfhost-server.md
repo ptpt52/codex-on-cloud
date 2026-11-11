@@ -132,7 +132,7 @@ sudo ./scripts/selfhost-server.sh install \
 查看服务状态：
 
 ```bash
-./scripts/selfhost-server.sh status
+sudo ./scripts/selfhost-server.sh status
 ```
 
 重复执行同一 `install` 命令会以固定依赖更新中心应用，并保留上一版应用目录。需要回滚时：
