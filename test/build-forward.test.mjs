@@ -22,7 +22,7 @@ test('forward builds use persisted configuration instead of the task environment
     await assert.rejects(buildForward({ root, origin }, { run: async (file, args) => {
       if (file === 'git') return { stdout: '123456abcdef\n' };
       if (args[0] === 'version') return { stdout: 'go version go1.26.4 linux/amd64\n' };
-      compiled = true; assert.ok(args.includes('-s -w -X main.defaultServer=' + (origin || 'https://current.example.test') + ' -X main.version=0.8.0+123456abcdef'));
+      compiled = true; assert.ok(args.includes('-s -w -X main.defaultServer=' + (origin || 'https://current.example.test') + ' -X main.version=0.9.0+123456abcdef'));
       throw Error('synthetic compiler stop');
     } }), /synthetic compiler stop/);
     assert.equal(compiled, true);
@@ -126,7 +126,7 @@ test('helper builds bind defaults and publication metadata to the configured nod
   const run = async (file, args, options) => {
     if (file === 'go' && args[0] === 'build') {
       compiled = true;
-      assert(args.includes('-s -w -X main.defaultServer=https://desk.example.test/node/site-a/ -X main.version=0.8.0+123456abcdef'));
+      assert(args.includes('-s -w -X main.defaultServer=https://desk.example.test/node/site-a/ -X main.version=0.9.0+123456abcdef'));
     }
     return h.run(file, args, options);
   };

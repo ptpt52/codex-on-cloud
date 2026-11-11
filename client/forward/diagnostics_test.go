@@ -39,14 +39,14 @@ func TestStreamDiagnosticsDistinguishPhaseAndTCPSideWithoutLeakingDetails(t *tes
 	}
 }
 
-func TestRejectedPairingExplainsCauseWithoutLeakingPeerText(t *testing.T) {
+func TestRejectedRuleGrantExplainsCauseWithoutLeakingPeerText(t *testing.T) {
 	for _, sample := range []struct {
 		code, expected string
 		status         int
 	}{
-		{"pair_expired", "配对码已过期", 410},
-		{"pair_used", "配对码已使用", 409},
-		{"pair_invalid", "配对码无效", 401},
+		{"pair_expired", "规则通道授权已过期", 410},
+		{"pair_used", "规则通道授权已使用", 409},
+		{"pair_invalid", "规则通道授权无效", 401},
 		{"untrusted-secret-text", "服务器拒绝授权", 401},
 	} {
 		t.Run(sample.code, func(t *testing.T) {
