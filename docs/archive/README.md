@@ -7,6 +7,8 @@
 | [验证记录](verification.md) | 历次测试与特定环境上线记录 |
 | [代码审核记录](code-review.md) | 历次发现、修复与当时的待跟进项 |
 | [托管容器记录](cloady.md) | 特定平台的手工部署，没有通用安装器 |
-| [TURN／自有 VPS 方案](turn-selfhost-plan.md) | 未实施规划，不是当前可用能力 |
+| [TURN／自有 VPS 方案](turn-selfhost-plan.md) | 实施前设计，部分能力现已落地；旧参数不作为安装接口 |
 
 实际安装请从[部署组合](../deployment.md)开始。当前验证方法见[测试与验证](../verification.md)。
+
+自建中转与 TURN 的当前实现见[中心部署](../selfhost-server.md)、[节点接入](../selfhost-node.md)和[网络说明](../lan.md)。

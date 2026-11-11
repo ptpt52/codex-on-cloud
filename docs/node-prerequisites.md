@@ -18,7 +18,7 @@ systemctl --user is-system-running
 | Python 3、tmux、util-linux/flock | Ubuntu 24.04 系统包 | 终端、文件服务、部署锁 |
 | Git、CA 证书 | 系统包 | 克隆仓库、助手版本信息、HTTPS 下载 |
 | Go | 固定 **1.26.4** | 构建端口映射助手 |
-| Codex 或其他 AI CLI | 按团队规范安装与登录 | 实际使用对应 AI；纯终端部署不要求预装 |
+| Codex CLI | 自行安装和登录，不由项目升级 | 桌面模式安装检查必需；纯终端模式可选 |
 
 `--install-deps` 安装工作区所需的 apt 基础包，不安装 Node.js、Go 或 Codex。Ubuntu 的默认 `nodejs` / `golang-go` 包不一定满足项目版本，不能用“apt 安装成功”代替版本核对。
 
@@ -104,24 +104,13 @@ go version
 
 ## 自建中继节点的完整顺序
 
-```bash
-# 1. 在本机安装并启动纯网页终端
-npm run deploy -- --mode terminal --install-deps --enable-linger
+在节点机器上按以下顺序操作，完整命令见[节点接入与恢复](selfhost-node.md)：
 
-# 2. 向管理员领取绑定自己 slug 的 key，交互隐藏输入 key
-npm run server:join -- --server https://desk.example.com --slug node-a
+1. 以普通用户部署所选工作区模式，确认本机工作台就绪。
+2. 从中心管理员取得绑定 slug 的 key，运行 `server:join`，在隐藏输入中填写 key。
+3. 需要助手时，按最终入口运行 `npm run build:forward`。
+4. 运行 `server:doctor`，再登录完整节点路径，在“端口映射”中核对四个平台下载。
 
-# 3. 接入成功后，按最终入口构建四平台助手
-npm run build:forward
+`--build-forward` 适用于最终入口已经确定的部署；安装器会在更改服务前检查固定 Go 版本，`--check --build-forward` 也会检查。首次自建接入应先部署、再接入、最后构建，避免助手绑定 localhost 或旧节点地址。
 
-# 4. 检查本机与接入状态
-npm run native:status
-npm run server:status
-npm run server:doctor
-```
-
-请替换域名与 slug。构建完成后，以节点管理员或临时账号登录，在“端口映射”中核对 Windows x64 / ARM64 和 Mac Apple Silicon / Intel 四项下载，并下载实际需要的版本。只有登录页能打开、节点在线或终端可用，还不能说明助手已发布。
-
-`--build-forward` 可用于最终访问入口已经确定的部署；它会在系统安装、配置初始化和服务变更前检查 Go 版本，`--check --build-forward` 也会检查。自建中继首次接入应按上面的“部署 → 接入 → 构建”顺序，避免先为 localhost 构建、接入后下载失效。
-
-切换域名、网关或 `/node/<slug>/` 路径后，重新构建并让客户重新下载。服务端会隐藏与当前节点入口不匹配的产物，防止助手连接到旧地址。单独构建和发布下载不需要重启面板，已有终端任务继续运行。
+入口变更后重新构建并下载。构建不重启工作台服务；节点在线或终端可用不等于助手已发布。中心服务器安装由[独立安装脚本](selfhost-server.md#中心安装)引导固定运行时，不使用本页的节点安装命令。

@@ -10,7 +10,7 @@
 npm run deploy -- --mode terminal --install-deps --enable-linger
 ```
 
-桌面部署改为 `--mode desktop` 并准备自己的 Codex CLI。登录信息在 WSL 内的 `secrets/credentials.txt`。Windows 本机可访问 localhost，公网访问按自己的[CF 域名](cloudflare.md)或[固定网关](gateway.md)配置。
+桌面部署改为 `--mode desktop` 并准备自己的 Codex CLI。登录信息在 WSL 内的 `secrets/credentials.txt`。Windows 本机可访问 localhost，公网访问按自己的[CF 域名](cloudflare.md)、[Cloudflare 网关](gateway.md)或[自建中心](selfhost-node.md)接入。
 
 linger 使用户服务可在 Linux 用户退出后运行，但不会保证 Windows 启动时自动启动该 WSL 发行版。主机或发行版重启会结束原进程；需要自动启动发行版时，由部署者设置自己的 Windows 启动方式。
 

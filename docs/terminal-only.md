@@ -1,6 +1,6 @@
 # 纯网页终端模式
 
-`--mode terminal` 在新部署中省去图形栈，保留网页终端、多终端、历史、文件中转和 TCP 映射。它可组合本机／SSH、单节点 Tunnel 或固定网关入口，见[部署组合](deployment.md)。
+`--mode terminal` 在新部署中省去图形栈，保留网页终端、多终端、历史、文件中转和 TCP 映射。它可组合本机／SSH、单节点 Tunnel、Cloudflare 网关或自建中心入口，见[部署组合](deployment.md)。
 
 ## 安装
 
@@ -12,7 +12,7 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 
 依赖已齐时省略 `--install-deps`。系统包为 tmux、Python 和 util-linux，npm 安装使用锁文件并省略开发依赖与 noVNC。Codex CLI 可选，安装器不安装或登录 Codex。
 
-本机访问 `http://localhost:36080`，登录信息位于 `secrets/credentials.txt`。域名参数和 Token 准备见[Cloudflare](cloudflare.md)，网页多节点入口见[固定网关](gateway.md)，Windows 主机见[WSL](wsl.md)。
+本机访问 `http://localhost:36080`，登录信息位于 `secrets/credentials.txt`。域名参数和 Token 准备见[Cloudflare](cloudflare.md)，网页多节点入口见[Cloudflare 网关](gateway.md)或[自建节点接入](selfhost-node.md)，Windows 主机见[WSL](wsl.md)。
 
 ## 与桌面模式的区别
 

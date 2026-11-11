@@ -2,7 +2,7 @@
 
 输入助手的“更多按键 ▾”打开分组列表，可上下滚动；点击条目只发送一次。打开列表、方向键移动选择、关闭列表都不发送远程输入。普通条目立即发送，Ctrl+C、Ctrl+D、Ctrl+Z 和双 Esc 先显示确认框，默认聚焦取消。网络、接管或观看代次变化会清除未确认操作。
 
-本项目运行 Codex CLI，核对版本为 `0.166.0`。以下按 CLI 与终端默认键位说明，不套用桌面 App 或 IDE 的同名组合；自定义键位和当前焦点程序可能改变用途。先点选远程 Codex 终端，再操作输入助手。
+以下用途依据已核对的 Codex CLI `0.166.0`，实际行为以部署者使用的 CLI 版本和自定义键位为准。项目不自动安装或升级 Codex。以下按 CLI 与终端默认键位说明，不套用桌面 App 或 IDE 的同名组合；自定义键位和当前焦点程序可能改变用途。先点选远程 Codex 终端，再操作输入助手。
 
 ## 固定清单
 
@@ -37,9 +37,9 @@
 | 会话控制 | Ctrl+Z | Unix 挂起前台程序，通常需在 shell 用 fg 恢复，需确认 |
 | 会话控制 | Esc → Esc | 空输入框时编辑上一条消息并建立分支；其他状态可能取消操作，需确认 |
 
-共 39 个可发送条目，清单见 `panel/public/shortcuts.js`。Ctrl+O 复制到远程剪贴板后，可用“取回文字”明确读取，再复制到本机。网页草稿仍由“粘贴文字”按钮发送，提交仍由独立 Enter 完成。
+共 39 个可发送条目，清单见[快捷键定义](../panel/public/shortcuts.js)。Ctrl+O 复制到远程剪贴板后，可用“取回文字”明确读取，再复制到本机。网页草稿仍由“粘贴文字”按钮发送，提交仍由独立 Enter 完成。
 
-本机 xterm 可能将 Shift+Enter 编码为普通 Enter，所以列表提供已验证的 Ctrl+J 换行。固定 Alt 编辑组合使用零间隔 ESC 前缀编码，兼容此 xterm 的 Meta 高位字符模式；它们用于终端输入，不作为其他桌面应用的 Alt 菜单快捷键。双 Esc 使用固定两键、80 毫秒间隔，不附加 Enter。
+部分 xterm 会将 Shift+Enter 编码为普通 Enter，所以列表提供已验证的 Ctrl+J 换行。固定 Alt 编辑组合使用零间隔 ESC 前缀编码，兼容此 xterm 的 Meta 高位字符模式；它们用于终端输入，不作为其他桌面应用的 Alt 菜单快捷键。双 Esc 使用固定两键、80 毫秒间隔，不附加 Enter。
 
 ## 发送与恢复
 
@@ -47,7 +47,7 @@
 
 列表与确认操作都不持久化。打开列表时延后自动换流和窗口尺寸适配；关闭后恢复检查。隐藏页面、失去焦点、断线、接管、退出和折叠输入会关闭列表。老浏览器没有 Popover API 时使用同一列表的定位回退，支持方向键、Home/End、Tab 和 Esc，触控条目至少 44 像素。
 
-快捷键说明依据 [OpenAI 官方 CLI 交互说明](https://learn.chatgpt.com/docs/developer-commands?surface=cli#interactive-shortcuts) 与 [CLI 外部编辑器说明](https://learn.chatgpt.com/docs/cli-customization#prompt-editor)，并核对本机固定版本。原生验证使用隔离 Xvfb、xterm 与私有 tmux 捕获实际字节，不向工作中的 Codex 发送测试按键。
+快捷键说明依据 [OpenAI 官方 CLI 交互说明](https://learn.chatgpt.com/docs/developer-commands?surface=cli#interactive-shortcuts) 与 [CLI 外部编辑器说明](https://learn.chatgpt.com/docs/cli-customization#prompt-editor)，并核对上述特定 CLI 版本。原生验证使用隔离 Xvfb、xterm 与私有 tmux 捕获实际字节，不向工作中的 Codex 发送测试按键。
 
 ## 网页终端的程序翻页与回到实时
 

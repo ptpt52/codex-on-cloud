@@ -20,10 +20,23 @@
 | 本机 | 不需要 | 工作区、面板 | `http://localhost:36080` |
 | SSH 转发 | 不需要 CF，需要 SSH 可达 | 与本机相同 | 转发后访问 localhost |
 | Cloudflare 单节点 | 自己的域名、区域和 Tunnel | 增加 cloudflared | 该节点自己的 HTTPS 域名 |
-| 固定域名网关 | 自己的固定域名、Worker、DO；每节点有独立后端域名和 Tunnel | 每节点 cloudflared，加云端网关 | 同一域名，`/__nodes/` 选择节点 |
-| 独立公网服务器 | 一个公网 IPv4 和一个域名，不使用 Cloudflare | 中心服务器运行 Caddy、frps、coturn；节点运行 frpc | 同一域名，`/node/<slug>/` 直接访问各节点 |
+| Cloudflare 固定网关 | 自己的固定域名、Worker、DO；每节点有独立后端域名和 Tunnel | 每节点 cloudflared，加云端网关 | 同一域名，`/__nodes/` 选择节点 |
+| 自建中转中心 | 一个公网 IPv4 和一个域名，不使用 Cloudflare | 中心服务器运行 Caddy、frps、coturn；节点运行 frpc | 同一域名，`/node/<slug>/` 直接访问各节点 |
 
-固定网关适用于多节点，也可以先接入一台再增加机器。桌面节点和纯终端节点可以混用；任务和文件各自留在原机器。只需要一台机器时，单节点 Tunnel 即可，不要求部署 Worker。
+Cloudflare 网关适用于多节点，也可以先接入一台再增加机器。桌面节点和纯终端节点可以混用；任务和文件各自留在原机器。只需要一台机器时，单节点 Tunnel 即可，不要求部署 Worker。
+
+### 两种多节点入口如何选
+
+| 对比 | Cloudflare 网关 | 自建中转中心 |
+| --- | --- | --- |
+| 运维资源 | CF 账户、Worker / DO、每节点后端域名与 Tunnel | 自己的 Ubuntu 公网服务器、单个域名、Caddy / frps / coturn |
+| 节点入口 | 固定根地址，`/__nodes/` 切换全局默认节点 | 每节点固定 `/node/<slug>/`，可分别打开 |
+| 控制页面 | `/__nodes/`，使用网关密码 | `/admin/`，使用中心管理员密码 |
+| 节点登录 | 各节点原有工作台账号 | 各节点原有工作台账号 |
+| 日常切换 | 不读取 CF 管理 Token、不改 DNS | 不使用 CF 账户或 Token |
+| TURN | 该模式没有通用 TURN 配置入口 | 由中心向在线节点签发短期凭据 |
+
+两种入口均不搬移节点任务或文件，也不是不受信任节点之间的浏览器源隔离。每个节点选择一个主入口；已有入口迁移需使用对应的接入 / 恢复流程，不能靠反复覆盖 `.env` 随意互换。
 
 ## 3. 常用组合与命令
 
@@ -87,9 +100,9 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 
 ### 独立公网服务器 + 多节点
 
-准备一台 Ubuntu 24.04、公网 IPv4 和域名，按[独立公网服务器部署](selfhost-server.md)安装中心。节点已有本机 Panel 后执行 `server:join`，通过 `/node/<slug>/` 接入。已有 Cloudflare/Gateway 状态默认不会被接管；显式使用 `--switch-existing` 时先保存 Panel 恢复记录，`server:leave` 可恢复原入口配置。
+准备一台 Ubuntu 24.04、公网 IPv4 和域名，按[中心部署](selfhost-server.md)安装；管理员通过[管理页](selfhost-admin.md)创建绑定 slug 的 key。每台节点按[节点接入](selfhost-node.md)先安装本机工作台，再执行 `server:join`，通过 `/node/<slug>/` 访问。中心安装使用 sudo，节点 npm 命令使用普通用户。已有 Cloudflare/Gateway 状态默认不会被接管；显式使用 `--switch-existing` 时先保存 Panel 恢复记录，`server:leave` 可恢复原入口配置。
 
-需要客户设备端口映射时，完成 `server:join` 后再运行 `npm run build:forward`，然后在网页核对四个平台下载。首次部署、节点接入和助手发布是分别验收的步骤；构建在接入前完成会使用旧入口。完整顺序见[首次部署验收](node-prerequisites.md#自建中继节点的完整顺序)。
+需要客户设备端口映射时，完成 `server:join` 后再运行 `npm run build:forward`，然后在网页核对四个平台下载。首次部署、节点接入和助手发布是分别验收的步骤；构建在接入前完成会使用旧入口。完整顺序见[节点接入与助手发布](selfhost-node.md)。
 
 ## 4. 按需添加功能
 
@@ -97,8 +110,9 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 | --- | --- | --- | --- |
 | WebRTC 直连 | 两种工作区、所有入口 | 默认开启；`WEBRTC_ENABLED=0` 可关闭 | 浏览器与节点之间 UDP 可达；失败仍可中转 |
 | Cloudflare Access | CF 单节点或固定网关 | 可选的外层登录 | 自己配置 Access 应用与策略，不替代工作台登录 |
-| TCP 端口映射 | 两种工作区、所有入口 | 按需配对本地助手 | 提供助手下载时增加 `--build-forward`，构建需 Go 1.26.4 |
+| TCP 端口映射 | 两种工作区、所有入口 | 按需配对本地助手 | 最终入口确定后构建；需 Go 1.26.4。外层 Access 登录可能阻止助手，见[限制](forward.md#故障提示) |
 | 串口接入 | 两种工作区、所有入口 | 复用本地助手，在设备端逐次授权 | 助手电脑连接串口并具备驱动与设备权限，见[串口说明](serial.md) |
+| TURN | 已接入自建中心的浏览器连接 | 沿用中心签发的短期凭据 | 放行中心端口并验证实际 relay；不是 UDP 端口映射 |
 | 屏幕锁／临时账号 | 两种工作区、所有入口 | 在“访问与屏幕锁”中配置 | 不增加常驻组件；临时账号权限有限 |
 | 快速切换待命 | 桌面部署 | 浏览器工具中开启，默认关闭 | 同时保留桌面与网页终端查看器，增加资源用量 |
 

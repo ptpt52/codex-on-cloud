@@ -1,6 +1,10 @@
 # 独立公网服务器部署
 
-本模式只使用一台 Ubuntu 24.04 公网服务器和一个域名，不依赖 Cloudflare。中心服务器提供统一管理页和节点入口，节点继续在自己的机器上运行 Codex、桌面、终端、文件和任务。
+本页面向中心服务器部署者。本模式使用一台 Ubuntu 24.04 公网服务器和一个域名，不依赖 Cloudflare。中心服务器提供统一管理页和节点入口，节点继续在自己的机器上运行 Codex、桌面、终端、文件和任务。
+
+本文的 `desk.example.com`、公网 / 私网 IP 和邮箱均为占位示例，部署时替换为自己的配置。
+
+[部署组合](deployment.md) · [节点接入](selfhost-node.md) · [首页与管理操作](selfhost-admin.md)
 
 ## 拓扑
 
@@ -61,7 +65,7 @@ frps
 
 ## 中心安装
 
-在仓库根目录执行：
+在中心服务器准备本仓库源码，以及 `curl`、`tar`、`sha256sum`，进入仓库根目录后执行。中心脚本会引导固定 Node 运行时；不需要先在中心运行节点的 `npm run deploy`：
 
 ```bash
 sudo ./scripts/selfhost-server.sh install \
@@ -74,9 +78,7 @@ sudo ./scripts/selfhost-server.sh install \
 
 TURN 首版固定使用 IPv4。安装器从默认路由自动识别本机私网 IPv4；云上 NAT 或特殊路由可显式传入：
 
-```bash
---private-ip 172.16.0.10
-```
+在完整 `install` 命令后增加 `--private-ip 172.16.0.10`。
 
 这不关闭浏览器与节点之间的 IPv6 ICE 直连；只有需要 TURN relay 的纯 IPv6 或 IPv6 入站受阻场景不受此首版支持，会回退到 HTTPS/WSS。
 
@@ -96,13 +98,7 @@ sudo ./scripts/selfhost-server.sh install \
 
 节点不需要各自申请域名 SSL 证书。浏览器访问的是中心域名，由中心 Caddy 提供证书；节点 Panel 只监听回环，frpc 主动建立 TLS 隧道。中心使用公共 CA 时，节点使用系统信任库，无需 `--ca-file`。
 
-私有 CA 接入示例：
-
-```bash
-npm run server:join -- --server https://desk.example.com --slug node-a --ca-file /path/to/center-ca.pem
-```
-
-`--ca-file` 是签发中心证书的 CA 公共证书，不是节点证书或服务器私钥。首次接入、退出、恢复、健康检查和 TURN 请求都使用该中心的 CA，并保留证书链、有效期和 URL 域名验证。切换中心时不会沿用旧中心的 CA；如新中心也使用私有 CA，应重新传入。重复接入同一中心可沿用已保存的 CA。
+私有 CA 的 `--ca-file` 接入方式见[节点文档](selfhost-node.md#私有-ca)。CA 公共证书与服务器私钥用途不同，不要把服务器私钥复制到节点。
 
 自动签发模式持续从 `/.well-known/acme-challenge/` 提供 HTTP-01 验证。首次签发只复制证书，写入最终配置后才启用完整服务；续期 hook 显式重启 frps、Caddy 和 coturn。Caddy 保持 `admin off`，不支持 `systemctl reload`。更新证书会短暂断开网络连接，节点桌面、终端后台和任务继续运行。
 
@@ -162,63 +158,9 @@ sudo ./scripts/selfhost-server.sh recover
 
 ## 首页与管理授权
 
-访问 `https://<domain>/` 无需登录，可查看在线节点并进入 `/node/<slug>/`。首页只公开节点名称、类型和访问路径，每 15 秒刷新；接入中、断线恢复、离线、过期、已撤销和心跳超时的节点不显示。进入节点后仍需使用该节点账号登录，节点登录和权限规则不变。
+首页 `https://desk.example.com/` 公开展示在线节点和管理入口，`/admin/` 使用独立管理员登录，各节点通过 `/node/<slug>/` 访问。创建授权、重新授权、撤销、登录标识和同源信任边界见[中心管理](selfhost-admin.md)。
 
-首页顶部提供“进入管理页面”入口，管理员也可直接打开：
-
-```text
-https://<domain>/admin/
-```
-
-同域名下，登录页会自动预填独立的登录标识，便于浏览器分别保存密码：
-
-| 入口 | 默认登录标识 |
-| --- | --- |
-| `/admin/` 管理中心 | `admin@center` |
-| `/node/a/` | `admin@node-a` |
-| `/node/b/` | `admin@node-b` |
-
-密码仍使用各入口原来的密码，原用户名 `admin` 也继续有效。自定义 `ADMIN_USER=operator` 的节点会预填 `operator@node-a`；临时账号可使用 `visitor@node-a`，仍保留临时权限。标识绑定固定路径，节点改名或重新授权不会改变它。
-
-想让浏览器分别记住密码，请保留预填登录名后保存。之前统一保存在 `admin` 下的记录需要手动修改或重新保存；网站无法替你迁移浏览器里的密码。浏览器仍可能列出同站点的其他账号，这不是域名级隔离，也不改变各节点的独立认证。
-
-中心管理员可以创建绑定固定 slug 的授权：
-
-- 一个 key 只对应一个逻辑节点。
-- key 可设置到期时间或无限期。
-- key 明文只在创建或重新授权时显示一次，磁盘只保存 SHA-256 哈希。
-- 同一 slug 已有在线连接时，第二接入被拒绝。
-- 节点断线后保留 60 秒恢复窗口。
-- 撤销 key 后拒绝重连，节点在下一次 5 秒心跳时关闭旧隧道；Caddy route auth 会立即拒绝新请求。
-- 中心不设置固定节点数量上限，也不限制业务并发、活跃浏览器或 TURN 会话数量；实际规模取决于服务器资源与状态文件容量。
-- 仅当 frps 异常退出遗漏 `CloseProxy` 时，中心会在新 `Login` 中核对回环 frps Admin API；旧代理已消失则允许 recovery，仍在线则继续拒绝重复接入。
-- 节点代理只允许绑定中心本身的一个域名和 `/node/<slug>/` 的一个 location；额外子域名、HTTP Basic 凭据、Host 重写或注入的请求/响应头都会拒绝接入，防止同一代理越过自己的节点路径。
-
-管理列表支持搜索名称 / 路径、按连接状态筛选，在线节点优先显示；默认隐藏已过期 / 已撤销记录，可在“全部（含历史）”或历史筛选中查看。电脑、平板和手机均在同一节点卡片提供“进入节点”“复制地址”和“更多”。
-
-“更多”中的操作：
-
-| 操作 | 作用 |
-| --- | --- |
-| 查看详情 | 查看来源、连接模式、创建时间和最近活动 |
-| 修改名称 / 有效期 | 保持固定路径；默认保留当前期限，修改已撤销记录不会恢复授权 |
-| 重新授权 | 保留节点 ID 和路径，生成新 key，旧 key 和节点凭据立即失效，现有隧道关闭；适用于 key 遗失、过期或撤销后恢复接入 |
-| 断开连接 | 关闭当前隧道，保留授权；客户端可能自动重连 |
-| 撤销授权 | 使 key 和节点凭据失效，拒绝重连；以后可在原记录重新授权 |
-
-重新授权和撤销会立即阻止新请求，已有隧道在下一次心跳（约 5 秒）关闭；断开连接也通过下一次心跳生效。以上操作不会停止节点上的终端、桌面和任务。重新授权后，需要在目标节点按下文命令重新接入。节点卡片上的地址保持不变，不能再用同一 slug 创建另一条记录。
-
-管理页每 5 秒读取状态，弹窗操作、展开“更多”或页面在后台时暂停自动读取；普通刷新保留列表焦点。在线统计只计入代理已上线且心跳有效的节点，“接入中”和“断线恢复”单独统计。TURN 的“已配置”只说明配置存在，不表示网络检测通过。
-
-有限期授权必须选择未来时间。管理操作失败时在当前弹窗显示原因；遇到网络中断、服务器错误或记录冲突，先“刷新核对列表”，再决定下一步，页面不会自动重发写操作。若创建已成功但 key 响应丢失，可在原记录重新授权取得新 key。
-
-管理页和管理员 API 位于 `/admin/`，管理员 Cookie 也限制在该路径。升级后旧根路径管理员会话失效，需要重新登录；Caddy 转发节点请求时会剔除新旧管理员 Cookie。`--admin-cidr` 只限制 `/admin/`，公开首页和在线列表不受管理白名单限制；节点接入、退出和 TURN 机器接口保持独立凭据认证。匿名在线列表接口为 `GET /api/public/nodes`，返回全部在线节点，不返回凭据、授权 ID、地址或审计信息，并独立按客户端限流。
-
-所有节点和管理页仍在同一浏览器源，必须由同一管理员控制、相互信任。Cookie 路径和转发过滤只能减少凭据外泄，不能隔离恶意节点的同源脚本。不要把不受信任的第三方节点接入同一域名。
-
-中心只信任回环 Caddy 写入的 `X-Forwarded-For` 客户端地址；管理员登录、节点接入和 TURN 刷新分别按客户端限流，不会互相消耗或让一个外部地址锁住其他管理员。
-
-### 自定义帮助页
+## 自定义帮助页
 
 可为本次部署准备一个 UTF-8 HTML 文件，安装时增加 `--help-file /path/to/help.html`。安装器会将其复制到 `/etc/codex-selfhost/help.html`（root 所有、组 codex-selfhost、0640），首页自动显示“使用帮助”，公开地址为 `https://<domain>/help/`。帮助页应包含返回首页的链接 `<a href="/">返回首页</a>`。
 
@@ -235,60 +177,11 @@ sudo systemctl restart codex-selfhost-center.service
 
 ## 节点接入
 
-首次部署者先准备[节点工具与依赖](node-prerequisites.md)。需要端口映射下载时，完整顺序是本机部署、节点接入、按最终节点路径构建助手，再登录核对四个平台下载；`--install-deps` 不会安装 Node/Go。
+在节点自己的机器以普通用户完成本机部署，再按[节点接入与恢复](selfhost-node.md)领取 key、运行 `server:join`。需要端口映射助手时，接入完成后再按最终路径构建。
 
-节点必须已经按现有方式完成本机 Panel 部署。在节点仓库根目录执行：
-
-```bash
-npm run server:join
-```
-
-命令会交互读取中心地址、slug 和隐藏输入的授权 key。key 不接受普通命令行参数，也不会写入磁盘。
-
-管理页生成的接入命令只包含中心地址和 slug，不包含 key。将 key 单独复制到命令提示的隐藏输入中。已安装并接入同一中心 / 路径的节点，重新授权后执行：
-
-```bash
-npm run server:join -- --server https://desk.example.com --slug node-a --reauthorize
-```
-
-`--reauthorize` 强制读取新 key，保留本机节点身份和路径，替换旧 credential。普通重复执行 `server:join` 会继续使用原 credential，不会重新询问 key。新机器首次接入不需要该选项；已有私有 CA 可沿用本机保存的 CA。重新授权一经完成，旧中心凭据不会因本地接入失败而恢复；修复接入失败的原因后可使用新 key 重试，若存在恢复记录先按 `server:doctor` 的提示处理。
-
-首次接入后，节点保存专用 credential，生成 `frpc.toml` 和独立 systemd user 服务。中继失败后每 15 秒重试，不因连续失败次数耗尽而永久停止；重新生成服务时也会清理旧的启动限流失败状态。SSH 退出后中继仍运行；建议确保已启用：
-
-```bash
-sudo loginctl enable-linger <user>
-```
-
-已有 Cloudflare/Gateway 发布状态时，`server:join` 默认拒绝自动接管。明确需要切换时使用：
-
-```bash
-npm run server:join -- \
-  --server https://desk.example.com \
-  --slug node-a \
-  --switch-existing
-```
-
-接入前会备份 `.env`、节点登录说明和 `gateway-node.json`。`server:leave` 会停止中继、释放中心路径并恢复原 Panel 配置，不会删除工作区、任务、桌面或 Codex 登录。
-
-接入后的日常更新直接运行 `npm run deploy`，省略 Cloudflare 参数。自建入口不会因保留旧 `tunnel_token` 而安装或启动 cloudflared；旧凭据仅保留供明确退出或恢复原入口时使用。
-
-`server:leave` 先确认 frpc 已停止，再释放中心租约并恢复 Panel；停止或恢复失败时保留接入配置与备份，修复问题后可直接重试。中心网络不可达时会明确警告，并在本地中继确认停止后完成离线清理。
-
-`server:join` 使用部署锁，并先完成 frpc、CA 和本地条件检查，再申请中心授权。改写配置前先写入最多 256 KiB 的私有事务快照，包含 Panel、旧备份、中继配置、CA 和服务状态；超出限制时拒绝更改。正式接入失败时会停止中继、释放中心授权并恢复原文件和服务状态；若回滚或中心释放仍未确认，会保留私有 `data/selfhost-node/join-recovery.json`，`server:doctor` 会报告该状态。恢复会逐个比较文件与事务预期内容，遇到人工修改保留现场，不覆盖冲突；只有全部恢复已确认才删除记录。故障排除后运行 `npm run server:leave -- --recover` 完成收尾。
-
-诊断与退出：
-
-接入命令会区分“配置已完成、入口待就绪”和“入口已就绪”。`server:doctor` 除检查中心及本地服务，还通过完整节点路径检查任务和文件服务，并核对节点身份；只有进程处于 active 不再视为入口正常。
-
-```bash
-npm run server:status
-npm run server:doctor
-npm run server:leave
-```
+中心安装使用 sudo；节点的 npm 命令使用普通用户。节点无需单独域名或 SSL 证书，也不需要 Cloudflare 账户或 Token。
 
 ## TURN
-
-每个节点在 `/node/<slug>/` scope 注册独立 Service Worker；缓存 key 包含入口 scope，安装、激活和旧版本清理只操作本节点缓存，不删除其他节点或无关项目的缓存。
 
 中心管理服务只为已在线节点签发短期 TURN 凭据，最长 1 小时：
 
@@ -310,14 +203,20 @@ npm run server:leave
 
 ## 验收
 
-```bash
-npm run check
-npm test
-npm run test:desktop
-npm run test:browser
+在中心服务器核对系统服务，再从客户端检查 HTTPS：
+
+```sh
+sudo ./scripts/selfhost-server.sh status
+curl -fsS --max-time 15 https://desk.example.com/healthz
 ```
 
-真实部署还应验证：
+在已接入节点的完整路径检查工作台就绪状态：
+
+```sh
+curl -fsS --max-time 15 https://desk.example.com/node/node-a/readyz
+```
+
+后者应返回 `ok`、`host`、`files` 均为 true，并包含对应节点身份。再完成以下部署验收；开发测试另见[验证方法](verification.md)。
 
 1. HTTP-01 或导入证书能完成 HTTPS/WSS。
 2. 两个不同 slug 的节点同时在线且路径、Cookie、草稿和 Service Worker 隔离。

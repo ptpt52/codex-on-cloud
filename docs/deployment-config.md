@@ -53,11 +53,23 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 运行中的服务使用启动时捕获的环境。`npm run native:*` 等维护命令以持久 `.env` 为权威，并忽略旧 Codex 终端继承的部署变量；只有不存在 `.env` 的隔离测试才使用显式环境。修改 `.env` 后应按对应服务重新加载。
 
-完整部署的变更命令由持有 `data/deploy.lock` 的监督 helper 启动，而不是由部署 Node 进程直接运行。部署父进程正常退出、被信号结束或崩溃时，helper 都会先终止并回收命令进程组、分离出的后代，再释放内核租约；新部署只能在其清理完成后取得锁。只读探测仍使用有界短命令，不占部署命令队列。
-
-监督 helper 的交互描述符明确映射维护进程的标准输入、输出和错误，与租约协议管道分开。有前台控制终端时，命令共享调用者的 session、使用独立进程组，执行期间取得终端前台，结束后恢复原前台和终端属性，使 sudo 能从 `/dev/tty` 读取密码且不回显；没有控制终端时继续使用独立 session。超时先回收全部子进程再返回 124，释放租约不会因固定的短期限而强杀正在清理的监督器；权限不足、暂时无法结束的后代退出前，租约继续保持。
+部署锁与子进程监督的实现见[架构参考](architecture.md#维护命令与有界状态)。
 
 `PORT` 是面板底层兼容覆盖项，优先于 `PANEL_PORT`；普通部署统一使用 `PANEL_PORT`，避免同时配置。`PATH`、`HOME`、`XDG_RUNTIME_DIR` 等属于宿主运行环境，systemd unit 安装时会固定可执行路径；更换 Node 安装位置后需重新生成 unit。Node、Codex、cloudflared、前端库及端口映射助手版本分别由宿主工具、安装脚本和锁文件管理；旧 `.env` 的 `CODEX_VERSION` 不控制原生部署升级。
+
+## 接入命令管理的入口配置
+
+以下字段由 `gateway:join`、`server:join` 及对应恢复流程维护。它们必须与私有节点配置一致；不能只手动改一个字段来切换中心、域名或节点身份。
+
+| 配置项 | 用途 |
+| --- | --- |
+| `NODE_ID` | 固定 32 位十六进制节点身份，用于请求、会话、草稿与下载校验 |
+| `SHARED_ENTRY` | Cloudflare 共享根入口为 `1`；自建路径入口由接入命令写为 `0` |
+| `ENTRY_BASE_PATH` | 默认 `/`；自建节点为 `/node/<slug>/`，资源与 API 均保留此前缀 |
+| `SELFHOST_NODE_CONFIG_FILE` | 自建节点凭据配置，接入命令写入 `./data/selfhost-node/connection.json` |
+| `SELFHOST_CA_FILE` | 私有中心 CA 的本地公共证书路径；公共 CA 场景可为空 |
+
+已有独立 CF 域名并入网关见[迁移流程](gateway-migration.md)，自建节点重新授权、切换或退出见[节点维护](selfhost-node.md#重新授权与切换中心)。中心服务器使用独立的 `/etc/codex-selfhost` 配置，不读取节点的 `.env` 作为自己的管理配置。
 
 ## 密钥、系统配置与持久化设置
 
@@ -69,6 +81,8 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | Cloudflare API token | 用户指定文件，如 `secrets/cf_token` | 仅供部署/配置 API 使用，不是常驻 Tunnel token |
 | Cloudflare 公网域名、DNS 与 Tunnel 路由 | 部署脚本参数及 Cloudflare 账户配置 | 入口配置必须与 `PUBLIC_ORIGIN` 一致 |
 | 网关接入、节点目录 | `gateway:join`，`data/gateway-node.json`；目录在网关 DO | 独立持久配置和节点凭据，不属于浏览器偏好 |
+| 自建节点身份、CA 与恢复记录 | `server:join` / `server:leave`，私有 `data/selfhost-node/` | 由[接入与恢复流程](selfhost-node.md)维护，不手改凭据 |
+| 中心管理员、FRP、TURN 密钥 | 中心服务器 `/etc/codex-selfhost/` | 与节点工作台密码分开，见[中心部署](selfhost-server.md) |
 | 屏幕锁、临时账号、设备授权 | 网页对应管理流程 | 按功能立即生效；不直接编辑其运行文件 |
 | 共享桌面分辨率 | 服务器桌面设置，`data/desktop-settings.json` | 显式保存和应用；不是浏览器字号/缩放 |
 | WSL 镜像网络 | Windows 用户 `.wslconfig` 的 `networkingMode`、`hostAddressLoopback` | 部署会检查/补齐 loopback；需保存任务后重启 WSL |
@@ -76,10 +90,8 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 ## 不属于部署配置的内容
 
-本机维护使用 `scripts/state-files.mjs` 读写有界状态文件，单次输出最多 256 KiB，采用内核租约、预期内容复核及原子提交。磁盘上的 `.portal-lock` 和 `.portal-next-v2` 是沿用的锁／暂存后缀；保留它们是为了让升级前后的写入者继续共享同一锁，不代表仍有独立门户功能。不要删除活跃锁 inode 或把这些运行文件加入 Git。
-
 浏览器字号、缩放、宽度适配、网页历史行数、亮屏选择和面板折叠属于当前浏览器，详见 [浏览器偏好](browser-preferences.md)。终端选择和草稿属于当前标签页。连接诊断、控制权、实际亮屏锁和在线状态属于运行状态。
 
 “连接状态”里的服务器 IP / 浏览器端 IP 直连提示也属于当前浏览器；它们随已认证协商发给服务端，作为额外 ICE 候选使用，不写 `.env`，不替换自动发现或部署时选择的监听地址。
 
-每份草稿 32768 字符、最多 9 份 / 2 MiB，文件上传和并发传输上限、WebRTC UDP 40000–40015 以及超时/背压等目前是代码中的资源或协议边界，不能在 `.env` 中随意设置。终端保活会话不占 `MAX_TERMINALS` 名额。
+每份草稿 32768 字符、每节点最多 9 份；同一标签页最多持久保存 16 个节点、合计 2 MiB。这是浏览器草稿上限，不是中心可接入的节点数上限。文件上传、并发传输、WebRTC 端口与背压等属于代码中的资源或协议边界，不能在 `.env` 中随意设置，详见[文件](files.md)、[网络](lan.md)和[映射协议](forward-protocol.md)。终端保活会话不占 `MAX_TERMINALS` 名额。

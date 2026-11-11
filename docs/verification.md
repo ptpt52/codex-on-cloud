@@ -31,6 +31,9 @@ npm run test:compat
 | 浏览器规格 | 实际引擎和协议，许多上游由 fixture 模拟 | 不代表手机系统键盘或真实 Codex 操作 |
 | `test:gateway:worker` | 真实 workerd／SQLite、HTTP／WSS 与私有面板入口 | 终端／文件宿主仍为夹具，不连接生产 CF |
 | `test:terminal-only` | 隔离 tmux／PTY、最小依赖、任务生命周期 | 不代表生产终端或所有发行版 |
+| `test:selfhost:edge` | 真实 Caddy、本地 TLS、HTTP-01 路由及 Cookie 过滤 | 续期命令为夹具，不代表公网 ACME 或正式 systemd 部署 |
+| `test:turn` | 真实 coturn，UDP / TCP / TLS 控制与强制 relay 数据往返 | 不代表真实云安全组、运营商及节点网络已打通 |
+| `test:forward:entry` | 真实 Go 助手通过完整节点路径传输 TCP | 桌面管理为夹具，不代表真实 FRP 和生产中心验收 |
 | 原生显示、指针与恢复检查 | 隔离 Xvfb／x11vnc／noVNC；部分测试需 systemd | 不应对生产桌面注入故障 |
 
 真实 Worker 检查：
@@ -45,10 +48,19 @@ WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
 
 ## 自己部署后的验收
 
-1. 从预期入口访问 `/healthz`、`/readyz`，确认宿主与文件服务就绪。
+1. 按下表选择真正的工作台入口，确认节点 `/readyz` 的 `ok`、`host`、`files` 均为 true，并核对节点身份。
 2. 使用自己的账号登录，确认终端或桌面可用；明确区分粘贴与 Enter。
 3. 关闭并重开浏览器，确认原任务保留，没有重复输入；验证另一页面接管。
 4. 验证文件、所选网络路径及自己启用的可选功能。
 5. 网关部署还需验证每个真实节点的登记、目标就绪和切换，确认原节点任务保留。
+
+| 入口 | 检查地址 |
+| --- | --- |
+| 本机 / SSH | `http://localhost:36080/healthz`、`http://localhost:36080/readyz` |
+| CF 单节点 | `https://desk.example.com/healthz`、`https://desk.example.com/readyz` |
+| CF 网关 | 固定入口的 `/readyz` 对应当前全局默认节点；另在 `/__nodes/` 验证目录和切换 |
+| 自建中心 | 根路径 `/healthz` 只证明中心存活；节点就绪检查使用 `https://desk.example.com/node/node-a/readyz` |
+
+HTTPS 已配置后，不以明文 localhost 登录代替真实入口验证。使用私有 CA 时让检测客户端信任该 CA，不通过跳过证书校验来判定 HTTPS 正常。
 
 手机键盘、剪贴板、后台恢复和真实跨机器网络应单独验收。不能用 fixture 通过代替这些结果，也不要为验收中断正在执行的生产任务。

@@ -9,6 +9,7 @@
 | backend | 脚本语法、Node、Python、Go race／vet／mod verify、actionlint |
 | gateway | 固定 Wrangler／workerd、SQLite、HTTP／WSS 和路由持久化 |
 | terminal | 最小生产依赖、隔离 tmux／PTY、终端生命周期 |
+| selfhost | 真实 Caddy / coturn、TLS 与 Cookie 路由、强制 relay、真实 Go 助手的节点路径转发 |
 | browsers | Chromium 电脑／手机／平板，Firefox，WebKit 电脑／手机／平板的兼容规格 |
 | chromium-regression | 独立运行完整手机／电脑 Chromium 回归 |
 | native | 隔离 Xvfb、XFCE、tmux、noVNC、文件／指针／映射及助手构建 |
@@ -31,6 +32,9 @@ npm run test:terminal-only
 npm run test:forward
 npm run test:serial
 npm run test:forward:publication
+npm run test:selfhost:edge
+npm run test:turn
+npm run test:forward:entry
 ```
 
 `test:recovery` 和 `TERMINAL_TEST_SYSTEMD=1 npm run test:terminal-only` 还需要可用的 systemd 用户管理器，只操作唯一命名的临时服务。普通进程组检查不等同于 systemd cgroup 验收。

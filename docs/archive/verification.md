@@ -1175,3 +1175,9 @@ CI 独立作业改名为 `gateway`，去除旧门户测试，真实 workerd 工�
 固定网关与边界布局又在 Chrome 电脑／手机／平板模拟及 Firefox 电脑完成 40 项兼容性检查，全部通过。工作流 actionlint 1.7.11 通过，本机仍因旧 ShellCheck 版本关闭其子检查，CI 保持完整检查。
 
 同时核对上轮 `d9dd3f5` 的 [Actions](https://github.com/ptpt52/codex-on-cloud/actions/runs/42765569382)：九个作业成功，Chromium 完整回归为 687 通过、10 跳过、一项中转切换连接数断言失败（预期 1、实际 2）。该历史失败不能记为成功；本轮没有修改该终端网络逻辑或断言，新提交的完整 CI 结果需另行核对。
+
+## 2026-11-06：旧兼容性页面记录
+
+以下从原 `docs/compatibility.md` 保留，属于当时环境，不是当前版本或本轮重新执行的测试结果：Chrome 137 的电脑 / 手机 / 平板模拟共 27 项，Playwright Firefox 157 电脑 9 项，Playwright WebKit 27.2 的电脑 / 手机 / 平板模拟 27 项。Android Chrome 曾完成人工输入、旋转、复制、全屏检查；不代表所有手机或真实 iOS Safari 验收。
+
+当时 Ubuntu 18.04 缺少新 Firefox / WebKit 运行库，使用 `workspaces/` 内隔离 Ubuntu 24.04 用户空间与 bubblewrap 执行。该临时开发环境没有提交，也不是部署依赖。当前矩阵与可重复执行方式见[兼容性指南](../compatibility.md)。
