@@ -217,6 +217,8 @@ sudo systemctl restart codex-selfhost-center.service
 
 ## 节点接入
 
+首次部署者先准备[节点工具与依赖](node-prerequisites.md)。需要端口映射下载时，完整顺序是本机部署、节点接入、按最终节点路径构建助手，再登录核对四个平台下载；`--install-deps` 不会安装 Node/Go。
+
 节点必须已经按现有方式完成本机 Panel 部署。在节点仓库根目录执行：
 
 ```bash

@@ -29,6 +29,8 @@
 
 先克隆仓库并进入目录。以下命令用于新部署；系统包已安装时省略 `--install-deps`，不需要无人登录运行时省略 `--enable-linger`。
 
+Node.js / npm 和构建助手所需的固定 Go 1.26.4 不由 `--install-deps` 安装。首次准备和已有工具的 PATH 检查见[节点工具与依赖](node-prerequisites.md)。
+
 ### 桌面 + 本机或 SSH
 
 ```sh
@@ -86,6 +88,8 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 ### 独立公网服务器 + 多节点
 
 准备一台 Ubuntu 24.04、公网 IPv4 和域名，按[独立公网服务器部署](selfhost-server.md)安装中心。节点已有本机 Panel 后执行 `server:join`，通过 `/node/<slug>/` 接入。已有 Cloudflare/Gateway 状态默认不会被接管；显式使用 `--switch-existing` 时先保存 Panel 恢复记录，`server:leave` 可恢复原入口配置。
+
+需要客户设备端口映射时，完成 `server:join` 后再运行 `npm run build:forward`，然后在网页核对四个平台下载。首次部署、节点接入和助手发布是分别验收的步骤；构建在接入前完成会使用旧入口。完整顺序见[首次部署验收](node-prerequisites.md#自建中继节点的完整顺序)。
 
 ## 4. 按需添加功能
 

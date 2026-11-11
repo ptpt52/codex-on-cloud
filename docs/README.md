@@ -7,6 +7,7 @@
 | 需要做什么 | 阅读 |
 | --- | --- |
 | 比较模式、选择组合、复制安装命令 | [部署组合](deployment.md) |
+| 首次准备 Node/Go、修复 PATH、完成助手发布 | [节点工具与依赖](node-prerequisites.md) |
 | 使用自己的 Cloudflare 账户、域名或已有 Tunnel | [Cloudflare 接入](cloudflare.md) |
 | 用一台公网 Ubuntu 服务器和 `/node/<slug>/` 路径接入多个节点 | [独立公网服务器](selfhost-server.md) |
 | 多台机器共用固定域名，从网页选择节点 | [固定域名网关](gateway.md) |

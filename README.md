@@ -21,6 +21,8 @@ WebRTC 直连、Cloudflare Access 和 TCP 端口映射按需添加，不要求�
 
 准备支持 systemd 用户服务的 Linux、Node.js 22+。Ubuntu/Debian 可由安装命令补齐系统依赖。使用 Codex 时，预先安装并登录自己的 Codex CLI；纯终端模式可以不安装 Codex。
 
+首次安装或命令版本不符时，先按[节点工具与依赖](docs/node-prerequisites.md)准备 Node.js / npm；需要端口映射助手时还需固定 Go 1.26.4。`--install-deps` 不安装这两套工具链。
+
 ```sh
 git clone https://github.com/ptpt52/codex-on-cloud.git
 cd codex-on-cloud

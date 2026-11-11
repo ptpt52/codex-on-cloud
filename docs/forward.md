@@ -138,6 +138,8 @@ Ctrl+C 会立即停止本地恢复；通道仍可达时通知服务端关闭映�
 
 构建使用 Go 1.26.4、Gorilla WebSocket 1.5.3 和 [Pion WebRTC 4.2.26](https://github.com/pion/webrtc/releases/tag/v4.2.26)，全部依赖在 go.mod 和 go.sum 锁定。服务端用既有 Python 标准库生成 Mac ZIP；Windows 用户只运行 exe，Mac 用户运行解压后的程序，均无需安装 Go、Node.js 或 Python。构建不自动安装或升级工具链。
 
+首次准备 Go、Node/npm 和命令路径见[节点工具与依赖](node-prerequisites.md)。自建中继应先完成 `server:join`，再运行下列构建；改域名或节点路径后需重新构建和下载。构建成功后，在网页“端口映射”中核对四个平台下载，不能只以节点在线作为完成标志。单独构建不重启节点服务。
+
     npm run build:forward
 
 默认服务器地址读取当前`.env`中的PUBLIC_ORIGIN并嵌入程序，不使用旧任务继承的部署变量，之后双击仅需输入配对码。也可显式指定构建地址：
