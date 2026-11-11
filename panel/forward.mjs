@@ -318,7 +318,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     tcp.once('close', () => { clearTimeout(deadline); if (ws.readyState === 1) ws.close(1000); });
   }
   function upgrade(req, socket, head, pathname) {
-    const deny = (status, code) => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n${code ? 'X-Codex-Forward-Error: ' + code + '\r\n' : ''}Content-Length: 0\r\n\r\n`);
+    const deny = (status, code) => socket.end(`HTTP/1.1 ${status} Rejected\r\n${config.nodeId ? 'X-Codex-Node-Id: ' + config.nodeId + '\r\n' : ''}Connection: close\r\n${code ? 'X-Codex-Forward-Error: ' + code + '\r\n' : ''}Content-Length: 0\r\n\r\n`);
     refresh();
     const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '');
     if (!match || req.headers['sec-websocket-protocol'] !== 'codex-forward-v1') return deny(401);

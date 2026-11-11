@@ -61,6 +61,15 @@ try {
   socket = new WebSocket('ws://127.0.0.1:' + port + '/session/connect?' + query, { origin, headers: { host: new URL(origin).host, cookie: first.cookie }, handshakeTimeout: 5000 });
   const welcome = once(socket, 'message'); await once(socket, 'open'); socket.send(JSON.stringify({ type: 'auth', csrf: first.csrf })); assert.equal(JSON.parse((await welcome)[0]).type, 'welcome');
   await select(b.gatewayEntry); assert.equal(socket.readyState, WebSocket.OPEN);
+  for (const [path, error] of [['agent', 'agent_key_invalid'], ['helper', 'pair_invalid'], ['resume', 'resume_authorization_invalid'], ['data', 'stream_authorization_invalid']]) {
+    const rejection = await new Promise((resolve, reject) => {
+      const invalid = new WebSocket('ws://127.0.0.1:' + port + '/forward/' + path, path === 'agent' ? 'codex-agent-v1' : 'codex-forward-v1', { origin, headers: { authorization: 'Bearer ' + (path === 'agent' ? grant.agent + '.' : '') + 'z'.repeat(43), 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'e'.repeat(32), 'x-codex-forward-resume': '1' }, handshakeTimeout: 5000 });
+      invalid.on('error', reject); invalid.once('open', () => { invalid.terminate(); reject(Error('Invalid helper credentials accepted')); });
+      invalid.once('unexpected-response', (_request, response) => { response.resume(); resolve({ status: response.statusCode, headers: response.headers }); invalid.terminate(); });
+    });
+    assert.equal(rejection.status, 401, path + ' authentication must survive gateway identity checks');
+    assert.equal(rejection.headers['x-codex-node-id'], a.gatewayEntry.id); assert.equal(rejection.headers['x-codex-forward-error'], error);
+  }
   // A new native connection remains on its granting node after the browser's
   // global selection changes. No browser cookie is passed to the helper.
   agentSocket = new WebSocket('ws://127.0.0.1:' + port + '/forward/agent', 'codex-agent-v1', { origin, headers: { authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'a'.repeat(32) }, handshakeTimeout: 5000 });
@@ -74,5 +83,5 @@ try {
   await runtime.dispose(); runtime = new Miniflare(convertV4MiniflareOptions(options)); await runtime.ready;
   const restored = await (await control('nodes')).json(); assert.equal(restored.nodes.length, 2); assert.equal(restored.activeId, b.gatewayEntry.id);
   assert.deepEqual(a.terminalInputs, []); assert.deepEqual(b.terminalInputs, []); assert.equal(a.managementStats.restarts + b.managementStats.restarts, 0);
-  console.log('PASS actual workerd/SQLite: independent gateway authentication, dynamic enrollment, atomic selection, streaming HTTP upload/download, WSS pass-through retained across selection, native helper pinned to its granting node, stale-node rejection, and persistent routing after Worker restart. No CF API or production input.');
+  console.log('PASS actual workerd/SQLite: independent gateway authentication, dynamic enrollment, atomic selection, streaming HTTP upload/download, WSS pass-through retained across selection, native helper pinned to its granting node, helper handshake rejection codes preserved, stale-node rejection, and persistent routing after Worker restart. No CF API or production input.');
 } finally { socket?.terminate(); agentSocket?.terminate(); await runtime?.dispose(); await h?.close(); await rm(root, { recursive: true, force: true }); }

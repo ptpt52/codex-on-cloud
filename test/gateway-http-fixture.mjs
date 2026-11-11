@@ -65,7 +65,11 @@ export async function gatewayHTTPFixture({ webrtc = false, origin: publicOrigin 
         socket.write('HTTP/1.1 101 Switching Protocols\r\n' + Object.entries(response.headers).map(([key, value]) => key + ': ' + value).join('\r\n') + '\r\n\r\n');
         if (received.length) socket.write(received); if (head.length) remote.write(head); remote.pipe(socket).pipe(remote); socket.on('error', () => remote.destroy()); remote.on('error', () => socket.destroy()); socket.on('close', () => remote.destroy()); remote.on('close', () => socket.destroy());
       });
-      upstream.on('response', response => { response.resume(); const identity = response.headers['x-codex-node-id']; socket.end(`HTTP/1.1 ${response.statusCode} Rejected\r\n${identity ? 'X-Codex-Node-Id: ' + identity + '\r\n' : ''}Connection: close\r\nContent-Length: 0\r\n\r\n`); });
+      upstream.on('response', response => {
+        response.resume();
+        const headers = ['x-codex-node-id', 'x-codex-forward-error'].flatMap(name => typeof response.headers[name] === 'string' ? [name + ': ' + response.headers[name]] : []);
+        socket.end(`HTTP/1.1 ${response.statusCode} Rejected\r\n${headers.length ? headers.join('\r\n') + '\r\n' : ''}Connection: close\r\nContent-Length: 0\r\n\r\n`);
+      });
       upstream.on('error', () => socket.destroy()); upstream.end();
     });
     backend.listen(0, '127.0.0.1'); await once(backend, 'listening'); servers.push(backend);

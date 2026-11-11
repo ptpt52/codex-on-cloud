@@ -106,7 +106,7 @@ export function createForwardAgents(config, forwarding) {
     return result;
   }
   function upgrade(req, socket, head) {
-    const deny = (status, error = '') => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n${error ? 'X-Codex-Forward-Error: ' + error + '\r\n' : ''}Content-Length: 0\r\n\r\n`);
+    const deny = (status, error = '') => socket.end(`HTTP/1.1 ${status} Rejected\r\n${identity.id ? 'X-Codex-Node-Id: ' + identity.id + '\r\n' : ''}Connection: close\r\n${error ? 'X-Codex-Forward-Error: ' + error + '\r\n' : ''}Content-Length: 0\r\n\r\n`);
     if (closed) return deny(503);
     const match = /^Bearer ([a-f0-9]{32}\.[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '');
     const agent = match && state.authenticate(match[1]);
