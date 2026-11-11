@@ -101,7 +101,7 @@ func (r managedRule) matches(ready readyMessage) bool {
 	if c.Serial != nil {
 		return ready.Protocol == "serial"
 	}
-	// Older v1 TCP handshakes omit the descriptive ssh/telnet/tcp label.
+	// TCP runtime handshakes omit the descriptive ssh/telnet/tcp label.
 	if ready.Protocol != "" && ready.Protocol != "tcp" && ready.Protocol != c.Protocol {
 		return false
 	}

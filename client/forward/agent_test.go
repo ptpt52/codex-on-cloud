@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -117,5 +120,40 @@ func TestInventoryRemovesConsoleControlsAndBoundsTheWholePayload(t *testing.T) {
 	data, _ := json.Marshal(bounded)
 	if len(data) > 32768 || !bounded.Truncated {
 		t.Fatal("inventory can overflow its control channel")
+	}
+}
+
+func TestAgentRetriesItsHalfOpenControlButRejectsAnotherProcess(t *testing.T) {
+	for _, sample := range []struct {
+		code     string
+		attempts int32
+	}{{"resume_busy", 2}, {"agent_already_connected", 1}} {
+		t.Run(sample.code, func(t *testing.T) {
+			var attempts atomic.Int32
+			instances := make(chan string, 2)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				instances <- r.Header.Get("X-Codex-Agent-Instance")
+				code, status := sample.code, http.StatusConflict
+				if attempts.Add(1) > 1 {
+					code, status = "agent_key_invalid", http.StatusUnauthorized
+				}
+				w.Header().Set("X-Codex-Forward-Error", code)
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := runAgent(ctx, testAgentKey(agentGrant{Version: 2, Server: srv.URL, Agent: strings.Repeat("a", 32), Secret: strings.Repeat("b", 43)}), io.Discard)
+			if attempts.Load() != sample.attempts || err == nil {
+				t.Fatalf("unexpected retry: attempts=%d error=%v", attempts.Load(), err)
+			}
+			first := <-instances
+			if !mappingPattern.MatchString(first) {
+				t.Fatal("missing process identity")
+			}
+			if sample.attempts == 2 && <-instances != first {
+				t.Fatal("reconnect replaced process identity")
+			}
+		})
 	}
 }

@@ -88,6 +88,16 @@ test('managed configuration requires full administrator access, CSRF and the cor
     connection = await connect(app, a.key);
     await assert.rejects(connect(app, a.key, '2'.repeat(32)), /409/);
     assert.equal(connection.ws.readyState, 1);
+    // A half-open connection from this same process must remain retryable;
+    // another computer receives a terminal rejection without evicting it.
+    const grant = decode(a.key);
+    for (const [instance, expected] of [['1'.repeat(32), 'resume_busy'], ['2'.repeat(32), 'agent_already_connected']]) {
+      const attempt = new WebSocket(app.config.origin.replace('http:', 'ws:') + '/node/office/forward/agent', 'codex-agent-v2', { headers: { origin: app.config.origin, authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-agent-instance': instance, 'x-codex-forward-node': grant.node } });
+      attempt.on('error', () => {});
+      const [, response] = await once(attempt, 'unexpected-response'); response.resume(); attempt.terminate();
+      assert.equal(response.statusCode, 409); assert.equal(response.headers['x-codex-forward-error'], expected);
+      assert.equal(connection.ws.readyState, 1);
+    }
     const replacement = await post(app, 'rekey', { id: a.id, revision: a.keyRevision }); await until(() => connection.ws.readyState === 3);
     await assert.rejects(connect(app, a.key), /401/);
     connection = await connect(app, replacement.key);

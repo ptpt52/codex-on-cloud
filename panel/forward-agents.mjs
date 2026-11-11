@@ -113,7 +113,8 @@ export function createForwardAgents(config, forwarding) {
     if (identity.id && req.headers['x-codex-forward-node'] !== identity.id) return deny(409, 'node_changed');
     const instance = req.headers['x-codex-agent-instance'];
     if (typeof instance !== 'string' || !ID.test(instance)) return deny(400, 'protocol_error');
-    if (sessions.has(agent.id)) return deny(409, 'agent_already_connected');
+    const current = sessions.get(agent.id);
+    if (current) return deny(409, current.instance === instance ? 'resume_busy' : 'agent_already_connected');
     const session = { ws: null, instance, connectedAt: Date.now(), inventory: null, inventoryRequestedAt: 0, messages: 0, messageAt: Date.now() };
     sessions.set(agent.id, session); // Reserve before the asynchronous upgrade.
     // A new process has no old mapping contexts, even when the desired rules match.
