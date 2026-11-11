@@ -36,7 +36,8 @@ npm run gateway:build
 ```sh
 npx --yes wrangler@4.158.0 login
 export CLOUDFLARE_ACCOUNT_ID=YOUR_ACCOUNT_ID
-npx --yes wrangler@4.158.0 deploy --config data/gateway-build/wrangler.json
+npx --yes wrangler@4.158.0 deploy --config data/gateway-build/wrangler.json \
+  --durable-objects-code-update-mode immediate
 npx --yes wrangler@4.158.0 secret bulk data/gateway-build/worker-secrets.json \
   --config data/gateway-build/wrangler.json
 ```
@@ -83,6 +84,7 @@ npm run gateway:join -- \
 - **更新节点**：运行 `npm run deploy`，省略 `--domain`；网关成员拒绝旧 DNS 发布／接管以及不兼容的 `--origin`。
 - **更新网关**：重新 `gateway:build`，确认发布到原账户和 Worker，再执行上面的 deploy／secret 命令。构建不自动部署。
 - **常驻映射助手**：升级该功能时同步更新 Worker、节点后台和 0.8.0 助手。助手的控制、数据及恢复连接固定到签发 key 的节点；切换浏览器默认节点不改变助手归属，不需要 CF Token。旧 Worker 不支持固定路由时可能连接错误节点并被身份检查拒绝，不能只热更新网页。
+- **路由协议升级**：按上面的 `immediate` 参数发布，使 DO 路由逻辑同时更新；否则 Cloudflare 默认可延迟五分钟。新网关会再次核对固定节点身份，旧 DO 不认识新参数时返回 503，不转发到默认节点。原目录仍保留。见[Cloudflare 代码更新说明](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)。
 - **接入中断**：核对 `data/gateway-join.json`，修复网络后明确重跑相同接入命令；复用同一节点身份，不自动重试。人工改动会被保留。
 - **撤销未完成接入**：仅在 `data/gateway-join.json` 仍存在时使用 `npm run gateway:join -- --abort`。已经向远端发送过登记时，先核对远端；仍登记的节点需先在网页切到其他节点并移除。成功接入后的独立入口恢复见[迁移维护流程](gateway-migration.md#成功接入后恢复独立入口)。
 - **切换回复丢失**：页面只读核对当前路由，不再提交；核对成功后手动进入。

@@ -52,6 +52,9 @@ export function createGateway({ config: source, assets = {}, request: upstream =
       if (pinned && (!/^[a-f0-9]{32}$/.test(pinned) || !/^Bearer (?:[a-f0-9]{32}\.)?[A-Za-z0-9_-]{43}$/.test(request.headers.get('authorization') || ''))) return error(400, '助手节点身份无效');
       const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : '')));
       if (!result.ok) throw Error(); node = await gatewayJSON(result, 2048);
+      // During a deferred DO update an older registry may ignore ?node and
+      // return the browser default. Never forward a pinned request there.
+      if (pinned && node?.id !== pinned) throw Error();
       if (node) { const parsed = gatewayNode({ id: node.id, name: node.name, backendOrigin: node.backendOrigin, mode: node.mode }, config); node = { ...parsed, secret: node.secret }; }
     } catch { return error(503, '节点路由暂不可用'); }
     if (!node) return !pinned && request.method === 'GET' && !request.headers.has('upgrade') ? reply(303, '', 'text/plain', { location: GATEWAY_PREFIX }) : error(503, pinned ? '助手授权节点不可用，请检查该节点状态' : '尚未选择入口节点');

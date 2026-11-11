@@ -36,6 +36,25 @@ test('fixed gateway login, CSRF and Host checks protect selection while registra
   assert.equal((await h.api('codes', { method: 'POST', raw: '', body: { name: 'x'.repeat(9000) } })).status, 413);
 });
 
+test('pinned helper routes fail closed when an older registry ignores the requested node during deployment', async () => {
+  const calls = [], h = await setup({ request: async request => {
+    const selected = request.headers.get('x-codex-gateway-node'); calls.push(selected);
+    return new Response('accepted', { headers: { 'x-codex-node-id': selected } });
+  } });
+  await h.register(entry(1), key(1), h.codeValue.key); await h.register(entry(2), key(2), h.codeValue.key); await h.select(entry(1).id);
+  h.env.GATEWAY_REGISTRY.get = () => ({ fetch: request => {
+    const url = new URL(request.url); url.search = ''; // Pre-pinning DO behavior.
+    return h.registry.fetch(new Request(url, request));
+  } });
+  for (const path of ['/forward/agent', '/forward/helper', '/forward/resume', '/forward/data']) {
+    const response = await h.fetch(h.origin + path, { headers: { 'x-codex-forward-node': entry(2).id, authorization: 'Bearer ' + 'a'.repeat(43) } });
+    assert.equal(response.status, 503);
+  }
+  assert.deepEqual(calls, []); assert.equal(h.storage.value.activeId, entry(1).id);
+  const own = await h.fetch(h.origin + '/forward/agent', { headers: { 'x-codex-forward-node': entry(1).id, authorization: 'Bearer ' + 'a'.repeat(43) } });
+  assert.equal(own.status, 200); assert.deepEqual(calls, [entry(1).id]);
+});
+
 test('arbitrary nodes register dynamically with bounded pagination, revoked codes preserve existing ownership, and routing survives restart', async () => {
   const h = await setup();
   for (let number = 1; number <= 20; number++) assert.equal((await h.register(entry(number), key(number), h.codeValue.key)).status, 200);
