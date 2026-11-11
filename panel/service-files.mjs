@@ -1,11 +1,13 @@
 import http from 'node:http';
 import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js';
 import { uploadOptions, uploadHeaders, uploadResult } from './public/file-upload.js';
+import { normalizeEntryBasePath } from './entry-path.mjs';
 const fault=(status,message)=>Object.assign(Error(message),{status});
 function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!=='..'&&!name.startsWith('.upload-')&&!/[/\\\x00-\x1f\x7f]/.test(name)&&Buffer.byteLength(name)<=240;}
 // This adapter can only address the existing authenticated file API on loopback.
 // Its request participates in the same global four-stream and guest upload quota.
-export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
+export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entryBasePath='/'}){
+ const prefix=normalizeEntryBasePath(entryBasePath).slice(0,-1);
  let active,lastId=0,ended=false,recoverable=false,retireTimer;
  const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:bytes=>channel.send(bytes),close:()=>channel.close(),
   addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(state=>{if(state==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};
@@ -27,7 +29,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail}){
    const entry=active={id:value.id,direction:value.direction,size:value.size,received:0,ended:false,controller:new AbortController()};
    entry.timer=setTimeout(()=>reject(entry,fault(408,'文件传输超过五分钟')),300000);entry.timer.unref();
    const requestSignal=AbortSignal.any([signal,entry.controller.signal]);
-   const req=entry.req=http.request({host:'127.0.0.1',port:port(),method:value.direction==='upload'?'PUT':'GET',path:'/api/files/'+encodeURIComponent(value.name),signal:requestSignal,
+   const req=entry.req=http.request({host:'127.0.0.1',port:port(),method:value.direction==='upload'?'PUT':'GET',path:prefix+'/api/files/'+encodeURIComponent(value.name),signal:requestSignal,
     headers:{...headers,...(value.direction==='upload'?{'content-type':'application/octet-stream','content-length':value.size,...uploadHeaders(upload)}:{})}},res=>{
     entry.res=res;
     if(value.direction==='download'){void download(entry,res).catch(err=>reject(entry,err));return;}
