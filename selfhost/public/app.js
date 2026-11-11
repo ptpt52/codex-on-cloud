@@ -8,13 +8,26 @@ const localTime = value => { const d = new Date(value); return new Date(d.getTim
 const modalOpen = () => !!document.querySelector('dialog[open], .node-row details[open]');
 function view(id) { for (const name of ['state-view', 'login-view', 'center-view']) $(name).hidden = name !== id; }
 function message(text = '', error = false) { $('list-message').textContent = text; $('list-message').className = error ? 'error' : 'muted'; }
+const object = value => value && typeof value === 'object' && !Array.isArray(value);
+const loginResponse = value => typeof value.username === 'string' && value.username.length <= 100 && /^[a-f0-9]{48}$/.test(value.csrf);
+const keyResponse = value => object(value) && /^[a-f0-9]{32}$/.test(value.id) && typeof value.name === 'string' && value.name.length <= 80 && /^[a-z0-9-]{1,48}$/.test(value.slug) && value.path === '/node/' + value.slug + '/' && Object.hasOwn(labels, value.status);
+function validResponse(path, method, value) {
+  if (!object(value)) return false;
+  if (['/api/login', '/api/me'].includes(path)) return loginResponse(value);
+  if (path === '/api/overview') return loginResponse(value) && Number.isSafeInteger(value.revision) && object(value.status) &&
+    ['onlineNodes', 'connectingNodes', 'graceNodes', 'activeKeys', 'totalKeys'].every(key => Number.isSafeInteger(value.status[key]) && value.status[key] >= 0) && Array.isArray(value.keys) && value.keys.every(keyResponse);
+  if (method === 'POST' && (path === '/api/keys' || /^\/api\/keys\/[a-f0-9]{32}\/reissue$/.test(path))) return keyResponse(value) && /^coc_[A-Za-z0-9_-]{43}$/.test(value.key);
+  if (/^\/api\/keys\/[a-f0-9]{32}$/.test(path)) return keyResponse(value);
+  return value.ok === true;
+}
 async function api(path, { method = 'GET', body, signal } = {}) {
   const timeout = AbortSignal.timeout(10000), headers = { accept: 'application/json' };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
   const response = await fetch('/admin' + path, { method, credentials: 'same-origin', headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-  const value = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(Error(value.error || '请求失败'), { status: response.status });
+  const value = await response.json().catch(() => null);
+  if (!response.ok) throw Object.assign(Error(typeof value?.error === 'string' ? value.error : '请求失败'), { status: response.status });
+  if (!validResponse(path, method, value)) throw Object.assign(Error('服务响应不完整，请刷新核对操作结果'), { outcome: 'unknown' });
   return value;
 }
 function schedule() {

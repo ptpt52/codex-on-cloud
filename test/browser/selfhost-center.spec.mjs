@@ -229,6 +229,25 @@ test('uncertain create result is shown inside the dialog and is reconciled witho
   } finally { await h.close(); }
 });
 
+for (const fault of ['truncated', 'missing-key']) test(`a ${fault} successful authorization response is reconciled without displaying a key or replaying a write`, async ({ page }) => {
+  await page.clock.install(); const h = await adminFixture(); let writes = 0;
+  try {
+    await loginAdmin(page, h.origin);
+    await page.route('**/admin/api/keys', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      writes++; const response = await route.fetch();
+      if (fault === 'truncated') return route.fulfill({ status: 201, contentType: 'application/json', body: '{"key":' });
+      const value = await response.json(); delete value.key; return route.fulfill({ status: 201, json: value });
+    });
+    await page.locator('#new-key').click(); await page.locator('#key-name').fill('响应异常节点'); await page.locator('#key-slug').fill('broken-response'); await page.locator('#create-key').click();
+    await expect(page.locator('#key-form-error')).toContainText('操作结果未确认');
+    await expect(page.locator('#secret-dialog')).toBeHidden(); await expect(page.locator('#join-command')).toHaveValue('');
+    await expect(page.locator('#key-dialog .reconcile')).toBeVisible(); await expect(page.locator('#create-key')).toBeDisabled();
+    await page.clock.fastForward(20000); expect(writes).toBe(1);
+    await page.locator('#key-dialog .reconcile').click(); await expect(page.locator('#key-list')).toContainText('/node/broken-response/'); expect(writes).toBe(1);
+  } finally { await h.close(); }
+});
+
 test('menus stay inside narrow viewports and modal flows return focus to a visible control', async ({ page }, testInfo) => {
   const h = await adminFixture(), key = await h.center.registry.createKey({ name: '焦点测试节点', slug: 'focus-node' });
   try {
