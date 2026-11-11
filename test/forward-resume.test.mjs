@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
 import WebSocket from 'ws';
-import { fixture } from './fixture.mjs';
+import { fixture } from './support/forward-transport.mjs';
 import { FORWARD_LIMITS } from '../panel/forward.mjs';
 
 const capability = { 'x-codex-forward-resume': '1' };
@@ -27,9 +27,9 @@ async function rejected(app, token, path = '/forward/resume', headers = {}) {
     ws.on('open', () => { ws.terminate(); reject(new Error('Unexpected recovery authorization')); });
   });
 }
-const status = async app => (await (await app.request('/api/forward')).json());
+const status = async app => (await (await app.request('mapping')).json());
 async function create(app, localPort = 2222, targetHost = '127.0.0.1') {
-  const response = await app.request('/api/forward', { method: 'POST', body: { localPort, targetHost, targetPort: app.config.forwardPorts[0] } });
+  const response = await app.request('mapping', { method: 'POST', body: { localPort, targetHost, targetPort: app.config.forwardPorts[0] } });
   assert.equal(response.status, 200); return response.json();
 }
 async function connected(app, path, token, direct = false) {
@@ -42,27 +42,6 @@ async function suspend(app, control) {
   await until(async () => (await status(app)).mappings[0]?.state === 'recovering');
 }
 
-test('an existing forward authorization resumes and accepts new TCP while the workspace stays locked', async t => {
-  const peers = new Set(); let accepted = 0, received = '';
-  const target = net.createServer(socket => { accepted++; peers.add(socket); socket.on('error', () => {}); socket.on('close', () => peers.delete(socket)); socket.on('data', bytes => { received += bytes.toString(); socket.write(bytes); }); });
-  target.listen(0, '127.0.0.1'); await once(target, 'listening');
-  const app = await fixture({ forwardPorts: [target.address().port] });
-  t.after(async () => { await app.close(); for (const socket of peers) socket.destroy(); await new Promise(resolve => target.close(resolve)); });
-  await app.login(); await app.claim(); const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code);
-  const oldData = await open(app, '/forward/data', first.ready.streamToken); await until(() => oldData.records.length === 1);
-  oldData.ws.send(Buffer.from('sent exactly once')); await until(() => oldData.records.some(Buffer.isBuffer));
-  assert.equal((await app.request('/api/security/screen-lock', { method: 'POST', body: { enabled: true, password: 'test-only-screen-password' } })).status, 200);
-  const oldClosed = once(oldData.ws, 'close'), controlClosed = once(first.ws, 'close'); first.ws.terminate(); await controlClosed; await oldClosed;
-  const resumed = await connected(app, '/forward/resume', first.ready.resumeToken);
-  assert.equal(resumed.ready.id, mapping.id); assert.notEqual(resumed.ready.streamToken, first.ready.streamToken); assert.equal(accepted, 1);
-  const fresh = await open(app, '/forward/data', resumed.ready.streamToken); await until(() => fresh.records.length === 1);
-  fresh.ws.send(Buffer.from('new connection while locked')); await until(() => fresh.records.some(Buffer.isBuffer));
-  assert.equal(received, 'sent exactly oncenew connection while locked'); assert.equal(accepted, 2);
-  const state = await (await app.request('/api/state')).json(); assert.equal(state.access.requiresUnlock, true); assert.equal(state.mine, false);
-  assert.equal((await app.request('/api/forward', { method: 'POST', body: { localPort: 2223, targetPort: target.address().port } })).status, 423);
-  const ended = once(resumed.ws, 'close'); await app.request('/api/logout', { method: 'POST', body: {} }); await ended;
-  assert.equal((await rejected(app, first.ready.resumeToken)).status, 401); assert.deepEqual(app.inputCalls, []); assert.deepEqual(app.terminalInputs, []);
-});
 
 test('recovery uses a separate capability, drops old TCP, rotates data authorization and opens targets only for new clients', async t => {
   const peers = new Set(); let accepted = 0, received = '';
@@ -70,7 +49,7 @@ test('recovery uses a separate capability, drops old TCP, rotates data authoriza
   target.listen(0, '127.0.0.2'); await once(target, 'listening');
   const app = await fixture({ forwardPorts: [target.address().port] });
   t.after(async () => { await app.close(); for (const socket of peers) socket.destroy(); await new Promise(resolve => target.close(resolve)); });
-  await app.login(); const mapping = await create(app, 2222, '127.0.0.2'), first = await connected(app, '/forward/helper', mapping.code);
+   const mapping = await create(app, 2222, '127.0.0.2'), first = await connected(app, '/forward/helper', mapping.code);
   assert.equal(first.ready.targetHost,'127.0.0.2');
   assert.equal(first.ready.resumeToken.length, 43); assert.equal(first.ready.resumeMs, FORWARD_LIMITS.resumeMs);
   assert.notEqual(first.ready.resumeToken, first.ready.streamToken); assert.notEqual(first.ready.resumeToken, mapping.code);
@@ -98,7 +77,7 @@ test('recovery uses a separate capability, drops old TCP, rotates data authoriza
 });
 
 test('a credentialed resume can replace a half-open control, and a concurrent handshake or stale close cannot take over again', async t => {
-  const app = await fixture(); t.after(() => app.close()); await app.login();
+  const app = await fixture(); t.after(() => app.close());
   const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code), closed = once(first.ws, 'close');
   const second = await open(app, '/forward/resume', first.ready.resumeToken); await until(() => second.records.length === 1);
   assert.equal((await rejected(app, first.ready.resumeToken)).code, 'resume_busy');
@@ -109,14 +88,14 @@ test('a credentialed resume can replace a half-open control, and a concurrent ha
   assert.equal((await rejected(app, first.ready.resumeToken)).code, 'helper_stopped');
 });
 
-for (const operation of ['stop', 'logout', 'expiry', 'restart']) {
+for (const operation of ['stop', 'revoke', 'expiry', 'restart']) {
   test(`recovery cannot survive ${operation} or recreate the revoked mapping`, async t => {
     if (operation === 'expiry') t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
-    const app = await fixture({ sessionMs: 60000 }); t.after(() => app.close()); await app.login();
+    const app = await fixture({ sessionMs: 60000 }); t.after(() => app.close());
     const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code); await suspend(app, first);
     const before = Date.now(); let expected;
-    if (operation === 'stop') { await app.request('/api/forward/stop', { method: 'POST', body: { id: mapping.id } }); expected = 'stopped'; }
-    if (operation === 'logout') { await app.request('/api/logout', { method: 'POST', body: {} }); expected = 'signed_out'; }
+    if (operation === 'stop') { await app.request('stop', { method: 'POST', body: { id: mapping.id } }); expected = 'stopped'; }
+    if (operation === 'revoke') { await app.request('revoke', { method: 'POST', body: {} }); expected = 'authorization_revoked'; }
     if (operation === 'expiry') { t.mock.timers.setTime(before + 61000); expected = 'authorization_expired'; }
     if (operation === 'restart') { await app.panel.close(); expected = 'resume_authorization_invalid'; }
     if (operation === 'restart') {
@@ -131,7 +110,7 @@ for (const operation of ['stop', 'logout', 'expiry', 'restart']) {
 
 test('recovery deadline and attempt budget cannot be renewed by incomplete handshakes, and recovering slots stay bounded', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
-  const app = await fixture(); t.after(() => app.close()); await app.login();
+  const app = await fixture(); t.after(() => app.close());
   const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code); await suspend(app, first);
   const deadline = (await status(app)).mappings[0].recoverUntil;
   for (let i = 0; i < FORWARD_LIMITS.resumeAttempts; i++) {
@@ -140,10 +119,10 @@ test('recovery deadline and attempt budget cannot be renewed by incomplete hands
     await suspend(app, attempt); assert.equal((await status(app)).mappings[0].recoverUntil, deadline);
   }
   assert.equal((await rejected(app, first.ready.resumeToken)).code, 'resume_expired');
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < FORWARD_LIMITS.mappings; i++) {
     const next = await create(app, 2223 + i), control = await connected(app, '/forward/helper', next.code); await suspend(app, control);
   }
-  const full = await app.request('/api/forward', { method: 'POST', body: { localPort: 3333, targetPort: app.config.forwardPorts[0] } }); assert.equal(full.status, 409);
+  const full = await app.request('mapping', { method: 'POST', body: { localPort: 3333, targetPort: app.config.forwardPorts[0] } }); assert.equal(full.status, 409);
   t.mock.timers.setTime(Date.now() + FORWARD_LIMITS.resumeMs + 1);
   const ended = await status(app); assert.equal(ended.mappings.length, 0); assert.equal(ended.recent[0].code, 'resume_expired');
   assert.ok(ended.recent.length <= FORWARD_LIMITS.recent); assert.equal(JSON.stringify(ended).includes('resumeHash'), false);
@@ -156,7 +135,7 @@ test('late ICE answers and status from the previous control generation cannot au
     captured = options;
     return { state: { id: options.id, available: false, reason: 'rtc_connecting' }, streams: 0, answer: () => answer,
       async destroy() { options.closed(); } };
-  } }); t.after(async () => { release('late test answer'); await app.close(); }); await app.login();
+  } }); t.after(async () => { release('late test answer'); await app.close(); });
   const mapping = await create(app), first = await connected(app, '/forward/helper', mapping.code, true);
   const offer = JSON.stringify({ type: 'rtc_offer', id: 1, sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
     'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'), ''].join('\r\n') });

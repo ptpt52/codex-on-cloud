@@ -203,7 +203,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
     for (const service of ['codex-cloud-files.service', 'codex-cloud-manager.service', 'codex-cloud-panel.service']) {
       if (active[selectedServices.indexOf(service)].status === 0) {
         if (service === 'codex-cloud-panel.service') panelTouched = true;
-        await step('更新后台：' + service + '（原任务保留；面板重启后映射需重新配对）', 'systemctl', ['--user', 'restart', service]);
+        await step('更新后台：' + service + '（原任务保留；面板重启后助手重新接入）', 'systemctl', ['--user', 'restart', service]);
       }
     }
     const env = parseEnv(await boundedFile(join(root, '.env'), 65536));

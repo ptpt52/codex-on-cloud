@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
 import WebSocket from 'ws';
-import { fixture } from './fixture.mjs';
+import { fixture } from './support/forward-transport.mjs';
 import { FORWARD_LIMITS } from '../panel/forward.mjs';
 
 const capability = { 'x-codex-forward-resume': '1', 'x-codex-forward-keep-streams': '1', 'x-codex-forward-reverse': '1' };
@@ -31,7 +31,7 @@ async function denied(app, path, token, headers = {}) {
     ws.on('open', () => { ws.terminate(); reject(Error('Unexpected data authorization')); });
   });
 }
-const status = async app => (await (await app.request('/api/forward')).json()).mappings[0];
+const status = async app => (await (await app.request('mapping')).json()).mappings[0];
 async function control(app, path, token, direct = false) {
   const result = await open(app, path, token); await until(() => result.records.length === 1);
   result.ready = result.records[0]; result.ws.send(JSON.stringify({ type: 'listening', ...(direct ? { direct: 1 } : {}) })); await until(() => result.records.some(value => value.type === 'listening')); return result;
@@ -44,8 +44,8 @@ test('preserved peer health cannot interleave with a new control handshake or au
     return peer = { state: { id: options.id, available: true, healthy: true, reason: '', family: 'IPv4', rttMs: 1 }, streams: 1,
       async answer() { return 'test-answer'; }, async destroy() { options.closed(); } };
   } });
-  t.after(() => app.close()); await app.login();
-  const mapping = await (await app.request('/api/forward', { method: 'POST', body: { localPort: await freePort(), targetPort: 22 } })).json();
+  t.after(() => app.close());
+  const mapping = await (await app.request('mapping', { method: 'POST', body: { localPort: await freePort(), targetPort: 22 } })).json();
   const first = await control(app, '/forward/helper', mapping.code, true);
   first.ws.send(JSON.stringify({ type: 'rtc_offer', id: 1, sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'), ''].join('\r\n') }));
   await until(() => first.records.some(value => value.type === 'rtc_answer'));
@@ -59,7 +59,7 @@ test('preserved peer health cannot interleave with a new control handshake or au
   next.ws.send('{"type":"listening","direct":1}'); await until(() => next.records.length === 4);
   assert.deepEqual(next.records.map(value => value.type), ['ready', 'listening', 'rtc_config', 'rtc_status']);
   assert.equal(captured.valid(), true); assert.equal(captured.authenticate(first.ready.streamToken), true);
-  await app.request('/api/forward/stop', { method: 'POST', body: { id: mapping.id } }); assert.equal(captured.valid(), false);
+  await app.request('stop', { method: 'POST', body: { id: mapping.id } }); assert.equal(captured.valid(), false);
 });
 async function setup(t, reverse, withPending = false) {
   const sockets = new Set(); let accepted = 0;
@@ -67,8 +67,8 @@ async function setup(t, reverse, withPending = false) {
   target.listen(0, '127.0.0.1'); await once(target, 'listening');
   const app = await fixture({ forwardPorts: '*', sessionMs: 60000 });
   t.after(async () => { await app.close(); for (const socket of sockets) socket.destroy(); await new Promise(resolve => target.close(resolve)); });
-  await app.login();
-  const mapping = await (await app.request('/api/forward', { method: 'POST', body: {
+
+  const mapping = await (await app.request('mapping', { method: 'POST', body: {
     localPort: await freePort(), targetHost: '127.0.0.1', targetPort: target.address().port,
     ...(reverse ? { direction: 'reverse', deviceName: 'test-device' } : {}) } })).json();
   const first = await control(app, '/forward/helper', mapping.code);
@@ -122,17 +122,17 @@ for (const reverse of [false, true]) {
     assert.equal(second.ready.targetHost, first.ready.targetHost); assert.equal(second.ready.targetPort, first.ready.targetPort);
     await exchange('after-resume'); assert.equal(accepted(), reverse ? 0 : 1);
     assert.equal((await status(app)).connections, 1); assert.equal((await status(app)).recoverUntil, null);
-    const json = JSON.stringify(await (await app.request('/api/forward')).json());
+    const json = JSON.stringify(await (await app.request('mapping')).json());
     for (const secret of [first.ready.streamToken, first.ready.resumeToken, mapping.code, 'streamToken', 'streamHash']) assert.equal(json.includes(secret), false);
-    const ended = once(data.ws, 'close'); await app.request('/api/forward/stop', { method: 'POST', body: { id: mapping.id } }); await ended;
+    const ended = once(data.ws, 'close'); await app.request('stop', { method: 'POST', body: { id: mapping.id } }); await ended;
     assert.deepEqual(app.inputCalls, []); assert.deepEqual(app.terminalInputs, []);
   });
-  for (const reason of ['logout', 'authorization-expired', 'resume-expired']) {
+  for (const reason of ['revoke', 'authorization-expired', 'resume-expired']) {
     test(`${direction}: preserved data is revoked on ${reason} during management recovery`, async t => {
       t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
       const { app, data, exchange } = await setup(t, reverse); await exchange('alive'); const ended = once(data.ws, 'close');
-      if (reason === 'logout') await app.request('/api/logout', { method: 'POST', body: {} });
-      else { t.mock.timers.setTime(Date.now() + (reason === 'authorization-expired' ? 61000 : FORWARD_LIMITS.resumeMs + 1)); await app.request('/api/forward'); }
+      if (reason === 'revoke') await app.request('revoke', { method: 'POST', body: {} });
+      else { t.mock.timers.setTime(Date.now() + (reason === 'authorization-expired' ? 61000 : FORWARD_LIMITS.resumeMs + 1)); await app.request('mapping'); }
       await ended; assert.equal(data.ws.readyState, WebSocket.CLOSED);
     });
   }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { once } from 'node:events';
 import WebSocket from 'ws';
-import { fixture } from '../fixture.mjs';
+import { fixture } from './forward-transport.mjs';
 
 const [directory, phase, fault] = process.argv.slice(2), sockets = new Set(), connections = new Set();
 async function until(probe) {
@@ -20,7 +20,7 @@ const target = net.createServer(socket => {
 let app;
 try {
   target.listen(0, '127.0.0.1'); await once(target, 'listening');
-  app = await fixture({ dataDir: directory, forwardPorts: '*' }); await app.login(); await app.claim();
+  app = await fixture({ dataDir: directory, forwardPorts: '*' });
   async function open(path, token, headers = {}) {
     const ws = new WebSocket(app.config.origin.replace('http:', 'ws:') + path, 'codex-forward-v1', {
       headers: { origin: app.config.origin, authorization: 'Bearer ' + token, ...headers },
@@ -30,7 +30,7 @@ try {
     await once(ws, 'open'); await until(() => records.length === 1); return { ws, records, ready: records[0] };
   }
   async function create(body, headers) {
-    const response = await app.request('/api/forward', { method: 'POST', body, headers }); assert.equal(response.status, 200); return response.json();
+    const response = await app.request('mapping', { method: 'POST', body, headers }); assert.equal(response.status, 200); return response.json();
   }
   const healthy = await create({ localPort: await freePort(), targetPort: target.address().port });
   const control = await open('/forward/helper', healthy.code); control.ws.send('{"type":"listening"}');
@@ -39,11 +39,7 @@ try {
   data.ws.send('before fault', { binary: true });
   await until(() => data.records.some(value => Buffer.isBuffer(value) && value.toString() === 'before fault'));
 
-  const saved = await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'guest-test-password' } });
-  assert.equal(saved.status, 200);
-  const login = await fetch(app.config.origin + '/api/login', { method: 'POST', headers: { origin: app.config.origin, 'content-type': 'application/json' }, body: JSON.stringify({ username: 'visitor', password: 'guest-test-password' }) });
-  assert.equal(login.status, 200); const identity = await login.json(); assert.equal(identity.access.role, 'temporary');
-  const headers = { cookie: login.headers.get('set-cookie').split(';')[0], 'x-csrf-token': identity.csrf };
+  const headers = {};
   const localPort = await freePort(), serial = phase === 'serial-pair';
   const mapping = await create({ direction: 'reverse', deviceName: 'test device', localPort, ...(serial ? {
     protocol: 'serial', serial: { path: 'COM3', baud: 115200, dataBits: 8, parity: 'none', stopBits: 1, dtr: false, rts: false },
@@ -51,7 +47,7 @@ try {
   const capability = { 'x-codex-forward-reverse': '1', 'x-codex-forward-resume': '1', ...(serial ? { 'x-codex-forward-serial': '1' } : {}) };
   let bad = await open('/forward/helper', mapping.code, capability);
   const resumeToken = bad.ready.resumeToken;
-  const state = async () => (await (await app.request('/api/forward')).json());
+  const state = async () => (await (await app.request('mapping')).json());
   if (phase === 'tcp-resume') {
     bad.ws.send('{"type":"listening"}'); await until(() => bad.records.some(value => value.type === 'listening'));
     bad.ws.terminate(); await until(async () => (await state()).mappings.find(value => value.id === mapping.id)?.state === 'recovering');
@@ -71,7 +67,7 @@ try {
     resumed.ws.send('{"type":"listening"}');
     await until(() => resumed.records.some(value => value.type === 'listening'));
   }
-  assert.equal((await app.request('/healthz')).status, 200);
+  assert.equal((await fetch(app.config.origin + '/healthz')).status, 200);
   assert.equal(control.ws.readyState, WebSocket.OPEN); assert.equal(data.ws.readyState, WebSocket.OPEN);
   data.ws.send('after fault', { binary: true });
   await until(() => data.records.some(value => Buffer.isBuffer(value) && value.toString() === 'after fault'));

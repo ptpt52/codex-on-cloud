@@ -1,5 +1,6 @@
 import net from 'node:net';
-import { serialConfig } from './serial-config.mjs';
+import { normalizeForwardRule } from './forward-validation.mjs';
+export { forwardDeviceName, forwardPorts, forwardTargetHost } from './forward-validation.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { equal } from './auth.mjs';
@@ -11,38 +12,10 @@ import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
 import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
 
-export const FORWARD_LIMITS = Object.freeze({ mappings: 4, managedMappings: 32, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
+export const FORWARD_LIMITS = Object.freeze({ mappings: 32, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
 const digest = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
-export function forwardDeviceName(value) {
-  if (typeof value !== 'string' || !value.trim() || value.length > 48 || Buffer.byteLength(value) > 192 || /[\p{Cc}\p{Cf}]/u.test(value)) throw fail(400, '设备名称需为 1–48 个字符，不含控制字符');
-  return value.trim();
-}
-export function forwardPorts(value = '*') {
-  if (value === '*') return '*';
-  if (value === '') return [];
-  const fields = String(value).split(',').map(item => item.trim());
-  if (fields.length > 16 || fields.some(item => !/^[1-9]\d{0,4}$/.test(item) || Number(item) > 65535)) throw new Error('TCP_FORWARD_PORTS 需为 *、最多 16 个以逗号分隔的端口，或留空禁用');
-  return [...new Set(fields.map(Number))];
-}
-
-export function forwardTargetHost(value = '127.0.0.1') {
-  if (typeof value !== 'string' || value.length > 64) throw fail(400, '目标 IP 需为 IPv4 或 IPv6 地址');
-  let host = value.trim();
-  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-  const family = net.isIP(host);
-  if (!family || host.includes('%')) throw fail(400, '目标 IP 需为 IPv4 或 IPv6 地址，不含端口、域名或网卡标识');
-  if (family === 6) {
-    host = new URL(`http://[${host}]/`).hostname.slice(1, -1);
-    const mapped = /^::ffff:([a-f0-9]{1,4}):([a-f0-9]{1,4})$/.exec(host);
-    if (mapped) { const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16); host = [high >> 8, high & 255, low >> 8, low & 255].join('.'); }
-  }
-  const ipv4 = net.isIP(host) === 4;
-  if (host === '::' || !ipv4 && host.startsWith('ff') || ipv4 && (host === '0.0.0.0' || Number(host.split('.')[0]) >= 224)) throw fail(400, '目标 IP 需为具体的单播地址');
-  return host;
-}
-
 // Forwarding has its own lifetime: screen locking, takeover, and desktop
 // reconnect/mode changes preserve its grants and both existing/new TCP streams.
 // Negotiated recovery preserves healthy data within the original grant/budget.
@@ -108,7 +81,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function revoke(session) { for (const item of mappings.values()) if (item.session === session) remove(item, 'signed_out'); }
   const timer = setInterval(refresh, 5000).unref();
-  function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, deviceId: item.deviceId, protocol: item.protocol, ...(item.serial ? { serial: item.serial } : {}), targetStatus: item.targetStatus || { state: 'unverified' } } : { targetStatus: item.targetStatus || { state: 'unverified' } }; }
+  function details(item) { return item.direction === 'reverse' ? { direction: 'reverse', deviceName: item.deviceName, protocol: item.protocol, ...(item.serial ? { serial: item.serial } : {}), targetStatus: item.targetStatus || { state: 'unverified' } } : { targetStatus: item.targetStatus || { state: 'unverified' } }; }
   function list(visible = () => true, viewer) {
     if (typeof visible !== 'function') visible = () => true;
     refresh();
@@ -120,29 +93,16 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
       recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
-  function normalize(body, policy = true) {
-    let hints;
-    try { hints = rtcHints(body?.hints); } catch (error) { throw fail(400, error.message); }
-    if (body && Object.hasOwn(body, 'hints')) { body = { ...body }; delete body.hints; }
-    const reversed = body?.direction === 'reverse', serial = reversed && body.protocol === 'serial' ? serialConfig(body.serial) : null;
-    const fieldsValid = serial ? Object.keys(body).sort().join(',') === 'deviceName,direction,localPort,protocol,serial' : body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'deviceId', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
-    if (!fieldsValid || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || policy && reversed && blockedPort(body.localPort)) throw fail(400, '监听端口需在 1024–65535 之间，不能占用工作台管理端口');
-    if (!serial && (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || policy && (!reversed && blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort)))) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
-    const targetHost = serial ? undefined : forwardTargetHost(body.targetHost);
-    const deviceName = reversed ? forwardDeviceName(body.deviceName ?? '本地设备') : undefined;
-    if (reversed && (body.deviceId !== undefined && (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) || body.protocol !== undefined && !['ssh', 'telnet', 'tcp', 'serial'].includes(body.protocol))) throw fail(400, '设备标识或协议无效');
-    body = { ...body, ...(!serial ? { targetHost } : {}), ...(reversed ? { deviceName } : {}) };
-    return { body, hints, reversed, serial, targetHost, deviceName };
-  }
+  function normalize(body, policy = true) { return normalizeForwardRule(config, body, policy); }
   function validate(body, { policy = true } = {}) { const value = normalize(body, policy); return { ...value.body, hints: value.hints }; }
   function create(body, session, authorizationError, authorization = {}) {
     refresh();
     const value = normalize(body), { hints, reversed, serial, targetHost, deviceName } = value; body = value.body;
     if (authorizationError()) throw fail(401, '登录授权已失效，请重新登录');
-    if (mappings.size >= FORWARD_LIMITS.managedMappings || !authorization.helperId && [...mappings.values()].filter(item => !item.authorization.helperId).length >= FORWARD_LIMITS.mappings) throw fail(409, authorization.helperId ? '活动映射已达到 32 条上限，请先停用不用的规则' : '最多保留 4 个映射，请先停止不用的映射');
+    if (mappings.size >= FORWARD_LIMITS.mappings) throw fail(409, '活动映射已达到 32 条上限，请先停用不用的规则');
     if ([...mappings.values()].some(item => item.direction === (reversed ? 'reverse' : undefined) && item.localPort === body.localPort && (reversed || item.session === session))) throw fail(409, '该监听端口已有待配对或活动映射');
     const code = secret(), item = { id: randomBytes(16).toString('hex'), session, hints, authorizationError, authorization, createdAt: now(), pairHash: digest(code), expires: now() + FORWARD_LIMITS.pairMs,
-      localPort: body.localPort, targetHost, targetPort: serial ? undefined : body.targetPort, ...(serial ? { serial } : {}), ...(reversed ? { direction: 'reverse', deviceName, deviceId: body.deviceId, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
+      localPort: body.localPort, targetHost, targetPort: serial ? undefined : body.targetPort, ...(serial ? { serial } : {}), ...(reversed ? { direction: 'reverse', deviceName, protocol: body.protocol || 'tcp' } : {}), state: 'pending', streams: new Set(), sent: 0, received: 0, opens: 0, openedAt: now(), peerId: 0, peerAt: -Infinity };
     mappings.set(item.id, item);
     return { id: item.id, code, expires: item.expires, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item) };
   }

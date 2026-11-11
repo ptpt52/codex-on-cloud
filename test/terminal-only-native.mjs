@@ -142,7 +142,7 @@ try {
     const fileText='headless transfer 中文';
     const upload=await fetch(origin+'/api/files/terminal-test.txt',{method:'PUT',headers:{origin,cookie,'x-viewer-id':viewer,'x-csrf-token':csrf,'content-type':'application/octet-stream'},body:fileText});
     assert.equal(upload.status,200);assert.equal(await(await fetch(origin+'/api/files/terminal-test.txt',{headers:{cookie}})).text(),fileText);
-    assert.equal((await api('/api/forward')).limit, 4);
+    assert.equal((await api('/api/forward')).managedHelpersProtocol, 2);
     if (!systemd) {
       const helper = Number((await readFile('/proc/' + files.pid + '/task/' + files.pid + '/children', 'utf8')).trim());
       assert.ok(Number.isInteger(helper) && helper > 1);

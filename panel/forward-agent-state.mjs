@@ -2,7 +2,7 @@ import { constants, openSync, closeSync, readSync, fstatSync, fsyncSync, lstatSy
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { equal } from './auth.mjs';
-import { forwardDeviceName } from './forward.mjs';
+import { forwardDeviceName } from './forward-validation.mjs';
 
 export const AGENT_LIMITS = Object.freeze({ agents: 8, rules: 16, file: 128 * 1024, inventory: 128, inventoryBytes: 32 * 1024, message: 48 * 1024, buffer: 128 * 1024 });
 const id = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);

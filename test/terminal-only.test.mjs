@@ -14,7 +14,7 @@ test('terminal-only capabilities preserve auth, ownership and CSRF while refusin
   }
   for(const path of ['/desktop/index.html','/desktop/viewer.js','/desktop/novnc/core/rfb.js','/api/desktop/settings'])assert.equal((await app.request(path)).status,501);
   for(const path of ['/terminal/index.html','/terminal/xterm.js','/desktop/stream-client.js','/api/terminals','/api/forward'])assert.equal((await app.request(path)).status,200);
-  const forwarding=await(await app.request('/api/forward')).json();assert.equal(forwarding.limit,4);assert.equal(forwarding.deviceLimit,16);
+  const forwarding=await(await app.request('/api/forward')).json();assert.equal(forwarding.managedHelpersProtocol,2);assert.equal((await(await app.request('/api/forward/agents')).json()).agents.length,8);
   const status=await new Promise(resolve=>{
     const ws=new WebSocket(app.config.origin.replace('http','ws')+'/desktop/websockify?viewer='+app.viewer,{headers:{origin:app.config.origin,cookie:app.cookie}});
     ws.on('error',()=>{});ws.on('unexpected-response',(_request,response)=>{response.resume();ws.terminate();resolve(response.statusCode);});

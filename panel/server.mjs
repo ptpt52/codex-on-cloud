@@ -151,7 +151,7 @@ export async function createPanel(config) {
     return session;
   };
   const isOwner = (req, session, viewer = req.headers['x-viewer-id']) => session.role !== 'temporary' && !!owner && owner.viewer === viewer && owner.session === session.hash && (!access.screenEnabled || owner.lockRevision === access.screenRevision);
-  // Before the first claim, preserve legacy administrator read/forward access
+  // Before the first claim, preserve authenticated administrator read access
   // only when no screen lock is configured. A taken-over page is restricted.
   const desktopAccess = (req, session, viewer) => session.role !== 'temporary' && (isOwner(req, session, viewer) || !access.screenEnabled && !owner);
   const accessState = (req, session) => ({ role: session.role || 'admin', full: isOwner(req, session), screenLockEnabled: access.screenEnabled,
@@ -357,7 +357,6 @@ export async function createPanel(config) {
     if (path === '/api/logout' && req.method === 'POST') {
       const session = requireWrite(req);
       const revoked = auth.revoke(cookieToken(req.headers.cookie));
-      forwarding.revoke(session.hash);
       await revoked;
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;

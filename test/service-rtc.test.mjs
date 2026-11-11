@@ -8,7 +8,7 @@ test('temporary service direct uses real ICE/DTLS with scoped RPC, keeps desktop
  const client=await serviceClient(app,{hints:{server:'10.123.254.253',browser:'10.123.254.252'}});t.after(()=>client.close());
  assert.equal((await client.rpc('ping')).value.ready,true);const state=await client.rpc('state');assert.equal(state.value.access.role,'temporary');assert.equal(state.value.mine,false);
  for(const action of ['paste','key','activate','terminals','/api/security','__proto__'])assert.equal((await client.rpc(action)).error.status,400);
- assert.equal((await client.rpc('forward-create',{localPort:2222,targetPort:22})).error.status,403);
+ assert.equal((await client.rpc('forward-create',{localPort:2222,targetPort:22})).error.status,400);
  assert.equal((await client.rpc('files')).ok,true);assert.equal((await client.rpc('diagnostics')).ok,true);
  assert.equal((await(await app.request('/api/state')).json()).mine,true);assert.equal(app.vncConnections,0);assert.deepEqual(app.inputCalls,[]);
  await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:false}});

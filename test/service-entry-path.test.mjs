@@ -19,24 +19,14 @@ async function setup(t, entryBasePath) {
 }
 
 for (const base of ['/', '/node/service-test/']) {
-  test(`service mapping grants at ${base} retain entry routing and HTTP authorization`, async t => {
+  test(`service helper downloads at ${base} retain entry routing and HTTP authorization`, async t => {
     const { app, rpc } = await setup(t, base);
     assert.equal((await rpc('state')).mine, true);
-    assert.deepEqual((await rpc('forward-list')).mappings, []);
-    await assert.rejects(rpc('forward-create', { localPort: 2222, targetPort: 22 }, { 'x-csrf-token': '' }), { status: 403 });
-    await assert.rejects(rpc('forward-create', { localPort: 2222, targetPort: 22 }, { origin: 'https://evil.example' }), { status: 403 });
-    for (const body of [{ localPort: 2222, targetPort: 22 },
-      { direction: 'reverse', localPort: 22001, targetHost: '192.168.1.1', targetPort: 22, deviceName: 'router', protocol: 'ssh' }]) {
-      const created = await rpc('forward-create', body);
-      assert.equal(created.code.length, 43);
-      assert.equal((await rpc('forward-list')).mappings[0].id, created.id);
-      assert.equal((await rpc('forward-hints', { id: created.id, hints: {} })).ok, true);
-      assert.equal((await rpc('forward-stop', { id: created.id })).ok, true);
-    }
-    assert.deepEqual((await rpc('forward-list')).mappings, []);
+    assert.equal((await rpc('forward-list')).managedHelpersProtocol, 2);
+    for (const action of ['forward-create','forward-stop','forward-hints']) await assert.rejects(rpc(action, {}), { status: 400 });
     await assert.rejects(rpc('__proto__'), { status: 400 });
     await app.request('/api/logout', { method: 'POST', body: {} });
-    await assert.rejects(rpc('forward-create', { localPort: 2222, targetPort: 22 }), { status: 401 });
+    await assert.rejects(rpc('forward-list'), { status: 401 });
     assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.inputCalls, []);
   });
 }
@@ -63,7 +53,7 @@ test('prefixed service file transfers use the same entry for uploads, downloads 
   assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.inputCalls, []);
 });
 
-test('prefixed service requests keep temporary accounts restricted to their own reverse grants', async t => {
+test('prefixed service requests cannot expose helper keys or create grants for temporary accounts', async t => {
   const base = '/node/guest/', { app, headers, signal, port } = await setup(t, base);
   assert.equal((await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'temporary-test-password', durationMs: 300000 } })).status, 200);
   const response = await app.request('/api/login', { method: 'POST', headers: { cookie: '' }, body: { username: 'visitor', password: 'temporary-test-password' } });
@@ -71,10 +61,9 @@ test('prefixed service requests keep temporary accounts restricted to their own 
   const guest = { ...headers, cookie: response.headers.get('set-cookie').split(';')[0], 'x-csrf-token': (await response.json()).csrf };
   const rpc = (action, body = {}) => localServiceRequest(port, guest, action, body, signal, base);
   assert.equal((await rpc('state')).access.role, 'temporary');
-  await assert.rejects(rpc('forward-create', { localPort: 2222, targetPort: 22 }), { status: 403 });
-  const created = await rpc('forward-create', { direction: 'reverse', localPort: 22001, targetPort: 22, deviceName: 'guest device', protocol: 'ssh' });
-  assert.equal(created.code.length, 43);
-  assert.equal((await rpc('forward-stop', { id: created.id })).ok, true);
+  await assert.rejects(rpc('forward-create', {}), { status: 400 });
+  assert.equal((await rpc('forward-list')).managedHelpersProtocol, 2);
+  assert.equal((await app.request('/api/forward/agents', { headers: { cookie: guest.cookie } })).status, 403);
   assert.equal((await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: false } })).status, 200);
   await assert.rejects(rpc('forward-list'), { status: 401 });
   assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.inputCalls, []);

@@ -4,15 +4,15 @@ import { once } from 'node:events';
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
-import { fixture } from './fixture.mjs';
+import { fixture } from './support/forward-transport.mjs';
 
 const capability = { 'x-codex-forward-resume': '1', 'x-codex-forward-reverse': '1' };
 async function until(probe) { for (let n = 0; n < 250; n++) { if (await probe()) return; await new Promise(r => setTimeout(r, 10)); } throw Error('reverse test deadline'); }
 async function freePort() { const s = net.createServer(); s.listen(0, '127.0.0.1'); await once(s, 'listening'); const port = s.address().port; await new Promise(r => s.close(r)); return port; }
-const status = async app => (await (await app.request('/api/forward')).json());
+const status = async app => (await (await app.request('mapping')).json());
 async function create(app, extra = {}) {
   const body = { direction: 'reverse', deviceName: '本地路由器', protocol: 'ssh', localPort: await freePort(), targetHost: '127.0.0.2', targetPort: 22, ...extra };
-  const response = await app.request('/api/forward', { method: 'POST', body }); assert.equal(response.status, 200); return response.json();
+  const response = await app.request('mapping', { method: 'POST', body }); assert.equal(response.status, 200); return response.json();
 }
 async function open(app, path, token, headers = {}) {
   const ws = new WebSocket(app.config.origin.replace('http', 'ws') + path, 'codex-forward-v1', { headers: { origin: app.config.origin, authorization: 'Bearer ' + token, ...capability, ...headers } });
@@ -29,7 +29,7 @@ async function refused(port) { const tcp = net.createConnection({ host: '127.0.0
 
 test('reverse pairing requires an upgraded locally consenting helper and binds no port before consent', async t => {
   const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close());
-  assert.equal((await app.request('/api/forward')).status, 401); await app.login();
+
   const mapping = await create(app); assert.equal(await refused(mapping.localPort), true);
   assert.deepEqual(await rejected(app, '/forward/helper', mapping.code, { 'x-codex-forward-reverse': '' }), { status: 426, code: 'reverse_upgrade_required' });
   const control = await open(app, '/forward/helper', mapping.code); t.after(() => control.ws.terminate()); await until(() => control.records.length === 1);
@@ -42,7 +42,7 @@ test('reverse pairing requires an upgraded locally consenting helper and binds n
 });
 
 test('reverse listener remains loopback-only, preserves bytes and half-close, and consumes each accepted stream once', async t => {
-  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); await app.login();
+  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close());
   const mapping = await create(app), control = await helper(app, mapping.code); t.after(() => control.ws.terminate());
   assert.equal((await status(app)).mappings[0].targetStatus.state, 'unverified');
   const tcp = net.createConnection({ host: '127.0.0.1', port: mapping.localPort, allowHalfOpen: true }); t.after(() => tcp.destroy()); tcp.on('error', () => {}); await once(tcp, 'connect');
@@ -59,11 +59,11 @@ test('reverse listener remains loopback-only, preserves bytes and half-close, an
   assert.deepEqual(Buffer.concat(data.records.filter(Buffer.isBuffer)), input);
   const reply = Buffer.from('device reply after client FIN'); const ended = once(tcp, 'end'); data.ws.send(reply); data.ws.send('{"type":"fin"}'); await ended;
   assert.deepEqual(Buffer.concat(received), reply); assert.equal((await status(app)).mappings[0].targetStatus.state, 'reachable');
-  await app.request('/api/forward/stop', { method: 'POST', body: { id: mapping.id } }); assert.equal(await refused(mapping.localPort), true);
+  await app.request('stop', { method: 'POST', body: { id: mapping.id } }); assert.equal(await refused(mapping.localPort), true);
 });
 
 test('reverse mapping bounds pending sockets, invalidates old streams on recovery, and never replays bytes', async t => {
-  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); await app.login(); const mapping = await create(app), first = await helper(app, mapping.code);
+  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close());  const mapping = await create(app), first = await helper(app, mapping.code);
   const clients = []; t.after(() => clients.forEach(tcp => tcp.destroy())); t.after(() => first.ws.terminate());
   for (let n = 0; n < 9; n++) { const tcp = net.createConnection({ host: '127.0.0.1', port: mapping.localPort }); tcp.on('error', () => {}); clients.push(tcp); await once(tcp, 'connect'); }
   await until(() => controlOpens(first).length === 8); await until(() => clients[8].destroyed); assert.equal((await status(app)).mappings[0].connections, 8);
@@ -73,35 +73,15 @@ test('reverse mapping bounds pending sockets, invalidates old streams on recover
   assert.equal(next.ready.id, mapping.id); assert.equal(next.ready.direction, 'reverse'); assert.equal(next.ready.targetHost, mapping.targetHost); assert.notEqual(next.ready.streamToken, first.ready.streamToken);
   assert.equal((await rejected(app, '/forward/data', first.ready.streamToken, { 'x-codex-reverse-stream': stale })).status, 401);
   assert.equal((await rejected(app, '/forward/data', next.ready.streamToken, { 'x-codex-reverse-stream': stale })).status, 401); assert.equal(controlOpens(next).length, 0);
-  await app.request('/api/logout', { method: 'POST', body: {} }); await until(() => next.ws.readyState === 3); assert.equal(await refused(mapping.localPort), true);
+  await app.request('revoke', { method: 'POST', body: {} }); await until(() => next.ws.readyState === 3); assert.equal(await refused(mapping.localPort), true);
 });
 function controlOpens(control) { return control.records.filter(x => x.type === 'reverse_open'); }
 
-test('live reverse TCP bytes and helper authorization survive screen locking and a password-protected takeover', async t => {
-  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); await app.login(); await app.claim();
-  const mapping = await create(app), control = await helper(app, mapping.code); t.after(() => control.ws.terminate());
-  const tcp = net.createConnection({ host: '127.0.0.1', port: mapping.localPort }); tcp.on('error', () => {}); t.after(() => tcp.destroy()); await once(tcp, 'connect');
-  await until(() => controlOpens(control).length === 1);
-  const data = await open(app, '/forward/data', control.ready.streamToken, { 'x-codex-reverse-stream': controlOpens(control)[0].id }); t.after(() => data.ws.terminate());
-  data.ws.send('{"type":"target_ready"}'); const replies = []; tcp.on('data', bytes => replies.push(bytes));
-  tcp.write('before lock'); await until(() => Buffer.concat(data.records.filter(Buffer.isBuffer)).toString() === 'before lock');
-  assert.equal((await app.request('/api/security/screen-lock', { method: 'POST', body: { enabled: true, password: 'test-screen-password' } })).status, 200);
-  tcp.write(' after lock'); await until(() => Buffer.concat(data.records.filter(Buffer.isBuffer)).toString() === 'before lock after lock');
-  const login = await fetch(app.config.origin + '/api/login', { method: 'POST', headers: { origin: app.config.origin, 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: app.config.password }) });
-  const cookie = login.headers.get('set-cookie').split(';')[0], identity = await login.json(), viewer = '22222222-2222-4222-8222-222222222222';
-  const claim = await fetch(app.config.origin + '/api/desktop/claim', { method: 'POST', headers: { origin: app.config.origin, cookie, 'x-viewer-id': viewer, 'x-csrf-token': identity.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ viewer, lockPassword: 'test-screen-password' }) });
-  assert.equal(claim.status, 200); assert.equal((await app.request('/api/terminals')).status, 423);
-  data.ws.send(Buffer.from('reply after takeover')); await until(() => Buffer.concat(replies).toString() === 'reply after takeover');
-  tcp.write(' after takeover'); await until(() => Buffer.concat(data.records.filter(Buffer.isBuffer)).toString() === 'before lock after lock after takeover');
-  assert.equal(control.ws.readyState, WebSocket.OPEN); assert.equal((await status(app)).mappings[0].id, mapping.id);
-  assert.deepEqual(app.inputCalls, []); assert.equal(app.managementStats.restarts, 0);
-});
 
 test('reverse validates identity and port scope, and reports listen collisions without reaching a device', async t => {
-  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close()); await app.login();
+  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close());
   const base = { direction: 'reverse', localPort: await freePort(), targetHost: '192.168.1.1', targetPort: 22, deviceName: '路由器' };
-  for (const invalid of [{ ...base, localPort: app.config.port }, { ...base, targetHost: 'device.local' }, { ...base, deviceName: '\u001b[2J' }, { ...base, protocol: 'ssh;command' }, { ...base, deviceId: '../' }]) assert.equal((await app.request('/api/forward', { method: 'POST', body: invalid })).status, 400);
-  assert.equal((await app.request('/api/forward', { method: 'POST', body: base, headers: { 'x-csrf-token': 'wrong' } })).status, 403);
+  for (const invalid of [{ ...base, localPort: app.config.port }, { ...base, targetHost: 'device.local' }, { ...base, deviceName: '\u001b[2J' }, { ...base, protocol: 'ssh;command' }, { ...base, deviceId: '../' }]) assert.equal((await app.request('mapping', { method: 'POST', body: invalid })).status, 400);
   const occupied = net.createServer(); occupied.listen(0, '127.0.0.1'); await once(occupied, 'listening'); t.after(() => new Promise(r => occupied.close(r)));
   const mapping = await create(app, { localPort: occupied.address().port }), control = await open(app, '/forward/helper', mapping.code); t.after(() => control.ws.terminate()); await until(() => control.records.length === 1); control.ws.send('{"type":"listening"}');
   await until(async () => (await status(app)).recent[0]?.code === 'reverse_port_in_use'); assert.equal((await status(app)).mappings.length, 0); assert.deepEqual(app.inputCalls, []);
