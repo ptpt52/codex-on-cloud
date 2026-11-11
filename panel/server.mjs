@@ -20,6 +20,7 @@ import { terminalTarget } from '../native/terminals.mjs';
 import { attachTerminal } from './terminal-bridge.mjs';
 import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
+import { createForwardAgents } from './forward-agents.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
 import { readUploadHeaders, uploadHeaders, UPLOAD_PROTOCOL } from './public/file-upload.js';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
@@ -113,6 +114,7 @@ export async function createPanel(config) {
   let rtcClosing = Promise.resolve();
   let turnCache = null, turnPending = null;
   const forwarding = createForwarding(config);
+  const forwardAgents = createForwardAgents(config, forwarding);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
   const fileTransfers = createFileTransfers();
   const turnConfig = async () => {
@@ -173,7 +175,7 @@ export async function createPanel(config) {
     if (!isOwner(req, session)) throw denied(req, session);
     return session;
   };
-  const mappingAllowed = (req, session, item) => desktopAccess(req, session) || item.direction === 'reverse' && (session.role !== 'temporary' || item.session === session.hash);
+  const mappingAllowed = (req, session, item) => desktopAccess(req, session) || !item.authorization?.helperId && item.direction === 'reverse' && (session.role !== 'temporary' || item.session === session.hash);
   async function ownedBody(req, limit) {
     requireOwner(req);
     const expected = owner;
@@ -432,8 +434,14 @@ export async function createPanel(config) {
       const downloads = await forwardDownloads.list();
       const session = requireSession(req), permission = accessState(req, session);
       const directory = permission.canManageDevices ? devices.list() : { devices: [], limit: 0 };
-      return reply(res, 200, { ...directory, ...forwarding.list(item => mappingAllowed(req, session, item), session.hash), deviceLimit: directory.limit, downloads,
+      return reply(res, 200, { ...directory, ...forwarding.list(item => !item.authorization?.helperId && !item.helperId && mappingAllowed(req, session, item), session.hash), deviceLimit: directory.limit, downloads, managedHelpersProtocol: 1,
         permissions: { directions: permission.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permission.canManageDevices } });
+    }
+    if (path === '/api/forward/agents' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, forwardAgents.list()); }
+    if (/^\/api\/forward\/agents\/(?:create|rekey|remove|rule|rule\/remove|inventory)$/.test(path) && req.method === 'POST') {
+      requireWrite(req); requireDesktopRead(req); const expected = owner, body = await jsonBody(req, 4096); requireWrite(req); requireDesktopRead(req);
+      if (owner !== expected) throw new HttpError(409, '控制权已变化，本次助手配置未保存');
+      return reply(res, 200, forwardAgents.action(path.slice('/api/forward/agents/'.length), body));
     }
     if (path === '/api/forward/devices' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, devices.list()); }
     if (['/api/forward/devices', '/api/forward/devices/remove'].includes(path) && req.method === 'POST') {
@@ -449,6 +457,7 @@ export async function createPanel(config) {
     if (['/api/forward', '/api/forward/stop', '/api/forward/hints'].includes(path) && req.method === 'POST') {
       requireWrite(req);
       const body = await jsonBody(req, 1024), session = requireWrite(req), token = cookieToken(req.headers.cookie);
+      if (path !== '/api/forward' && forwarding.list(item => item.id === body?.id && !!item.authorization?.helperId).mappings.length) throw new HttpError(409, '请在对应助手的规则列表修改或停用此映射');
       if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body, item => mappingAllowed(req, session, item)));
       if (path.endsWith('/hints')) return reply(res, 200, forwarding.updateHints(body, item => mappingAllowed(req, session, item)));
       if (body?.direction !== 'reverse' && !desktopAccess(req, session)) throw denied(req, session);
@@ -734,6 +743,8 @@ export async function createPanel(config) {
     }
     if (forwardURL.pathname.startsWith('/forward/')) {
       if (closing || forwardURL.search) return deny(400);
+      if (forwardURL.pathname === '/forward/agent') return forwardAgents.upgrade(req, socket, head);
+      if (req.headers['x-codex-forward-node'] && req.headers['x-codex-forward-node'] !== config.nodeId) return deny(409);
       return forwarding.upgrade(req, socket, head, forwardURL.pathname);
     }
     if (!scopedNode(req, forwardURL)) return deny(409);
@@ -849,7 +860,7 @@ export async function createPanel(config) {
   }, 10_000).unref();
   async function close() {
     closing = true;
-    await forwarding.close();
+    forwardAgents.close(); await forwarding.close();
     await services.close();
     fileTransfers.close();
     clearInterval(expiration);

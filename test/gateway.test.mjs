@@ -7,6 +7,21 @@ const entry = number => ({ id: number.toString(16).padStart(32, '0'), name: '动
 const key = number => number.toString(16).padStart(64, '0');
 const setup = async options => { const h = await gatewayFixture({ probe: async () => true, ...options }); await h.login(); const code = await h.code(); return { ...h, codeValue: code }; };
 
+test('native helper control and data stay on their authorized node while browser selection changes', async () => {
+  const calls = [], h = await setup({ request: async request => {
+    const selected = request.headers.get('x-codex-gateway-node'); calls.push({ selected, path: new URL(request.url).pathname });
+    return new Response('accepted', { headers: { 'x-codex-node-id': selected } });
+  } });
+  await h.register(entry(1), key(1), h.codeValue.key); await h.register(entry(2), key(2), h.codeValue.key); await h.select(entry(1).id);
+  for (const path of ['/forward/agent', '/forward/helper', '/forward/resume', '/forward/data']) {
+    const response = await h.fetch(h.origin + path, { headers: { 'x-codex-forward-node': entry(2).id, authorization: 'Bearer ' + (path.endsWith('/agent') ? entry(2).id + '.' : '') + 'a'.repeat(43) } });
+    assert.equal(response.status, 200); assert.equal(calls.at(-1).selected, entry(2).id);
+  }
+  await h.fetch(h.origin + '/api/state', { headers: { 'x-codex-forward-node': entry(2).id } }); assert.equal(calls.at(-1).selected, entry(1).id);
+  assert.equal((await h.fetch(h.origin + '/forward/agent', { headers: { 'x-codex-forward-node': 'invalid' } })).status, 400);
+  assert.equal(h.storage.value.activeId, entry(1).id);
+});
+
 test('fixed gateway login, CSRF and Host checks protect selection while registration credentials cannot administer the gateway', async () => {
   const h = await gatewayFixture({ probe: async () => true });
   assert.equal((await h.api('nodes')).status, 401);

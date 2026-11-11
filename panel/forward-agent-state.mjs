@@ -91,7 +91,7 @@ export function createForwardAgentState(directory, validateRule, identity) {
       if (old && old.revision !== body.revision) throw fail(409, '映射规则已更新，请刷新后重新编辑');
       if (!old && agent.rules.length >= AGENT_LIMITS.rules) throw fail(409, '每个助手最多保存 16 条规则');
       if (typeof body.enabled !== 'boolean') throw fail(400, '映射启用状态无效');
-      const rule = { id: old?.id || randomBytes(16).toString('hex'), revision: (old?.revision || 0) + 1, name: forwardDeviceName(body.name), enabled: body.enabled, config: validateRule(body.config) };
+      const rule = { id: old?.id || randomBytes(16).toString('hex'), revision: (old?.revision || 0) + 1, name: forwardDeviceName(body.name), enabled: body.enabled, config: validateRule(body.config, { policy: body.enabled }) };
       if (!Number.isSafeInteger(rule.revision)) throw fail(409, '映射版本已达到上限，请重新创建');
       for (const other of agents) for (const r of other.rules) {
         if (!r.enabled || !rule.enabled || other.id === agent.id && r.id === rule.id) continue;

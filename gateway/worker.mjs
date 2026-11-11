@@ -47,12 +47,14 @@ export function createGateway({ config: source, assets = {}, request: upstream =
       const asset = assets[url.pathname]; return asset ? reply(200, request.method === 'HEAD' ? null : asset.body, asset.type) : error(404, '页面不存在');
     }
     let node;
+    const pinned = /^\/forward\/(?:agent|helper|resume|data)$/.test(url.pathname) && request.headers.get('x-codex-forward-node');
     try {
-      const result = await stub.fetch(new Request('https://registry.internal/route'));
+      if (pinned && (!/^[a-f0-9]{32}$/.test(pinned) || !/^Bearer (?:[a-f0-9]{32}\.)?[A-Za-z0-9_-]{43}$/.test(request.headers.get('authorization') || ''))) return error(400, '助手节点身份无效');
+      const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : '')));
       if (!result.ok) throw Error(); node = await gatewayJSON(result, 2048);
       if (node) { const parsed = gatewayNode({ id: node.id, name: node.name, backendOrigin: node.backendOrigin, mode: node.mode }, config); node = { ...parsed, secret: node.secret }; }
     } catch { return error(503, '节点路由暂不可用'); }
-    if (!node) return request.method === 'GET' && !request.headers.has('upgrade') ? reply(303, '', 'text/plain', { location: GATEWAY_PREFIX }) : error(503, '尚未选择入口节点');
+    if (!node) return !pinned && request.method === 'GET' && !request.headers.has('upgrade') ? reply(303, '', 'text/plain', { location: GATEWAY_PREFIX }) : error(503, pinned ? '助手授权节点不可用，请检查该节点状态' : '尚未选择入口节点');
     if (!gatewaySecret(node.secret)) return error(503, '节点路由配置无效');
     const destination = new URL(request.url), backend = new URL(node.backendOrigin); destination.protocol = backend.protocol; destination.host = backend.host;
     const forwarded = new Headers(request.headers);

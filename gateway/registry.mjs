@@ -111,7 +111,9 @@ export class GatewayRegistry {
     const url = new URL(request.url), path = url.pathname;
     try {
       if (path === '/route' && request.method === 'GET') {
-        const value = await this.state.storage.get('gateway'), node = value?.nodes.find(item => item.id === value.activeId);
+        const pinned = url.searchParams.get('node');
+        if (pinned !== null && !gatewayHex(pinned)) return Response.json({ error: '节点标识无效' }, { status: 400 });
+        const value = await this.state.storage.get('gateway'), node = value?.nodes.find(item => item.id === (pinned || value.activeId));
         return Response.json(node ? { id: node.id, name: node.name, mode: node.mode, backendOrigin: node.backendOrigin, secret: node.secret } : null);
       }
       const body = request.method === 'GET' ? {} : await request.json();
