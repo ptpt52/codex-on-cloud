@@ -56,9 +56,18 @@ export class SelfhostRegistry {
       }
       if (Buffer.byteLength(text) > limit) throw selfhostError(413, '中心状态容量不足，请清理或减少新增授权；撤销操作保留独立空间');
       await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
-      await writeStateFile(this.file, text, { expected: this.text, valid });
-      this.value = value; this.sessions = sessions; this.text = text;
-      for (const item of result?.close || []) await this.onClose(item.slug, item.reason);
+      let committed = false, failure;
+      try {
+        await writeStateFile(this.file, text, { expected: this.text, valid, committed: () => {
+          // Publish at the same synchronous boundary as the atomic rename.
+          // A later directory fsync/lease error must never revive old grants.
+          this.value = value; this.sessions = sessions; this.text = text; committed = true;
+        } });
+      } catch (error) { if (!committed) throw error; failure = error; }
+      for (const item of result?.close || []) {
+        try { await this.onClose(item.slug, item.reason); } catch (error) { failure ||= error; }
+      }
+      if (failure) throw Object.assign(failure, { outcome: 'unknown' });
       return result?.value;
     });
     this.queue = operation.catch(() => {});
@@ -317,7 +326,7 @@ export class SelfhostRegistry {
       return !item || this.keyStatus(item, now) !== 'ready' || (session.status === 'grace' && session.graceUntil <= now) ||
         (['connecting', 'authenticated'].includes(session.status) && session.connectedAt + SELFHOST_LIMITS.connectMs <= now) ||
         (session.status === 'online' && session.lastSeenAt + SELFHOST_LIMITS.heartbeatMs <= now);
-    }, { safety: true });
+    });
     if (!due) return false;
     const result = await this.mutate(({ value, sessions, now, close }) => {
       for (const [key, session] of sessions) {
@@ -328,7 +337,7 @@ export class SelfhostRegistry {
         else if (session.status === 'online' && session.lastSeenAt + SELFHOST_LIMITS.heartbeatMs <= now) { sessions.delete(key); close.push({ slug: key, reason: 'heartbeat_timeout' }); }
       }
       return { value: true, close };
-    });
+    }, { safety: true });
     return result;
   }
 }

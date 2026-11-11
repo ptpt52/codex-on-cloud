@@ -61,7 +61,8 @@ async function withLease(path, valid, action) {
 // interrupted deployments keep sharing the same leases during upgrades.
 // One <=256 KiB temporary and a persistent empty lease inode. Compare inside
 // the lease and immediately before committing, with no intervening await.
-export async function writeStateFile(path, text, { exclusive = false, expected, valid = () => {} } = {}) {
+// Notify committed state before fallible temporary cleanup or directory sync.
+export async function writeStateFile(path, text, { exclusive = false, expected, valid = () => {}, committed = () => {} } = {}) {
   if (Buffer.byteLength(text) > 262144) throw Error('输出文件超过 256 KiB');
   const prior = expectation(expected);
   return withLease(path, valid, guard => {
@@ -74,9 +75,10 @@ export async function writeStateFile(path, text, { exclusive = false, expected, 
       valid(); guard(); compare(path, prior);
       if (exclusive || prior === null) {
         try { linkSync(target, path); } catch (error) { if (prior === null && error.code === 'EEXIST') throw conflict(); throw error; }
+        committed();
         unlinkSync(target);
       }
-      else renameSync(target, path);
+      else { renameSync(target, path); created = false; committed(); }
       created = false; syncDirectory(path);
     } finally { if (fd !== undefined) closeSync(fd); if (created) unlinkSync(target); }
   });

@@ -1,4 +1,6 @@
 import test from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, symlink, lstat, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +10,15 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { existsSync, writeFileSync } from 'node:fs';
+
+test('exclusive publication notifies committed state even if temporary-link cleanup fails afterward', async t => {
+ const dir=await mkdtemp(join(tmpdir(),'state-publication-notify-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'state.json');
+ const unlink=fs.unlinkSync;let notifications=0,failed=false;
+ t.mock.method(fs,'unlinkSync',target=>{if(target===path+'.portal-next-v2'&&!failed){failed=true;throw Error('simulated post-publication cleanup failure');}return unlink(target);});syncBuiltinESMExports();
+ try{await assert.rejects(writeStateFile(path,'committed',{expected:null,committed(){notifications++;}}),/post-publication cleanup/);}
+ finally{t.mock.restoreAll();syncBuiltinESMExports();}
+ assert.equal(notifications,1);assert.equal(await readFile(path,'utf8'),'committed');await assert.rejects(lstat(path+'.portal-next-v2'),{code:'ENOENT'});
+});
 test('state configuration recovers dead writers and legacy partial files without deleting unrelated data', async t => {
  const dir = await mkdtemp(join(tmpdir(), 'state-writer-')); t.after(() => rm(dir, { recursive: true, force: true })); const path = join(dir, 'config.json');
  await writeStateFile(path, 'original'); await writeFile(path + '.portal-next', 'legacy partial');

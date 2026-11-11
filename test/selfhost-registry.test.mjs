@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SelfhostRegistry } from '../selfhost/registry.mjs';
 import { SELFHOST_LIMITS } from '../selfhost/protocol.mjs';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 
 async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-registry-'));
@@ -16,6 +18,52 @@ async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
 }
 
 const metadata = (credential, slug, nodeId) => ({ credential, slug, nodeId });
+
+test('a revoked key stays revoked in memory and closes its tunnel after a post-commit durability error', async t => {
+  const { registry, directory, closed } = await setup(t), key = await registry.createKey({ name: 'Node', slug: 'node-a' });
+  const joined = await registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } });
+  const metas = metadata(joined.credential, key.slug, 'a'.repeat(32));
+  await registry.authorizeLogin({ metas, runId: 'run' });
+  await registry.authorizeProxy({ metas, runId: 'run', name: 'node-node-a', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/node-a/'] });
+  assert.equal(await registry.routeAllowed(key.slug), true);
+  const fsync = fs.fsyncSync; let failure;
+  t.mock.method(fs, 'fsyncSync', descriptor => { if (fs.fstatSync(descriptor).isDirectory()) throw Error('simulated directory durability failure'); return fsync(descriptor); });
+  syncBuiltinESMExports();
+  try { await registry.revoke(key.id).catch(error => { failure = error; }); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.match(failure?.message || '', /durability failure/);
+  assert.equal(JSON.parse(await readFile(join(directory, 'state.json'), 'utf8')).keys[0].revokedAt > 0, true);
+  assert.equal(await registry.routeAllowed(key.slug), false);
+  assert.equal(await registry.authorizePing({ metas, runId: 'run' }), false);
+  assert.deepEqual(closed, [{ slug: key.slug, reason: 'authorization_revoked' }]);
+  assert.equal(failure.outcome, 'unknown');
+  await registry.createKey({ name: 'Next node', slug: 'next' });
+});
+
+test('heartbeat cleanup still works for a legacy state at the byte limit without audit space to reclaim', async t => {
+  const { directory, clock } = await setup(t), at = clock.value;
+  const value = { version: 1, revision: 1, keys: [], audit: [] }, size = () => Buffer.byteLength(JSON.stringify(value) + '\n');
+  for (let index = 0; ; index++) {
+    value.keys.push({ id: index.toString(16).padStart(32, '0'), slug: 'n-' + index, name: 'N', keyHash: index.toString(16).padStart(64, '0'), credentialHash: null, createdAt: at, expiresAt: null, revokedAt: null });
+    if (size() > SELFHOST_LIMITS.stateBytes) { value.keys.pop(); break; }
+  }
+  for (const key of value.keys) { key.name += 'x'.repeat(Math.min(79, SELFHOST_LIMITS.stateBytes - size())); if (size() === SELFHOST_LIMITS.stateBytes) break; }
+  const file = join(directory, 'state.json'); await writeFile(file, JSON.stringify(value) + '\n', { mode: 0o600 });
+  const closed = [], registry = await new SelfhostRegistry({ file, now: () => at + SELFHOST_LIMITS.heartbeatMs + 1, onClose: async slug => closed.push(slug) }).open();
+  for (const key of value.keys.slice(0, 2)) registry.sessions.set(key.slug, { keyId: key.id, status: 'online', lastSeenAt: at });
+  assert.equal(await registry.sweep(), true); assert.equal(registry.sessions.size, 0); assert.equal(closed.length, 2);
+  assert.equal((await registry.list()).length, value.keys.length);
+  assert(Buffer.byteLength(await readFile(file)) <= SELFHOST_LIMITS.stateBytes);
+});
+
+test('cleanup attempts every tunnel close even if an earlier close fails', async t => {
+  const { registry, clock } = await setup(t), attempted = [];
+  for (const slug of ['first', 'second']) { const key = await registry.createKey({ name: slug, slug }); registry.sessions.set(slug, { keyId: key.id, status: 'online', lastSeenAt: clock.value }); }
+  registry.onClose = async slug => { attempted.push(slug); if (slug === 'first') throw Error('tunnel close failed'); };
+  clock.value += SELFHOST_LIMITS.heartbeatMs + 1;
+  await assert.rejects(registry.sweep(), /tunnel close failed/);
+  assert.deepEqual(attempted, ['first', 'second']); assert.equal(registry.sessions.size, 0);
+});
 
 test('registry authorization is checked again before publishing an asynchronous mutation', async t => {
   const { registry, directory } = await setup(t);

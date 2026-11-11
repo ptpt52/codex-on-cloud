@@ -228,7 +228,7 @@ export async function createSelfhostCenter({
 
   const server = http.createServer((req, res) => route(req, res).catch(error => {
     if (!error.status) console.error(`[selfhost] ${error.name}: request failed`);
-    reply(res, error.status || 503, { error: error.status ? error.message : '中心服务暂时不可用', outcome: 'rejected' });
+    reply(res, error.status || 503, { error: error.status ? error.message : '中心服务暂时不可用', outcome: error.outcome || 'rejected' });
   }));
   server.requestTimeout = 30_000; server.headersTimeout = 10_000; server.maxHeadersCount = 64; server.maxConnections = 256;
   timer = setInterval(() => { if (!closing) void registry.sweep().catch(() => {}); }, 5000); timer.unref();
