@@ -139,6 +139,10 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   let existingMode, existingEnv = {};
   try { existingEnv = parseEnv(await boundedFile(join(root, '.env'), 65536)); existingMode = deploymentMode(existingEnv.DEPLOY_MODE); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (existingEnv.SELFHOST_NODE_CONFIG_FILE) {
+    if (values.domain || values.zone || values['api-token-file']) throw Error('本机使用自建中心，更新请省略 Cloudflare 参数；改换入口请先运行 server:leave');
+    if (values.origin && values.origin !== existingEnv.PUBLIC_ORIGIN) throw Error('本机使用自建中心，不能通过 --origin 改绑入口；请使用 server:join 或先 server:leave');
+  }
   const mode = deploymentMode(values.mode || existingMode);
   if (!values.check && existingMode && values.mode && existingMode !== mode) throw Error('已有部署模式不同，不会自动切换或停止任务；请在新部署中选择模式');
   const selectedServices = modeServices(mode);
@@ -204,7 +208,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
     }
     const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
     let tunnel = false;
-    try { tunnel = env.PUBLIC_ORIGIN?.startsWith('https://') && (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096)).trim().length > 0; }
+    try { tunnel = !env.SELFHOST_NODE_CONFIG_FILE && env.PUBLIC_ORIGIN?.startsWith('https://') && (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096)).trim().length > 0; }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (tunnel) {
       if (!values.domain) await step('检查固定版本 cloudflared', process.execPath, ['scripts/install-cloudflared.mjs']);

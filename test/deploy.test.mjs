@@ -77,6 +77,20 @@ test('a live desktop in another deployment prevents terminal installation before
   assert.ok(h.calls.every(c=>c.capture));await assert.rejects(readFile(join(h.root,'.env')),{code:'ENOENT'});
 });
 
+test('selfhost updates ignore preserved Tunnel tokens and reject implicit Cloudflare or origin switching', async t => {
+  const h = await harness(t);
+  await mkdir(join(h.root, 'secrets'), { recursive: true });
+  await writeFile(join(h.root, '.env'), 'DEPLOY_MODE=terminal\nPUBLIC_ORIGIN=https://desk.example.test\nENTRY_BASE_PATH=/node/office/\nSELFHOST_NODE_CONFIG_FILE=./data/selfhost-node/connection.json\n');
+  await writeFile(join(h.root, 'secrets', 'tunnel_token'), 'synthetic_preserved_tunnel_token');
+  for (const values of [{ domain: 'old.example.test', zone: 'example.test' }, { origin: 'https://other.example.test' }]) {
+    await assert.rejects(deploy(values, h.context), /自建中心/);
+  }
+  assert.equal(h.calls.length, 0);
+  await deploy({}, h.context);
+  assert(h.healthy); assert(!h.calls.some(call => call.args.includes('scripts/install-cloudflared.mjs') || call.args.includes('tunnel')));
+  assert.equal(await readFile(join(h.root, 'secrets', 'tunnel_token'), 'utf8'), 'synthetic_preserved_tunnel_token');
+});
+
 test('unsupported host, root and old Node are rejected before any subprocess or changes',async t=>{
   const h=await harness(t);
   for(const override of [{platform:'darwin'},{uid:0},{nodeVersion:'20.1.0'}])await assert.rejects(deploy({}, {...h.context,...override}));

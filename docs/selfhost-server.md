@@ -270,6 +270,8 @@ npm run server:join -- \
 
 接入前会备份 `.env`、节点登录说明和 `gateway-node.json`。`server:leave` 会停止中继、释放中心路径并恢复原 Panel 配置，不会删除工作区、任务、桌面或 Codex 登录。
 
+接入后的日常更新直接运行 `npm run deploy`，省略 Cloudflare 参数。自建入口不会因保留旧 `tunnel_token` 而安装或启动 cloudflared；旧凭据仅保留供明确退出或恢复原入口时使用。
+
 `server:leave` 先确认 frpc 已停止，再释放中心租约并恢复 Panel；停止或恢复失败时保留接入配置与备份，修复问题后可直接重试。中心网络不可达时会明确警告，并在本地中继确认停止后完成离线清理。
 
 `server:join` 使用部署锁，并先完成 frpc、CA 和本地条件检查，再申请中心授权。改写配置前先写入最多 256 KiB 的私有事务快照，包含 Panel、旧备份、中继配置、CA 和服务状态；超出限制时拒绝更改。正式接入失败时会停止中继、释放中心授权并恢复原文件和服务状态；若回滚或中心释放仍未确认，会保留私有 `data/selfhost-node/join-recovery.json`，`server:doctor` 会报告该状态。恢复会逐个比较文件与事务预期内容，遇到人工修改保留现场，不覆盖冲突；只有全部恢复已确认才删除记录。故障排除后运行 `npm run server:leave -- --recover` 完成收尾。
