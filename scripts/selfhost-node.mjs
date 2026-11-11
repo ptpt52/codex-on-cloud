@@ -42,7 +42,7 @@ try {
     if (process.platform !== 'linux') throw Error('节点接入当前只支持 Linux/Ubuntu');
     const native = maintenanceSettings(), server = values.server || await line('中心服务器地址：'), slug = values.slug || await line('节点路径 slug：');
     const result = await joinNode({ root, server, slug, mode: native.mode, panelPort: native.panelPort, caFile: values['ca-file'], replace: values.replace === true, reauthorize: values.reauthorize === true, switchExisting: values['switch-existing'] === true, promptKey: () => secret('授权 key：') });
-    console.log(`节点已接入：${result.connection.origin}${result.connection.path}`);
+    console.log(`${result.entryReady ? '节点已接入，入口已就绪' : '节点接入配置已完成，入口尚未就绪'}：${result.connection.origin}${result.connection.path}`);
     console.log(`中继服务：${result.unit}`);
     console.log('需要端口映射助手时，请在本次接入完成后运行 npm run build:forward，并在网页“端口映射”中核对四项下载。旧入口构建的助手不能用于当前节点路径。');
     for (const warning of result.warnings) console.log(`警告：${warning}`);

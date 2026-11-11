@@ -19,9 +19,14 @@ test('real HTTPS enrollment, doctor, rollback recovery and leave share scoped CA
   await writeFile(join(root, 'index'), ''); await writeFile(join(root, 'serial'), '01\n');
   await writeFile(join(root, 'ca.cnf'), `[ca]\ndefault_ca=local\n[local]\ndatabase=${root}/index\nserial=${root}/serial\nnew_certs_dir=${root}\ncertificate=${caFile}\nprivate_key=${key}\ndefault_md=sha256\npolicy=policy\nx509_extensions=ext\n[policy]\ncommonName=supplied\n[ext]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n`);
   openssl(['ca', '-batch', '-notext', '-config', join(root, 'ca.cnf'), '-in', csr, '-out', expired, '-startdate', '20200101000000Z', '-enddate', '20200102000000Z']);
-  let leaves = 0, failLeave = false;
+  let leaves = 0, failLeave = false, enrolledNodeId = '';
   const server = https.createServer({ key: await readFile(key), cert: await readFile(caFile) }, async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
+    if (req.url === '/api/join') enrolledNodeId = JSON.parse(body).node.id;
+    if (req.url === '/node/node-a/readyz') {
+      assert.equal(req.headers['x-codex-node'], enrolledNodeId);
+      res.end(JSON.stringify({ ok: true, host: true, files: true, nodeId: enrolledNodeId })); return;
+    }
     if (req.url === '/api/leave') { leaves++; if (failLeave) { res.writeHead(503); return res.end('{"error":"retry"}'); } }
     const value = req.url === '/api/join' ? { credential: 'cocn_' + 'b'.repeat(43), entryBasePath: '/node/node-a/', turnEndpoint: null,
       frp: { serverAddr: 'localhost', tlsServerName: 'localhost', serverPort: 7000, token: 'synthetic_token_123456' } } : { ok: true };

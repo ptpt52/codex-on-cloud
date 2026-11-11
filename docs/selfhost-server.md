@@ -276,6 +276,8 @@ npm run server:join -- \
 
 诊断与退出：
 
+接入命令会区分“配置已完成、入口待就绪”和“入口已就绪”。`server:doctor` 除检查中心及本地服务，还通过完整节点路径检查任务和文件服务，并核对节点身份；只有进程处于 active 不再视为入口正常。
+
 ```bash
 npm run server:status
 npm run server:doctor

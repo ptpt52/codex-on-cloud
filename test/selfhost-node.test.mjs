@@ -84,6 +84,7 @@ test('a rejected replacement restores the previous relay service and connection 
     return { ok: true, stdout: args.includes('--value') ? 'yes' : args.includes('is-enabled') ? 'enabled' : args.includes('is-active') ? relayActive ? 'active' : 'inactive' : '', stderr: '' };
   };
   const request = async (_url, options) => {
+    if (!_url.endsWith('/api/join')) return new Response('{}', { status: 503 });
     joins++; const body = JSON.parse(options.body);
     if (joins === 2) return new Response('{"error":"center rejected replacement"}', { status: 409 });
     return new Response(JSON.stringify({ ...h.joined, turnEndpoint: null, entryBasePath: '/node/' + body.slug + '/' }), { status: 200 });
@@ -263,7 +264,7 @@ test('failed center release preserves a recovery record that can be retried safe
 test('doctor verifies self-signed centers with the enrolled CA instead of disabling TLS checks', async t => {
   const h = await setup(t), certDir = join(h.root, 'certs'); await mkdir(certDir, { recursive: true });
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(certDir, 'key.pem'), '-out', join(certDir, 'cert.pem'), '-subj', '/CN=desk.example.test', '-addext', 'subjectAltName=DNS:desk.example.test,IP:127.0.0.1'], { stdio: 'ignore' });
-  const server = https.createServer({ key: await readFile(join(certDir, 'key.pem')), cert: await readFile(join(certDir, 'cert.pem')) }, (_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
+  const server = https.createServer({ key: await readFile(join(certDir, 'key.pem')), cert: await readFile(join(certDir, 'cert.pem')) }, (req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(req.url === '/node/node-a/readyz' ? { ok: true, host: true, files: true, nodeId: 'a'.repeat(32) } : { ok: true })); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const nodeDir = join(h.root, 'data', 'selfhost-node'); await mkdir(nodeDir, { recursive: true, mode: 0o700 });
   const connection = { version: 1, origin: `https://127.0.0.1:${server.address().port}`, slug: 'node-a', name: 'A', path: '/node/node-a/', nodeId: 'a'.repeat(32), mode: 'terminal', credential,
@@ -348,4 +349,22 @@ test('a first installation succeeds when there is no previously loaded service t
     request: async () => new Response(JSON.stringify(h.joined)), install: async () => '/opt/frpc', promptKey: async () => key });
   assert.equal(result.connection.slug, 'node-a');
   assert(h.calls.some(call => call.includes('restart') && call.includes('codex-cloud-selfhost-node.service')));
+});
+
+test('join reports pending entry and doctor requires the correct ready node through its public path', async t => {
+  const h = await setup(t); let ready = false, nodeId = '';
+  const request = async (url, options) => {
+    if (url.endsWith('/api/join')) return new Response(JSON.stringify(h.joined));
+    assert.equal(new URL(url).pathname, '/node/node-a/readyz');
+    assert.equal(options.headers['x-codex-node'].length, 32); assert.equal(options.body, undefined);
+    return new Response(JSON.stringify({ ok: true, host: true, files: true, nodeId }), { status: ready ? 200 : 503 });
+  };
+  const joined = await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key });
+  assert.equal(joined.entryReady, false); assert(joined.warnings.some(text => text.includes('尚未就绪')));
+  const doctor = () => nodeDoctor({ root: h.root, run: h.run, request, secureHealth: async () => true });
+  assert.equal((await doctor()).ok, false);
+  ready = true; nodeId = 'b'.repeat(32); assert.equal((await doctor()).ok, false);
+  nodeId = joined.connection.nodeId;
+  const verified = await doctor(); assert.equal(verified.entryReady, true); assert.equal(verified.ok, true);
 });

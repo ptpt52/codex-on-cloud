@@ -110,6 +110,17 @@ async function httpsHealth(origin, _serverName, ca) {
   return response.ok && (await response.json()).ok === true;
 }
 
+export async function nodeEntryReady(connection, { request = centerRequest, ca } = {}) {
+  try {
+    const response = await centerClient(connection.origin, ca, request)(connection.origin + connection.path + 'readyz', {
+      headers: { 'x-codex-node': connection.nodeId }, redirect: 'error', signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) return false;
+    const value = await response.json();
+    return value?.ok === true && value.host === true && value.files === true && value.nodeId === connection.nodeId;
+  } catch { return false; }
+}
+
 function replaceEnv(text, key, value) {
   if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw Error('Panel 环境配置值无效');
   const pattern = new RegExp('^' + key + '=.*$', 'gm'), matches = text.match(pattern);
@@ -402,8 +413,10 @@ async function joinNodeLocked({
       const enabled = process.env.USER ? await run('loginctl', ['enable-linger', process.env.USER]) : { ok: false };
       if (!enabled.ok) warnings.push('未能启用 systemd user linger；请由管理员执行 loginctl enable-linger ' + (process.env.USER || '<用户>'));
     }
+    const entryReady = await nodeEntryReady(connection, { request, ca: caBytes || undefined });
+    if (!entryReady) warnings.push('中继进程已启动，节点入口尚未就绪；请稍后运行 npm run server:doctor 检查隧道、节点身份及任务/文件服务');
     await removeStateFile(recoveryPath(root), { expected: recoveryText });
-    return { connection, warnings, unit, config, frpc };
+    return { connection, warnings, entryReady, unit, config, frpc };
   } catch (error) {
     const journalFailures = [];
     try {
@@ -438,12 +451,14 @@ export async function nodeDoctor({ root, run = command, request = centerRequest,
     : await request(connection.origin + '/healthz', { signal: AbortSignal.timeout(5000) }).then(response => response.ok).catch(() => false);
   if (recovery) issues.push('存在未完成的中继回滚，请运行 server:leave --recover');
   if (!health) issues.push('中心健康检查失败');
+  const entryReady = health && await nodeEntryReady(connection, { request, ca });
+  if (!entryReady) issues.push('节点入口尚未就绪或节点身份不匹配，请检查 frpc 到中心 7000 端口及节点任务/文件服务');
   const service = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]), panel = await run('systemctl', ['--user', 'is-active', 'codex-cloud-panel.service']);
   if (service.stdout !== 'active') issues.push('中继服务未运行');
   if (panel.stdout !== 'active') issues.push('节点 Panel 未运行');
   const linger = process.env.USER ? await run('loginctl', ['show-user', process.env.USER, '-p', 'Linger', '--value']) : { stdout: '' };
   if (linger.stdout !== 'yes') warnings.push('systemd user linger 未启用');
-  return { ok: issues.length === 0, origin: connection.origin, path: connection.path, service: service.stdout || 'inactive', panel: panel.stdout || 'inactive', health, issues, warnings };
+  return { ok: issues.length === 0, origin: connection.origin, path: connection.path, service: service.stdout || 'inactive', panel: panel.stdout || 'inactive', health, entryReady, issues, warnings };
 }
 
 export async function leaveNode(options = {}) {
