@@ -1854,6 +1854,8 @@ accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions
   canUnlock: () => loggedIn && permissions.canClaim && !accessExpired, needsUnlock: () => permissions.requiresUnlock,
   lockEnabled: () => permissions.screenLockEnabled, claim, changed: updateAccess, activity: () => { renderInputControls(); scheduleViewport(); }, toast });
 forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online',
+  prepareDownloads: () => { if (serviceProtocol !== 1 || !rtcConfig?.webrtc) return false; serviceLink.start(); return serviceLink.state.issue === 'connecting' || serviceLink.transport?.features?.helperDownloadsProtocol === 1; },
+  downloadClient: () => serviceLink.helperFiles, saveDownload: saveDirectFile,
   capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
 function canLeaveNode() { return !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
 $('gateway-switch-button').addEventListener('click', () => {

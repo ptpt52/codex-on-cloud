@@ -5,13 +5,57 @@ import { forwardReport, forwardFaultArea } from './forward-report.js';
 import { rtcHints } from './rtc-hints.js';
 
 // The browser grants one short-lived capability; raw TCP bytes never enter it.
-export function createForwardUI({ api, allowed, hints = () => ({}), capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }) }) {
+export function createForwardUI({ api, allowed, hints = () => ({}), capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }),
+  prepareDownloads = () => false, downloadClient = () => null, saveDownload }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
   let platform = { os: forwardOS(navigator), arch: null }, detection, downloads = [];
   let policyReady = false, portsEnabled = false;
   let devices = [], mappings = [], selectedDevice = '', pendingDelete = '', deviceSignature = '', connectionId = '';
   let policySignature = '', reportText = '';
+  let downloadController, downloadMessage = '';
+  function downloadStatus() {
+    $('forward-download-status').textContent = downloadMessage || (downloadClient() && globalThis.crypto?.subtle ? '助手下载：WebRTC 加密通道已就绪' : '助手下载：HTTPS；直连就绪后优先使用 WebRTC');
+  }
+  function cancelDownload() { const old = downloadController; downloadController = undefined; old?.abort(); downloadMessage = ''; downloadStatus(); }
+  async function downloadHelper(file, href) {
+    if (downloadController || !allowed()) return;
+    const request = downloadController = new AbortController(), live = () => downloadController === request && !request.signal.aborted && allowed();
+    try {
+      if (!Object.hasOwn(FORWARD_CLIENTS, file.arch) || file.name !== FORWARD_CLIENTS[file.arch].name || !Number.isSafeInteger(file.size) || file.size <= 0 || file.size > 32 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(file.sha256)) throw Error('助手下载信息无效，请刷新列表');
+      downloadMessage = '正在准备助手下载…'; downloadStatus();
+      const deadline = performance.now() + 1500;
+      let client = downloadClient();
+      while (!client && live() && performance.now() < deadline && prepareDownloads()) {
+        await new Promise(resolve => setTimeout(resolve, 50)); client = downloadClient();
+      }
+      if (!live()) return;
+      if (!client || !globalThis.crypto?.subtle) {
+        const link = document.createElement('a'); link.href = href; link.download = file.name;
+        document.body.append(link); link.click(); link.remove();
+        downloadMessage = '已开始通过 HTTPS 下载助手'; downloadStatus(); return;
+      }
+      if (client.busy) throw Error('文件通道正在传输，请完成后再下载助手');
+      const url = new URL(href, location.origin), versions = url.searchParams.getAll('generation');
+      if (versions.length > 1 || versions.length && !/^[a-f0-9]{32}$/.test(versions[0])) throw Error('助手版本信息无效，请刷新列表');
+      const helper = { arch: file.arch, ...(versions.length ? { generation: versions[0] } : {}) };
+      let lastUpdate = -Infinity;
+      downloadMessage = '正在通过 WebRTC 下载助手…'; downloadStatus();
+      const blob = await client.downloadHelper(helper, file.size, request.signal, (received, size) => {
+        if (!live() || performance.now() - lastUpdate < 100 && received !== size) return;
+        lastUpdate = performance.now(); downloadMessage = '正在通过 WebRTC 下载助手：' + Math.floor(received * 100 / size) + '%'; downloadStatus();
+      });
+      if (!live()) return;
+      downloadMessage = '正在校验助手文件…'; downloadStatus();
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+      if (!live()) return;
+      const actual = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+      if (blob.size !== file.size || actual !== file.sha256) throw Error('助手文件校验失败，请刷新下载列表后重试');
+      saveDownload(blob, file.name); downloadMessage = '助手已通过 WebRTC 下载，SHA256 校验通过'; downloadStatus();
+    } catch (error) {
+      if (live()) { downloadMessage = (error.message || '助手下载失败') + '；请手动重试'; downloadStatus(); }
+    } finally { if (downloadController === request) downloadController = undefined; }
+  }
   const clearReport = () => { reportText = ''; if ($('forward-diagnostics')) { $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; } };
   const reversed = () => $('forward-direction').value === 'reverse';
   const serialMode = () => reversed() && $('forward-protocol').value === 'serial';
@@ -84,6 +128,13 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
       const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small');
       row.className = 'forward-download'; row.dataset.arch = file.arch;
       link.href = nodeLink(file.href); link.download = file.name; link.textContent = '下载 ' + FORWARD_CLIENTS[file.arch].label + ' 助手';
+      link.addEventListener('click', event => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        if (downloadController) { event.preventDefault(); return; }
+        if (!allowed()) { event.preventDefault(); return; }
+        if ((!downloadClient() && !prepareDownloads()) || !saveDownload) { downloadMessage = '已开始通过 HTTPS 下载助手'; downloadStatus(); return; }
+        event.preventDefault(); void downloadHelper(file, link.href);
+      });
       if (file.arch === platform.arch) { row.classList.add('recommended'); link.setAttribute('aria-description', '推荐版本'); }
       hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); target.append(row);
     }
@@ -97,7 +148,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   }
   function clearCode() { codeId = ''; codeExpires = 0; $('forward-code').value = ''; $('forward-pair').hidden = true; }
   function cancel() { generation++; controller?.abort(); controller = null; clearTimeout(timer); timer = null; busy = false; }
-  function reset() { clearReport(); cancel(); clearCode(); clearConnection(); devices = []; mappings = []; selectedDevice = ''; pendingStop = pendingDelete = ''; deviceSignature = ''; $('forward-device-list').replaceChildren(); if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
+  function reset() { clearReport(); cancelDownload(); cancel(); clearCode(); clearConnection(); devices = []; mappings = []; selectedDevice = ''; pendingStop = pendingDelete = ''; deviceSignature = ''; $('forward-device-list').replaceChildren(); if (confirmation.open) confirmation.close(); if (dialog.open) dialog.close(); $('forward-list').replaceChildren(); $('forward-recent').replaceChildren(); }
   function update() {
     const permission = capabilities(), signature = JSON.stringify(permission);
     if (policySignature && policySignature !== signature) {
@@ -120,6 +171,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     $('forward-direction').disabled = busy;
     $('forward-device-name').disabled = $('forward-protocol').disabled = busy || !reversed();
     $('forward-device-save').disabled = $('forward-device-new').disabled = busy || !allowed() || !permission.manageDevices || serialMode();
+    downloadStatus();
   }
   async function request(path, options = {}) {
     const current = generation, abort = new AbortController(); controller = abort;
@@ -215,7 +267,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     if (data) render(data);
     if (generation === current && allowed() && dialog.open && !document.hidden && !busy) timer = setTimeout(load, 3000);
   }
-  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); policyReady = false; portsEnabled = false; update(); $('forward-status').textContent = ''; $('forward-mac-help').open = platform.os === 'darwin'; dialog.showModal(); detectPlatform(); void load(); });
+  $('forward-button').addEventListener('click', () => { cancel(); clearCode(); policyReady = false; portsEnabled = false; update(); $('forward-status').textContent = ''; $('forward-mac-help').open = platform.os === 'darwin'; dialog.showModal(); prepareDownloads(); downloadStatus(); detectPlatform(); void load(); });
   $('forward-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { clearReport(); cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); });
   $('forward-direction').addEventListener('change', () => { clearCode(); clearConnection(); if (reversed() && $('forward-local').value === '2222') $('forward-local').value = '22001'; else if (!reversed() && $('forward-local').value === '22001') $('forward-local').value = '2222'; renderDirection(); });
@@ -282,7 +334,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     busy = false; update(); if (data) $('forward-status').textContent = deleting ? '设备条目已删除，现有授权保持不变。' : '映射已停止。'; void load();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { clearReport(); cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); }
+    if (document.hidden) { clearReport(); cancelDownload(); cancel(); clearCode(); clearConnection(); if (confirmation.open) confirmation.close(); }
     else if (dialog.open) { update(); void load(); }
   });
   window.addEventListener('pagehide', reset);
@@ -298,5 +350,5 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   $('forward-diagnostics-select')?.addEventListener('click', copyReport);
   $('forward-diagnostics-close')?.addEventListener('click', () => { $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; });
   renderDirection();
-  return { update, reset, get busy() { return busy; } };
+  return { update, reset, get busy() { return busy || !!downloadController; } };
 }

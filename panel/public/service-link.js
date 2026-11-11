@@ -78,6 +78,7 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
     get rttMs() { return current?.health.rttMs ?? null; },
     get transport() { return current; },
     get files() { return files?.ready ? files : null; },
+    get helperFiles() { return current?.features?.helperDownloadsProtocol === 1 && files?.ready ? files : null; },
     start() { if (running) return; running = true; epoch++; delay = 15000; attempts = 0; halted = false; void probe(); },
     wake,
     stop() { running = false; epoch++; clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },

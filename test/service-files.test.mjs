@@ -1,5 +1,7 @@
 import test from 'node:test';
-import { mkdir,writeFile,readFile,readdir } from 'node:fs/promises';
+import { mkdir,mkdtemp,rm,writeFile,readFile,readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +14,7 @@ import { serviceClient } from './support/service-client.mjs';
 import { createFileClient } from '../panel/public/file-client.js';
 import { FILE_MAX } from '../panel/public/file-wire.js';
 import { attachServiceFiles } from '../panel/service-files.mjs';
+import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 test('an early HTTP rejection drains already-sent file frames until the rejection can reach the browser',async t=>{
  const upstream=http.createServer((_req,res)=>{res.writeHead(412,{'content-type':'application/json'});res.end('{"error":"原文件已变化"}');});
@@ -27,8 +30,35 @@ test('an early HTTP rejection drains already-sent file frames until the rejectio
  await new Promise(resolve=>setImmediate(resolve));assert.equal(closed,0);assert.deepEqual(failed,[]);
  files.close();assert.deepEqual(failed,[true]);
 });
-async function setup(t){const app=await fixture({webrtc:true});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
+async function setup(t,options={}){const app=await fixture({webrtc:true,...options});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
 async function fileClient(c){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter);for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
+test('a temporary service peer downloads the published helper rather than a same-named shared file, and stale versions preserve service authorization',async t=>{
+ const directory=await mkdtemp(join(tmpdir(),'codex-helper-direct-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const arch='windows-amd64',name=FORWARD_FILES[arch],bytes=Buffer.alloc(1024*1024,137);
+ await writeFile(join(directory,name),bytes);await writeFile(join(directory,'manifest.json'),JSON.stringify({version:1,files:[{arch,name,size:bytes.length,sha256:hash(bytes),build:'direct-test'}]}));
+ const {app,c}=await setup(t,{forwardDownloadDir:directory});app.files.set(name,Buffer.from('shared directory must not supply helper bytes'));
+ assert.equal((await c.rpc('ping')).value.helperDownloadsProtocol,1);
+ const files=await fileClient(c),progress=[];const blob=await files.downloadHelper({arch},bytes.length,undefined,received=>progress.push(received));
+ assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));assert.equal(progress.at(-1),bytes.length);
+ assert.equal(app.received.some(req=>req.url==='/files/'+name),false);assert.equal(app.vncConnections,0);assert.deepEqual(app.inputCalls,[]);
+ await assert.rejects(files.downloadHelper({arch,generation:'f'.repeat(32)},bytes.length),error=>error.status===410);
+ assert.equal((await c.rpc('ping')).ok,true);
+ const replacement=await fileClient(c);assert.equal((await replacement.downloadHelper({arch},bytes.length)).size,bytes.length);
+});
+
+test('helper source records cannot select arbitrary paths, URLs, methods or oversized artifacts',async t=>{
+ let requests=0;const upstream=http.createServer((_req,res)=>{requests++;res.end('unexpected');});upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+ t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));
+ const original={type:'start',id:1,direction:'download',name:FORWARD_FILES['windows-amd64'],size:1,helper:{arch:'windows-amd64'}};
+ const invalid=[{helper:{arch:'../../secret'}},{helper:{arch:'windows-amd64',url:'http://127.0.0.1/private'}},{helper:{arch:'windows-amd64',generation:['a'.repeat(32)]}},{helper:{arch:['windows-amd64']}},{direction:'upload'},{name:'agent_secret'},{size:32*1024*1024+1},{helper:{arch:'windows-amd64',method:'POST'}}];
+ for(const change of invalid){
+  const callbacks={};let finish;const closed=new Promise(resolve=>finish=resolve);
+  const channel={readyState:'open',bufferedAmount:0,send(){},close(){finish();},onMessage:{subscribe:fn=>callbacks.message=fn},stateChange:{subscribe:fn=>callbacks.state=fn},error:{subscribe:fn=>callbacks.error=fn}};
+  const controller=new AbortController(),files=attachServiceFiles(channel,{valid:()=>true,headers:{},port:()=>upstream.address().port,signal:controller.signal,fail(){}});
+  let timer;try{callbacks.message(JSON.stringify({...original,...change}));await Promise.race([closed,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('invalid helper source was not rejected')),1000))]);}finally{clearTimeout(timer);files.close();}
+ }
+ assert.equal(requests,0);
+});
 test('dedicated file channel transfers 8 MiB and empty files over real DTLS, hashes match and desktop remains untouched',async t=>{
  const {app,c}=await setup(t),files=await fileClient(c);assert.equal((await c.rpc('ping')).value.filesProtocol,1);
  const bytes=Buffer.alloc(8*1024*1024);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;

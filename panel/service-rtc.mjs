@@ -35,7 +35,7 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
 
 // At most eight peers (including closing), four per role, two per login.
 // No desktop owner, VNC, terminal, shell input, action queue or persisted state.
-export function createServiceRTC({ config, authorized, port, connectFiles, turn }) {
+export function createServiceRTC({ config, authorized, port, connectFiles, helperDownloads = false, turn }) {
   const entries = new Set(), pages = new Map(); let stopped = false;
   async function negotiate({ token, session, viewer, body, headers, signal }) {
     if (!config.webrtc) throw error(404, '服务端已关闭直连');
@@ -66,7 +66,7 @@ export function createServiceRTC({ config, authorized, port, connectFiles, turn 
         ...(connectFiles ? { connectFiles: (channel, live, fail) => connectFiles(channel, live, headers, controller.signal, fail) } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
-          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0 };
+          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
           const result = await localServiceRequest(port(), headers, action, value, controller.signal, config.entryBasePath);
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
           return result;

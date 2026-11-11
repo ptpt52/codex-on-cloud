@@ -127,7 +127,7 @@ export async function createPanel(config) {
     const turn = await turnConfig();
     return { serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '', rtcIceServers: config.webrtc && turn ? turn.iceServers : [], rtcIceExpiresAt: turn?.expiresAt };
   };
-  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port, turn: turnConfig,
+  const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port, turn: turnConfig, helperDownloads: true,
     connectFiles: (channel, valid, headers, signal, fail) => attachServiceFiles(channel, { valid, headers, signal, fail, entryBasePath, port: () => server.address().port }) });
   const hostAllowed = req => config.hosts.has(String(req.headers.host || '').toLowerCase());
   const originAllowed = req => {
