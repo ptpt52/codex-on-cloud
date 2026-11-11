@@ -17,6 +17,21 @@ async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
 
 const metadata = (credential, slug, nodeId) => ({ credential, slug, nodeId });
 
+test('the online owner can refresh configuration without resetting its live lease or admitting a second peer', async t => {
+  const { registry } = await setup(t), key = await registry.createKey({ name: 'online', slug: 'online' }), node = { id: 'a'.repeat(32), mode: 'terminal' };
+  const first = await registry.join({ version: 1, slug: key.slug, key: key.key, node });
+  const metas = { credential: first.credential, slug: key.slug, nodeId: node.id, mode: node.mode }, runId = 'original-run';
+  assert.equal(await registry.authorizeLogin({ metas, runId }), true);
+  assert.equal(await registry.authorizeProxy({ metas, runId, name: 'node-online', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/online/'] }), true);
+  const before = structuredClone(registry.sessions.get(key.slug));
+  const refreshed = await registry.join({ version: 1, slug: key.slug, credential: first.credential, node });
+  assert.equal(refreshed.credential, first.credential); assert.deepEqual(registry.sessions.get(key.slug), before);
+  await assert.rejects(registry.join({ version: 1, slug: key.slug, credential: first.credential, node: { ...node, id: 'b'.repeat(32) } }), { status: 409 });
+  await assert.rejects(registry.join({ version: 1, slug: key.slug, key: key.key, node }), { status: 409 });
+  assert.equal(await registry.authorizeLogin({ metas, runId: 'second-run', proxyOnline: async () => true }), false);
+  assert.equal(await registry.routeAllowed(key.slug), true);
+});
+
 test('a full legacy state can revoke a key without dropping authorizations or exceeding its byte bound', async t => {
   const { directory, clock } = await setup(t), at = clock.value;
   const value = { version: 1, revision: 1, keys: [], audit: Array.from({ length: 512 }, () => ({ at, type: 'key_created', slug: 'n-0' })) };

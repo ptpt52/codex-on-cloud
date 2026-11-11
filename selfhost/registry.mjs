@@ -193,6 +193,11 @@ export class SelfhostRegistry {
     }
     let current = draft.sessions.get(nodeSlug);
     if (current?.status === 'grace' && current.graceUntil <= now) { draft.sessions.delete(nodeSlug); current = undefined; }
+    // HTTP configuration refresh does not create another live frp connection.
+    // Keep its run ID and online status; frp Login still rejects a second peer.
+    if (current?.status === 'online' && typeof input.key !== 'string' && current.nodeId === nodeId && current.mode === input.node.mode && equalHash(current.credentialHash, key.credentialHash)) {
+      return { value: { version: 1, slug: nodeSlug, name: key.name, entryBasePath: entryBasePath(nodeSlug), credential, expiresAt: key.expiresAt, sessionId: key.id }, close };
+    }
     const graceMatch = current?.status === 'grace' && current.graceUntil > now && equalHash(key.credentialHash, current.credentialHash);
     const keyRecovery = typeof input.key === 'string' && (!current || current.status === 'grace');
     if (current && !graceMatch && !keyRecovery) throw selfhostError(409, '该节点已有在线连接，拒绝重复接入');
