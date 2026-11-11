@@ -14,11 +14,11 @@ import (
 
 func testAgentKey(grant agentGrant) string {
 	data, _ := json.Marshal(grant)
-	return "COCA1." + base64.RawURLEncoding.EncodeToString(data)
+	return "COCA2." + base64.RawURLEncoding.EncodeToString(data)
 }
 
 func TestAgentKeyBindsNodeAndEntryWithoutPermittingUnsafeURLs(t *testing.T) {
-	value := agentGrant{Version: 1, Server: "https://desk.example/node/office/", Node: strings.Repeat("a", 32), Agent: strings.Repeat("b", 32), Secret: strings.Repeat("c", 43)}
+	value := agentGrant{Version: 2, Server: "https://desk.example/node/office/", Node: strings.Repeat("a", 32), Agent: strings.Repeat("b", 32), Secret: strings.Repeat("c", 43)}
 	grant, server, err := parseAgentKey(testAgentKey(value))
 	if err != nil || grant != value || server.String() != value.Server {
 		t.Fatal("valid key rejected", err)
@@ -30,7 +30,7 @@ func TestAgentKeyBindsNodeAndEntryWithoutPermittingUnsafeURLs(t *testing.T) {
 			t.Fatal("unsafe entry accepted", bad)
 		}
 	}
-	for _, key := range []string{"not-a-key", "COCA1." + strings.Repeat("a", 2048), "COCA1." + base64.RawURLEncoding.EncodeToString([]byte(`{"version":1,"unexpected":true}`))} {
+	for _, key := range []string{"not-a-key", "COCA2." + strings.Repeat("a", 2048), "COCA2." + base64.RawURLEncoding.EncodeToString([]byte(`{"version":1,"unexpected":true}`))} {
 		if _, _, err := parseAgentKey(key); err == nil {
 			t.Fatal("bad key accepted")
 		}
@@ -76,7 +76,7 @@ func TestAgentHandshakeUsesDedicatedProtocolAndPinsEveryNativeConnection(t *test
 	for _, path := range []string{"/forward/agent", "/forward/helper", "/forward/resume", "/forward/data"} {
 		protocol := "codex-forward-v1"
 		if path == "/forward/agent" {
-			protocol = "codex-agent-v1"
+			protocol = "codex-agent-v2"
 		}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != path || r.Header.Get("X-Codex-Forward-Node") != strings.Repeat("a", 32) || r.Header.Get("Authorization") != "Bearer synthetic-token" {

@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
 import { root } from '../native/config.mjs';
 import { deploymentMode } from '../native/deployment-mode.mjs';
+import { createForwardAgentState } from '../panel/forward-agent-state.mjs';
+import { createForwarding } from '../panel/forward.mjs';
 
 const { values } = parseArgs({ options: { mode: { type: 'string' }, origin: { type: 'string' }, username: { type: 'string', default: 'admin' }, 'allow-host': { type: 'string', multiple: true, default: [] } } });
 const mode = deploymentMode(values.mode);
@@ -35,4 +37,9 @@ try { await writeFile(join(root, '.env'), env, { flag: 'wx', mode: 0o600 }); }
 catch (error) { if (error.code !== 'EEXIST') throw error; console.log('保留已有 .env 和密钥；旧 Docker 的 CODEX_VERSION 配置在原生模式不再使用。'); }
 await mkdir(join(root, 'workspaces', 'transfer'), { recursive: true });
 await mkdir(join(root, 'data'), { recursive: true, mode: 0o700 });
+const panelDirectory = join(root, 'data', 'panel');
+await mkdir(panelDirectory, { recursive: true, mode: 0o700 });
+const rules = createForwarding({ forwardPorts: '*' });
+try { createForwardAgentState(panelDirectory, rules.validate, { entry: '', id: '' }); } finally { await rules.close(); }
+console.log('固定助手1–8已初始化，key 可在管理员端口映射页面查看。');
 console.log('初始化完成，登录信息保存在 secrets/credentials.txt。\n下一步：npm run native:doctor，然后 npm run native:install。');

@@ -34,16 +34,16 @@ type agentGrant struct {
 func parseAgentKey(key string) (agentGrant, *url.URL, error) {
 	var grant agentGrant
 	invalid := errors.New("助手授权 key 格式无效，请从控制台完整复制")
-	if len(key) > 2048 || !strings.HasPrefix(key, "COCA1.") {
+	if len(key) > 2048 || !strings.HasPrefix(key, "COCA2.") {
 		return grant, nil, invalid
 	}
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, "COCA1."))
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, "COCA2."))
 	if err != nil {
 		return grant, nil, invalid
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&grant) != nil || decoder.Decode(new(any)) != io.EOF || grant.Version != 1 || !mappingPattern.MatchString(grant.Agent) || !tokenPattern.MatchString(grant.Secret) || grant.Node != "" && !mappingPattern.MatchString(grant.Node) {
+	if decoder.Decode(&grant) != nil || decoder.Decode(new(any)) != io.EOF || grant.Version != 2 || !mappingPattern.MatchString(grant.Agent) || !tokenPattern.MatchString(grant.Secret) || grant.Node != "" && !mappingPattern.MatchString(grant.Node) {
 		return grant, nil, invalid
 	}
 	server, err := serverURL(grant.Server)
@@ -356,7 +356,7 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 		return connectionFailure(err)
 	}
 	var ready agentReady
-	if kind != websocket.TextMessage || json.Unmarshal(data, &ready) != nil || ready.Type != "agent-ready" || ready.Version != 1 || ready.ID != grant.Agent || !validDeviceName(ready.Name) || ready.Node.ID != grant.Node || ready.RuleLimit < 1 || ready.RuleLimit > 16 || ready.InventoryInterval != 30000 {
+	if kind != websocket.TextMessage || json.Unmarshal(data, &ready) != nil || ready.Type != "agent-ready" || ready.Version != 2 || ready.ID != grant.Agent || !validDeviceName(ready.Name) || ready.Node.ID != grant.Node || ready.RuleLimit < 1 || ready.RuleLimit > 16 || ready.InventoryInterval != 30000 {
 		return failure("protocol_error")
 	}
 	entry, err := serverURL(ready.Node.Entry)
@@ -439,7 +439,7 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 				default:
 				}
 			case "rules":
-				if message.Version != 1 {
+				if message.Version != 2 {
 					return failure("protocol_error")
 				}
 				if err := manager.apply(message.Rules); err != nil {

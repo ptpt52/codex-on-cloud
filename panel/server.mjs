@@ -10,7 +10,6 @@ import { createAuth, cookieToken as readCookieToken, sessionCookie, sessionCooki
 import { canonicalLoginUsername, createLoginIdentity, nodeLoginScope } from './login-identity.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { createServiceDiagnostics } from './service-diagnostics.mjs';
-import { createDeviceDirectory } from './devices.mjs';
 import { managerRequest } from './manager-client.mjs';
 import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
@@ -81,7 +80,6 @@ export async function createPanel(config) {
   const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
   const access = await createAccessControl(config);
   const auth = await createAuth(config, { validSession: session => session.role !== 'temporary' || access.temporaryValid(session) });
-  const devices = createDeviceDirectory(config.dataDir);
   const tunnelDiagnostics = createTunnelDiagnostics(config.tunnelDiagnosticsUrl);
   const serviceDiagnostics = config.serviceDiagnostics || createServiceDiagnostics(undefined, config.mode);
   const failures = new Map();
@@ -158,10 +156,10 @@ export async function createPanel(config) {
   const desktopAccess = (req, session, viewer) => session.role !== 'temporary' && (isOwner(req, session, viewer) || !access.screenEnabled && !owner);
   const accessState = (req, session) => ({ role: session.role || 'admin', full: isOwner(req, session), screenLockEnabled: access.screenEnabled,
     requiresUnlock: session.role !== 'temporary' && access.screenEnabled && !isOwner(req, session), canClaim: session.role !== 'temporary',
-    canForward: desktopAccess(req, session), canReverse: true, canManageDevices: desktopAccess(req, session) });
+    canManageHelpers: desktopAccess(req, session) });
   function denied(req, session) {
     const error = new HttpError(session.role === 'temporary' ? 403 : access.screenEnabled ? 423 : 409,
-      session.role === 'temporary' ? '临时账号只允许服务器访问本地设备映射和文件中转' : access.screenEnabled ? '请先输入屏幕锁密码解锁' : '桌面已在另一页面打开，请先接管');
+      session.role === 'temporary' ? '临时账号只允许文件中转和连接状态查看' : access.screenEnabled ? '请先输入屏幕锁密码解锁' : '桌面已在另一页面打开，请先接管');
     error.code = session.role === 'temporary' ? 'restricted_account' : access.screenEnabled ? 'screen_locked' : 'control_required';
     error.access = accessState(req, session); return error;
   }
@@ -175,7 +173,6 @@ export async function createPanel(config) {
     if (!isOwner(req, session)) throw denied(req, session);
     return session;
   };
-  const mappingAllowed = (req, session, item) => desktopAccess(req, session) || !item.authorization?.helperId && item.direction === 'reverse' && (session.role !== 'temporary' || item.session === session.hash);
   async function ownedBody(req, limit) {
     requireOwner(req);
     const expected = owner;
@@ -386,7 +383,7 @@ export async function createPanel(config) {
     }
     if (path.startsWith('/api/')) {
       const session = requireSession(req);
-      const shared = ['/api/desktop/claim', '/api/files', '/api/forward', '/api/forward/stop', '/api/forward/hints'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/');
+      const shared = ['/api/desktop/claim', '/api/files', '/api/forward'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/');
       if (!shared && !desktopAccess(req, session)) { if (!['GET', 'HEAD'].includes(req.method)) requireWrite(req); throw denied(req, session); }
     }
     if (path === '/api/security' && req.method === 'GET') { const session = requireSession(req); if (!isOwner(req, session)) throw denied(req, session); return reply(res, 200, access.status()); }
@@ -431,43 +428,24 @@ export async function createPanel(config) {
     }
     if (path === '/api/forward' && req.method === 'GET') {
       requireSession(req);
-      const downloads = await forwardDownloads.list();
-      const session = requireSession(req), permission = accessState(req, session);
-      const directory = permission.canManageDevices ? devices.list() : { devices: [], limit: 0 };
-      return reply(res, 200, { ...directory, ...forwarding.list(item => !item.authorization?.helperId && !item.helperId && mappingAllowed(req, session, item), session.hash), deviceLimit: directory.limit, downloads, managedHelpersProtocol: 1,
-        permissions: { directions: permission.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permission.canManageDevices } });
+      const downloads = await forwardDownloads.list(); requireSession(req);
+      return reply(res, 200, { ports: forwarding.list().ports, allPorts: forwarding.list().allPorts, maxConnections: 8, downloads, managedHelpersProtocol: 2 });
     }
     if (path === '/api/forward/agents' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, forwardAgents.list()); }
-    if (/^\/api\/forward\/agents\/(?:create|rekey|remove|rule|rule\/remove|inventory)$/.test(path) && req.method === 'POST') {
+    if (path === '/api/forward/agents/key' && req.method === 'GET') {
+      requireDesktopRead(req);
+      if (url.searchParams.getAll('id').length !== 1 || [...url.searchParams.keys()].some(key => key !== 'id')) throw new HttpError(400, '助手标识无效');
+      return reply(res, 200, forwardAgents.action('key', { id: url.searchParams.get('id') }));
+    }
+    if (/^\/api\/forward\/agents\/(?:rekey|rule|rule\/remove|inventory)$/.test(path) && req.method === 'POST') {
       requireWrite(req); requireDesktopRead(req); const expected = owner, body = await jsonBody(req, 4096); requireWrite(req); requireDesktopRead(req);
       if (owner !== expected) throw new HttpError(409, '控制权已变化，本次助手配置未保存');
       return reply(res, 200, forwardAgents.action(path.slice('/api/forward/agents/'.length), body));
-    }
-    if (path === '/api/forward/devices' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, devices.list()); }
-    if (['/api/forward/devices', '/api/forward/devices/remove'].includes(path) && req.method === 'POST') {
-      requireWrite(req); requireDesktopRead(req); const expected = owner, body = await jsonBody(req, 1024); requireWrite(req); requireDesktopRead(req);
-      if (owner !== expected) throw new HttpError(409, '控制权已变化，本次设备设置未保存');
-      return reply(res, 200, path.endsWith('/remove') ? devices.remove(body) : devices.save(body));
     }
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
       requireSession(req);
       if (url.searchParams.getAll('generation').length > 1) throw new HttpError(400, '助手版本参数无效');
       return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res, url.searchParams.get('generation') ?? undefined);
-    }
-    if (['/api/forward', '/api/forward/stop', '/api/forward/hints'].includes(path) && req.method === 'POST') {
-      requireWrite(req);
-      const body = await jsonBody(req, 1024), session = requireWrite(req), token = cookieToken(req.headers.cookie);
-      if (path !== '/api/forward' && forwarding.list(item => item.id === body?.id && !!item.authorization?.helperId).mappings.length) throw new HttpError(409, '请在对应助手的规则列表修改或停用此映射');
-      if (path.endsWith('/stop')) return reply(res, 200, forwarding.stop(body, item => mappingAllowed(req, session, item)));
-      if (path.endsWith('/hints')) return reply(res, 200, forwarding.updateHints(body, item => mappingAllowed(req, session, item)));
-      if (body?.direction !== 'reverse' && !desktopAccess(req, session)) throw denied(req, session);
-      if (body?.deviceId !== undefined && !desktopAccess(req, session)) throw denied(req, session);
-      if (body?.direction === 'reverse' && body.deviceId !== undefined) {
-        if (typeof body.deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(body.deviceId)) throw new HttpError(400, '设备标识无效');
-        const device = devices.find(body.deviceId);
-        if (!device || device.name !== body.deviceName || device.targetHost !== body.targetHost || device.targetPort !== body.targetPort || device.protocol !== body.protocol || device.localPort !== body.localPort) throw new HttpError(409, '设备资料已改变，请重新选择设备后配对');
-      }
-      return reply(res, 200, forwarding.create(body, session.hash, () => closing ? 'server_stopping' : auth.get(token) ? '' : session.expires <= Date.now() ? 'authorization_expired' : 'authorization_revoked', { expiresAt: session.expires, role: session.role || 'admin' }));
     }
     if (path === '/api/terminals' && req.method === 'POST') {
       const body = await ownedBody(req, 1024);

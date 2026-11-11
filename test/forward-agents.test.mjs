@@ -9,10 +9,12 @@ const decode = key => JSON.parse(Buffer.from(key.slice(6), 'base64url'));
 const until = async probe => { const end = Date.now() + 6000; while (!await probe()) { if (Date.now() > end) throw Error('condition deadline'); await new Promise(r => setTimeout(r, 20)); } };
 const post = async (app, path, body) => { const r = await app.request('/api/forward/agents/' + path, { method: 'POST', body }); assert.equal(r.status, 200, await r.clone().text()); return r.json(); };
 const list = async app => (await app.request('/api/forward/agents')).json();
+const slot = async (app, number = 1) => { const agent = (await list(app)).agents[number - 1]; return { ...agent, ...await (await app.request('/api/forward/agents/key?id=' + agent.id)).json() }; };
+
 async function connect(app, key, instance = '1'.repeat(32), extra = {}) {
   const grant = decode(key), messages = [], url = new URL('/forward/agent', app.config.origin);
   url.protocol = 'ws:'; url.pathname = (app.config.entryBasePath === '/' ? '' : app.config.entryBasePath.replace(/\/$/, '')) + '/forward/agent';
-  const ws = new WebSocket(url, 'codex-agent-v1', { headers: { origin: app.config.origin, authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-agent-instance': instance, ...(grant.node ? { 'x-codex-forward-node': grant.node } : {}), ...extra } });
+  const ws = new WebSocket(url, 'codex-agent-v2', { headers: { origin: app.config.origin, authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-agent-instance': instance, ...(grant.node ? { 'x-codex-forward-node': grant.node } : {}), ...extra } });
   ws.on('error', () => {}); ws.on('message', bytes => { if (messages.length < 64) messages.push(JSON.parse(bytes)); });
   await once(ws, 'open'); await until(() => messages.some(m => m.type === 'agent-ready'));
   return { ws, messages, async rules(count) { await until(() => messages.some(m => m.type === 'rules' && m.rules.length === count)); return messages.filter(m => m.type === 'rules').at(-1).rules; } };
@@ -23,20 +25,20 @@ test('multiple managed helpers receive only their own dynamic rules; revocation 
   const app = await fixture(); const connections = [];
   try {
     await app.login(); await app.claim();
-    const a = await post(app, 'create', { name: '电脑 A' }), b = await post(app, 'create', { name: '电脑 B' });
+    const a = await slot(app), b = await slot(app, 2);
     const ca = await connect(app, a.key), cb = await connect(app, b.key, '2'.repeat(32)); connections.push(ca.ws, cb.ws);
     const ar = await post(app, 'rule', rule(a.id)), br = await post(app, 'rule', rule(b.id, 22002));
     const [am] = await ca.rules(1), [bm] = await cb.rules(1);
     assert.equal(am.id, ar.id); assert.equal(bm.id, br.id); assert.notEqual(am.code, bm.code);
-    const state = await list(app); assert(state.agents.every(a => a.online));
+    const state = await list(app); assert(state.agents.slice(0, 2).every(a => a.online));
     assert(!JSON.stringify(state).includes(am.code)); assert(!JSON.stringify(state).includes(decode(a.key).secret));
-    assert.equal((await (await app.request('/api/forward')).json()).mappings.length, 0);
+    assert.equal((await (await app.request('/api/forward')).json()).managedHelpersProtocol, 2);
     const rejected = await app.request('/api/forward/agents/rule', { method: 'POST', body: { ...rule(a.id, 22003), id: ar.id, revision: 0 } }); assert.equal(rejected.status, 409);
     await post(app, 'rule/remove', { agentId: a.id, id: ar.id, revision: ar.revision });
     await until(() => ca.messages.some(m => m.type === 'rules' && !m.rules.length));
     assert.equal((await list(app)).agents.find(a => a.id === b.id).rules[0].id, br.id);
-    await post(app, 'remove', { id: a.id }); await until(() => ca.ws.readyState === 3);
-    assert.equal(cb.ws.readyState, 1); assert.equal((await list(app)).agents.length, 1);
+    await post(app, 'rekey', { id: a.id, revision: a.keyRevision }); await until(() => ca.ws.readyState === 3);
+    assert.equal(cb.ws.readyState, 1); assert.equal((await list(app)).agents.length, 8);
     assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.inputCalls, []);
   } finally { for (const ws of connections) ws.terminate(); await app.close(); }
 });
@@ -44,7 +46,7 @@ test('multiple managed helpers receive only their own dynamic rules; revocation 
 test('serial and IPv4 inventory is read-only, scoped to its helper and remains available as dated last-known information', async () => {
   const app = await fixture(); let connection;
   try {
-    await app.login(); await app.claim(); const a = await post(app, 'create', { name: '串口主机' }); connection = await connect(app, a.key);
+    await app.login(); await app.claim(); const a = await slot(app); connection = await connect(app, a.key);
     const inventory = { type: 'inventory', serialPorts: ['COM3', 'COM8'], interfaces: [{ name: '以太网', index: 1, up: true, error: false, addresses: [{ address: '192.168.1.23', prefix: 24 }, { address: '10.0.0.23', prefix: 8 }] }, { name: '停用网卡', index: 2, up: false, error: false, addresses: [] }], error: '', truncated: false };
     connection.ws.send(JSON.stringify(inventory));
     await until(async () => (await list(app)).agents[0].inventory?.interfaces.length === 2);
@@ -58,7 +60,7 @@ test('serial and IPv4 inventory is read-only, scoped to its helper and remains a
 test('reconnecting the same helper control preserves its mapping identity and browser logout does not revoke the long-lived grant', async () => {
   const app = await fixture(); let connection, resumed, mapping;
   try {
-    await app.login(); await app.claim(); const a = await post(app, 'create', { name: '常驻电脑' });
+    await app.login(); await app.claim(); const a = await slot(app);
     connection = await connect(app, a.key);
     await post(app, 'rule', { agentId: a.id, name: 'SSH', enabled: true, config: { localPort: 2222, targetHost: '127.0.0.1', targetPort: 22 } });
     const [original] = await connection.rules(1), packets = [];
@@ -79,14 +81,14 @@ test('managed configuration requires full administrator access, CSRF and the cor
   const app = await fixture({ nodeId: 'a'.repeat(32), entryBasePath: '/node/office/' }); let connection;
   try {
     await app.login(); await app.claim();
-    assert.equal((await app.request('/api/forward/agents/create', { method: 'POST', body: { name: 'A' }, headers: { 'x-csrf-token': '' } })).status, 403);
-    assert.equal((await app.request('/api/forward/agents/create', { method: 'POST', body: { name: 'A' }, headers: { origin: 'https://other.example' } })).status, 403);
-    const a = await post(app, 'create', { name: 'A' }); assert.equal(decode(a.key).server, app.config.origin + '/node/office/');
+    assert.equal((await app.request('/api/forward/agents/rekey', { method: 'POST', body: { name: 'A' }, headers: { 'x-csrf-token': '' } })).status, 403);
+    assert.equal((await app.request('/api/forward/agents/rekey', { method: 'POST', body: { name: 'A' }, headers: { origin: 'https://other.example' } })).status, 403);
+    const a = await slot(app); assert.equal(decode(a.key).server, app.config.origin + '/node/office/');
     await assert.rejects(connect(app, a.key, '1'.repeat(32), { 'x-codex-forward-node': 'b'.repeat(32) }), /409/);
     connection = await connect(app, a.key);
     await assert.rejects(connect(app, a.key, '2'.repeat(32)), /409/);
     assert.equal(connection.ws.readyState, 1);
-    const replacement = await post(app, 'rekey', { id: a.id }); await until(() => connection.ws.readyState === 3);
+    const replacement = await post(app, 'rekey', { id: a.id, revision: a.keyRevision }); await until(() => connection.ws.readyState === 3);
     await assert.rejects(connect(app, a.key), /401/);
     connection = await connect(app, replacement.key);
     await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'visitor-test-password', durationMs: 3600000 } });
@@ -111,7 +113,7 @@ test('inventory rejects file paths, control characters, IPv6 injection and unbou
 test('batch rule failures coalesce policy snapshots and oversized inventory cannot replace the last bounded snapshot', async () => {
   const app = await fixture(); let connection;
   try {
-    await app.login(); await app.claim(); const a = await post(app, 'create', { name: '规则隔离' }); connection = await connect(app, a.key);
+    await app.login(); await app.claim(); const a = await slot(app); connection = await connect(app, a.key);
     for (let i = 0; i < 16; i++) await post(app, 'rule', { agentId: a.id, name: '规则 ' + i, enabled: true, config: { localPort: 2222 + i, targetHost: '127.0.0.1', targetPort: 22 } });
     const rules = await connection.rules(16), before = connection.messages.filter(m => m.type === 'rules').length;
     for (const rule of rules) connection.ws.send(JSON.stringify({ type: 'rule-result', id: rule.id, mappingId: rule.mappingId, revision: rule.revision, error: 'serial_open_failed' }));
@@ -126,4 +128,16 @@ test('batch rule failures coalesce policy snapshots and oversized inventory cann
     connection.ws.send(tooLarge); await until(() => connection.ws.readyState === 3);
     assert.deepEqual((await list(app)).agents[0].inventory, previous);
   } finally { connection?.ws.terminate(); await app.close(); }
+});
+
+test('fixed slot APIs expose keys only to full administrators and retire creation, deletion and one-time grants', async t => {
+  const app = await fixture(); t.after(() => app.close());
+  assert.equal((await app.request('/api/forward/agents/key?id=' + 'a'.repeat(32))).status, 401);
+  await app.login(); await app.claim(); const state = await list(app);
+  assert.equal(state.agents.length, 8); assert.deepEqual(state.agents.map(a => a.slot), [1,2,3,4,5,6,7,8]);
+  const a = await slot(app); assert.equal((await slot(app)).key, a.key); assert(!JSON.stringify(state).includes(decode(a.key).secret));
+  for (const path of ['/api/forward', '/api/forward/stop', '/api/forward/hints', '/api/forward/devices', '/api/forward/agents/create', '/api/forward/agents/remove']) {
+    assert.equal((await app.request(path, { method: 'POST', body: {} })).status, 404, path);
+  }
+  assert.equal((await app.request('/api/forward/agents/key?id=' + a.id + '&id=' + a.id)).status, 400);
 });

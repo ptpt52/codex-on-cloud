@@ -69,7 +69,7 @@ export function createForwardAgents(config, forwarding) {
       changed = true;
     }
     if (changed) {
-      send(session, { type: 'rules', version: 1, rules: agent.rules.filter(r => r.enabled).flatMap(rule => {
+      send(session, { type: 'rules', version: 2, rules: agent.rules.filter(r => r.enabled).flatMap(rule => {
         const entry = runtime.get(rule.id);
         return entry?.mapping ? [{ id: rule.id, revision: rule.revision, name: rule.name, mappingId: entry.mapping, code: entry.code, config: rule.config }] : [];
       }) });
@@ -78,10 +78,10 @@ export function createForwardAgents(config, forwarding) {
   const timer = setInterval(() => { for (const id of sessions.keys()) reconcile(id); }, 5000).unref();
   function list() {
     const mappings = new Map(forwarding.list(item => !!item.authorization?.helperId).mappings.map(m => [m.id, m]));
-    return { protocol: 1, limits: { agents: AGENT_LIMITS.agents, rules: AGENT_LIMITS.rules, active: 32 }, node: identity,
+    return { protocol: 2, limits: { agents: AGENT_LIMITS.agents, rules: AGENT_LIMITS.rules, active: 32 }, node: identity,
       agents: state.all().map(agent => {
         const session = sessions.get(agent.id);
-        return { id: agent.id, name: agent.name, createdAt: agent.createdAt, online: session?.ws?.readyState === 1, connectedAt: session?.connectedAt || null,
+        return { id: agent.id, slot: agent.slot, name: agent.name, keyRevision: agent.keyRevision, createdAt: agent.createdAt, online: session?.ws?.readyState === 1, connectedAt: session?.connectedAt || null,
           inventory: session?.inventory || inventories.get(agent.id) || null,
           rules: agent.rules.map(rule => {
             const entry = runtime.get(rule.id), mapping = entry?.mapping && mappings.get(entry.mapping);
@@ -91,9 +91,8 @@ export function createForwardAgents(config, forwarding) {
   }
   function action(path, body) {
     let result;
-    if (path === 'create') result = state.create(body);
+    if (path === 'key') result = state.key(body);
     else if (path === 'rekey') { const previous = state.find(body?.id)?.keyHash; try { result = state.rekey(body); } finally { if (state.find(body?.id)?.keyHash !== previous) disconnect(body.id); } }
-    else if (path === 'remove') { try { result = state.remove(body); } finally { if (body?.id && !state.find(body.id)) disconnect(body.id); } }
     else if (path === 'rule') { try { result = state.saveRule(body); } finally { reconcile(body?.agentId, true); } }
     else if (path === 'rule/remove') { try { result = state.removeRule(body); } finally { reconcile(body?.agentId, true); } }
     else if (path === 'inventory') {
@@ -110,7 +109,7 @@ export function createForwardAgents(config, forwarding) {
     if (closed) return deny(503);
     const match = /^Bearer ([a-f0-9]{32}\.[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '');
     const agent = match && state.authenticate(match[1]);
-    if (!agent || req.headers['sec-websocket-protocol'] !== 'codex-agent-v1') return deny(401, 'agent_key_invalid');
+    if (!agent || req.headers['sec-websocket-protocol'] !== 'codex-agent-v2') return deny(401, 'agent_key_invalid');
     if (identity.id && req.headers['x-codex-forward-node'] !== identity.id) return deny(409, 'node_changed');
     const instance = req.headers['x-codex-agent-instance'];
     if (typeof instance !== 'string' || !ID.test(instance)) return deny(400, 'protocol_error');
@@ -149,7 +148,7 @@ export function createForwardAgents(config, forwarding) {
             } else throw Error();
           } catch { ws.close(1008, 'protocol_error'); ws.terminate(); }
         });
-        send(session, { type: 'agent-ready', version: 1, id: agent.id, name: agent.name, node: identity, ruleLimit: AGENT_LIMITS.rules, inventoryIntervalMs: 30000 });
+        send(session, { type: 'agent-ready', version: 2, id: agent.id, name: agent.name, node: identity, ruleLimit: AGENT_LIMITS.rules, inventoryIntervalMs: 30000 });
         reconcile(agent.id, true); send(session, { type: 'inventory-request' });
       });
     } catch { sessions.delete(agent.id); socket.destroy(); }

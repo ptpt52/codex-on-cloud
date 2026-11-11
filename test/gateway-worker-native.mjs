@@ -50,9 +50,10 @@ try {
   };
   const first = await panelLogin(a), viewer = crypto.randomUUID();
   const claim = await runtime.dispatchFetch(origin + '/api/desktop/claim', { method: 'POST', headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-csrf-token': first.csrf, 'x-viewer-id': viewer, 'content-type': 'application/json' }, body: JSON.stringify({ viewer }) }); assert.equal(claim.status, 200);
-  const created = await runtime.dispatchFetch(origin + '/api/forward/agents/create', { method: 'POST', headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-csrf-token': first.csrf, 'x-viewer-id': viewer, 'content-type': 'application/json' }, body: JSON.stringify({ name: '固定控制节点的助手' }) });
-  assert.equal(created.status, 200, await created.clone().text());
-  const grant = JSON.parse(Buffer.from((await created.json()).key.slice(6), 'base64url'));
+  const helpers = await runtime.dispatchFetch(origin + '/api/forward/agents', { headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-viewer-id': viewer } });
+  assert.equal(helpers.status, 200); const agentId = (await helpers.json()).agents[0].id;
+  const keyResponse = await runtime.dispatchFetch(origin + '/api/forward/agents/key?id=' + agentId, { headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-viewer-id': viewer } });
+  assert.equal(keyResponse.status, 200); const grant = JSON.parse(Buffer.from((await keyResponse.json()).key.slice(6), 'base64url'));
   const bytes = Buffer.alloc(65536, 97);
   const uploaded = await runtime.dispatchFetch(origin + '/api/files/native.txt', { method: 'PUT', headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-csrf-token': first.csrf, 'content-type': 'application/octet-stream', 'content-length': String(bytes.length), 'if-none-match': '*' }, body: bytes });
   assert.equal(uploaded.status, 200, await uploaded.text()); assert.deepEqual(a.files.get('native.txt'), bytes);
@@ -63,7 +64,7 @@ try {
   await select(b.gatewayEntry); assert.equal(socket.readyState, WebSocket.OPEN);
   for (const [path, error] of [['agent', 'agent_key_invalid'], ['helper', 'pair_invalid'], ['resume', 'resume_authorization_invalid'], ['data', 'stream_authorization_invalid']]) {
     const rejection = await new Promise((resolve, reject) => {
-      const invalid = new WebSocket('ws://127.0.0.1:' + port + '/forward/' + path, path === 'agent' ? 'codex-agent-v1' : 'codex-forward-v1', { origin, headers: { authorization: 'Bearer ' + (path === 'agent' ? grant.agent + '.' : '') + 'z'.repeat(43), 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'e'.repeat(32), 'x-codex-forward-resume': '1' }, handshakeTimeout: 5000 });
+      const invalid = new WebSocket('ws://127.0.0.1:' + port + '/forward/' + path, path === 'agent' ? 'codex-agent-v2' : 'codex-forward-v1', { origin, headers: { authorization: 'Bearer ' + (path === 'agent' ? grant.agent + '.' : '') + 'z'.repeat(43), 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'e'.repeat(32), 'x-codex-forward-resume': '1' }, handshakeTimeout: 5000 });
       invalid.on('error', reject); invalid.once('open', () => { invalid.terminate(); reject(Error('Invalid helper credentials accepted')); });
       invalid.once('unexpected-response', (_request, response) => { response.resume(); resolve({ status: response.statusCode, headers: response.headers }); invalid.terminate(); });
     });
@@ -72,7 +73,7 @@ try {
   }
   // A new native connection remains on its granting node after the browser's
   // global selection changes. No browser cookie is passed to the helper.
-  agentSocket = new WebSocket('ws://127.0.0.1:' + port + '/forward/agent', 'codex-agent-v1', { origin, headers: { authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'a'.repeat(32) }, handshakeTimeout: 5000 });
+  agentSocket = new WebSocket('ws://127.0.0.1:' + port + '/forward/agent', 'codex-agent-v2', { origin, headers: { authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'a'.repeat(32) }, handshakeTimeout: 5000 });
   const agentWelcome = once(agentSocket, 'message'); await once(agentSocket, 'open');
   const agentReady = JSON.parse((await agentWelcome)[0]); assert.equal(agentReady.type, 'agent-ready'); assert.equal(agentReady.node.id, a.gatewayEntry.id);
   assert.equal((await (await control('nodes')).json()).activeId, b.gatewayEntry.id);

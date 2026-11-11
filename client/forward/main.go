@@ -80,7 +80,7 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 	}
 	protocol := "codex-forward-v1"
 	if path == "/forward/agent" {
-		protocol = "codex-agent-v1"
+		protocol = "codex-agent-v2"
 	}
 	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{protocol}}
 	origin := *server
@@ -573,8 +573,6 @@ func main() {
 		}
 		os.Exit(0)
 	}
-	server := flag.String("server", defaultServer, "服务器 HTTPS 地址（可包含 /node/<slug>/）")
-	allowReverse := flag.String("allow-reverse", "", "明确授权一个反向目标 IP:端口；省略时在首次配对后交互确认")
 	listSerial := flag.Bool("list-serial", false, "列出本机串口名称，不打开设备")
 	showVersion := flag.Bool("version", false, "显示版本后退出")
 	showLicenses := flag.Bool("licenses", false, "显示依赖许可证后退出")
@@ -605,7 +603,7 @@ func main() {
 		return
 	}
 	if *showVersion {
-		fmt.Println("Codex Cloud Forward " + version)
+		fmt.Println("Codex Cloud Forward " + version + "\n下载入口：" + defaultServer)
 		return
 	}
 	fmt.Println("Codex Cloud TCP 端口映射助手 " + version)
@@ -617,87 +615,12 @@ func main() {
 		}
 		return strings.TrimSpace(string(line)), nil
 	}
-	fmt.Print("请粘贴助手授权 key（或旧版一次性配对码）：")
-	code, inputError := readLine()
-	if inputError == nil && strings.HasPrefix(code, "COCA1.") {
+	fmt.Print("请粘贴控制台助手1–8对应的授权 key：")
+	key, err := readLine()
+	if err == nil {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer cancel()
-		var err error
-		explicitServer := false
-		flag.Visit(func(value *flag.Flag) {
-			if value.Name == "server" {
-				explicitServer = true
-			}
-		})
-		if *allowReverse != "" {
-			err = errors.New("--allow-reverse 仅用于一次性配对；常驻 key 由授权节点统一管理目标")
-		}
-		if err == nil && explicitServer {
-			_, granted, keyError := parseAgentKey(code)
-			requested, serverError := serverURL(*server)
-			if keyError != nil || serverError != nil || granted.String() != requested.String() {
-				err = errors.New("--server 与授权 key 的节点入口不一致，请核对后重新输入")
-			}
-		}
-		if err == nil {
-			err = runAgent(ctx, code, os.Stdout)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "无法继续："+err.Error())
-			if info, statErr := os.Stdin.Stat(); (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && statErr == nil && info.Mode()&os.ModeCharDevice != 0 {
-				fmt.Print("按 Enter 退出…")
-				readLine()
-			}
-			os.Exit(1)
-		}
-		return
-	}
-	if *server == "" {
-		fmt.Print("服务器地址（https://...）：")
-		*server, _ = readLine()
-	}
-	u, err := serverURL(*server)
-	if err == nil {
-		fmt.Println("服务器：" + u.String())
-		err = inputError
-		if err == nil {
-			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-			defer cancel()
-			approve := func(ctx context.Context, ready readyMessage) error {
-				target := net.JoinHostPort(ready.TargetHost, fmt.Sprint(ready.TargetPort))
-				if ready.Serial != nil {
-					target = ready.Serial.label()
-				}
-				fmt.Printf("反向设备授权：%s\n服务器 127.0.0.1:%d 将访问你电脑可达的 %s。\n", ready.DeviceName, ready.LocalPort, target)
-				if ready.Serial != nil {
-					fmt.Println("串口仅实际客户端接入时打开；打开时 DTR/RTS 可能短暂跳变并使设备复位。单客户端，无硬件流控；不会重放断线前数据。TCP 目标授权不能代替串口确认。")
-				}
-				if *allowReverse != "" {
-					if ready.Serial != nil {
-						return failure("reverse_denied")
-					}
-					if *allowReverse == target {
-						return nil
-					}
-					return failure("reverse_denied")
-				}
-				fmt.Print("允许此目标请输入 YES（60 秒内），其他输入取消：")
-				answer := make(chan string, 1)
-				go func() { line, _ := readLine(); answer <- line }()
-				timer := time.NewTimer(55 * time.Second)
-				defer timer.Stop()
-				select {
-				case line := <-answer:
-					if line == "YES" {
-						return nil
-					}
-				case <-ctx.Done():
-				case <-timer.C:
-				}
-				return failure("reverse_denied")
-			}
-			err = runWithReverse(ctx, u, code, os.Stdout, approve)
-		}
+		err = runAgent(ctx, key, os.Stdout)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "无法继续："+err.Error())

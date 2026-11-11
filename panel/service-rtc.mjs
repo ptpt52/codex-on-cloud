@@ -5,7 +5,7 @@ import { normalizeEntryBasePath } from './entry-path.mjs';
 
 const error = (status, message, outcome = 'rejected') => Object.assign(Error(message), { status, outcome });
 export const SERVICE_ACTIONS = Object.freeze({ state: ['GET', '/api/state'], diagnostics: ['GET', '/api/diagnostics'], files: ['GET', '/api/files'],
-  'forward-list': ['GET', '/api/forward'], 'forward-create': ['POST', '/api/forward'], 'forward-stop': ['POST', '/api/forward/stop'], 'forward-hints': ['POST', '/api/forward/hints'] });
+  'forward-list': ['GET', '/api/forward'] });
 
 // Fixed loopback requests reuse the HTTP authorization and quota checks. The
 // client cannot supply a URL, credentials, headers, host, port or HTTP method.
