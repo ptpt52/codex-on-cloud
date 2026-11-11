@@ -17,6 +17,29 @@ async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
 
 const metadata = (credential, slug, nodeId) => ({ credential, slug, nodeId });
 
+test('a full legacy state can revoke a key without dropping authorizations or exceeding its byte bound', async t => {
+  const { directory, clock } = await setup(t), at = clock.value;
+  const value = { version: 1, revision: 1, keys: [], audit: Array.from({ length: 512 }, () => ({ at, type: 'key_created', slug: 'n-0' })) };
+  const size = () => Buffer.byteLength(JSON.stringify(value) + '\n');
+  for (let i = 0; ; i++) {
+    value.keys.push({ id: i.toString(16).padStart(32, '0'), slug: 'n-' + i, name: 'N', keyHash: i.toString(16).padStart(64, '0'), credentialHash: null, createdAt: at, expiresAt: null, revokedAt: null });
+    if (size() > SELFHOST_LIMITS.stateBytes) { value.keys.pop(); break; }
+  }
+  for (const key of value.keys) { key.name += 'x'.repeat(Math.min(79, SELFHOST_LIMITS.stateBytes - size())); if (size() === SELFHOST_LIMITS.stateBytes) break; }
+  const file = join(directory, 'state.json'); await writeFile(file, JSON.stringify(value) + '\n', { mode: 0o600 });
+  const closed = [], registry = await new SelfhostRegistry({ file, onClose: async slug => closed.push(slug), now: () => at }).open();
+  const last = value.keys.at(-1); await registry.revoke(last.id);
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(saved.keys.length, value.keys.length); assert.equal(saved.keys.at(-1).revokedAt, at);
+  assert.equal(saved.audit.at(-1).type, 'key_revoked'); assert(saved.audit.length < 512);
+  assert(Buffer.byteLength(await readFile(file)) <= SELFHOST_LIMITS.stateBytes); assert.deepEqual(closed, [last.slug]);
+  await new SelfhostRegistry({ file }).open();
+  await registry.createKey({ name: 'more', slug: 'more' });
+  const next = JSON.parse(await readFile(file, 'utf8'));
+  assert(SELFHOST_LIMITS.stateBytes - Buffer.byteLength(await readFile(file)) >= 2048 + next.keys.filter(item => !item.revokedAt).length * 16);
+  assert.equal((await registry.list()).length, value.keys.length + 1);
+});
+
 test('authorization keys are returned once while state contains only hashes and survives restart', async t => {
   const { directory, registry } = await setup(t), future = Date.now() + 60000;
   const finite = await registry.createKey({ name: '深圳测试机', slug: 'shenzhen-test', expiresAt: future });

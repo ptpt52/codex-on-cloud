@@ -294,7 +294,7 @@ npm run server:leave
 - frps：`MemoryMax=512M`、`TasksMax=1024`、`LimitNOFILE=65536`
 - coturn：`MemoryMax=512M`、`TasksMax=2048`、`LimitNOFILE=65536`
 - Caddy：`MemoryMax=512M`、`TasksMax=1024`、`LimitNOFILE=65536`
-- 中心不设固定授权记录数量上限；保留最多 512 条审计记录，单个状态文件最多 256 KiB，达到容量上限时拒绝新增或修改，不截断现有授权
+- 中心不设固定授权记录数量上限；单个状态文件最多 256 KiB。最多保留 512 条审计记录，容量紧张时优先裁剪旧审计并为撤销授权预留空间；不足时拒绝新增或扩展记录，不截断现有授权
 
 日志进入 journald。服务以非 root 用户运行；Caddy 仅因监听 80/443 由 systemd 启动。
 

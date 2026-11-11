@@ -40,13 +40,20 @@ export class SelfhostRegistry {
     this.text = text; return this;
   }
 
-  mutate(action) {
+  mutate(action, { safety = false } = {}) {
     const operation = this.queue.then(async () => {
       const value = structuredClone(this.value);
       const sessions = new Map([...this.sessions].map(([key, session]) => [key, { ...session }]));
       const result = await action({ value, sessions, now: this.now(), close: [] });
-      const text = JSON.stringify(value) + '\n';
-      if (Buffer.byteLength(text) > SELFHOST_LIMITS.stateBytes) throw selfhostError(413, '中心状态超过容量上限');
+      // Reserve enough timestamp growth to revoke every remaining key. Old
+      // audit entries may yield space; authorizations are never truncated.
+      const reserve = safety ? 0 : 2048 + value.keys.filter(item => !item.revokedAt).length * 16;
+      const limit = SELFHOST_LIMITS.stateBytes - reserve;
+      let text = JSON.stringify(value) + '\n';
+      while (Buffer.byteLength(text) > limit && value.audit.length > 1) {
+        value.audit.shift(); text = JSON.stringify(value) + '\n';
+      }
+      if (Buffer.byteLength(text) > limit) throw selfhostError(413, '中心状态容量不足，请清理或减少新增授权；撤销操作保留独立空间');
       await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
       await writeStateFile(this.file, text, { expected: this.text });
       this.value = value; this.sessions = sessions; this.text = text;
@@ -209,7 +216,7 @@ export class SelfhostRegistry {
       if (item.revokedAt) return { value: publicKey(item, sessions.get(item.slug), now), close };
       item.revokedAt = now; item.credentialHash = null; sessions.delete(item.slug); close.push({ slug: item.slug, reason: 'authorization_revoked' }); this.audit(value, 'key_revoked', item, now);
       return { value: publicKey(item, null, now), close };
-    });
+    }, { safety: true });
   }
 
   async disconnect(nodeSlug, input = {}) {
@@ -219,7 +226,7 @@ export class SelfhostRegistry {
       if (!sessions.delete(nodeSlug)) throw selfhostError(409, '节点当前未接入');
       close.push({ slug: nodeSlug, reason: 'disconnected_by_admin' }); this.audit(value, 'node_disconnected', item, now);
       return { value: { ok: true }, close };
-    });
+    }, { safety: true });
   }
 
   async leave(input = {}) {
@@ -230,7 +237,7 @@ export class SelfhostRegistry {
       if (!owner || owner.id !== item.id || !sessions.has(nodeSlug)) throw selfhostError(401, '节点接入凭据无效或已经离线');
       sessions.delete(nodeSlug); close.push({ slug: nodeSlug, reason: 'node_left' }); this.audit(value, 'node_left', item, now);
       return { value: { ok: true }, close };
-    });
+    }, { safety: true });
   }
 
   loginMeta(metas) {
@@ -304,7 +311,7 @@ export class SelfhostRegistry {
       return !item || this.keyStatus(item, now) !== 'ready' || (session.status === 'grace' && session.graceUntil <= now) ||
         (['connecting', 'authenticated'].includes(session.status) && session.connectedAt + SELFHOST_LIMITS.connectMs <= now) ||
         (session.status === 'online' && session.lastSeenAt + SELFHOST_LIMITS.heartbeatMs <= now);
-    });
+    }, { safety: true });
     if (!due) return false;
     const result = await this.mutate(({ value, sessions, now, close }) => {
       for (const [key, session] of sessions) {
