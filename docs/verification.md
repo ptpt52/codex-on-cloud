@@ -34,6 +34,7 @@ npm run test:compat
 | `test:selfhost:edge` | 真实 Caddy、本地 TLS、HTTP-01 路由及 Cookie 过滤 | 续期命令为夹具，不代表公网 ACME 或正式 systemd 部署 |
 | `test:turn` | 真实 coturn，UDP / TCP / TLS 控制与强制 relay 数据往返 | 不代表真实云安全组、运营商及节点网络已打通 |
 | `test:forward:entry` | 真实 Go 助手通过完整节点路径传输 TCP | 桌面管理为夹具，不代表真实 FRP 和生产中心验收 |
+| `test:forward:agents` | 两个真实 Linux 助手、TCP、回环 WS、Pion / werift 直连、规则隔离及面板重启恢复 | 桌面管理为夹具，不代表真实 USB 串口、Windows / Mac 或公网验收 |
 | 原生显示、指针与恢复检查 | 隔离 Xvfb／x11vnc／noVNC；部分测试需 systemd | 不应对生产桌面注入故障 |
 
 真实 Worker 检查：

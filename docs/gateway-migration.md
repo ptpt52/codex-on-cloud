@@ -57,7 +57,7 @@ systemctl --user show codex-cloud-panel.service \
   -p MainPID -p ExecMainStartTimestamp --no-pager
 ```
 
-panel 可能因加载节点身份而重启，端口映射会因此需要重新配对。桌面／终端宿主、manager、files 和 Tunnel 不应因本次迁移重启。
+panel 可能因加载节点身份而重启，一次性映射需重新配对；常驻助手的入口 / 身份变化时重新生成并输入新 key，保存规则保留。桌面／终端宿主、manager、files 和 Tunnel 不应因本次迁移重启。
 
 ## 2. 在本机准备节点身份
 
@@ -171,7 +171,7 @@ node --input-type=module -e 'import{readGatewayConnection}from"./native/gateway-
 
 1. 保持 `PUBLIC_ORIGIN=https://desk.example.com` 不变，把 `old.example.com` 保留在 `ALLOWED_HOSTS`。
 2. 保留 `old.example.com` 的代理 CNAME 和同一 Tunnel ingress。
-3. 重启 panel 使配置生效；桌面／终端任务不会因此重启，已有内存端口映射需要重新配对。
+3. 重启 panel 使配置生效；桌面／终端任务不会因此重启。一次性映射需重新配对，常驻助手入口 / 身份变化时重新生成并输入新 key。
 4. 分别从 `https://old.example.com` 和 `https://desk.example.com` 登录验证。两个 Host 的浏览器 Cookie 相互独立，可使用同一节点账号密码。
 5. 独立域名页面中的“切换入口节点”会跳转到固定网关，不依赖旧域名提供 `/__nodes/`。
 
@@ -264,6 +264,6 @@ node --input-type=module -e 'import{readGatewayConnection}from"./native/gateway-
 | `/__nodes/` 没有新节点 | 未登记或探测失败；先核对 Tunnel、后端和恢复记录，不重复创建身份 |
 | 登记后网关返回 502／503 | 检查后端 CNAME、ingress、Tunnel 健康连接及节点就绪状态 |
 | 切换后页面空白或登录异常 | 核对当前默认节点，使用该节点原账号密码；不要在两个节点间反复提交切换 |
-| 端口映射失效 | panel 曾为加载节点身份重启；任务保留，但需要在面板重新配对映射 |
+| 端口映射失效 | 一次性模式重新配对；常驻助手入口 / 身份变化时重新生成并输入新 key，规则保留 |
 
 完成迁移后，服务 PID、公网入口、节点目录、旧 DNS 清理结果和实际功能验收应分别记录。测试或日志中的“节点已登记”不能替代真实浏览器登录和任务保留检查。

@@ -176,8 +176,8 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     const activateMs = item.direction === 'reverse' && !resume ? 60000 : 5000;
     item.timer = setTimeout(() => suspend(item, ws, item.direction === 'reverse' && !resume ? 'reverse_confirm_timeout' : 'pairing_timeout'), Math.min(activateMs, item.recoverUntil ? Math.max(1, item.recoverUntil - now()) : activateMs)).unref();
     const token = resume && item.keepStreams ? item.streamToken : secret(); item.streamHash = digest(token);
-    // At most four mapping-scoped secrets, memory only, retained solely for a
-    // negotiated management resume. They never appear in list/history/logs.
+    // One secret per bounded active mapping, memory only, retained solely for
+    // negotiated management resume. It never appears in list/history/logs.
     if (item.keepStreams) item.streamToken = token;
     let resumeToken;
     if (!resume && capable) { resumeToken = secret(); item.resumeHash = digest(resumeToken); }

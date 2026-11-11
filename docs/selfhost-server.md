@@ -231,6 +231,8 @@ curl -fsS --max-time 15 https://desk.example.com/node/node-a/readyz
 
 转发助手从 `0.7.3` 起支持 `https://desk.example.com/node/node-a/`。TCP、串口、反向映射及恢复连接均保留节点前缀，Origin 仍是 `https://desk.example.com`。更新节点后重新运行 `npm run build:forward` 并重新下载助手；构建使用 `.env` 的 `PUBLIC_ORIGIN` 与 `ENTRY_BASE_PATH`，也可显式指定完整节点 URL。旧根地址部署继续兼容。
 
+`0.8.0` 起支持[常驻助手和动态规则](forward.md#常驻助手一个进程多条规则)。key 包含完整节点路径，同一中心的多台节点不会相互覆盖助手归属；网页切换节点后，助手仍连接原授权节点。更新对应节点后台并下载新助手即可，中心仍按原节点路径转发。
+
 ## 验证范围
 
 `npm run test:selfhost:edge` 使用真实 Caddy 验证本地 TLS、HTTP-01 路由和 Cookie 过滤；续期 shell 命令使用本地夹具，不访问 systemd 或公共 ACME。`npm run test:turn` 使用真实 coturn 做 UDP、TCP、TLS 强制 relay 数据往返。`npm run test:forward:entry` 编译真实 Go 助手并通过节点路径传输 TCP 数据，桌面管理使用夹具。它们都不替代正式服务器上的 DNS、安全组、公共 CA 签发、FRP 和 Cloudflare 部署检查。

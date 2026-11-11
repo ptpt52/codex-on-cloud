@@ -52,7 +52,7 @@ WEBRTC_STUN_URL=stun:stun.cloudflare.com:3478
 systemctl --user restart codex-cloud-panel.service
 ```
 
-面板重启保留桌面和终端任务，但现有端口映射需要重新配对。关闭 WebRTC 时设 `WEBRTC_ENABLED=0`；日常更新使用[维护流程](operations.md)，不要为调网络在活动任务中重装依赖。
+面板重启保留桌面和终端任务；一次性映射需重新配对，常驻助手使用原 key 重建已启用规则，旧 TCP 由客户端重连。关闭 WebRTC 时设 `WEBRTC_ENABLED=0`；日常更新使用[维护流程](operations.md)，不要为调网络在活动任务中重装依赖。
 
 ### UDP 与中继端口
 

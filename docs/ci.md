@@ -30,6 +30,7 @@ npm run test:viewport
 npm run test:pointer
 npm run test:terminal-only
 npm run test:forward
+npm run test:forward:agents
 npm run test:serial
 npm run test:forward:publication
 npm run test:selfhost:edge
