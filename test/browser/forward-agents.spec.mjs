@@ -57,6 +57,39 @@ test('later connections using the same key cannot replace the online helper', as
   } finally { peer?.close(); await app.close(); }
 });
 
+test('helper status refreshes after disconnect even when the download list fails', async ({ page }) => {
+  const app = await fixture({ rfb: true }); let peer;
+  try {
+    await login(page, app); await open(page); const a = await choose(page, 1); peer = await helper(app, a.key);
+    await expect(page.locator('#forward-agent-connection')).toHaveText('助手在线');
+    await page.route('**/api/forward', route => route.fulfill({ status: 503, json: { error: '下载列表暂不可用' } }));
+    peer.close();
+    await until(() => peer.ws.readyState === 3);
+    await expect(page.locator('#forward-agent-connection')).toHaveText('助手离线', { timeout: 10000 });
+    await expect(page.locator('#forward-agent-tab-1')).toHaveAttribute('data-online', 'false');
+    await expect(page.locator('#forward-agent-inventory-refresh')).toBeDisabled();
+    expect(app.inputCalls).toEqual([]);
+  } finally { peer?.close(); await app.close(); }
+});
+
+test('failed helper status reads show unconfirmed status and recover without retaining a stale online badge', async ({ page }) => {
+  const app = await fixture({ rfb: true }); let peer;
+  try {
+    await login(page, app); await open(page); const a = await choose(page, 1); peer = await helper(app, a.key);
+    await expect(page.locator('#forward-agent-connection')).toHaveText('助手在线');
+    await page.route('**/api/forward/agents', route => route.fulfill({ status: 503, json: { error: '助手状态暂不可用' } }));
+    await page.locator('#forward-refresh').click();
+    await expect(page.locator('#forward-agent-connection')).toHaveText('助手状态未确认');
+    await expect(page.locator('#forward-agent-tab-1')).toHaveAttribute('data-online', 'unknown');
+    await expect(page.locator('#forward-agent-inventory-refresh')).toBeDisabled();
+    await expect(page.locator('#forward-agent-key')).toHaveValue(a.key);
+    await page.unroute('**/api/forward/agents'); peer.close();
+    await expect(page.locator('#forward-agent-connection')).toHaveText('助手离线', { timeout: 10000 });
+    await expect(page.locator('#forward-agent-tab-1')).toHaveAttribute('data-online', 'false');
+    await expect(page.locator('#forward-agent-key')).toHaveValue(a.key);
+  } finally { peer?.close(); await app.close(); }
+});
+
 test('per-helper mock diagnostics distinguish new routes from existing mixed connections and never copy keys or addresses', async ({ page }) => {
   const app = await fixture({ rfb: true, forwardPorts: '*' }); let peer;
   try {

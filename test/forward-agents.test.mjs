@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { fixture } from './fixture.mjs';
-import { agentInventory } from '../panel/forward-agents.mjs';
+import { agentInventory, AGENT_CONTROL_TIMEOUT_MS } from '../panel/forward-agents.mjs';
 
 const decode = key => JSON.parse(Buffer.from(key.slice(6), 'base64url'));
 const until = async probe => { const end = Date.now() + 6000; while (!await probe()) { if (Date.now() > end) throw Error('condition deadline'); await new Promise(r => setTimeout(r, 20)); } };
@@ -20,6 +20,44 @@ async function connect(app, key, instance = '1'.repeat(32), extra = {}) {
   return { ws, messages, async rules(count) { await until(() => messages.some(m => m.type === 'rules' && m.rules.length === count)); return messages.filter(m => m.type === 'rules').at(-1).rules; } };
 }
 const rule = (agentId, port = 2222) => ({ agentId, name: '路由器', enabled: true, config: { direction: 'reverse', protocol: 'ssh', deviceName: '路由器', localPort: port, targetHost: '192.168.1.1', targetPort: 22 } });
+
+test('responsive transport without helper messages expires and a new instance can claim the slot', async t => {
+  const app = await fixture(); let old, replacement;
+  try {
+    await app.login(); await app.claim(); const a = await slot(app); old = await connect(app, a.key);
+    const pong = once(old.ws, 'pong'); old.ws.ping('transport-alive'); await pong;
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    t.mock.timers.tick(AGENT_CONTROL_TIMEOUT_MS);
+    // The old transport is still open; expire it before refusing a new process.
+    assert.equal(old.ws.readyState, 1);
+    replacement = await connect(app, a.key, '2'.repeat(32));
+    await until(() => old.ws.readyState === 3);
+    assert.equal((await list(app)).agents[0].online, true);
+    t.mock.timers.tick(AGENT_CONTROL_TIMEOUT_MS);
+    assert.equal((await list(app)).agents[0].online, false);
+    assert.equal((await app.request('/api/forward/agents/inventory', { method: 'POST', body: { id: a.id } })).status, 409);
+  } finally { t.mock.timers.reset(); old?.ws.terminate(); replacement?.ws.terminate(); await app.close(); }
+});
+
+test('valid inventory renews only its own helper liveness and expired control retains the last inventory', async t => {
+  const app = await fixture(); let a, b;
+  try {
+    await app.login(); await app.claim(); const first = await slot(app), second = await slot(app, 2);
+    a = await connect(app, first.key); b = await connect(app, second.key, '2'.repeat(32));
+    const inventory = { type: 'inventory', serialPorts: [], interfaces: [], truncated: false, error: '' };
+    a.ws.send(JSON.stringify(inventory)); await until(async () => !!(await list(app)).agents[0].inventory);
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    for (let n = 0; n < 2; n++) {
+      t.mock.timers.tick(30000); b.ws.send(JSON.stringify(inventory));
+      await until(async () => (await list(app)).agents[1].inventory?.updatedAt === Date.now());
+    }
+    t.mock.timers.tick(AGENT_CONTROL_TIMEOUT_MS - 60000);
+    const state = await list(app);
+    assert.equal(state.agents[0].online, false); assert.equal(state.agents[0].connectedAt, null);
+    assert.deepEqual(state.agents[0].inventory.serialPorts, []);
+    assert.equal(state.agents[1].online, true); assert.equal(b.ws.readyState, 1);
+  } finally { t.mock.timers.reset(); a?.ws.terminate(); b?.ws.terminate(); await app.close(); }
+});
 
 test('multiple managed helpers receive only their own dynamic rules; revocation and stale edits are isolated', async () => {
   const app = await fixture(); const connections = [];

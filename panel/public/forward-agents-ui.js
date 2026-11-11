@@ -7,7 +7,7 @@ const node = (tag, text = '', className = '') => { const n = document.createElem
 export function createForwardAgentsUI({ api, allowed, canManage = () => true, visible, hints }) {
   const $ = id => document.getElementById(id), editor = $('forward-rule-dialog'), confirmation = $('forward-agent-confirm');
   let agents = [], selectedId = '', selectedSlot = 1, generation = 0, reading, pending, keyRequest, keyRevision = 0, policy = null, edit = null, confirming = null;
-  let inventorySignature = '', layoutFrame = 0, rowsAgent = '', permitted = false, managing = false;
+  let inventorySignature = '', layoutFrame = 0, rowsAgent = '', permitted = false, managing = false, statusKnown = false;
   const rows = new Map(), tabs = [];
   const live = () => allowed() && visible(), selected = () => agents.find(a => a.id === selectedId);
   const message = text => { $('forward-agent-status').textContent = text; };
@@ -22,7 +22,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     for (const id of ['forward-agent-rekey', 'forward-agent-key-visibility', 'forward-rules-heading', 'forward-agent-rules', 'forward-agent-inventory', 'forward-diagnostics-copy']) $(id).hidden = !managing;
     $('forward-agent-key-refresh').hidden = managing; $('forward-agent-key-readonly').hidden = managing;
     const agent = selected();
-    for (const id of ['forward-rule-add', 'forward-agent-rekey', 'forward-agent-inventory-refresh', 'forward-agent-temporary-key-visible']) $(id).disabled = !permitted || !managing || busy() || !agent || id === 'forward-agent-inventory-refresh' && !agent.online;
+    for (const id of ['forward-rule-add', 'forward-agent-rekey', 'forward-agent-inventory-refresh', 'forward-agent-temporary-key-visible']) $(id).disabled = !permitted || !managing || busy() || !agent || id === 'forward-agent-inventory-refresh' && (!statusKnown || !agent.online);
     $('forward-agent-key-copy').disabled = !permitted || busy() || !agent || !$('forward-agent-key').value;
     $('forward-agent-key-refresh').disabled = !permitted || busy() || !agent || !!keyRequest;
     for (const tab of tabs) tab.disabled = !permitted || busy();
@@ -107,11 +107,16 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
       const value = await api('/api/forward/agents', { signal: request.signal });
       if (epoch !== generation || !live()) return;
       if (value.protocol !== 2 || !Array.isArray(value.agents) || value.agents.length > 8 || value.agents.some(a => !Number.isInteger(a.slot) || a.slot < 1 || a.slot > 8 || a.name !== '助手' + a.slot) || new Set(value.agents.map(a => a.slot)).size !== value.agents.length || (canManage() ? value.agents.length !== 8 || value.agents.some((a, i) => a.slot !== i + 1) : value.readOnly !== true)) throw Error('固定助手配置无效，请检查节点版本');
-      agents = value.agents;
+      agents = value.agents; statusKnown = true;
       const agent = agents.find(a => a.slot === selectedSlot) || agents[0];
       if (selectedId !== (agent?.id || '')) { selectedId = agent?.id || ''; selectedSlot = agent?.slot || 1; clearKey(); }
       update(); render(); void loadKey();
-    } catch (error) { if (epoch === generation && live() && !request.signal.aborted) message(error.message); }
+    } catch (error) {
+      if (epoch === generation && reading === request && live()) {
+        statusKnown = false; render(); update();
+        message(request.signal.aborted ? '助手状态更新超时，请刷新列表确认。' : error.message);
+      }
+    }
     finally { clearTimeout(timeout); if (reading === request) reading = null; }
   }
   async function mutate(path, body) {
@@ -171,10 +176,10 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-target-note').textContent = serial ? '串口位于该助手电脑上；实际客户端接入后才打开设备。' : reverse ? '目标从该助手电脑访问。服务器只监听 127.0.0.1，目标使用原服务的认证。' : '目标从节点服务器访问，127.0.0.1 指服务器自身。';
     $('forward-port-policy').textContent = policy?.allPorts ? 'TCP 目标端口：允许所有非管理端口。' : 'TCP 目标端口：' + (policy?.ports?.join('、') || '已禁用；串口不受此限制。');
     $('forward-port-policy').hidden = serial || !!policy?.allPorts;
-    const saveLabel = busy() ? '正在保存…' : !selected()?.online || !$('forward-rule-enabled').checked ? '保存规则' : '保存并应用';
+    const saveLabel = busy() ? '正在保存…' : !statusKnown || !selected()?.online || !$('forward-rule-enabled').checked ? '保存规则' : '保存并应用';
     // WebKit cancels a pressed button's click if input blur replaces its text.
     if ($('forward-create').textContent !== saveLabel) $('forward-create').textContent = saveLabel;
-    $('forward-rule-effect').textContent = !$('forward-rule-enabled').checked ? '保存为停用规则，暂不建立映射。' : !selected()?.online ? '助手当前离线。规则会保存，接入后自动应用。' : edit?.rule ? '保存将重建这一条规则，关闭它的现有连接；其他规则继续运行。' : '保存后自动下发给' + (selected()?.name || '助手') + '。';
+    $('forward-rule-effect').textContent = !$('forward-rule-enabled').checked ? '保存为停用规则，暂不建立映射。' : !statusKnown ? '助手状态未确认。规则会保存，助手接入后自动应用。' : !selected()?.online ? '助手当前离线。规则会保存，接入后自动应用。' : edit?.rule ? '保存将重建这一条规则，关闭它的现有连接；其他规则继续运行。' : '保存后自动下发给' + (selected()?.name || '助手') + '。';
     const local = $('forward-local').value || '监听端口', host = $('forward-host').value.trim() || '目标 IP', target = $('forward-target').value || '目标端口';
     const destination = serial ? ($('forward-serial-path').value.trim() || '选择或填写串口') + ' @ ' + $('forward-serial-baud').value : (host.includes(':') ? '[' + host + ']' : host) + ':' + target;
     $('forward-rule-preview').textContent = (reverse ? '节点服务器' : (selected()?.name || '助手') + '本机') + ' 127.0.0.1:' + local + ' → ' + (reverse ? (selected()?.name || '助手') + '上的' : '节点服务器上的 ') + destination;
@@ -247,24 +252,24 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     const agent = selected(); if (!agent) return;
     $('forward-agent-panel').setAttribute('aria-labelledby', 'forward-agent-tab-' + agent.slot);
     $('forward-agent-panel').dataset.agentId = agent.id; $('forward-agent-heading').textContent = agent.name; $('forward-agent-key-label').textContent = agent.name + '授权 key';
-    for (const [i, tab] of tabs.entries()) { const item = agents.find(a => a.slot === i + 1); tab.setAttribute('aria-selected', String(i + 1 === agent.slot)); tab.dataset.online = String(!!item?.online); tab.dataset.readonly = String(!canManage()); tab.title = '助手' + (i + 1) + (canManage() ? item?.online ? ' · 在线' : ' · 离线' : ''); }
+    for (const [i, tab] of tabs.entries()) { const item = agents.find(a => a.slot === i + 1); tab.setAttribute('aria-selected', String(i + 1 === agent.slot)); tab.dataset.online = statusKnown ? String(!!item?.online) : 'unknown'; tab.dataset.readonly = String(!canManage()); tab.title = '助手' + (i + 1) + (canManage() ? !statusKnown ? ' · 状态未确认' : item?.online ? ' · 在线' : ' · 离线' : ''); }
     $('forward-agent-connection').hidden = !canManage();
     if (!canManage()) { $('forward-agent-network').hidden = true; measureLayout(); return; }
     $('forward-agent-temporary-key-visible').checked = agent.temporaryKeyVisible === true;
-    $('forward-agent-connection').textContent = agent.online ? '助手在线' : '助手离线';
-    $('forward-agent-connection').dataset.online = String(agent.online);
+    $('forward-agent-connection').textContent = !statusKnown ? '助手状态未确认' : agent.online ? '助手在线' : '助手离线';
+    $('forward-agent-connection').dataset.online = statusKnown ? String(agent.online) : 'unknown';
     $('forward-rule-count').textContent = agent.rules.length + ' / 16';
     const active = agent.rules.filter(r => r.mapping?.state === 'active'), directReady = active.filter(r => r.mapping.direct.available).length;
     const direct = agent.rules.reduce((n, r) => n + (r.mapping?.directConnections || 0), 0), total = agent.rules.reduce((n, r) => n + (r.mapping?.connections || 0), 0);
-    $('forward-agent-network').textContent = `已有数据连接：直连 ${direct} / 中转 ${total - direct}。` + (active.length ? `新连接：${directReady} 条规则优先直连，${active.length - directReady} 条规则走中转。` : '尚无可建立新连接的规则。');
+    $('forward-agent-network').textContent = !statusKnown ? '连接状态未更新，以下为上次读取的规则信息。' : `已有数据连接：直连 ${direct} / 中转 ${total - direct}。` + (active.length ? `新连接：${directReady} 条规则优先直连，${active.length - directReady} 条规则走中转。` : '尚无可建立新连接的规则。');
     $('forward-agent-network').hidden = !agent.rules.length;
-    const signature = JSON.stringify([agent.id, agent.online, agent.inventory]);
+    const signature = JSON.stringify([agent.id, statusKnown, agent.online, agent.inventory]);
     if (signature !== inventorySignature) {
       inventorySignature = signature; const target = $('forward-agent-inventory-body'), info = agent.inventory; target.replaceChildren();
       $('forward-agent-inventory-title').textContent = info ? `网卡 ${info.interfaces.length} 张 · 串口 ${info.serialPorts.length} 个` : '网卡和串口信息';
       if (!info) target.append(node('p', '等待助手上报设备信息。', 'muted'));
       else {
-        target.append(node('p', '更新时间：' + new Date(info.updatedAt).toLocaleString() + (!agent.online ? '；离线，仅为最后一次信息。' : '') + (info.truncated ? '；信息超出上限，已截断。' : '') + (info.error ? '；部分设备信息读取失败，可手动填写串口。' : ''), 'muted'));
+        target.append(node('p', '更新时间：' + new Date(info.updatedAt).toLocaleString() + (!statusKnown ? '；状态未确认，仅为最后一次信息。' : !agent.online ? '；离线，仅为最后一次信息。' : '') + (info.truncated ? '；信息超出上限，已截断。' : '') + (info.error ? '；部分设备信息读取失败，可手动填写串口。' : ''), 'muted'));
         for (const iface of info.interfaces) target.append(node('p', `${iface.name}（${iface.up ? '启用' : '停用'}）：` + (iface.addresses.map(ip => `${ip.address}/${ip.prefix}（${mask(ip.prefix)}）`).join('、') || (iface.error ? '地址读取失败' : '无 IPv4 地址')), 'muted'));
         target.append(node('p', '串口：' + (info.serialPorts.join('、') || '未发现，可手动填写。'), 'muted'));
       }
@@ -313,7 +318,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     const number = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
     const lines = ['Codex Cloud 助手诊断 v2', '地址、端口、网卡名、串口路径、规则名称、标识和 key 均已省略。'];
     for (const agent of agents) {
-      lines.push(`${agent.name}：${agent.online ? '控制在线' : '控制离线'}；规则 ${agent.rules.length}`);
+      lines.push(`${agent.name}：${!statusKnown ? '控制状态未确认' : agent.online ? '控制在线' : '控制离线'}；规则 ${agent.rules.length}`);
       for (const [i, r] of agent.rules.entries()) lines.push(`规则 ${i + 1}：${states[r.state] || '未知'}；${r.mapping?.state === 'active' ? r.mapping.direct.available ? '新连接 直连' : '新连接 中转' : '新连接 暂停'}；已有直连 ${number(r.mapping?.directConnections)} / 总连接 ${number(r.mapping?.connections)}；RTT ms ${number(r.mapping?.direct.rttMs)}`);
     }
     return lines.join('\n').slice(0, 24000);
@@ -326,6 +331,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   });
   function suspend() {
     generation++; reading?.abort(); reading = null;
+    statusKnown = false; render();
     const writing = pending; pending?.abort(); pending = null; clearKey(); closeConfirm();
     if (writing) {
       const text = '保存结果未确认，返回后请刷新列表核对；不会自动重试。'; message(text);
@@ -334,7 +340,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; update();
   }
   function reset() {
-    generation++; reading?.abort(); pending?.abort(); reading = pending = null; clearKey();
+    generation++; statusKnown = false; reading?.abort(); pending?.abort(); reading = pending = null; clearKey();
     closeConfirm(); if (editor.open) editor.close(); edit = null;
     agents = []; selectedId = ''; rowsAgent = ''; rows.clear(); $('forward-agent-rules').replaceChildren(); $('forward-agent-inventory-body').replaceChildren(); inventorySignature = '';
     $('forward-agent-connection').textContent = ''; $('forward-agent-network').textContent = ''; message(''); $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = '';

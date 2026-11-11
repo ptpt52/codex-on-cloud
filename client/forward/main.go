@@ -618,7 +618,7 @@ func main() {
 	fmt.Print("请粘贴控制台助手1–8对应的授权 key：")
 	key, err := readLine()
 	if err == nil {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		defer cancel()
 		err = runAgent(ctx, key, os.Stdout)
 	}

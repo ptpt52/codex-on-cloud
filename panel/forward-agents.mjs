@@ -5,6 +5,9 @@ import { forwardHeartbeat } from './forward-heartbeat.mjs';
 import { serialConfig } from './serial-config.mjs';
 
 const ID = /^[a-f0-9]{32}$/;
+// Inventory arrives every 30 seconds, including from existing v2 helpers.
+// Transport Pongs can come from a proxy and do not prove the helper is alive.
+export const AGENT_CONTROL_TIMEOUT_MS = 75000;
 const fields = (value, allowed) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => allowed.includes(key));
 const text = (value, maximum) => typeof value === 'string' && Buffer.byteLength(value) <= maximum && !/[\p{Cc}\p{Cf}]/u.test(value);
 
@@ -42,11 +45,20 @@ export function createForwardAgents(config, forwarding) {
   function stopRuntime(entry) { if (entry.mapping) forwarding.stop({ id: entry.mapping }); runtime.delete(entry.ruleId); }
   function stopAgent(id) { for (const entry of runtime.values()) if (entry.agentId === id) stopRuntime(entry); }
   function disconnect(id) { clearTimeout(updates.get(id)); updates.delete(id); const session = sessions.get(id); if (session) { sessions.delete(id); session.ws?.terminate(); } inventories.delete(id); stopAgent(id); }
+  function currentSession(id) {
+    const session = sessions.get(id);
+    if (session && Date.now() - session.lastMessageAt >= AGENT_CONTROL_TIMEOUT_MS) {
+      sessions.delete(id); session.ws?.terminate();
+      // Healthy data sockets keep their independent recovery and lifetimes.
+      return undefined;
+    }
+    return session;
+  }
   // At most one pending policy notification per connected helper (eight total).
   function scheduleUpdate(id) { if (closed || updates.has(id)) return; updates.set(id, setTimeout(() => { updates.delete(id); reconcile(id, true); }, 20).unref()); }
   function reconcile(agentId, force = false) {
     if (closed) return;
-    const agent = state.find(agentId), session = sessions.get(agentId);
+    const agent = state.find(agentId), session = currentSession(agentId);
     if (!agent || !session || session.ws?.readyState !== 1) return;
     const mappings = new Map(forwarding.list(item => item.authorization?.helperId === agentId).mappings.map(m => [m.id, m]));
     let changed = force;
@@ -80,7 +92,7 @@ export function createForwardAgents(config, forwarding) {
     const mappings = new Map(forwarding.list(item => !!item.authorization?.helperId).mappings.map(m => [m.id, m]));
     return { protocol: 2, limits: { agents: AGENT_LIMITS.agents, rules: AGENT_LIMITS.rules, active: 32 }, node: identity,
       agents: state.all().map(agent => {
-        const session = sessions.get(agent.id);
+        const session = currentSession(agent.id);
         return { id: agent.id, slot: agent.slot, name: agent.name, keyRevision: agent.keyRevision, temporaryKeyVisible: agent.temporaryKeyVisible, visibilityRevision: agent.visibilityRevision, createdAt: agent.createdAt, online: session?.ws?.readyState === 1, connectedAt: session?.connectedAt || null,
           inventory: session?.inventory || inventories.get(agent.id) || null,
           rules: agent.rules.map(rule => {
@@ -105,7 +117,7 @@ export function createForwardAgents(config, forwarding) {
     else if (path === 'rule/remove') { try { result = state.removeRule(body); } finally { reconcile(body?.agentId, true); } }
     else if (path === 'inventory') {
       if (!fields(body, ['id']) || !ID.test(body.id || '')) throw Object.assign(Error('助手标识无效'), { status: 400 });
-      const session = sessions.get(body.id);
+      const session = currentSession(body.id);
       if (!session) throw Object.assign(Error('助手未连接，请稍后刷新'), { status: 409 });
       if (Date.now() - session.inventoryRequestedAt < 2000) throw Object.assign(Error('设备信息刷新过于频繁'), { status: 429 });
       session.inventoryRequestedAt = Date.now(); send(session, { type: 'inventory-request' }); result = { ok: true };
@@ -121,9 +133,9 @@ export function createForwardAgents(config, forwarding) {
     if (identity.id && req.headers['x-codex-forward-node'] !== identity.id) return deny(409, 'node_changed');
     const instance = req.headers['x-codex-agent-instance'];
     if (typeof instance !== 'string' || !ID.test(instance)) return deny(400, 'protocol_error');
-    const current = sessions.get(agent.id);
+    const current = currentSession(agent.id);
     if (current) return deny(409, current.instance === instance ? 'resume_busy' : 'agent_already_connected');
-    const session = { ws: null, instance, connectedAt: Date.now(), inventory: null, inventoryRequestedAt: 0, messages: 0, messageAt: Date.now() };
+    const session = { ws: null, instance, connectedAt: Date.now(), lastMessageAt: Date.now(), inventory: null, inventoryRequestedAt: 0, messages: 0, messageAt: Date.now() };
     sessions.set(agent.id, session); // Reserve before the asynchronous upgrade.
     // A new process has no old mapping contexts, even when the desired rules match.
     if ([...runtime.values()].some(entry => entry.agentId === agent.id && entry.instance !== instance)) stopAgent(agent.id);
@@ -155,6 +167,7 @@ export function createForwardAgents(config, forwarding) {
                 if (value.error) { forwarding.stop({ id: entry.mapping }); entry.mapping = ''; entry.code = ''; entry.retryAt = Date.now() + 15000; scheduleUpdate(agent.id); }
               }
             } else throw Error();
+            session.lastMessageAt = Date.now();
           } catch { ws.close(1008, 'protocol_error'); ws.terminate(); }
         });
         send(session, { type: 'agent-ready', version: 2, id: agent.id, name: agent.name, node: identity, ruleLimit: AGENT_LIMITS.rules, inventoryIntervalMs: 30000 });

@@ -100,14 +100,17 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     if (!allowed() || !dialog.open || document.hidden) return;
     if (controller) { timer = setTimeout(load, 3000); return; }
     const epoch = generation, request = controller = new AbortController(), deadline = setTimeout(() => request.abort(), 8000);
+    // Device status must keep refreshing even if downloads or policy fail.
+    const status = agentsUI.refresh();
     try {
       const data = await api('/api/forward', { signal: request.signal });
       if (epoch !== generation || !dialog.open || !allowed()) return;
       if (data.managedHelpersProtocol !== 2) throw Error('助手管理版本不匹配，请更新节点和网页');
       downloads = (data.downloads || []).filter(file => Object.hasOwn(FORWARD_CLIENTS, file.arch)).slice(0, 4); renderDownloads();
-      agentsUI.policy(data); await agentsUI.refresh();
+      agentsUI.policy(data);
     } catch (error) { if (epoch === generation && !request.signal.aborted) $('forward-status').textContent = error.message; }
     finally {
+      await status;
       clearTimeout(deadline); if (controller === request) controller = null;
       if (epoch === generation && allowed() && dialog.open && !document.hidden) timer = setTimeout(load, 3000);
     }

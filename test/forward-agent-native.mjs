@@ -138,6 +138,13 @@ try {
   const relayed = await connect(thirdPort); await exchange(relayed, '节点重启后按保存规则新建中转 TCP\n');
   const restored = (await listing(app)).agents[1].rules[0].mapping; assert.equal(restored.directConnections, 0); assert.equal(restored.connections, 1);
   assert.equal(helperB.exit, null); assert(!helperA.output.includes(a.key)); assert(!helperB.output.includes(b.key));
+  // macOS Terminal closes with SIGHUP. Exercise the same Unix signal on the
+  // real Linux helper, including cleanup of the active mapping.
+  helperB.child.kill('SIGHUP');
+  await until(() => helperB.exit, 'terminal hangup did not stop the helper');
+  assert.deepEqual(helperB.exit, { code: 0, signal: null });
+  await until(async () => !(await listing(app)).agents[1].online, 'terminal hangup retained online status');
+  await until(() => relayed.destroyed, 'terminal hangup retained an active mapping');
   assert(helperA.output.includes('正在被控制台节点控制')); assert(helperA.output.includes('A-SSH')); assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
   console.log('✓ two real helpers, '+(tlsMode?'TLS/WSS 8 MiB and certificate validation':'forward/reverse Pion paths')+', '+entryPath+', NIC inventory, live UI publication, isolated edits, preserved TCP during control reconnect, key revocation and saved rules restored over relay after panel restart');
 } catch (error) {
