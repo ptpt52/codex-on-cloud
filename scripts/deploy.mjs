@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { acquireDeploymentLease } from './deployment-lease.mjs';
 import { readGatewayConnection } from '../native/gateway-config.mjs';
 import { createForwardDownloads } from '../panel/forward-downloads.mjs';
+import { normalizeEntryBasePath } from '../panel/entry-path.mjs';
 
 // Keep the version guard reachable even when older Node lacks util.parseEnv.
 const { parseArgs, parseEnv } = util;
@@ -86,6 +87,7 @@ export async function checkHealth(config, { attempts = 20, interval = 400 } = {}
     // Generated systemd units load today's .env, not those inherited values.
     config = readConfig(environment({}));
   }
+  const readyPath = normalizeEntryBasePath(config.entryBasePath).slice(0, -1) + '/readyz';
   const request = (port, path, headers) => new Promise(resolve => {
     const req = http.get({hostname:'127.0.0.1', port, path, headers, timeout:2500}, res => {
       const chunks = []; let size = 0;
@@ -99,10 +101,10 @@ export async function checkHealth(config, { attempts = 20, interval = 400 } = {}
   });
   for (let attempt = 0; attempt < attempts; attempt++) {
     const [panel, files] = await Promise.all([
-      request(config.port, '/readyz', {host:new URL(config.origin).host}),
+      request(config.port, readyPath, {host:new URL(config.origin).host, ...(config.nodeId ? {'x-codex-node':config.nodeId} : {})}),
       request(config.fileAgentPort ?? config.agentPort, '/health', {authorization:'Bearer ' + config.agentSecret}),
     ]);
-    if (panel?.ok && panel.host && panel.files && files?.ready && files.uploadProtocol === 1 && files.quotaProtocol === 1) return;
+    if (panel?.ok && panel.host && panel.files && (!config.nodeId || panel.nodeId === config.nodeId) && files?.ready && files.uploadProtocol === 1 && files.quotaProtocol === 1) return;
     if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, interval));
   }
   throw new Error('面板、任务宿主或独立文件服务尚未就绪；请运行 npm run native:status，检查 journalctl --user -u codex-cloud-manager.service -u codex-cloud-files.service -u codex-cloud-panel.service -n 50');

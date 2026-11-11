@@ -313,6 +313,26 @@ test('readiness refuses an absent dedicated FILE_AGENT_PORT despite a healthy ho
   await assert.rejects(checkHealth({port:server.address().port,agentPort:server.address().port,fileAgentPort:missingPort,origin:'http://example.test',agentSecret:'synthetic_test_secret'}, {attempts:1}), /独立文件服务/);
 });
 
+test('selfhost readiness keeps the node path and refuses a different node identity', async t => {
+  const requests = [], nodeId = 'a'.repeat(32); let responseId = nodeId;
+  const server = http.createServer((req, res) => {
+    requests.push(req.url); res.setHeader('content-type', 'application/json');
+    if (req.url === '/node/office/readyz') {
+      assert.equal(req.headers.host, 'desk.example.test'); assert.equal(req.headers['x-codex-node'], nodeId);
+      res.end(JSON.stringify({ ok: true, host: true, files: true, nodeId: responseId }));
+    } else if (req.url === '/health') {
+      assert.equal(req.headers.authorization, 'Bearer synthetic_test_secret');
+      res.end('{"ready":true,"uploadProtocol":1,"quotaProtocol":1}');
+    } else { res.writeHead(404); res.end('{}'); }
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)));
+  const config = { port: server.address().port, agentPort: server.address().port, origin: 'https://desk.example.test', agentSecret: 'synthetic_test_secret', entryBasePath: '/node/office/', nodeId };
+  await checkHealth(config, { attempts: 1 });
+  assert.deepEqual(requests.sort(), ['/health', '/node/office/readyz']);
+  responseId = 'b'.repeat(32);
+  await assert.rejects(checkHealth(config, { attempts: 1 }), /尚未就绪/);
+});
+
 test('default deployment readiness uses the persisted origin and helper port despite stale task environment variables', async t => {
   const root = await mkdtemp(join(tmpdir(), 'codex-health-env-'));t.after(()=>rm(root,{recursive:true,force:true}));
   for(const folder of ['native','panel','scripts','gateway'])await cp(resolve(folder),join(root,folder),{recursive:true,filter:path=>!path.includes('__pycache__')});
