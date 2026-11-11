@@ -1,5 +1,10 @@
 import { X509Certificate, createPrivateKey } from 'node:crypto';
 import https from 'node:https';
+import * as tls from 'node:tls';
+
+let systemRoots;
+const roots = () => systemRoots ||= (tls.getCACertificates?.('default') || tls.rootCertificates).map(text => new X509Certificate(text));
+const issuedBy = (certificate, issuer) => issuer.ca && certificate.checkIssued(issuer) && certificate.verify(issuer.publicKey);
 
 // Trust is explicit for imported private certificates as well as public CAs.
 // Validate the entire supplied chain before replacing any installed files.
@@ -14,6 +19,13 @@ export function validateServerCertificate(certificate, { domain, privateKey, now
     const from = Date.parse(certificate.validFrom), until = Date.parse(certificate.validTo);
     if (!Number.isFinite(from) || !Number.isFinite(until) || from > now) throw Error('证书尚未生效或有效期无效');
     if (until <= now) throw Error('证书已过期，请先续期后再安装');
+  }
+  for (let i = 0; i + 1 < chain.length; i++) {
+    if (!issuedBy(chain[i], chain[i + 1])) throw Error('证书链顺序、签名或 CA 约束无效，请提供叶证书及其完整中间链');
+  }
+  const last = chain.at(-1), selfSigned = last.subject === last.issuer && last.verify(last.publicKey);
+  if (!selfSigned && !roots().some(root => issuedBy(last, root) && Date.parse(root.validFrom) <= now && Date.parse(root.validTo) > now)) {
+    throw Error('证书链不完整：请补齐中间证书；私有 CA 还需在证书链末尾提供根证书');
   }
   if (privateKey !== undefined) {
     if (Buffer.byteLength(privateKey) > 256 * 1024 || !leaf.checkPrivateKey(createPrivateKey(privateKey))) throw Error('导入证书与私钥不匹配');
