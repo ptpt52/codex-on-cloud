@@ -34,6 +34,7 @@ async function login(page, app, username) {
   await expect(page.locator('#workspace-view')).toBeVisible();
   await page.locator('#forward-button').click();
   await expect(page.locator('.forward-download')).toHaveCount(4);
+  if (!await page.locator('#forward-download-section').evaluate(n => n.open)) await page.locator('#forward-download-section > summary').click();
 }
 async function readDownload(download) {
   const stream = await download.createReadStream(), chunks = [];
@@ -41,6 +42,18 @@ async function readDownload(download) {
   return Buffer.concat(chunks);
 }
 const helperLink = page => page.locator('.forward-download[data-arch="windows-amd64"] a');
+
+test('version details retain focus and expansion across automatic status refreshes', async ({ page }) => {
+  const item = await published({ webrtc: false }); let reads = 0;
+  try {
+    page.on('request', r => { if (new URL(r.url()).pathname === '/api/forward') reads++; });
+    await login(page, item.app);
+    const details = page.locator('.forward-download[data-arch="windows-amd64"] details'), summary = details.locator('summary');
+    await summary.focus(); await page.keyboard.press('Enter'); await expect(details).toHaveAttribute('open', '');
+    const previous = reads; await expect.poll(() => reads, { timeout: 8000 }).toBeGreaterThan(previous);
+    await expect(details).toHaveAttribute('open', ''); await expect(summary).toBeFocused();
+  } finally { await item.close(); }
+});
 
 test('published helper bytes use an independent WebRTC file channel while the direct desktop remains connected', async ({ page }) => {
   const item = await published(), { app } = item; let httpBodies = 0;

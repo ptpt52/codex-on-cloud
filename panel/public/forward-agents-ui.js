@@ -111,26 +111,27 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
       return epoch === generation && selectedId === id && live() ? value : null;
     } catch (error) {
       if (epoch === generation && live()) {
-        const text = error.outcome === 'rejected' ? error.message : '结果未确认，请刷新列表核对；不会自动重试。'; message(text); if (editor.open) $('forward-rule-error').textContent = text;
+        const text = error.outcome === 'rejected' ? error.message : '结果未确认，请刷新列表核对；不会自动重试。'; message(text); if (editor.open) { $('forward-rule-error').textContent = text; $('forward-rule-error').focus(); }
       }
       return null;
     } finally { clearTimeout(timeout); if (pending === request) pending = null; update(); }
   }
-  function confirm(title, description, action) {
+  function confirm(title, description, action, accept = '确认') {
     if (!live() || busy()) return;
     confirming = action; $('forward-agent-confirm-title').textContent = title; $('forward-agent-confirm-description').textContent = description;
+    $('forward-agent-confirm-accept').textContent = accept;
     confirmation.showModal(); $('forward-agent-confirm-cancel').focus({ preventScroll: true });
   }
   function closeConfirm() { confirming = null; if (confirmation.open) confirmation.close(); }
   $('forward-agent-confirm-cancel').addEventListener('click', closeConfirm);
   confirmation.addEventListener('close', () => { confirming = null; });
-  confirmation.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); closeConfirm(); } });
+  confirmation.addEventListener('keydown', event => { if (event.key === 'Enter' && event.target !== $('forward-agent-confirm-accept')) { event.preventDefault(); closeConfirm(); } });
   $('forward-agent-confirm-accept').addEventListener('click', async () => { const action = confirming; closeConfirm(); if (action && live()) { await action(); await refresh(); } });
   $('forward-agent-rekey').addEventListener('click', () => {
     const agent = selected(); if (!agent) return;
     confirm('刷新' + agent.name + '的 key', '旧 key 立即失效，该助手及其映射连接将断开；规则保留。其他助手不受影响。', async () => {
       clearKey(); await mutate('rekey', { id: agent.id, revision: agent.keyRevision });
-    });
+    }, '刷新并断开');
   });
   $('forward-agent-key-copy').addEventListener('click', async () => {
     const key = $('forward-agent-key').value, epoch = generation; if (!key || !live()) return;
@@ -145,6 +146,16 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     $('forward-local-label').textContent = reverse ? '服务器回环端口' : '助手本机端口';
     $('forward-target-note').textContent = serial ? '串口位于该助手电脑上；实际客户端接入后才打开设备。' : reverse ? '目标从该助手电脑访问。服务器只监听 127.0.0.1，目标使用原服务的认证。' : '目标从节点服务器访问，127.0.0.1 指服务器自身。';
     $('forward-port-policy').textContent = policy?.allPorts ? 'TCP 目标端口：允许所有非管理端口。' : 'TCP 目标端口：' + (policy?.ports?.join('、') || '已禁用；串口不受此限制。');
+    $('forward-port-policy').hidden = serial || !!policy?.allPorts;
+    const saveLabel = busy() ? '正在保存…' : !selected()?.online || !$('forward-rule-enabled').checked ? '保存规则' : '保存并应用';
+    // WebKit cancels a pressed button's click if input blur replaces its text.
+    if ($('forward-create').textContent !== saveLabel) $('forward-create').textContent = saveLabel;
+    $('forward-rule-effect').textContent = !$('forward-rule-enabled').checked ? '保存为停用规则，暂不建立映射。' : !selected()?.online ? '助手当前离线。规则会保存，接入后自动应用。' : edit?.rule ? '保存将重建这一条规则，关闭它的现有连接；其他规则继续运行。' : '保存后自动下发给' + (selected()?.name || '助手') + '。';
+    const local = $('forward-local').value || '监听端口', host = $('forward-host').value.trim() || '目标 IP', target = $('forward-target').value || '目标端口';
+    const destination = serial ? ($('forward-serial-path').value.trim() || '选择或填写串口') + ' @ ' + $('forward-serial-baud').value : (host.includes(':') ? '[' + host + ']' : host) + ':' + target;
+    $('forward-rule-preview').textContent = (reverse ? '节点服务器' : (selected()?.name || '助手') + '本机') + ' 127.0.0.1:' + local + ' → ' + (reverse ? (selected()?.name || '助手') + '上的' : '节点服务器上的 ') + destination;
+    const hintsLabel = $('forward-server-ip').value.trim() || $('forward-helper-ip').value.trim() ? '已设置' : '自动探测';
+    if ($('forward-hints-summary').textContent !== hintsLabel) $('forward-hints-summary').textContent = hintsLabel;
   }
   function openEditor(rule = null) {
     const agent = selected(); if (!agent || !live() || busy()) return;
@@ -159,12 +170,26 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     for (const [field, value] of Object.entries({ path: serial.path, baud: serial.baud, bits: serial.dataBits, parity: serial.parity, stop: serial.stopBits })) $('forward-serial-' + field).value = value;
     $('forward-serial-dtr').checked = serial.dtr; $('forward-serial-rts').checked = serial.rts;
     serialOptions(); $('forward-rule-error').textContent = ''; $('forward-rule-title').textContent = agent.name + (rule ? ' · 编辑规则' : ' · 新增规则');
-    editor.showModal(); update(); $('forward-rule-name').focus();
+    $('forward-rule-advanced').open = false;
+    editor.showModal(); update(); edit.initial = draftValues(); $('forward-rule-name').focus();
   }
-  function closeEditor() { if (busy()) return; if (editor.open) editor.close(); }
+  function draftValues() {
+    const reverse = $('forward-direction').value === 'reverse', serial = reverse && $('forward-protocol').value === 'serial';
+    const fields = ['rule-name', 'rule-enabled', 'direction', 'local', 'server-ip', 'helper-ip'];
+    if (reverse) fields.push('protocol');
+    fields.push(...(serial ? ['serial-path', 'serial-baud', 'serial-bits', 'serial-parity', 'serial-stop', 'serial-dtr', 'serial-rts'] : ['host', 'target']));
+    return JSON.stringify(fields.map(id => { const n = $('forward-' + id); return [id, n.type === 'checkbox' ? n.checked : n.value]; }));
+  }
+  function closeEditor(force = false) {
+    if (busy()) return;
+    if (!force && edit && draftValues() !== edit.initial) {
+      confirm('放弃当前填写内容？', '仅关闭当前表单，不会再次提交。已保存的规则不受影响。', () => closeEditor(true), '放弃填写'); return;
+    }
+    if (editor.open) editor.close();
+  }
   $('forward-rule-add').addEventListener('click', () => openEditor());
-  $('forward-rule-close').addEventListener('click', closeEditor); $('forward-rule-cancel').addEventListener('click', closeEditor);
-  editor.addEventListener('cancel', event => { if (busy()) event.preventDefault(); });
+  $('forward-rule-close').addEventListener('click', () => closeEditor()); $('forward-rule-cancel').addEventListener('click', () => closeEditor());
+  editor.addEventListener('cancel', event => { event.preventDefault(); closeEditor(); });
   editor.addEventListener('close', () => { edit = null; $('forward-form').reset(); $('forward-rule-error').textContent = ''; });
   $('forward-direction').addEventListener('change', () => { if ($('forward-local').value === '2222' && $('forward-direction').value === 'reverse') $('forward-local').value = '22001'; else if ($('forward-local').value === '22001' && $('forward-direction').value !== 'reverse') $('forward-local').value = '2222'; renderDirection(); });
   $('forward-protocol').addEventListener('change', renderDirection);
@@ -175,6 +200,9 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     if (select.dataset.ports !== JSON.stringify(ports)) { select.dataset.ports = JSON.stringify(ports); select.replaceChildren(new Option('从列表选择，或手动填写', ''), ...ports.map(p => new Option(p, p))); }
     select.value = ports.includes(path) ? path : '';
   }
+  $('forward-form').addEventListener('input', renderDirection);
+  $('forward-form').addEventListener('change', renderDirection);
+  $('forward-form').addEventListener('invalid', event => { if ($('forward-rule-advanced').contains(event.target)) $('forward-rule-advanced').open = true; }, true);
   $('forward-form').addEventListener('submit', async event => {
     event.preventDefault(); if (!edit || !live() || busy()) return;
     if (edit.rule && currentRule(edit.rule.id)?.revision !== edit.rule.revision) { update(); return; }
@@ -185,9 +213,9 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
       if (reverse) Object.assign(config, { direction: 'reverse', protocol: $('forward-protocol').value, deviceName: $('forward-rule-name').value.trim() });
       if (serial) config.serial = { path: $('forward-serial-path').value.trim(), baud: Number($('forward-serial-baud').value), dataBits: Number($('forward-serial-bits').value), parity: $('forward-serial-parity').value, stopBits: Number($('forward-serial-stop').value), dtr: $('forward-serial-dtr').checked, rts: $('forward-serial-rts').checked };
       else Object.assign(config, { targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) });
-    } catch (error) { $('forward-rule-error').textContent = error.message; return; }
+    } catch (error) { $('forward-rule-advanced').open = true; $('forward-rule-error').textContent = error.message; $('forward-rule-error').focus(); return; }
     const draft = edit, result = await mutate('rule', { agentId: edit.agentId, ...(edit.rule ? { id: edit.rule.id, revision: edit.rule.revision } : {}), name: $('forward-rule-name').value.trim(), enabled: $('forward-rule-enabled').checked, config });
-    if (result && edit === draft) { closeEditor(); message('规则已保存；助手在线时自动应用。'); }
+    if (result && edit === draft) { closeEditor(true); message(!result.enabled ? '规则已保存，当前停用。' : selected()?.online ? '规则已保存，应用结果见规则状态。' : '规则已保存，等待助手接入后自动应用。'); }
     await refresh();
   });
   function button(text, action) { const b = node('button', text, 'secondary'); b.type = 'button'; b.addEventListener('click', action); return b; }
@@ -196,10 +224,13 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     $('forward-agent-panel').setAttribute('aria-labelledby', 'forward-agent-tab-' + agent.slot);
     $('forward-agent-panel').dataset.agentId = agent.id; $('forward-agent-heading').textContent = agent.name; $('forward-agent-key-label').textContent = agent.name + '授权 key';
     for (const [i, tab] of tabs.entries()) { tab.setAttribute('aria-selected', String(i + 1 === agent.slot)); tab.dataset.online = String(agents[i].online); tab.title = '助手' + (i + 1) + (agents[i].online ? ' · 在线' : ' · 离线'); }
-    $('forward-agent-connection').textContent = agent.online ? '助手在线 · 控制连接已建立' : '助手离线 · 使用本页 key 启动助手后自动接入';
+    $('forward-agent-connection').textContent = agent.online ? '助手在线' : '助手离线';
+    $('forward-agent-connection').dataset.online = String(agent.online);
+    $('forward-rule-count').textContent = agent.rules.length + ' / 16';
     const active = agent.rules.filter(r => r.mapping?.state === 'active'), directReady = active.filter(r => r.mapping.direct.available).length;
     const direct = agent.rules.reduce((n, r) => n + (r.mapping?.directConnections || 0), 0), total = agent.rules.reduce((n, r) => n + (r.mapping?.connections || 0), 0);
     $('forward-agent-network').textContent = `已有数据连接：直连 ${direct} / 中转 ${total - direct}。` + (active.length ? `新连接：${directReady} 条规则优先直连，${active.length - directReady} 条规则走中转。` : '尚无可建立新连接的规则。');
+    $('forward-agent-network').hidden = !agent.rules.length;
     const signature = JSON.stringify([agent.id, agent.online, agent.inventory]);
     if (signature !== inventorySignature) {
       inventorySignature = signature; const target = $('forward-agent-inventory-body'), info = agent.inventory; target.replaceChildren();
@@ -218,30 +249,36 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
       let row = rows.get(rule.id);
       if (!row) {
         const root = node('article', '', 'forward-agent-rule'); root.dataset.ruleId = rule.id;
-        const title = node('strong'), detail = node('p', '', 'muted'), state = node('p', '', 'muted'), transport = node('p', '', 'muted'), actions = node('div', '', 'forward-agent-actions');
+        const heading = node('div', '', 'forward-rule-heading'), title = node('strong'), badge = node('span', '', 'forward-rule-state'), detail = node('p', '', 'forward-rule-path'), state = node('p', '', 'forward-rule-note'), transport = node('p', '', 'muted'), actions = node('div', '', 'forward-agent-actions');
+        heading.append(title, badge);
         const toggle = button('停用规则', async () => {
           const value = currentRule(rule.id); if (!value) return;
           const operation = async () => { await mutate('rule', { agentId: selectedId, id: value.id, revision: value.revision, name: value.name, config: value.config, enabled: !value.enabled }); await refresh(); };
-          if (value.enabled) confirm('停用映射规则', '关闭这一条规则及其现有连接，其他规则继续运行。', operation); else await operation();
+          if (value.enabled) confirm('停用“' + value.name + '”', '关闭这一条规则及其现有连接，其他规则继续运行。', operation, '停用规则'); else await operation();
         });
-        actions.append(button('编辑规则', () => { const value = currentRule(rule.id); if (value) openEditor(value); }), toggle, button('删除规则', () => {
-          const value = currentRule(rule.id); if (value) confirm('删除映射规则', '删除这一条规则并关闭其现有连接，其他规则不受影响。', async () => { await mutate('rule/remove', { agentId: selectedId, id: value.id, revision: value.revision }); });
-        }), button('复制连接信息', async () => {
+        const remove = button('删除规则', () => {
+          const value = currentRule(rule.id); if (value) confirm('删除“' + value.name + '”', '删除这一条规则并关闭其现有连接，其他规则不受影响。', async () => { await mutate('rule/remove', { agentId: selectedId, id: value.id, revision: value.revision }); }, '删除规则');
+        });
+        toggle.className = 'quiet'; remove.className = 'quiet forward-danger forward-rule-remove';
+        actions.append(button('复制连接信息', async () => {
           const value = currentRule(rule.id); if (!value || !live()) return;
           const c = value.config, address = '127.0.0.1:' + c.localPort;
           const command = c.serial ? 'nc 127.0.0.1 ' + c.localPort : c.protocol === 'ssh' ? 'ssh -o HostKeyAlias=codex-cloud-' + value.id + ' -p ' + c.localPort + ' USER@127.0.0.1' : c.protocol === 'telnet' ? 'telnet 127.0.0.1 ' + c.localPort : address;
-          const text = `${value.name}\n${c.direction === 'reverse' ? '服务器' : '助手本机'}入口：${address}\n${command}`;
+          const text = `${value.name}\n${c.direction === 'reverse' ? '服务器' : '助手本机'}入口：${address}\n目标：${c.direction === 'reverse' ? '助手电脑' : '节点服务器'} ${endpoint(c)}\n${command}`;
           try { await navigator.clipboard.writeText(text); if (live()) message('连接信息已复制，不含 key 或密码。'); } catch { if (live()) message('无法使用剪贴板，请按规则中显示的回环端口连接。'); }
-        }));
-        root.append(title, detail, state, transport, actions); $('forward-agent-rules').append(root); row = { root, title, detail, state, transport, toggle }; rows.set(rule.id, row);
+        }), button('编辑规则', () => { const value = currentRule(rule.id); if (value) openEditor(value); }), toggle, remove);
+        root.append(heading, detail, state, transport, actions); $('forward-agent-rules').append(root); row = { root, title, badge, detail, state, transport, toggle }; rows.set(rule.id, row);
       }
-      row.title.textContent = rule.name; row.detail.textContent = (rule.config.direction === 'reverse' ? '服务器' : '助手') + ` 127.0.0.1:${rule.config.localPort} → ${endpoint(rule.config)}`;
+      row.title.textContent = rule.name; row.root.setAttribute('aria-label', rule.name);
+      row.detail.textContent = (rule.config.direction === 'reverse' ? '节点服务器' : '助手本机') + ` 127.0.0.1:${rule.config.localPort} → ` + (rule.config.direction === 'reverse' ? agent.name + '上的 ' : '节点服务器上的 ') + endpoint(rule.config);
       const m = rule.mapping, p = m?.direct;
-      row.state.textContent = (states[rule.state] || '等待状态') + (rule.error ? '：' + rule.error : m?.error ? '；最近连接错误：' + m.error : m?.state === 'active' ? m.targetStatus?.state === 'reachable' ? '；目标最近连接成功' : '；目标尚未连接验证' : ''); row.toggle.textContent = rule.enabled ? '停用规则' : '启用规则';
+      row.badge.textContent = rule.error || m?.error ? '需要检查' : states[rule.state] || '等待状态'; row.badge.dataset.state = rule.error || m?.error ? 'warning' : rule.state;
+      row.state.textContent = rule.error || (m?.error ? '最近连接错误：' + m.error : m?.state === 'active' ? m.targetStatus?.state === 'reachable' ? '目标最近连接成功' : '监听已就绪，目标尚未连接验证。' : ''); row.state.hidden = !row.state.textContent; row.state.dataset.error = String(!!(rule.error || m?.error));
+      const toggleLabel = rule.enabled ? '停用规则' : '启用规则'; if (row.toggle.textContent !== toggleLabel) row.toggle.textContent = toggleLabel;
       row.transport.textContent = !m ? '数据通道尚未建立' : (m.state === 'active' ? p.available ? `新连接：${p.family || 'IP'} / UDP 加密直连${Number.isFinite(p.rttMs) ? ' · ' + p.rttMs + ' ms' : ''}` : '新连接：WSS 加密中转' : '新连接暂停') + `；已有：直连 ${m.directConnections} / 中转 ${m.connections - m.directConnections}`;
     }
     $('forward-agent-rules').querySelector('.forward-rule-empty')?.remove();
-    if (!agent.rules.length) $('forward-agent-rules').append(node('p', '尚无规则，点击“新增规则”配置；助手离线时也可保存。', 'muted forward-rule-empty'));
+    if (!agent.rules.length) { const empty = node('div', '', 'forward-rule-empty'); empty.append(node('strong', '尚无规则，为' + agent.name + '添加第一条映射。'), node('p', '点击“新增规则”，选择访问方向并填写目标。助手离线时也可保存，上线后自动应用。', 'muted')); $('forward-agent-rules').append(empty); }
     layout();
   }
   function report() {
@@ -260,6 +297,15 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     try { await navigator.clipboard.writeText(text); if (epoch === generation && live()) message('脱敏诊断报告已复制。'); }
     catch { if (epoch === generation && live()) { $('forward-diagnostics-text').focus(); $('forward-diagnostics-text').select(); } }
   });
+  function suspend() {
+    generation++; reading?.abort(); reading = null;
+    const writing = pending; pending?.abort(); pending = null; clearKey(); closeConfirm();
+    if (writing) {
+      const text = '保存结果未确认，返回后请刷新列表核对；不会自动重试。'; message(text);
+      if (editor.open) $('forward-rule-error').textContent = text;
+    }
+    $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = ''; update();
+  }
   function reset() {
     generation++; reading?.abort(); pending?.abort(); reading = pending = null; clearKey();
     closeConfirm(); if (editor.open) editor.close(); edit = null;
@@ -267,5 +313,5 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     $('forward-agent-connection').textContent = ''; $('forward-agent-network').textContent = ''; message(''); $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = '';
     if (layoutFrame) cancelAnimationFrame(layoutFrame); layoutFrame = 0;
   }
-  return { refresh, update, reset, policy(value) { policy = value; }, get busy() { return busy(); } };
+  return { refresh, update, reset, suspend, policy(value) { policy = value; }, get busy() { return busy(); } };
 }

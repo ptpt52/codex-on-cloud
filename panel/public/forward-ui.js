@@ -6,7 +6,7 @@ import { createForwardAgentsUI } from './forward-agents-ui.js';
 export function createForwardUI({ api, allowed, hints = () => ({}), capabilities = () => ({ manageDevices: true }),
   prepareDownloads = () => false, downloadClient = () => null, downloadRoute = () => null, saveDownload }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog');
-  let generation = 0, controller, timer, downloads = [], detection, downloadController, downloadMessage = '';
+  let generation = 0, controller, timer, downloads = [], detection, downloadController, downloadMessage = '', downloadSignature = '';
   let platform = { os: forwardOS(navigator), arch: null };
   const agentsUI = createForwardAgentsUI({ api, hints, allowed: () => allowed() && capabilities().manageDevices, visible: () => dialog.open && !document.hidden });
   function downloadStatus() {
@@ -53,6 +53,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
     } finally { if (downloadController === request) downloadController = undefined; }
   }
   function renderDownloads() {
+    const signature = JSON.stringify([platform, downloads]); if (signature === downloadSignature) return; downloadSignature = signature;
     const target = $('forward-downloads'); target.replaceChildren();
     const recommended = platform.arch && downloads.some(file => file.arch === platform.arch);
     $('forward-platform-note').textContent = recommended ? '推荐：' + FORWARD_CLIENTS[platform.arch].label + '。也可手动下载其他版本。' : platform.os === 'darwin' ?
@@ -63,7 +64,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
       return rank(a) - rank(b);
     });
     for (const file of ordered) {
-      const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small');
+      const row = document.createElement('div'), link = document.createElement('a'), hash = document.createElement('small'), details = document.createElement('details'), summary = document.createElement('summary');
       row.className = 'forward-download'; row.dataset.arch = file.arch;
       link.href = nodeLink(file.href); link.download = file.name; link.textContent = '下载 ' + FORWARD_CLIENTS[file.arch].label + ' 助手';
       link.addEventListener('click', event => {
@@ -74,7 +75,8 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
         event.preventDefault(); void downloadHelper(file, link.href);
       });
       if (file.arch === platform.arch) { row.classList.add('recommended'); link.setAttribute('aria-description', '推荐版本'); }
-      hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256; row.append(link, hash); target.append(row);
+      summary.textContent = '版本与 SHA256'; hash.textContent = '版本：' + file.build + ' · SHA256：' + file.sha256;
+      details.className = 'forward-download-integrity'; details.append(summary, hash); row.append(link, details); target.append(row);
     }
     if (!downloads.length) target.textContent = '助手暂时无法下载，请在服务器完成助手构建后刷新列表。';
     const hasMac = downloads.some(file => FORWARD_CLIENTS[file.arch].os === 'darwin');
@@ -111,13 +113,14 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   function reset() { cancel(); cancelDownload(); agentsUI.reset(); if (dialog.open) dialog.close(); }
   $('forward-button').addEventListener('click', () => {
     cancel(); $('forward-status').textContent = ''; update(); if (!allowed()) return;
+    $('forward-download-section').open = !capabilities().manageDevices;
     dialog.showModal(); $('forward-mac-help').open = platform.os === 'darwin'; prepareDownloads(); downloadStatus(); detectPlatform(); void load();
   });
   $('forward-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { cancel(); cancelDownload(); agentsUI.reset(); });
   $('forward-refresh').addEventListener('click', () => { $('forward-status').textContent = ''; void load(); });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { cancel(); cancelDownload(); agentsUI.reset(); }
+    if (document.hidden) { cancel(); cancelDownload(); agentsUI.suspend(); }
     else if (dialog.open) { update(); void load(); }
   });
   window.addEventListener('pagehide', reset);

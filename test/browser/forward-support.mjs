@@ -7,6 +7,7 @@ export const until = async probe => { const end = Date.now() + 8000; while (!awa
 export const freePort = async () => { const s = net.createServer(); s.listen(0, '127.0.0.1'); await once(s, 'listening'); const p = s.address().port; await new Promise(r => s.close(r)); return p; };
 export async function login(page, app) { await page.goto(app.config.origin + app.config.entryBasePath); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click(); await expect(page.locator('#connection-status')).toContainText('在线'); }
 export async function open(page) { await page.locator('#forward-button').click(); await expect(page.locator('#forward-agent-section')).toBeVisible(); await expect(page.locator('#forward-agent-key')).not.toHaveValue(''); }
+export async function discard(page) { await page.locator('#forward-rule-cancel').click(); if (await page.locator('#forward-agent-confirm').isVisible()) await page.locator('#forward-agent-confirm-accept').click(); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible(); }
 export async function choose(page, slot) {
   const tab = page.locator('#forward-agent-tab-' + slot);
   if (await tab.isVisible()) await tab.click(); else await page.locator('#forward-agent-overflow').selectOption(String(slot));
