@@ -56,7 +56,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     if (!entry?.floating) return;
     const focused = entry.panel.contains(document.activeElement) ? document.activeElement : null;
     entry.panel.classList.remove('history-tools-floating', 'history-tools-short');
-    for (const name of ['top', 'max-height', '--history-panel-height', '--history-copy-top', '--history-copy-height']) entry.panel.style.removeProperty(name);
+    for (const name of ['top', 'left', 'width', 'max-height', '--history-panel-height', '--history-copy-top', '--history-copy-height']) entry.panel.style.removeProperty(name);
     moving = true;
     try { if (entry.marker.parentNode) entry.marker.parentNode.insertBefore(entry.panel, entry.marker.nextSibling); else entry.panel.remove(); }
     finally { moving = false; }
@@ -82,13 +82,16 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     const copyHeight = Math.max(1, Math.min(520, (visible?.height || innerHeight) - 16));
     entry.panel.style.setProperty('--history-copy-height', `${copyHeight}px`);
     entry.panel.style.setProperty('--history-copy-top', `${Math.max(0, visible?.offsetTop || 0) + Math.max(8, ((visible?.height || innerHeight) - copyHeight) / 2)}px`);
-    const boundary = frame.getBoundingClientRect().top + (frame.contentDocument.getElementById('history-up')?.getBoundingClientRect().top || 0);
-    entry.panel.style.top = `calc(${Math.max(0, visible?.offsetTop || 0)}px + max(4px, env(safe-area-inset-top)))`;
-    let top = entry.panel.getBoundingClientRect().top;
-    if (top > boundary - 48) { top = Math.max(0, boundary - 48); entry.panel.style.top = `${top}px`; }
-    const room = boundary - top, height = Math.max(44, Math.min(20000, Math.floor(room - (room >= 52 ? 4 : 0)), Math.floor((visible?.height || innerHeight) - 4)));
+    const frameBox = frame.getBoundingClientRect();
+    const visibleTop = Math.max(0, visible?.offsetTop || 0), visibleBottom = visibleTop + (visible?.height || innerHeight);
+    const boundary = Math.max(visibleTop + 44, Math.min(frameBox.top, visibleBottom));
+    const height = Math.max(44, Math.min(180, Math.floor(boundary - visibleTop)));
+    entry.panel.style.left = `${frameBox.left}px`; entry.panel.style.width = `${frameBox.width}px`;
     entry.panel.style.maxHeight = `${height}px`; entry.panel.style.setProperty('--history-panel-height', `${height}px`);
     entry.panel.classList.toggle('history-tools-short', height < 96);
+    // Grow upward from the terminal's top edge. The existing history controls
+    // and every terminal row stay in place below the attached drawer.
+    entry.panel.style.top = `${boundary - entry.panel.getBoundingClientRect().height}px`;
     notify(); composing(entry.panel.dataset.composing === 'true');
     // Firefox ignores focus while adoption is still inside the iframe's click
     // handler. Use the same bounded layout callback after that event completes.
@@ -115,6 +118,7 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
   frame.addEventListener('codex-history-tools', onTools);
   const schedule = () => { cancelAnimationFrame(layoutFrame); layoutFrame = requestAnimationFrame(() => { layoutFrame = 0; layout(true); }); };
   window.addEventListener('resize', schedule);
+  window.addEventListener('scroll', schedule, { passive: true });
   window.visualViewport?.addEventListener('resize', schedule); window.visualViewport?.addEventListener('scroll', schedule);
   document.addEventListener('fullscreenchange', schedule);
   const observer = new ResizeObserver(schedule); observer.observe(frame);
