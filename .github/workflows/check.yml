@@ -109,9 +109,15 @@ jobs:
       max-parallel: 5
       matrix:
         include:
-          - target: chromium
+          - target: chromium-desktop
             engine: chromium
-            projects: --project=chromium-desktop --project=chromium-phone --project=chromium-tablet
+            projects: --project=chromium-desktop
+          - target: chromium-phone
+            engine: chromium
+            projects: --project=chromium-phone
+          - target: chromium-tablet
+            engine: chromium
+            projects: --project=chromium-tablet
           - target: firefox
             engine: firefox
             projects: --project=firefox-desktop
