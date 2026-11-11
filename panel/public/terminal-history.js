@@ -42,8 +42,12 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     const different = next !== reviewing; reviewing = next;
     if (!reviewing) unseen = false;
     newer.hidden = !reviewing || !unseen;
-    const paging = program && !reviewing;
+    // Explicit paging controls can resume the program from a read-only view;
+    // snapshot scroll limits must never disable those controls.
+    const paging = program;
     mode.setAttribute('aria-pressed', String(program));
+    up.title = paging ? (reviewing ? '退出查找快照并向程序发送 PageUp，保持程序翻页开启' : '向程序发送 PageUp') : '本地回看，每次最多 3 行；到顶后按需补取历史';
+    down.title = paging ? (reviewing ? '退出查找快照并向程序发送 PageDown，保持程序翻页开启' : '向程序发送 PageDown') : '本地回看，每次最多 3 行';
     up.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program && !programScrolled;
@@ -51,7 +55,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
-    if (program && reviewing) label += ' · 程序翻页已暂停';
+    if (program && reviewing) label += ' · 程序翻页已暂停，点上翻/下翻退出快照并继续';
     if (reviewing && unseen) label += ' · 有新输出';
     if (state.textContent !== label) { state.textContent = label; state.title = label; }
     host.dataset.reviewing = String(reviewing);
@@ -220,8 +224,14 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     } catch (error) { if (!disposed && loading === controller && !controller.signal.aborted) notice = error.message; }
     finally { if (loading === controller) { loading = undefined; update(); } }
   }
-  function turn(direction, fullPage = false) {
+  function turn(direction, fullPage = false, explicit = false) {
     notice = '';
+    // Only an explicit toolbar action resumes remote paging. Wheel, touch and
+    // keyboard navigation inside a frozen snapshot remain local.
+    if (explicit && program && reviewing) {
+      if (!allowed()) return;
+      resetLocalView({ preserveProgram: true });
+    }
     if (!program || reviewing) {
       if (archiveOpen && archiveLocal && direction < 0 && archive.scrollTop === 0) void fetchHistory(distance(fullPage));
       else if (archiveOpen) archive.scrollBy(0, direction * distance(fullPage));
@@ -231,7 +241,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       update(); return;
     }
     const now = performance.now();
-    if (!allowed() || reviewing || now - lastPage < 160) return;
+    if (!allowed() || reviewing || (!explicit && now - lastPage < 160)) return;
     lastPage = now;
     if (navigate(direction < 0 ? 'PageUp' : 'PageDown')) programScrolled = true;
     update();
@@ -249,7 +259,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     else { pixels -= count * step; term.scrollLines(Math.max(-term.rows, Math.min(term.rows, count))); update(); }
   }
   listen(mode, 'click', () => { const next = !program; if (!toolsOpen) resetLocalView(); program = next; pixels = 0; gesture = undefined; update(); });
-  listen(up, 'click', () => turn(-1)); listen(down, 'click', () => turn(1)); listen(latest, 'click', live);
+  listen(up, 'click', () => turn(-1, false, true)); listen(down, 'click', () => turn(1, false, true)); listen(latest, 'click', live);
   listen(newer, 'click', live);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
   listen(document.getElementById('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });

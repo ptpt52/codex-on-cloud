@@ -37,7 +37,7 @@ async function select(frame, text) {
   }, text);
 }
 
-for (const program of [false, true]) test(`find and copy preserve program paging ${program ? 'on' : 'off'} while all snapshot navigation stays local`, async ({ page }) => {
+for (const program of [false, true]) test(`find and copy preserve program paging ${program ? 'on' : 'off'} while snapshot keyboard navigation stays local`, async ({ page }) => {
   const app = await fixture();
   try {
     const frame = await login(page, app);
@@ -52,9 +52,11 @@ for (const program of [false, true]) test(`find and copy preserve program paging
     expect(await select(frame, 'PAGING-COPY-120')).toBe('PAGING-COPY-120');
     await page.locator('#history-copy-selection').click(); expect(await frame.evaluate(() => window.copiedHistory)).toEqual(['PAGING-COPY-120']);
     const middle = await archive.evaluate(element => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) / 2); return element.scrollTop; });
-    await expect(frame.locator('#history-up')).toBeEnabled(); await frame.locator('#history-up').click();
+    await expect(frame.locator('#history-up')).toBeEnabled();
+    if (program) await archive.press('PageUp'); else await frame.locator('#history-up').click();
     await expect.poll(() => archive.evaluate(element => element.scrollTop)).toBeLessThan(middle);
-    const older = await archive.evaluate(element => element.scrollTop); await frame.locator('#history-down').click();
+    const older = await archive.evaluate(element => element.scrollTop);
+    if (program) await archive.press('PageDown'); else await frame.locator('#history-down').click();
     await expect.poll(() => archive.evaluate(element => element.scrollTop)).toBeGreaterThan(older);
     await archive.press('PageUp'); await expect(archive).toBeVisible();
     expect(app.terminalInputs).toEqual([]); expect(app.terminalHistoryReads).toEqual([]);
