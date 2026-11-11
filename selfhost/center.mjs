@@ -12,9 +12,12 @@ import { frpsProxyProbe } from './frps-admin.mjs';
 
 const PUBLIC = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/', ['home.html', 'text/html; charset=utf-8']],
+  ['/home.js', ['home.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/admin/', ['index.html', 'text/html; charset=utf-8']],
+  ['/admin/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/admin/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
 const BODY_LIMIT = 16 * 1024, PLUGIN_LIMIT = 128 * 1024;
 
@@ -70,7 +73,7 @@ export async function createSelfhostCenter({
   const auth = await createAuth(authConfig), web = await assets();
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
   const proxyOnline = frpsAdmin ? frpsProxyProbe(frpsAdmin) : undefined;
-  const failures = new Map(), joinRequests = new Map(), turnRequests = new Map();
+  const failures = new Map(), joinRequests = new Map(), turnRequests = new Map(), publicRequests = new Map();
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
   let closing = false, timer;
@@ -157,13 +160,15 @@ export async function createSelfhostCenter({
       return reply(res, 200, await registry.leave(await jsonBody(req, 4096)));
     }
 
-    if ((path === '/' || path === '/admin') && req.method === 'GET') {
+    if (path === '/api/public/nodes' && req.method === 'GET') {
+      rate(publicRequests, clientAddress(req), 120, 60_000);
+      return reply(res, 200, { nodes: registry.publicNodes() });
+    }
+    if (path === '/admin' && req.method === 'GET') {
       res.writeHead(308, { location: '/admin/', 'cache-control': 'no-store' }); return res.end();
     }
-    if (!path.startsWith('/admin/')) throw selfhostError(404, '资源不存在');
     // Revoke the legacy root cookie; the new revision also invalidates its stored sessions.
-    res.setHeader('set-cookie', sessionCookie('', { ...authConfig, nodeId: 'center', entryBasePath: '/' }, true));
-    path = path.slice('/admin'.length);
+    if (path === '/' || path.startsWith('/admin/')) res.setHeader('set-cookie', sessionCookie('', { ...authConfig, nodeId: 'center', entryBasePath: '/' }, true));
     const asset = web.get(path);
     if (asset && req.method === 'GET') {
       res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
@@ -171,6 +176,8 @@ export async function createSelfhostCenter({
       return res.end(asset.bytes);
     }
 
+    if (!path.startsWith('/admin/')) throw selfhostError(404, '资源不存在');
+    path = path.slice('/admin'.length);
     const current = requireSession(req);
     if (path === '/api/me' && req.method === 'GET') return reply(res, 200, { username, csrf: current.csrf, host: parsed.host });
     if (path === '/api/logout' && req.method === 'POST') {

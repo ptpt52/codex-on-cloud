@@ -95,6 +95,19 @@ export class SelfhostRegistry {
     return this.value.keys.map(item => publicKey(item, this.sessions.get(item.slug), now)).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
   }
 
+  publicNodes() {
+    // Read the last committed state without queuing anonymous requests behind
+    // mutations. Expose only this bounded projection, never session/key metadata.
+    const now = this.now(), nodes = [];
+    for (const item of this.value.keys) {
+      const session = this.sessions.get(item.slug);
+      if (this.keyStatus(item, now) !== 'ready' || session?.status !== 'online' || session.lastSeenAt + SELFHOST_LIMITS.heartbeatMs <= now) continue;
+      nodes.push({ name: item.name, path: entryBasePath(item.slug), mode: session.mode });
+      if (nodes.length >= SELFHOST_LIMITS.nodes) break;
+    }
+    return nodes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  }
+
   async status() {
     const keys = await this.list(), now = this.now();
     return {

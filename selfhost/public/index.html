@@ -18,13 +18,14 @@
       <label for="password">密码</label>
       <input id="password" name="password" type="password" autocomplete="current-password" maxlength="512" required>
       <button type="submit" class="primary">登录</button>
+      <a class="back-home" href="/">返回节点首页</a>
     </form>
   </main>
 
   <main id="center-view" class="center-view" hidden>
     <header class="topbar">
       <div><span class="mark small">CN</span><strong>节点中继</strong><span class="host" id="center-host"></span></div>
-      <div class="top-actions"><span id="connection-state" class="status neutral">状态加载中</span><button id="logout" class="quiet">退出</button></div>
+      <div class="top-actions"><a class="back-home" href="/">节点首页</a><span id="connection-state" class="status neutral">状态加载中</span><button id="logout" class="quiet">退出</button></div>
     </header>
     <section class="summary" aria-label="中心状态">
       <div><span>在线节点</span><strong id="online-count">0</strong><small id="online-limit">上限 64</small></div>

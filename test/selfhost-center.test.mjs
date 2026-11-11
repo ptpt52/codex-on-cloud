@@ -145,6 +145,54 @@ test('admin migration revokes root sessions and removes legacy root management A
   const h = await setup(t, { legacy: true });
   assert.equal((await h.request('/admin/api/me', { headers: { cookie: 'coc_session_center_admin=' + h.legacyToken } })).status, 401);
   for (const path of ['/api/login', '/api/me', '/api/keys']) assert.equal((await h.request(path)).status, 404);
-  assert.equal((await h.request('/')).headers.get('location'), '/admin/');
+  assert.equal((await h.request('/')).status, 200);
+  assert.equal((await h.request('/admin')).headers.get('location'), '/admin/');
   const page = await h.request('/admin/'); assert.match(page.headers.get('set-cookie'), /coc_session_center=; Path=\/;.*Max-Age=0/);
+});
+
+
+test('the anonymous homepage and online list expose only routable node names, modes and paths', async t => {
+  const h = await setup(t), registry = h.center.registry;
+  let now = Date.now(); registry.now = () => now;
+  const enroll = async (slug, mode = 'desktop', state = 'online', expiresAt = null) => {
+    const key = await registry.createKey({ name: '节点 ' + slug, slug, expiresAt });
+    if (state === 'offline') return key;
+    const joined = await registry.join({ version: 1, slug, key: key.key, node: { id: 'a'.repeat(32), mode }, source: '198.51.100.20' });
+    if (state === 'connecting') return key;
+    const metas = { credential: joined.credential, slug, nodeId: 'a'.repeat(32), mode }, runId = 'run-' + slug;
+    assert(await registry.authorizeLogin({ metas, runId, source: '198.51.100.20' }));
+    if (state === 'authenticated') return key;
+    assert(await registry.authorizeProxy({ metas, runId, name: 'node-' + slug, type: 'http', customDomains: ['desk.example.test'], locations: ['/node/' + slug + '/'] }));
+    if (state === 'grace') await registry.closeProxy({ metas, runId });
+    return key;
+  };
+  await enroll('offline', 'terminal', 'offline'); await enroll('connecting', 'terminal', 'connecting');
+  await enroll('authenticated', 'terminal', 'authenticated'); await enroll('grace', 'terminal', 'grace');
+  await enroll('expired', 'terminal', 'online', now + 60000);
+  const revoked = await enroll('revoked'); await registry.revoke(revoked.id);
+  await enroll('a'); await enroll('b', 'terminal'); now += 60001;
+  const page = await h.request('/', { authenticated: false });
+  assert.equal(page.status, 200); assert.equal(page.headers.get('location'), null);
+  assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
+  const html = await page.text(); assert.match(html, /href="\/admin\/"/); assert(!html.includes('password'));
+  for (const path of ['/home.js', '/styles.css']) assert.equal((await h.request(path, { authenticated: false })).status, 200);
+  const response = await h.request('/api/public/nodes', { authenticated: false });
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('set-cookie'), null); assert.equal(response.headers.get('access-control-allow-origin'), null);
+  assert.deepEqual(await response.json(), { nodes: [{ name: '节点 a', path: '/node/a/', mode: 'desktop' }, { name: '节点 b', path: '/node/b/', mode: 'terminal' }] });
+  assert.equal((await h.request('/admin/api/keys', { authenticated: false })).status, 401);
+  assert.equal((await h.request('/api/public/nodes', { method: 'POST', body: {}, authenticated: false })).status, 404);
+  assert.equal((await h.request('/api/public/keys', { authenticated: false })).status, 404);
+  now += 60000;
+  assert.deepEqual(await (await h.request('/api/public/nodes', { authenticated: false })).json(), { nodes: [] });
+});
+
+test('public list polling has a separate per-client bounded rate limit', async t => {
+  const h = await setup(t);
+  for (let index = 0; index < 121; index++) {
+    const response = await h.request('/api/public/nodes', { authenticated: false, headers: { 'x-forwarded-for': '198.51.100.30' } });
+    assert.equal(response.status, index < 120 ? 200 : 429);
+  }
+  assert.equal((await h.request('/api/public/nodes', { authenticated: false, headers: { 'x-forwarded-for': '198.51.100.31' } })).status, 200);
+  assert.equal((await h.login()).status, 200);
 });
