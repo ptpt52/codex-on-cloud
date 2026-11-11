@@ -42,14 +42,16 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     const different = next !== reviewing; reviewing = next;
     if (!reviewing) unseen = false;
     newer.hidden = !reviewing || !unseen;
+    const paging = program && !reviewing;
     mode.setAttribute('aria-pressed', String(program));
-    up.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
-    down.disabled = !!loading || (program ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
+    up.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
+    down.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program && !programScrolled;
     let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
+    if (program && reviewing) label += ' · 程序翻页已暂停';
     if (reviewing && unseen) label += ' · 有新输出';
     if (state.textContent !== label) { state.textContent = label; state.title = label; }
     host.dataset.reviewing = String(reviewing);
@@ -148,7 +150,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   function freezeLocal() {
     const parsed = captureHistoryBuffer(term);
     view = { parsed, text: parsed.runs.map(run => run.text).join('') }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
-    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; program = false; clearCopy(); search();
+    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy(); search();
     const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; update();
   }
   function openTools(focus = false) {
@@ -220,7 +222,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function turn(direction, fullPage = false) {
     notice = '';
-    if (!program) {
+    if (!program || reviewing) {
       if (archiveOpen && archiveLocal && direction < 0 && archive.scrollTop === 0) void fetchHistory(distance(fullPage));
       else if (archiveOpen) archive.scrollBy(0, direction * distance(fullPage));
       else if (direction < 0 && term.buffer.active.viewportY === 0) void fetchHistory(distance(fullPage));
@@ -238,15 +240,15 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (!Number.isFinite(delta) || !delta) return;
     const line = rowHeight();
     const amount = delta * (deltaMode === 1 ? line : deltaMode === 2 ? host.clientHeight : 1);
-    const step = program ? 40 : line;
+    const paging = program && !reviewing, step = paging ? 40 : line;
     pixels = Math.max(-host.clientHeight * 2, Math.min(host.clientHeight * 2, pixels + amount));
     const count = Math.trunc(pixels / step);
     if (!count) return;
-    if (program) { pixels = 0; turn(Math.sign(count)); }
+    if (paging) { pixels = 0; turn(Math.sign(count)); }
     else if (count < 0 && term.buffer.active.viewportY === 0) { pixels = 0; void fetchHistory(Math.min(distance(true), -count * line)); }
     else { pixels -= count * step; term.scrollLines(Math.max(-term.rows, Math.min(term.rows, count))); update(); }
   }
-  listen(mode, 'click', () => { const next = !program; resetLocalView(); program = next; update(); });
+  listen(mode, 'click', () => { const next = !program; if (!toolsOpen) resetLocalView(); program = next; pixels = 0; gesture = undefined; update(); });
   listen(up, 'click', () => turn(-1)); listen(down, 'click', () => turn(1)); listen(latest, 'click', live);
   listen(newer, 'click', live);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
@@ -324,7 +326,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (event.key === 'PageUp') turn(-1, true);
     else if (event.key === 'PageDown') turn(1, true);
     else if (event.key === 'Home') { if (archiveOpen) archive.scrollTop = 0; else term.scrollToTop(); }
-    else resetLocalView();
+    else resetLocalView({ preserveProgram: true });
     update();
   }, { capture: true });
   listen(archive, 'scroll', update);

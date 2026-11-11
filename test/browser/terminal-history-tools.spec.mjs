@@ -37,6 +37,58 @@ async function select(frame, text) {
   }, text);
 }
 
+for (const program of [false, true]) test(`find and copy preserve program paging ${program ? 'on' : 'off'} while all snapshot navigation stays local`, async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app);
+    output(app, Array.from({ length: 240 }, (_, index) => `PAGING-COPY-${index}\r\n`).join(''));
+    await expect.poll(() => frame.evaluate(() => window.toolsTerminal.buffer.active.baseY)).toBeGreaterThan(100);
+    if (program) await frame.locator('#history-program').click();
+    await frame.locator('#history-tools-toggle').click(); const archive = frame.locator('#history-archive');
+    await expect(archive).toBeVisible(); await expect(page.locator('#history-tools')).toBeVisible();
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', String(program));
+    if (program) await expect(frame.locator('#history-state')).toContainText('程序翻页已暂停');
+    await page.locator('#history-query').fill('PAGING-COPY-12'); await expect(page.locator('#history-find-state')).toContainText('/11');
+    expect(await select(frame, 'PAGING-COPY-120')).toBe('PAGING-COPY-120');
+    await page.locator('#history-copy-selection').click(); expect(await frame.evaluate(() => window.copiedHistory)).toEqual(['PAGING-COPY-120']);
+    const middle = await archive.evaluate(element => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) / 2); return element.scrollTop; });
+    await expect(frame.locator('#history-up')).toBeEnabled(); await frame.locator('#history-up').click();
+    await expect.poll(() => archive.evaluate(element => element.scrollTop)).toBeLessThan(middle);
+    const older = await archive.evaluate(element => element.scrollTop); await frame.locator('#history-down').click();
+    await expect.poll(() => archive.evaluate(element => element.scrollTop)).toBeGreaterThan(older);
+    await archive.press('PageUp'); await expect(archive).toBeVisible();
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalHistoryReads).toEqual([]);
+    await page.locator('#history-tools-close').click(); await expect(page.locator('#history-tools')).toBeHidden(); await expect(archive).toBeVisible();
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', String(program));
+    await frame.locator('#history-latest').click(); await expect(archive).toBeHidden();
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', String(program));
+    if (program) { await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[1;5F']); await frame.locator('#history-up').click(); await expect.poll(() => app.terminalInputs.at(-1)?.text).toBe('\x1b[5~'); }
+    else expect(app.terminalInputs).toEqual([]);
+    expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('program paging can change during find without closing or sending input from the readonly snapshot', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app); output(app, 'COPY-MODE\r\n'.repeat(240));
+    await expect.poll(() => frame.evaluate(() => window.toolsTerminal.buffer.active.baseY)).toBeGreaterThan(100);
+    await frame.locator('#history-tools-toggle').click(); const archive = frame.locator('#history-archive');
+    const original = await archive.textContent();
+    for (const program of [true, false, true]) {
+      await frame.locator('#history-program').click();
+      await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', String(program));
+      await expect(page.locator('#history-tools')).toBeVisible(); await expect(archive).toBeVisible(); await expect(archive).toHaveText(original);
+      expect(app.terminalInputs).toEqual([]);
+    }
+    await page.locator('#history-tools-close').click(); await expect(archive).toBeVisible();
+    await archive.press('Escape'); await expect(archive).toBeHidden(); await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalHistoryReads).toEqual([]);
+    await frame.locator('#history-latest').click(); await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[1;5F']);
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
+  } finally { await app.close(); }
+});
+
 test('history search crosses styled runs, navigates literal Unicode matches, and never resizes the terminal or fetches more data', async ({ page }, info) => {
   const source = 'HEAD\n\x1b[31mERR\x1b[0m\x1b[1mOR\x1b[0m 中文😀\nerror 中文\nERROR\n[.*] <img src="/never-search-image">\n' + 'x'.repeat(180) + 'FAR-NEEDLE\n' + 'tail\n'.repeat(50);
   const app = await fixture({ webrtc: true, terminalHistory: source });
