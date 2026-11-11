@@ -12,7 +12,7 @@ test('temporary browser establishes independent direct services with saved hints
   page.on('request',r=>{if(r.url().endsWith('/api/service/rtc'))offers.push(r.postDataJSON());if(/\/api\/(desktop\/claim|desktop\/rtc|terminal\/rtc)$/.test(r.url()))claims.push(r.url());});
   await setup(app,page);await expect(page.locator('#diag-transport')).toContainText('WebRTC', {timeout:15000});expect(offers[0].hints).toEqual({server:'10.123.254.253',browser:'10.123.254.252'});expect(claims).toEqual([]);
   await page.route('**/api/files',route=>route.abort());await page.locator('#files-button').click();await expect(page.locator('#file-list')).toContainText('还没有');await page.locator('#close-files').click();
-  await page.locator('#forward-button').click();await expect(page.locator('#forward-direction')).toHaveValue('reverse');await page.locator('#forward-device-name').fill('router');await page.locator('#forward-create').click();await expect(page.locator('#forward-code')).not.toHaveValue('');
+  await page.locator('#forward-button').click();await expect(page.locator('#forward-agent-section')).toBeHidden();await expect(page.locator('#forward-permission')).toBeVisible();
   expect((await(await app.request('/api/state')).json()).mine).toBe(true);expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
  }finally{await app.close();}
 });

@@ -1,8 +1,7 @@
 import { directRetry } from './transport-policy.js';
 import { desktopTransport } from '/rtc-transport.js';
 import { createFileClient } from './file-client.js';
-const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'GET /api/forward': 'forward-list',
-  'POST /api/forward': 'forward-create', 'POST /api/forward/stop': 'forward-stop', 'POST /api/forward/hints': 'forward-hints' };
+const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'GET /api/forward': 'forward-list' };
 export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
 
 // Separate authenticated service link: no frame, desktop claim or input replay.

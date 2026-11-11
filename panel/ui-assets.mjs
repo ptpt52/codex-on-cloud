@@ -32,7 +32,6 @@ export const ASSETS = new Map([
   ['/terminal-history-limits.js', ['terminal-history-limits.js', 'text/javascript; charset=utf-8']],
   ['/terminal-tabs.js', ['terminal-tabs.js', 'text/javascript; charset=utf-8']],
   ['/workspace.css', ['workspace.css', 'text/css; charset=utf-8']],
-  ['/forward-report.js', ['forward-report.js', 'text/javascript; charset=utf-8']],
   ['/forward-ui.js', ['forward-ui.js', 'text/javascript; charset=utf-8']],
   ['/forward-platform.js', ['forward-platform.js', 'text/javascript; charset=utf-8']],
   ['/control.js', ['control.js', 'text/javascript; charset=utf-8']],

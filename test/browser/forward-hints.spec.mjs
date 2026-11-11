@@ -1,18 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
-for(const override of ['', '10.2.3.4'])test(`temporary mappings inherit hints with helper override '${override}'`,async({page})=>{
- const app=await fixture({forwardPorts:'*',webrtc:true});
+import { login, open, choose, add } from './forward-support.mjs';
+for(const override of ['', '10.2.3.4'])test(`fixed helper rules preserve their direct address hints with helper override '${override}'`,async({page})=>{
+ const app=await fixture({rfb:true,forwardPorts:'*'}),writes=[];
  try{
-  await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});
   await page.addInitScript(()=>localStorage.setItem('codex-cloud.rtc-hints.v1',JSON.stringify({server:'10.1.1.1',browser:'192.168.1.2'})));
-  await page.goto(app.config.origin);await page.locator('#username').fill('visitor');await page.locator('#password').fill('temporary-test-password');await page.locator('#login-button').click();
-  await expect(page.locator('#user-label')).toContainText('临时访问');await page.locator('#forward-button').click();
-  await expect(page.locator('#forward-direction')).toHaveValue('reverse');await page.locator('#forward-device-name').fill('router');await page.locator('#forward-helper-ip').fill(override);
-  await page.locator('#forward-create').click();await expect(page.locator('#forward-code')).not.toHaveValue('');
-  expect((await(await app.request('/api/forward')).json()).mappings[0].hints).toEqual({server:'10.1.1.1',browser:override||'192.168.1.2'});
-  await expect(page.locator('#forward-code')).not.toHaveValue('');await page.locator('#forward-helper-ip').fill('10.3.4.5');
-  await page.getByRole('button',{name:'应用当前直连提示'}).click();await expect(page.locator('#forward-status')).toContainText('已更新');
-  expect((await(await app.request('/api/forward')).json()).mappings[0].hints.browser).toBe('10.3.4.5');
-  expect(app.inputCalls).toEqual([]);expect(app.managementStats.restarts).toBe(0);
+  page.on('request',request=>{if(request.method()==='POST'&&new URL(request.url()).pathname.endsWith('/api/forward/agents/rule'))writes.push(request.postDataJSON());});
+  await login(page,app);await open(page);await choose(page,1);await page.locator('#forward-rule-add').click();await page.locator('#forward-rule-name').fill('地址提示');if(override)await page.locator('#forward-helper-ip').fill(override);await page.locator('#forward-create').click();await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
+  expect(writes[0].config.hints).toEqual({server:'10.1.1.1',browser:override||'192.168.1.2'});
+  await page.getByRole('button',{name:'编辑规则',exact:true}).click();await page.locator('#forward-helper-ip').fill('10.3.4.5');await page.locator('#forward-create').click();await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();expect(writes.at(-1).config.hints.browser).toBe('10.3.4.5');expect(app.inputCalls).toEqual([]);
  }finally{await app.close();}
 });
