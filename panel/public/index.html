@@ -120,9 +120,11 @@
   </dialog>
   <dialog id="access-dialog" class="files-dialog access-dialog" aria-labelledby="access-title">
     <div class="dialog-heading"><h2 id="access-title">访问与屏幕锁</h2><button id="access-close" class="quiet" type="button" aria-label="关闭访问设置">✕</button></div>
-    <form id="screen-lock-form" class="access-form" method="post" action="/api/security/screen-lock">
+    <form id="screen-lock-form" name="screen-lock-settings" class="access-form" autocomplete="off" method="post" action="/api/security/screen-lock">
       <h3>屏幕锁</h3><label class="access-checkbox"><input id="screen-lock-enabled" type="checkbox">开启屏幕锁</label>
-      <label for="screen-lock-password">新屏幕锁密码</label><input id="screen-lock-password" name="password" type="password" autocomplete="new-password" maxlength="128" placeholder="4–128 个字符；已有密码时留空保留">
+      <!-- Match the local verification hint used for unlocking, including during
+           setup: new-password makes Chrome offer to save an account password. -->
+      <label for="screen-lock-password">新屏幕锁密码</label><input id="screen-lock-password" name="lockPassword" type="password" autocomplete="section-screen-lock-settings one-time-code" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="128" placeholder="4–128 个字符；已有密码时留空保留">
       <p class="muted">首次进入和重新接管需解锁。锁定后已授权的双向映射全部保留，仍可建立新 TCP 连接并按原规则恢复；原任务继续运行。</p><button id="screen-lock-save" class="primary" type="submit">保存屏幕锁</button>
     </form>
     <form id="temporary-account-form" class="access-form" method="post" action="/api/security/temporary-account">

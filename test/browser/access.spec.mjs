@@ -19,7 +19,12 @@ async function unlock(page, password = pin) {
   await page.locator('#unlock-password').fill(password); await page.locator('#unlock-password').press('Enter');
   await expect(page.locator('#unlock-dialog')).toBeHidden(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
 }
-async function security(page) { await page.locator('#toggle-controls-button').click(); await page.locator('#access-settings-button').click(); await expect(page.locator('#access-status')).toHaveText(''); await expect(page.locator('#screen-lock-save')).toBeEnabled(); }
+async function security(page) {
+  await page.locator('#toggle-controls-button').click(); await page.locator('#access-settings-button').click();
+  await expect(page.locator('#access-status')).toHaveText(''); await expect(page.locator('#screen-lock-save')).toBeEnabled();
+  await expect(page.locator('#screen-lock-password')).toHaveAttribute('type', 'password');
+  await expect(page.locator('#screen-lock-password')).toHaveAttribute('autocomplete', /one-time-code$/);
+}
 async function configure(app) {
   await app.login(); await app.claim();
   expect((await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: guestPassword, durationMs: 3600000 } })).status).toBe(200);
