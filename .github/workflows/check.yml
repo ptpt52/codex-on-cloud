@@ -48,6 +48,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Prepare reliable Ubuntu package sources
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux python3 util-linux
       - run: npm ci --omit=dev --omit=optional
       - run: npm run test:terminal-only
@@ -94,6 +96,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: client/forward/go.sum
+      - name: Prepare reliable Ubuntu package sources
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends caddy=2.6.2-6ubuntu0.24.04.3 coturn=4.6.1-1build4
       - run: npm ci
       - run: npm run test:selfhost:edge
@@ -139,6 +143,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Prepare reliable Ubuntu package sources
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: npx playwright install --with-deps ${{ matrix.engine }}
         timeout-minutes: 20
       - name: Cross-browser compatibility
@@ -165,6 +171,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Prepare reliable Ubuntu package sources
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: npx playwright install --with-deps chromium
       - name: Full Chromium regression
         timeout-minutes: 35
@@ -193,6 +201,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: client/forward/go.sum
+      - name: Prepare reliable Ubuntu package sources
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - name: Isolated desktop dependencies
         run: |
           sudo apt-get update
