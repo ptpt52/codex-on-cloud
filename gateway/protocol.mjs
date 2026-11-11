@@ -1,5 +1,5 @@
 export const GATEWAY_PREFIX = '/__nodes/';
-export const GATEWAY_LIMITS = Object.freeze({ nodes: 64, page: 16, bytes: 131072, sessions: 8, codes: 16, failures: 64, body: 8192, probeMs: 4000, pendingMs: 15000 });
+export const GATEWAY_LIMITS = Object.freeze({ page: 16, bytes: 131072, sessions: 8, codes: 16, failures: 64, body: 8192, probeMs: 4000, pendingMs: 15000 });
 export const gatewayHex = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 export const gatewaySecret = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 export const gatewayLocal = host => ['localhost', '127.0.0.1', '[::1]'].includes(host);

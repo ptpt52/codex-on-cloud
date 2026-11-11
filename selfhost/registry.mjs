@@ -7,7 +7,7 @@ import {
 } from './protocol.mjs';
 
 function normalizeStored(value) {
-  if (!value || value.version !== 1 || !Number.isSafeInteger(value.revision) || !Array.isArray(value.keys) || !Array.isArray(value.audit) || value.keys.length > SELFHOST_LIMITS.keys || value.audit.length > SELFHOST_LIMITS.audit) throw Error('中心状态文件格式无效');
+  if (!value || value.version !== 1 || !Number.isSafeInteger(value.revision) || !Array.isArray(value.keys) || !Array.isArray(value.audit) || value.audit.length > SELFHOST_LIMITS.audit) throw Error('中心状态文件格式无效');
   const ids = new Set(), slugs = new Set();
   const keys = value.keys.map(item => {
     if (!item || typeof item !== 'object' || Object.keys(item).some(key => !['id', 'slug', 'name', 'keyHash', 'credentialHash', 'createdAt', 'expiresAt', 'revokedAt'].includes(key))) throw Error('中心授权记录格式无效');
@@ -69,7 +69,6 @@ export class SelfhostRegistry {
     const name = displayName(input.name), nodeSlug = slug(input.slug), expiresAt = keyExpiration(input, this.now());
     return this.mutate(({ value, now, close }) => {
       this.checkRevision(value, input);
-      if (value.keys.length >= SELFHOST_LIMITS.keys) throw selfhostError(429, '最多保存 ' + SELFHOST_LIMITS.keys + ' 个授权');
       if (value.keys.some(item => item.slug === nodeSlug)) throw selfhostError(409, '该节点路径已有授权，不能重复创建；请在原节点的更多操作中重新授权');
       const token = this.random('coc_'), item = { id: tokenHash(token).slice(0, 32), slug: nodeSlug, name, keyHash: tokenHash(token), credentialHash: null, createdAt: now, expiresAt, revokedAt: null };
       value.keys.push(item); this.audit(value, 'key_created', item, now);
@@ -78,17 +77,6 @@ export class SelfhostRegistry {
   }
 
   keyStatus(item, now) { return item.revokedAt ? 'revoked' : item.expiresAt !== null && item.expiresAt <= now ? 'expired' : 'ready'; }
-
-  liveSessions(close, now) {
-    const live = new Map();
-    for (const [key, session] of this.sessions) {
-      const item = this.findKey(this.value, session.keyId);
-      if (!item || this.keyStatus(item, now) !== 'ready') { close.push({ slug: key, reason: 'authorization_revoked' }); continue; }
-      if (session.status === 'grace') continue;
-      live.set(key, session);
-    }
-    return live;
-  }
 
   listed(now = this.now()) {
     return this.value.keys.map(item => publicKey(item, this.visibleSession(this.sessions.get(item.slug), now), now)).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
@@ -109,13 +97,12 @@ export class SelfhostRegistry {
 
   publicNodes() {
     // Read the last committed state without queuing anonymous requests behind
-    // mutations. Expose only this bounded projection, never session/key metadata.
+    // mutations. Expose only public fields, never session/key metadata.
     const now = this.now(), nodes = [];
     for (const item of this.value.keys) {
       const session = this.sessions.get(item.slug);
       if (this.keyStatus(item, now) !== 'ready' || session?.status !== 'online' || session.lastSeenAt + SELFHOST_LIMITS.heartbeatMs <= now) continue;
       nodes.push({ name: item.name, path: entryBasePath(item.slug), mode: session.mode });
-      if (nodes.length >= SELFHOST_LIMITS.nodes) break;
     }
     return nodes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
   }
@@ -123,7 +110,7 @@ export class SelfhostRegistry {
   counts(keys, now) {
     return {
       revision: this.value.revision,
-      maximumNodes: SELFHOST_LIMITS.nodes,
+      maximumNodes: null,
       onlineNodes: keys.filter(item => item.status === 'online').length,
       connectingNodes: keys.filter(item => ['connecting', 'authenticated'].includes(item.status)).length,
       graceNodes: keys.filter(item => item.status === 'grace').length,
@@ -202,7 +189,6 @@ export class SelfhostRegistry {
     const graceMatch = current?.status === 'grace' && current.graceUntil > now && equalHash(key.credentialHash, current.credentialHash);
     const keyRecovery = typeof input.key === 'string' && (!current || current.status === 'grace');
     if (current && !graceMatch && !keyRecovery) throw selfhostError(409, '该节点已有在线连接，拒绝重复接入');
-    if (!current && this.liveSessions(close, now).size >= SELFHOST_LIMITS.nodes) throw selfhostError(429, '在线节点已达到上限');
     const session = {
       slug: nodeSlug, keyId: key.id, credentialHash: key.credentialHash, nodeId, mode: input.node.mode,
       source: typeof input.source === 'string' ? input.source.slice(0, 128) : '', status: 'connecting', connectedAt: now,
@@ -262,17 +248,16 @@ export class SelfhostRegistry {
       if (this.keyStatus(item, now) !== 'ready') return { value: false, close };
       let session = sessions.get(item.slug);
       if (!session) {
-        if (this.liveSessions(close, now).size >= SELFHOST_LIMITS.nodes) return { value: false, close };
         session = { slug: item.slug, keyId: item.id, credentialHash: item.credentialHash, nodeId: meta.nodeId, mode: meta.mode, source, status: 'connecting', connectedAt: now, authenticatedAt: null, onlineAt: null, lastSeenAt: now, graceUntil: null, runId: '' };
         sessions.set(item.slug, session);
       }
       if (session.status === 'online') {
         if (!proxyOnline || await proxyOnline(proxyName(item.slug))) return { value: false, close };
-        session.status = 'connecting'; session.runId = ''; session.onlineAt = null; session.graceUntil = null; session.lastSeenAt = now;
+        session.status = 'connecting'; session.runId = ''; session.connectedAt = now; session.authenticatedAt = null; session.onlineAt = null; session.graceUntil = null; session.lastSeenAt = now;
         this.audit(value, 'node_recovered', item, now);
       }
       if (!NODE_ID.test(meta.nodeId) || session.nodeId !== meta.nodeId || session.status === 'online' || session.status === 'authenticated') return { value: false, close };
-      session.status = 'authenticated'; session.authenticatedAt = now; session.lastSeenAt = now; session.runId = runId || ''; session.source = source.slice(0, 128); session.graceUntil = null;
+      session.status = 'authenticated'; session.connectedAt = now; session.authenticatedAt = now; session.onlineAt = null; session.lastSeenAt = now; session.runId = runId || ''; session.source = source.slice(0, 128); session.graceUntil = null;
       this.audit(value, 'frp_login', item, now); return { value: true, close };
     });
   }

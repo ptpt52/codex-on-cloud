@@ -90,7 +90,9 @@ sudo ./scripts/selfhost-server.sh install \
   --key-file /path/to/server.pem
 ```
 
-导入模式会校验证书域名、证书与私钥是否匹配，不启用 :80 跳转。证书续期由证书来源负责；更新 PEM 后重跑安装命令即可。节点若使用私有 CA，接入时指定 `--ca-file`。
+导入模式在修改正式配置前校验证书域名、整条所提供证书链的有效期及证书与私钥是否匹配，不启用 :80 跳转。证书续期由证书来源负责；更新 PEM 后重跑安装命令即可。节点若使用私有 CA，接入时指定 `--ca-file`。
+
+安装和回滚时，HTTPS 健康检测验证中心域名、有效期及实际提供的证书是否与已安装证书一致；导入私有证书时仅为该次检测显式信任所提供证书链，不修改系统信任库。
 
 节点不需要各自申请域名 SSL 证书。浏览器访问的是中心域名，由中心 Caddy 提供证书；节点 Panel 只监听回环，frpc 主动建立 TLS 隧道。中心使用公共 CA 时，节点使用系统信任库，无需 `--ca-file`。
 
@@ -170,7 +172,7 @@ https://<domain>/admin/
 - 同一 slug 已有在线连接时，第二接入被拒绝。
 - 节点断线后保留 60 秒恢复窗口。
 - 撤销 key 后拒绝重连，节点在下一次 5 秒心跳时关闭旧隧道；Caddy route auth 会立即拒绝新请求。
-- 中心最多允许 64 个在线节点，不限制业务并发、活跃浏览器或 TURN 会话数量。
+- 中心不设置固定节点数量上限，也不限制业务并发、活跃浏览器或 TURN 会话数量；实际规模取决于服务器资源与状态文件容量。
 - 仅当 frps 异常退出遗漏 `CloseProxy` 时，中心会在新 `Login` 中核对回环 frps Admin API；旧代理已消失则允许 recovery，仍在线则继续拒绝重复接入。
 - 节点代理只允许绑定中心本身的一个域名和 `/node/<slug>/` 的一个 location；额外子域名、HTTP Basic 凭据、Host 重写或注入的请求/响应头都会拒绝接入，防止同一代理越过自己的节点路径。
 
@@ -192,7 +194,7 @@ https://<domain>/admin/
 
 有限期授权必须选择未来时间。管理操作失败时在当前弹窗显示原因；遇到网络中断、服务器错误或记录冲突，先“刷新核对列表”，再决定下一步，页面不会自动重发写操作。若创建已成功但 key 响应丢失，可在原记录重新授权取得新 key。
 
-管理页和管理员 API 位于 `/admin/`，管理员 Cookie 也限制在该路径。升级后旧根路径管理员会话失效，需要重新登录；Caddy 转发节点请求时会剔除新旧管理员 Cookie。`--admin-cidr` 只限制 `/admin/`，公开首页和在线列表不受管理白名单限制；节点接入、退出和 TURN 机器接口保持独立凭据认证。匿名在线列表接口为 `GET /api/public/nodes`，最多返回 64 个节点，不返回凭据、授权 ID、地址或审计信息，并独立按客户端限流。
+管理页和管理员 API 位于 `/admin/`，管理员 Cookie 也限制在该路径。升级后旧根路径管理员会话失效，需要重新登录；Caddy 转发节点请求时会剔除新旧管理员 Cookie。`--admin-cidr` 只限制 `/admin/`，公开首页和在线列表不受管理白名单限制；节点接入、退出和 TURN 机器接口保持独立凭据认证。匿名在线列表接口为 `GET /api/public/nodes`，返回全部在线节点，不返回凭据、授权 ID、地址或审计信息，并独立按客户端限流。
 
 所有节点和管理页仍在同一浏览器源，必须由同一管理员控制、相互信任。Cookie 路径和转发过滤只能减少凭据外泄，不能隔离恶意节点的同源脚本。不要把不受信任的第三方节点接入同一域名。
 
@@ -216,7 +218,7 @@ npm run server:join -- --server https://desk.example.com --slug node-a --reautho
 
 `--reauthorize` 强制读取新 key，保留本机节点身份和路径，替换旧 credential。普通重复执行 `server:join` 会继续使用原 credential，不会重新询问 key。新机器首次接入不需要该选项；已有私有 CA 可沿用本机保存的 CA。重新授权一经完成，旧中心凭据不会因本地接入失败而恢复；修复接入失败的原因后可使用新 key 重试，若存在恢复记录先按 `server:doctor` 的提示处理。
 
-首次接入后，节点保存专用 credential，生成 `frpc.toml` 和独立 systemd user 服务。SSH 退出后中继仍运行；建议确保已启用：
+首次接入后，节点保存专用 credential，生成 `frpc.toml` 和独立 systemd user 服务。中继失败后每 15 秒重试，不因连续失败次数耗尽而永久停止；重新生成服务时也会清理旧的启动限流失败状态。SSH 退出后中继仍运行；建议确保已启用：
 
 ```bash
 sudo loginctl enable-linger <user>
@@ -263,7 +265,7 @@ npm run server:leave
 - frps：`MemoryMax=512M`、`TasksMax=1024`、`LimitNOFILE=65536`
 - coturn：`MemoryMax=512M`、`TasksMax=2048`、`LimitNOFILE=65536`
 - Caddy：`MemoryMax=512M`、`TasksMax=1024`、`LimitNOFILE=65536`
-- 中心状态最多 512 个授权和 512 条有界审计记录，单个状态文件最多 256 KiB
+- 中心不设固定授权记录数量上限；保留最多 512 条审计记录，单个状态文件最多 256 KiB，达到容量上限时拒绝新增或修改，不截断现有授权
 
 日志进入 journald。服务以非 root 用户运行；Caddy 仅因监听 80/443 由 systemd 启动。
 

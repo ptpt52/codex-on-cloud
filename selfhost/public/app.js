@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 const labels = { offline: '离线', connecting: '接入中', authenticated: '认证中', online: '在线', grace: '断线恢复', revoked: '已撤销', expired: '已过期' };
 let csrf = '', keys = [], revision = 0, timer, loading, controller, epoch = 0, fresh = false, writing = false, target, pendingAction;
 const rows = new Map();
+const dialogTriggers = new WeakMap();
 const date = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '从未';
 const localTime = value => { const d = new Date(value); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
 const modalOpen = () => !!document.querySelector('dialog[open], .node-row details[open]');
@@ -42,7 +43,7 @@ async function load() {
       $('center-host').textContent = value.host;
       const status = value.status;
       for (const [id, count] of [['online-count', status.onlineNodes], ['connecting-count', status.connectingNodes], ['grace-count', status.graceNodes], ['active-count', status.activeKeys]]) $(id).textContent = count;
-      $('online-limit').textContent = '上限 ' + status.maximumNodes; $('total-count').textContent = '共 ' + status.totalKeys + ' 个'; $('turn-state').textContent = value.turn ? '已配置' : '未配置';
+      $('total-count').textContent = '共 ' + status.totalKeys + ' 个'; $('turn-state').textContent = value.turn ? '已配置' : '未配置';
       $('connection-state').textContent = '已更新'; $('connection-state').className = 'status online'; message(); render(); view('center-view');
     } catch (error) {
       if (current !== epoch) return;
@@ -65,7 +66,7 @@ function makeRow(id) {
   const more = element('details', 'node-more'), summary = element('summary', 'quiet', '更多'), menu = element('div', 'node-menu');
   for (const [action, text] of [['details', '查看详情'], ['edit', '修改名称 / 有效期'], ['reissue', '重新授权'], ['disconnect', '断开连接'], ['revoke', '撤销授权']]) {
     const button = element('button', action === 'revoke' ? 'danger-text' : 'quiet', text); button.type = 'button'; button.dataset.action = action; if (action !== 'details') button.dataset.manage = '';
-    button.addEventListener('click', () => { const item = keys.find(k => k.id === id); more.open = false; if (item) openAction(action, item); }); menu.append(button);
+    button.addEventListener('click', () => { const item = keys.find(k => k.id === id); more.open = false; if (item) openAction(action, item, summary); }); menu.append(button);
   }
   more.append(summary, menu); more.addEventListener('toggle', () => { if (more.open) for (const other of document.querySelectorAll('.node-more[open]')) if (other !== more) other.open = false; schedule(); }); actions.append(enter, copy, more); row.append(info, meta, actions);
   return { row, name, path, state, expiry, enter, menu };
@@ -102,7 +103,13 @@ function resetDialog(dialog) {
   dialog.querySelectorAll('.reconcile').forEach(node => { node.hidden = true; });
   dialog.querySelectorAll('button').forEach(node => { node.disabled = false; });
 }
-function show(dialog) { clearTimeout(timer); resetDialog(dialog); dialog.showModal(); }
+function show(dialog, trigger = document.activeElement) { clearTimeout(timer); resetDialog(dialog); dialogTriggers.set(dialog, trigger); dialog.showModal(); }
+function restoreDialogFocus(dialog) {
+  if (dialog.open || writing || $('center-view').hidden || document.querySelector('dialog[open]')) return;
+  const trigger = dialogTriggers.get(dialog);
+  const destination = trigger?.isConnected && !trigger.disabled && trigger.getClientRects().length ? trigger : $('filter');
+  destination.focus({ preventScroll: true });
+}
 function expiryFields(prefix, finite) {
   $(prefix === 'key' ? 'expiry-field' : 'edit-expiry-field').hidden = !finite;
   const input = $(prefix + '-expiry'); input.required = finite; input.disabled = !finite; input.min = localTime(Date.now() + 60000);
@@ -113,27 +120,27 @@ function expiration(prefix, infinite) {
   if (!Number.isSafeInteger(value) || value <= Date.now()) throw Error('请选择有效的未来到期时间');
   return { neverExpires: false, expiresAt: value };
 }
-function openKey(item) {
+function openKey(item, trigger) {
   target = item ? { ...item, revision } : null;
   $('key-form').reset(); $('key-name').value = item?.name || ''; $('key-slug').value = item?.slug || ''; $('key-name').readOnly = !!item; $('key-slug').readOnly = !!item;
   $('key-dialog-title').textContent = item ? '重新授权节点' : '创建节点授权'; $('create-key').textContent = item ? '重新授权并生成 key' : '创建';
   $('key-warning').hidden = !item; $('key-warning').textContent = item ? '将替换“' + item.name + '”的 key。旧 key 和节点凭据失效，新请求立即被阻止，现有隧道在下一次心跳（约 5 秒）关闭。地址 ' + item.path + ' 保持不变；不会结束节点上的终端或桌面任务。请在节点重新执行接入命令。' : '';
-  $('key-never-expires').checked = !item?.expiresAt; $('key-expiry').value = item?.expiresAt && item.expiresAt > Date.now() ? localTime(item.expiresAt) : ''; expiryFields('key', !$('key-never-expires').checked); show($('key-dialog'));
+  $('key-never-expires').checked = !item?.expiresAt; $('key-expiry').value = item?.expiresAt && item.expiresAt > Date.now() ? localTime(item.expiresAt) : ''; expiryFields('key', !$('key-never-expires').checked); show($('key-dialog'), trigger);
 }
-function openAction(action, item) {
+function openAction(action, item, trigger) {
   if (action !== 'details' && (!fresh || writing)) return;
   target = { ...item, revision };
-  if (action === 'reissue') return openKey(item);
-  if (action === 'edit') { $('edit-name').value = item.name; $('edit-context').textContent = item.path + ' · ' + (item.expiresAt === null ? '无限期' : '到期 ' + date(item.expiresAt)); $('edit-validity').value = 'keep'; $('edit-expiry').value = ''; expiryFields('edit', false); return show($('edit-dialog')); }
+  if (action === 'reissue') return openKey(item, trigger);
+  if (action === 'edit') { $('edit-name').value = item.name; $('edit-context').textContent = item.path + ' · ' + (item.expiresAt === null ? '无限期' : '到期 ' + date(item.expiresAt)); $('edit-validity').value = 'keep'; $('edit-expiry').value = ''; expiryFields('edit', false); return show($('edit-dialog'), trigger); }
   if (action === 'details') {
     $('details-title').textContent = item.name; const list = $('node-details'); list.replaceChildren();
     for (const [label, value] of [['访问路径', item.path], ['连接状态', labels[item.status]], ['授权有效期', item.expiresAt === null ? '无限期' : date(item.expiresAt)], ['创建时间', date(item.createdAt)], ['撤销时间', date(item.revokedAt)], ['模式', item.session ? item.session.mode === 'terminal' ? '网页终端' : '开发桌面' : '尚无连接'], ['来源', item.session?.source || '—'], ['连接时间', date(item.session?.connectedAt)], ['最近活动', date(item.session?.lastSeenAt)]]) list.append(element('dt', '', label), element('dd', '', value));
-    return show($('details-dialog'));
+    return show($('details-dialog'), trigger);
   }
   const revoke = action === 'revoke'; pendingAction = { path: revoke ? '/api/keys/' + item.id : '/api/nodes/' + item.slug + '/disconnect', method: revoke ? 'DELETE' : 'POST', revision };
   $('confirm-title').textContent = revoke ? '撤销节点授权' : '断开节点连接'; $('confirm-target').textContent = item.name + ' · ' + item.path;
   $('confirm-message').textContent = revoke ? '将使该 key 和节点凭据失效，立即阻止新请求；现有隧道在下一次心跳（约 5 秒）关闭。终端和桌面任务继续运行。以后可在此节点重新授权，保留访问路径。' : '下一次心跳（约 5 秒）关闭当前隧道，保留授权和节点上的终端、桌面任务。节点客户端可能自动重连；要持续阻止接入，请撤销授权。';
-  $('confirm-action').textContent = revoke ? '撤销此节点授权' : '断开此节点连接'; show($('confirm-dialog'));
+  $('confirm-action').textContent = revoke ? '撤销此节点授权' : '断开此节点连接'; show($('confirm-dialog'), trigger);
 }
 async function mutate(dialog, errorId, action, success) {
   if (writing || !fresh) return;
@@ -146,18 +153,18 @@ async function mutate(dialog, errorId, action, success) {
       $(errorId).textContent = error.status && error.status < 500 ? error.message : '操作结果未确认：' + error.message + '。请刷新核对列表后再决定，系统不会自动重试此操作。';
       if (!error.status || error.status >= 500 || error.status === 409) { fresh = false; dialog.querySelector('.reconcile').hidden = false; message('操作结果需要核对，请刷新列表后再管理节点。', true); $('connection-state').textContent = '待核对'; $('connection-state').className = 'status warning'; }
     }
-  } finally { writing = false; dialog.querySelectorAll('button').forEach(button => { button.disabled = false; }); permissions(); schedule(); }
+  } finally { writing = false; dialog.querySelectorAll('button').forEach(button => { button.disabled = false; }); permissions(); restoreDialogFocus(dialog); schedule(); }
 }
 function clearSecret() { $('secret-value').textContent = ''; $('join-command').value = ''; $('secret-context').textContent = ''; $('copy-state').textContent = ''; }
 function secret(value, reissued) {
   $('secret-context').textContent = value.name + ' · ' + value.path; $('secret-value').textContent = value.key; $('copy-state').textContent = '';
   $('join-command').value = 'npm run server:join -- --server ' + location.origin + ' --slug ' + value.slug + (reissued ? ' --reauthorize' : '');
-  show($('secret-dialog'));
+  show($('secret-dialog'), dialogTriggers.get($('key-dialog')));
 }
 async function copyText(text, output) { try { await navigator.clipboard.writeText(text); output.textContent = '已复制'; output.classList.remove('error'); } catch { output.textContent = '无法自动复制，请手动选择文本复制。'; } }
 for (const dialog of document.querySelectorAll('dialog')) {
   dialog.addEventListener('cancel', event => { if (writing) event.preventDefault(); });
-  dialog.addEventListener('close', () => { if (dialog.id === 'secret-dialog') clearSecret(); schedule(); });
+  dialog.addEventListener('close', () => { if (dialog.id === 'secret-dialog') clearSecret(); restoreDialogFocus(dialog); schedule(); });
   dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => { if (!writing) dialog.close(); }));
   dialog.querySelector('.reconcile')?.addEventListener('click', () => { dialog.close(); void load(); });
 }
@@ -175,7 +182,7 @@ $('copy-secret').addEventListener('click', () => void copyText($('secret-value')
 $('copy-command').addEventListener('click', () => void copyText($('join-command').value, $('copy-state')));
 $('key-never-expires').addEventListener('change', () => expiryFields('key', !$('key-never-expires').checked));
 $('edit-validity').addEventListener('change', () => expiryFields('edit', $('edit-validity').value === 'finite'));
-$('new-key').addEventListener('click', () => openKey());
+$('new-key').addEventListener('click', () => openKey(undefined, $('new-key')));
 $('key-form').addEventListener('submit', event => {
   event.preventDefault(); let expiry;
   try { expiry = expiration('key', $('key-never-expires').checked); } catch (error) { $('key-form-error').textContent = error.message; return; }

@@ -1,10 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export const SELFHOST_LIMITS = Object.freeze({
-  keys: 512,
-  nodes: 64,
   audit: 512,
-  sessions: 64,
   stateBytes: 256 * 1024,
   graceMs: 60_000,
   connectMs: 120_000,

@@ -3,7 +3,6 @@ import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { chmod, chown, cp, lstat, mkdir, open, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { resolve4 } from 'node:dns/promises';
-import https from 'node:https';
 import net from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +13,7 @@ import {
   certbotHook, coturnConfig, coturnUnit, frpsConfig, frpsUnit, serverDomain, serverEmail,
 } from '../selfhost/server-config.mjs';
 import { resolveAdminCidrs, serverSettings } from '../selfhost/server-settings.mjs';
+import { probeLocalHttps, validateServerCertificate } from '../selfhost/certificates.mjs';
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
@@ -40,12 +40,9 @@ async function listenTcp(port) {
   await waitCheck(() => new Promise(resolve => { const socket = net.createConnection(port, '127.0.0.1'); socket.once('connect', () => { socket.destroy(); resolve(true); }); socket.once('error', () => resolve(false)); }), 'TCP ' + port);
 }
 async function localHttpsHealth(domain) {
-  await waitCheck(() => new Promise(resolve => {
-    const request = https.request({ host: '127.0.0.1', port: 443, servername: domain, path: '/healthz', method: 'GET', headers: { host: domain }, rejectUnauthorized: false, timeout: 3000 }, response => {
-      const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('end', () => { try { resolve(response.statusCode === 200 && JSON.parse(Buffer.concat(chunks)).ok === true); } catch { resolve(false); } });
-    });
-    request.on('timeout', () => request.destroy()); request.on('error', () => resolve(false)); request.end();
-  }), 'HTTPS /healthz');
+  const certificate = await readFile(join(ETC, 'tls', 'fullchain.pem'));
+  validateServerCertificate(certificate, { domain });
+  await waitCheck(() => probeLocalHttps(domain, { certificate }), 'HTTPS /healthz');
 }
 
 async function privateIPv4(configured) {
@@ -179,17 +176,18 @@ async function ensureDirectory(path, mode, uid, gid) {
   await chmod(path, mode); await chown(path, uid, gid);
 }
 
-async function installImportedCertificate({ domain, certFile, keyFile }) {
+async function readImportedCertificate({ domain, certFile, keyFile }) {
   if (!certFile || !keyFile) throw Error('导入证书时必须同时提供 --cert-file 和 --key-file');
   const certificate = await readFile(certFile), key = await readFile(keyFile);
   if (certificate.length < 100 || certificate.length > 1024 * 1024 || key.length < 100 || key.length > 256 * 1024) throw Error('导入证书或私钥大小无效');
   const certText = certificate.toString(), keyText = key.toString();
   if (!certText.includes('-----BEGIN CERTIFICATE-----') || !/(?:-----BEGIN (?:RSA |EC |)PRIVATE KEY-----)/.test(keyText)) throw Error('导入文件不是 PEM 证书或私钥');
-  const host = await command('openssl', ['x509', '-in', certFile, '-noout', '-checkhost', domain]);
-  if (!host.ok || !host.stdout.includes('does match')) throw Error('导入证书不匹配中心域名 ' + domain);
-  const certPublic = await requiredCommand('openssl', ['x509', '-in', certFile, '-pubkey', '-noout']);
-  const keyPublic = await requiredCommand('openssl', ['pkey', '-in', keyFile, '-pubout']);
-  if (certPublic.stdout !== keyPublic.stdout) throw Error('导入证书与私钥不匹配');
+  validateServerCertificate(certText, { domain, privateKey: keyText });
+  return { certText, keyText };
+}
+
+async function installImportedCertificate({ domain, certText, keyText }) {
+  validateServerCertificate(certText, { domain, privateKey: keyText });
   const serviceGid = Number((await requiredCommand('id', ['-g', SERVICE])).stdout), turnGid = Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout);
   await safeWrite(join(ETC, 'tls', 'fullchain.pem'), certText, 0o640, 0, serviceGid);
   await safeWrite(join(ETC, 'tls', 'privkey.pem'), keyText, 0o640, 0, serviceGid);
@@ -209,6 +207,7 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   if (net.isIP(publicIp) !== 4) throw Error('公网 IP 必须是 IPv4 地址');
   const localIpv4 = await privateIPv4(privateIp);
   if (!!certFile !== !!keyFile) throw Error('导入证书时必须同时提供 --cert-file 和 --key-file');
+  const importedCertificate = certFile ? await readImportedCertificate({ domain, certFile, keyFile }) : null;
   if (!certFile) email = serverEmail(email);
   const addresses = await resolve4(domain, { ttl: true }).catch(() => []);
   if (!addresses.some(item => item.address === publicIp)) throw Error(`DNS 尚未将 ${domain} 指向 ${publicIp}；未更改服务器`);
@@ -236,7 +235,7 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   await requiredCommand('systemctl', ['daemon-reload']);
   const hook = '/etc/letsencrypt/renewal-hooks/deploy/codex-selfhost';
   if (certFile) {
-    await installImportedCertificate({ domain, certFile, keyFile });
+    await installImportedCertificate({ domain, ...importedCertificate });
     const existingHook = await readFile(hook, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
     if (existingHook?.includes('# Managed by codex-selfhost.') || existingHook?.includes('systemctl restart codex-selfhost-frps.service')) await unlink(hook);
   } else {

@@ -209,3 +209,42 @@ test('uncertain create result is shown inside the dialog and is reconciled witho
     await more(page, key.id, 'revoke'); await page.locator('#confirm-action').click(); await expect(page.locator('#confirm-error')).toHaveText('节点信息已变化'); await expect(page.locator('#confirm-dialog')).toBeVisible(); await expect(page.locator('#confirm-dialog .reconcile')).toBeVisible();
   } finally { await h.close(); }
 });
+
+test('menus stay inside narrow viewports and modal flows return focus to a visible control', async ({ page }, testInfo) => {
+  const h = await adminFixture(), key = await h.center.registry.createKey({ name: '焦点测试节点', slug: 'focus-node' });
+  try {
+    await loginAdmin(page, h.origin);
+    const row = page.locator(`[data-id="${key.id}"]`), summary = row.locator('summary');
+    for (const width of [320, 360, 390, 768, 1024, 1440]) {
+      await page.setViewportSize({ width, height: 850 }); await summary.click();
+      const menu = row.locator('.node-menu'); await expect(menu).toBeVisible();
+      const bounds = await menu.boundingBox(); expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      for (const button of await menu.locator('button:visible').all()) {
+        const box = await button.boundingBox(); expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(width); expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+      if ([320, 1024].includes(width)) await page.screenshot({ path: testInfo.outputPath(`menu-${width}.png`), fullPage: true });
+      await page.keyboard.press('Escape'); await expect(summary).toBeFocused();
+    }
+    await more(page, key.id, 'edit'); await page.locator('#edit-dialog [data-close]').last().click(); await expect(summary).toBeFocused();
+    await more(page, key.id, 'edit'); await page.locator('#edit-name').fill('已保存的名称'); await page.locator('#edit-form button[type=submit]').click();
+    await expect(row).toContainText('已保存的名称'); await expect(summary).toBeFocused();
+    await more(page, key.id, 'details'); await page.locator('#details-dialog [data-close]').last().click(); await expect(summary).toBeFocused();
+    await more(page, key.id, 'revoke'); await page.locator('#confirm-dialog [data-close]').click(); await expect(summary).toBeFocused();
+    await more(page, key.id, 'reissue'); await page.locator('#key-dialog [data-close]').last().click(); await expect(summary).toBeFocused();
+    await page.locator('#new-key').click(); await page.locator('#key-name').fill('新建后的焦点'); await page.locator('#key-slug').fill('created-focus'); await page.locator('#create-key').click();
+    await expect(page.locator('#secret-dialog')).toBeVisible(); await expect(page.locator('#refresh')).toBeEnabled(); await expect(page.locator('#secret-close')).toBeFocused();
+    await page.locator('#secret-close').click(); await expect(page.locator('#new-key')).toBeFocused();
+    await more(page, key.id, 'revoke'); await page.locator('#confirm-action').click(); await expect(row).toBeHidden(); await expect(page.locator('#filter')).toBeFocused();
+  } finally { await h.close(); }
+});
+
+test('public homepage accepts and displays more than sixty-four online nodes', async ({ page }) => {
+  const h = await adminFixture();
+  const nodes = Array.from({ length: 66 }, (_, index) => ({ name: '在线节点 ' + index, path: '/node/node-' + index + '/', mode: 'terminal' }));
+  try {
+    await page.route('**/api/public/nodes', route => route.fulfill({ json: { nodes } }));
+    await page.goto(h.origin); await expect(page.locator('#node-list .home-node')).toHaveCount(66); await expect(page.locator('#node-count')).toHaveText('66 个在线');
+    await expect(page.locator('#home-empty')).toBeHidden();
+    await loginAdmin(page, h.origin); await expect(page.locator('.summary')).toContainText('节点数量不限');
+  } finally { await h.close(); }
+});

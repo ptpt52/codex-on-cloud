@@ -84,8 +84,7 @@ export function serviceUnit({ frpc, config }) {
 Description=Codex on Cloud self-host node relay
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=120
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -391,8 +390,10 @@ async function joinNodeLocked({
     }
     const panel = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
     if (!panel.ok) throw Error('Panel 重启失败：' + (panel.stderr || panel.stdout || panel.code));
-    for (const args of [['--user', 'daemon-reload'], ['--user', 'enable', NODE_SERVICE], ['--user', 'restart', NODE_SERVICE]]) {
-      const result = await run('systemctl', args); if (!result.ok) throw Error('systemctl 执行失败：' + (result.stderr || result.stdout || result.code || 'unknown'));
+    for (const args of [['--user', 'daemon-reload'], ['--user', 'reset-failed', NODE_SERVICE], ['--user', 'enable', NODE_SERVICE], ['--user', 'restart', NODE_SERVICE]]) {
+      // On first installation systemd may not have loaded this unit yet.
+      // Clearing old failure counters is best-effort; enable/restart must pass.
+      const result = await run('systemctl', args); if (!result.ok && args[1] !== 'reset-failed') throw Error('systemctl 执行失败：' + (result.stderr || result.stdout || result.code || 'unknown'));
     }
     const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]);
     if (!active.ok || active.stdout !== 'active') throw Error('节点中继服务未进入 active 状态');

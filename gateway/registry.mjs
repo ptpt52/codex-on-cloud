@@ -39,7 +39,6 @@ export class GatewayRegistry {
     const existing = value.nodes.find(item => item.id === node.id);
     if (existing && (!gatewayEqual(existing.secret, body.secret) || existing.backendOrigin !== node.backendOrigin)) throw gatewayError(409, '节点已有其他接入身份或地址，不能隐式覆盖');
     if (value.nodes.some(item => item.id !== node.id && item.backendOrigin === node.backendOrigin)) throw gatewayError(409, '该后端地址已登记');
-    if (!existing && value.nodes.length >= GATEWAY_LIMITS.nodes) throw gatewayError(429, '最多登记 64 个节点，请先移除不用的节点');
     if (value.pending) throw gatewayError(409, '入口正在切换，请稍后登记');
     return { node, existing };
   }
@@ -144,7 +143,7 @@ export class GatewayRegistry {
         const session = await this.session(value, request, request.method !== 'GET');
         if (path === '/api/logout' && request.method === 'POST') { value.sessions = value.sessions.filter(item => item !== session); return Response.json({ ok: true }, { headers: { 'set-cookie': gatewayCookie('', this.config.origin, true) } }); }
         if (path === '/api/nodes' && request.method === 'GET') {
-          const offset = Number(url.searchParams.get('offset') || 0); if (!Number.isInteger(offset) || offset < 0 || offset >= GATEWAY_LIMITS.nodes) throw gatewayError(400, '分页参数无效');
+          const offset = Number(url.searchParams.get('offset') || 0); if (!Number.isSafeInteger(offset) || offset < 0) throw gatewayError(400, '分页参数无效');
           return Response.json(this.listing(value, session, offset));
         }
         if (path === '/api/codes' && request.method === 'GET') return Response.json({ codes: value.codes.map(({ id, name, at }) => ({ id, name, at })) });

@@ -36,7 +36,7 @@ async function load() {
     const response = await fetch('/api/public/nodes', { credentials: 'omit', cache: 'no-store', redirect: 'error', signal: controller.signal });
     if (!response.ok) throw Error();
     const value = await response.json();
-    if (!Array.isArray(value.nodes) || value.nodes.length > 64 || !value.nodes.every(node =>
+    if (!Array.isArray(value.nodes) || !value.nodes.every(node =>
       node && typeof node.name === 'string' && node.name.length <= 80 && /^\/node\/[a-z0-9-]{1,48}\/$/.test(node.path) && ['desktop', 'terminal'].includes(node.mode))) throw Error();
     if (stopped) return;
     render(value.nodes); status.className = 'muted'; status.textContent = '每 15 秒自动更新，也可手动刷新。';

@@ -37,8 +37,8 @@ test('join stores only the node credential, generates bounded frpc and systemd f
   const config = await readFile(join(h.root, 'data', 'selfhost-node', 'frpc.toml'), 'utf8');
   const unit = await readFile(join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service'), 'utf8');
   assert(!connectionText.includes(key)); assert(!config.includes(key)); assert.match(config, /useSystemCa = true/);
-  assert.match(config, /locations = \["\/node\/node-a\/"\]/); assert.match(config, /metadatas\.credential/); assert.match(unit, /Restart=on-failure/);
-  assert.deepEqual(h.calls.slice(0, 4), [['systemctl', '--user', 'restart', 'codex-cloud-panel.service'], ['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', 'codex-cloud-selfhost-node.service'], ['systemctl', '--user', 'restart', 'codex-cloud-selfhost-node.service']]);
+  assert.match(config, /locations = \["\/node\/node-a\/"\]/); assert.match(config, /metadatas\.credential/); assert.match(unit, /Restart=on-failure/); assert.match(unit, /StartLimitIntervalSec=0/); assert.match(unit, /RestartSec=15/);
+  assert.deepEqual(h.calls.slice(0, 5), [['systemctl', '--user', 'restart', 'codex-cloud-panel.service'], ['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'reset-failed', 'codex-cloud-selfhost-node.service'], ['systemctl', '--user', 'enable', 'codex-cloud-selfhost-node.service'], ['systemctl', '--user', 'restart', 'codex-cloud-selfhost-node.service']]);
   const env = await readFile(join(h.root, '.env'), 'utf8');
   assert.match(env, /PUBLIC_ORIGIN=https:\/\/desk\.example\.test/); assert.match(env, /ENTRY_BASE_PATH=\/node\/node-a\//); assert.match(env, /SHARED_ENTRY=0/);
   assert.match(env, new RegExp('^NODE_ID=' + result.connection.nodeId + '$', 'm'));
@@ -339,4 +339,13 @@ test('explicit reauthorization prompts for the new key at the same fixed node wi
   assert.equal(prompts, 2); assert.equal(submissions[1].key, 'coc_' + 'z'.repeat(43)); assert.equal(submissions[1].credential, undefined);
   assert.equal(next.connection.nodeId, first.connection.nodeId); assert.equal(next.connection.path, first.connection.path); assert.notEqual(next.connection.credential, first.connection.credential);
   assert(h.calls.every(call => !call.includes('codex-cloud-desktop.service')));
+});
+
+test('a first installation succeeds when there is no previously loaded service to reset', async t => {
+  const h = await setup(t);
+  const run = (file, args) => args.includes('reset-failed') ? Promise.resolve({ ok: false, code: 1, stderr: 'Unit is not loaded' }) : h.run(file, args);
+  const result = await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome, run,
+    request: async () => new Response(JSON.stringify(h.joined)), install: async () => '/opt/frpc', promptKey: async () => key });
+  assert.equal(result.connection.slug, 'node-a');
+  assert(h.calls.some(call => call.includes('restart') && call.includes('codex-cloud-selfhost-node.service')));
 });

@@ -90,10 +90,13 @@ test('logout during readiness cancels selection before its atomic commit', async
   release(); assert.equal((await changing).status, 401); assert.equal(h.storage.value.activeId, null); assert.equal(h.storage.value.pending, null);
 });
 
-test('the dynamic registry enforces node, code and session bounds without exposing route credentials', async () => {
+test('the dynamic registry admits more than sixty-four nodes while bounding state, codes and sessions', async () => {
   const h = await setup();
-  for (let number = 1; number <= GATEWAY_LIMITS.nodes; number++) assert.equal((await h.register(entry(number), key(number), h.codeValue.key)).status, 200);
-  assert.equal((await h.register(entry(65), key(65), h.codeValue.key)).status, 429);
+  for (let number = 1; number <= 70; number++) assert.equal((await h.register(entry(number), key(number), h.codeValue.key)).status, 200);
+  const lastPage = await (await h.api('nodes?offset=64')).json();
+  assert.equal(lastPage.total, 70); assert.equal(lastPage.nodes.length, 6); assert.equal(lastPage.next, null);
+  assert.equal((await h.select(entry(70).id)).status, 200);
+  for (const offset of ['-1', '1.5', '9007199254740992']) assert.equal((await h.api('nodes?offset=' + offset)).status, 400);
   for (let number = 1; number < GATEWAY_LIMITS.codes; number++) await h.code();
   assert.equal((await h.api('codes', { method: 'POST', body: { name: 'overflow' } })).status, 429);
   for (let number = 0; number < 10; number++) await h.login();

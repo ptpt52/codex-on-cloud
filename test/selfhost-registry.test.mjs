@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SelfhostRegistry } from '../selfhost/registry.mjs';
@@ -89,18 +89,60 @@ test('revocation immediately removes the session, invalidates its credential and
   assert.equal((await registry.list())[0].status, 'revoked');
 });
 
-test('the center refuses the sixty-fifth live node and counts only live sessions', async t => {
-  const { registry } = await setup(t), joined = [];
-  for (let index = 0; index < SELFHOST_LIMITS.nodes; index++) {
-    const slug = 'node-' + index, key = await registry.createKey({ name: slug, slug }), value = await registry.join({ version: 1, slug, key: key.key, node: { id: index.toString(16).padStart(32, '0'), mode: 'terminal' } });
-    joined.push({ slug, credential: value.credential, nodeId: index.toString(16).padStart(32, '0') });
+test('more than sixty-four nodes can join, recover and appear in the public directory', async t => {
+  const { registry, directory } = await setup(t), joined = [];
+  for (let index = 0; index < 66; index++) {
+    const slug = 'node-' + index, key = await registry.createKey({ name: slug, slug });
+    const nodeId = index.toString(16).padStart(32, '0');
+    const value = await registry.join({ version: 1, slug, key: key.key, node: { id: nodeId, mode: 'terminal' } });
+    const metas = metadata(value.credential, slug, nodeId), runId = 'run-' + index;
+    assert.equal(await registry.authorizeLogin({ metas, runId }), true);
+    assert.equal(await registry.authorizeProxy({ metas, runId, name: 'node-' + slug, type: 'http', customDomains: ['desk.example.test'], locations: ['/node/' + slug + '/'] }), true);
+    joined.push({ metas, runId });
   }
-  const extra = await registry.createKey({ name: 'node-64', slug: 'node-64' });
-  await assert.rejects(registry.join({ version: 1, slug: 'node-64', key: extra.key, node: { id: 'f'.repeat(32), mode: 'terminal' } }), /在线节点已达到上限/);
-  await registry.closeProxy({ metas: metadata(joined[0].credential, joined[0].slug, joined[0].nodeId), runId: '' }); // Not online yet, remains non-live.
-  const status = await registry.status();
-  assert.equal(status.onlineNodes, 0);
-  assert.equal(status.connectingNodes, SELFHOST_LIMITS.nodes);
+  assert.equal((await registry.status()).onlineNodes, 66);
+  assert.equal((await registry.status()).maximumNodes, null);
+  assert.equal(registry.publicNodes().length, 66);
+  await registry.closeProxy(joined[0]);
+  await registry.join({ version: 1, slug: joined[0].metas.slug, credential: joined[0].metas.credential, node: { id: joined[0].metas.nodeId, mode: 'terminal' } });
+  const reopened = await new SelfhostRegistry({ file: join(directory, 'state.json'), host: 'desk.example.test' }).open();
+  // frpc Login alone must also recover saved credentials beyond the old limit.
+  for (const item of joined) assert.equal(await reopened.authorizeLogin(item), true);
+  assert.equal((await reopened.status()).connectingNodes, 66);
+});
+
+test('authorization storage has byte and audit bounds without a fixed record count', async t => {
+  const { registry, directory } = await setup(t);
+  await registry.createKey({ name: 'Node', slug: 'seed' });
+  const disk = JSON.parse(await readFile(join(directory, 'state.json'), 'utf8'));
+  disk.keys = Array.from({ length: 512 }, (_, index) => ({ ...disk.keys[0], id: index.toString(16).padStart(32, '0'), slug: 'node-' + index }));
+  await writeFile(join(directory, 'state.json'), JSON.stringify(disk), { mode: 0o600 });
+  const reopened = await new SelfhostRegistry({ file: join(directory, 'state.json') }).open();
+  await reopened.createKey({ name: '513th', slug: 'over-old-record-limit' });
+  assert.equal((await reopened.list()).length, 513);
+  assert(Buffer.byteLength(await readFile(join(directory, 'state.json'))) <= SELFHOST_LIMITS.stateBytes);
+});
+
+test('a fresh frps recovery handshake survives sweeping after a long online session', async t => {
+  const { registry, clock } = await setup(t), key = await registry.createKey({ name: '恢复节点', slug: 'recover' });
+  const joined = await registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } });
+  const metas = metadata(joined.credential, key.slug, 'a'.repeat(32));
+  const proxy = { metas, name: 'node-recover', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/recover/'] };
+  await registry.authorizeLogin({ metas, runId: 'old' }); await registry.authorizeProxy({ ...proxy, runId: 'old' });
+  clock.value += SELFHOST_LIMITS.connectMs + 60000;
+  await registry.authorizePing({ metas, runId: 'old' });
+  assert.equal(await registry.authorizeLogin({ metas, runId: 'new', proxyOnline: async () => false }), true);
+  assert.equal((await registry.list())[0].status, 'authenticated');
+  assert.equal((await registry.list())[0].session.connectedAt, clock.value);
+  assert.equal(await registry.sweep(), false);
+  assert.equal(await registry.authorizeProxy({ ...proxy, runId: 'new' }), true);
+  await registry.closeProxy({ metas, runId: 'new' });
+  clock.value += 1000;
+  assert.equal(await registry.authorizeLogin({ metas, runId: 'grace' }), true);
+  assert.equal((await registry.list())[0].session.connectedAt, clock.value);
+  assert.equal(await registry.authorizePing({ metas, runId: 'new' }), false);
+  clock.value += SELFHOST_LIMITS.connectMs + 1;
+  assert.equal(await registry.sweep(), true); // Failed new handshakes still expire.
 });
 
 test('explicit finite intent rejects missing dates and updates preserve revoked state and fixed paths', async t => {
