@@ -3,11 +3,20 @@ import { fixture } from '../fixture.mjs';
 
 const pin = 'test-only-screen-password', guestPassword = 'test-only-visitor-password';
 async function login(page, app, username = 'admin', password = app.config.password) {
-  await page.goto(app.config.origin); await page.locator('#username').fill(username); await page.locator('#password').fill(password); await page.locator('#login-button').click();
+  await page.goto(app.config.origin);
+  await expect(page.locator('#username')).toHaveAttribute('autocomplete', 'username');
+  await expect(page.locator('#password')).toHaveAttribute('autocomplete', 'current-password');
+  await expect(page.locator('#password')).not.toHaveAttribute('data-1p-ignore');
+  await page.locator('#username').fill(username); await page.locator('#password').fill(password); await page.locator('#login-button').click();
   await expect(page.locator('#workspace-view')).toBeVisible();
 }
 async function unlock(page, password = pin) {
-  await expect(page.locator('#unlock-dialog')).toBeVisible(); await page.locator('#unlock-password').fill(password); await page.locator('#unlock-submit').click();
+  await expect(page.locator('#unlock-dialog')).toBeVisible();
+  // A clean browser checks form separation and the unlock flow, not native
+  // password-manager UI from a user's saved-password profile or extensions.
+  await expect(page.locator('#unlock-password')).toHaveAttribute('type', 'password');
+  await expect(page.locator('#unlock-password')).toHaveAttribute('autocomplete', /one-time-code$/);
+  await page.locator('#unlock-password').fill(password); await page.locator('#unlock-password').press('Enter');
   await expect(page.locator('#unlock-dialog')).toBeHidden(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
 }
 async function security(page) { await page.locator('#toggle-controls-button').click(); await page.locator('#access-settings-button').click(); await expect(page.locator('#access-status')).toHaveText(''); await expect(page.locator('#screen-lock-save')).toBeEnabled(); }
