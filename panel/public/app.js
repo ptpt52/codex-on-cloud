@@ -553,6 +553,11 @@ function renderConnection() {
   else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
   $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…', '终端已关闭'].includes(label));
   $('connection-status').lastChild.textContent = label;
+  const overviewState = ['桌面在线', '终端在线'].includes(label) ? 'healthy' : nodeMismatch || accessExpired || !navigator.onLine || panelState === 'offline' ? 'offline' : !owned ? 'limited' : 'pending';
+  $('connection-overview').dataset.state = overviewState;
+  if ($('connection-summary').textContent !== label) $('connection-summary').textContent = label;
+  const overviewNote = nodeMismatch ? '入口节点已切换，请刷新页面连接新节点。' : accessExpired ? '请重新验证访问，服务器上的既有任务继续运行。' : !navigator.onLine || panelState === 'offline' ? '正在等待网络恢复，服务器上的既有任务继续运行。' : !owned ? '画面访问与文件、映射服务分别授权，已有映射不受影响。' : overviewState === 'healthy' ? '当前会话可用。画面、输入和文件分别显示各自使用的通道。' : frameState === 'reconnecting' ? '正在恢复画面连接，状态恢复前请勿重复提交操作。' : '请查看下方会话信息；后台服务详情可展开查看。';
+  if ($('connection-summary-note').textContent !== overviewNote) $('connection-summary-note').textContent = overviewNote;
   renderConnectionNotice();
   const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
   const panelPath = panelRoute === 'service' ? rtcRouteLabel(serviceLink.state.route) : panelRoute === 'direct' ? rtcRouteLabel(route) : panelRoute === 'terminal' ? 'HTTPS / WebSocket' : 'HTTPS';
@@ -563,6 +568,7 @@ function renderConnection() {
   $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? rtcRouteLabel(route) + (terminalMode() ? ' · 文字终端' : '') : 'HTTPS / WebSocket 中转';
   $('diag-input-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? '网页终端加密通道' : controlReady ? rtcRouteLabel(route) : 'HTTPS';
   $('file-transport').textContent = serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（最多 50 MiB）` : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测 WebRTC' : '文件内容：HTTPS';
+  $('diag-file-transport').textContent = $('file-transport').textContent.replace(/^文件内容：/, '');
   const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}（${({ host: '主机地址', srflx: 'NAT 映射地址', prflx: '对端发现地址', relay: 'TURN 中继地址' })[value.type] || '类型未知'}）`;
   $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用 WebRTC';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
@@ -622,11 +628,13 @@ function stopDiagnostics() {
   clearTimeout(diagnosticsTimer);
   diagnosticsController?.abort();
   diagnosticsController = null;
+  $('refresh-connection').disabled = false; $('refresh-connection').textContent = '刷新状态';
 }
 async function loadDiagnostics() {
   if (!$('connection-dialog').open || !loggedIn || accessExpired || diagnosticsController) return;
   const controller = new AbortController();
   diagnosticsController = controller;
+  $('refresh-connection').disabled = true; $('refresh-connection').textContent = '正在刷新…';
   const timeout = setTimeout(() => controller.abort(new Error('诊断响应超时，请稍后重试')), 6000);
   clearTimeout(diagnosticsTimer);
   try {
@@ -641,17 +649,20 @@ async function loadDiagnostics() {
     const fileState = !fileService ? '服务状态未知' : fileService.limited ? '自动恢复已停止' : fileService.state === 'missing' ? '服务未安装' : fileService.state === 'active' ? '服务运行中' : fileService.state === 'failed' ? '服务失败' : '服务未就绪';
     $('diag-files').textContent = `${fileState} · ${files?.ready === true ? '接口正常' : files?.ready === false ? '接口未就绪' : '接口状态未知'}`;
     $('diag-note').textContent = tunnel?.available ? `更新于 ${new Date(tunnel.checkedAt).toLocaleTimeString()}；仅统计当前活动边缘连接。` : 'Tunnel 未启动、未配置或诊断接口暂不可用；这不表示桌面任务已停止。';
+    $('connection-refresh-state').textContent = `节点状态更新于 ${new Date().toLocaleTimeString()} · 每 5 秒自动更新`;
   } catch (error) {
     if (diagnosticsController === controller && loggedIn) {
       $('diag-tunnel').textContent = '状态未知';
       $('diag-families').textContent = '—';
       $('diag-recovery').textContent = $('diag-services').textContent = $('diag-files').textContent = '状态未知';
       $('diag-note').textContent = error.message;
+      $('connection-refresh-state').textContent = '节点状态未更新，请重试；会话连接信息仍单独更新。';
     }
   } finally {
     clearTimeout(timeout);
     if (diagnosticsController === controller) {
       diagnosticsController = null;
+      $('refresh-connection').disabled = false; $('refresh-connection').textContent = '刷新状态';
       if ($('connection-dialog').open && loggedIn && !accessExpired) diagnosticsTimer = setTimeout(loadDiagnostics, 5000);
     }
   }

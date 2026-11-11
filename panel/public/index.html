@@ -225,28 +225,46 @@
     <p id="desktop-settings-status" class="muted settings-help" role="status"></p>
     <button id="refresh-desktop-settings" class="quiet">刷新设置</button>
   </dialog>
-  <dialog id="connection-dialog" class="files-dialog connection-dialog">
-    <div class="dialog-heading"><h2>连接状态</h2><button id="close-connection" class="quiet" aria-label="关闭连接状态">✕</button></div>
-    <dl class="connection-details">
+  <dialog id="connection-dialog" class="files-dialog connection-dialog" aria-labelledby="connection-title">
+    <div class="dialog-heading"><h2 id="connection-title">连接状态</h2><button id="close-connection" class="quiet" type="button" aria-label="关闭连接状态">✕</button></div>
+    <section id="connection-overview" class="connection-overview" aria-label="当前连接概况" data-state="pending">
+      <p id="connection-summary" class="connection-summary" role="status">等待连接</p>
+      <p id="connection-summary-note" class="connection-summary-note">当前会话的连接方式与延迟。</p>
+      <dl class="connection-metrics">
+        <div><dt>当前画面通道</dt><dd id="diag-transport">等待画面连接</dd></div>
+        <div><dt>往返时间</dt><dd id="diag-latency">—</dd></div>
+      </dl>
+    </section>
+    <div class="connection-refresh"><p id="connection-refresh-state" class="muted">节点状态在窗口打开时自动更新</p><button id="refresh-connection" class="secondary" type="button">刷新状态</button></div>
+    <dl class="connection-details connection-session">
       <div><dt>网页服务</dt><dd id="diag-panel">等待检测</dd></div>
-      <div><dt>远程桌面</dt><dd id="diag-desktop">等待检测</dd></div>
       <div><dt>桌面画面</dt><dd id="diag-frame">等待连接</dd></div>
-      <div><dt>画面路径</dt><dd id="diag-transport">等待画面连接</dd></div>
+      <div><dt>输入通道</dt><dd id="diag-input-transport">等待画面连接</dd></div>
+      <div><dt>文件通道</dt><dd id="diag-file-transport">等待检测</dd></div>
+      <div><dt>画面尺寸</dt><dd id="diag-resolution">等待画面连接</dd></div>
+    </dl>
+    <details id="connection-network" class="connection-disclosure">
+      <summary>网络路径与端点</summary>
+      <dl class="connection-details">
+      <div><dt>WebRTC 路径</dt><dd id="diag-direct-status">尚未检测</dd></div>
       <div><dt>WebRTC 网络</dt><dd id="diag-network">等待检测</dd></div>
       <div><dt>连接端点</dt><dd id="diag-peer" title="实际选中的 ICE 候选地址；TURN 中继地址不是设备地址。">—</dd></div>
-      <div><dt>往返时间</dt><dd id="diag-latency">—</dd></div>
-      <div><dt>WebRTC 路径</dt><dd id="diag-direct-status">尚未检测</dd></div>
-      <div><dt>输入助手路径</dt><dd id="diag-input-transport">等待画面连接</dd></div>
-      <div><dt>实际分辨率</dt><dd id="diag-resolution">等待画面连接</dd></div>
-      <div><dt>本机屏幕</dt><dd id="diag-awake">未开启保持亮屏</dd></div>
+      </dl>
+      <p class="muted">端点是实际选中的网络候选地址；TURN 地址属于中继服务器，不能据此判断两台设备的 IP。</p>
+    </details>
+    <details id="connection-services" class="connection-disclosure">
+      <summary>节点服务与浏览器</summary>
+      <dl class="connection-details">
+      <div><dt>远程桌面</dt><dd id="diag-desktop">等待检测</dd></div>
       <div><dt>Cloudflare Tunnel</dt><dd id="diag-tunnel">等待检测</dd></div>
-      <div><dt>面板恢复</dt><dd id="diag-recovery">等待检测</dd></div>
+      <div><dt>面板服务</dt><dd id="diag-recovery">等待检测</dd></div>
       <div><dt>输入与桌面执行</dt><dd id="diag-services">等待检测</dd></div>
       <div><dt>文件服务</dt><dd id="diag-files">等待检测</dd></div>
-      <div><dt>IPv6 / IPv4 连接</dt><dd id="diag-families">—</dd></div>
-    </dl>
-    <p id="diag-note" class="muted" role="status">仅查看连接信息，不会重启桌面。</p>
-    <button id="refresh-connection" class="secondary">刷新状态</button>
+      <div><dt>Tunnel IPv6 / IPv4</dt><dd id="diag-families">—</dd></div>
+      <div><dt>浏览器亮屏</dt><dd id="diag-awake">未开启保持亮屏</dd></div>
+      </dl>
+      <p id="diag-note" class="muted" role="status">仅查看连接信息，不会重启桌面。</p>
+    </details>
     <details id="input-notice-history" class="connection-trace">
       <summary>操作与通道提示</summary>
       <p class="muted">仅本页最近 32 条，退出后清空。收起提示不代表操作成功，不会重发输入。</p>
