@@ -72,7 +72,7 @@ test('real IPv6 UDP/DTLS direct path reports selected addresses and survives rel
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await page.locator('#connection-button').click();
     await expect(page.locator('#diag-transport')).toHaveText('HTTPS / WebSocket 中转');
-    await expect(page.locator('#diag-network')).toHaveText('当前未使用直连');
+    await expect(page.locator('#diag-network')).toHaveText('当前未使用 WebRTC');
     await expect(page.locator('#diag-peer')).toHaveText('—');
     await page.locator('#close-connection').click();
     await frame.evaluate(() => { window.dropHealth = false; window.dispatchEvent(new Event('online')); });

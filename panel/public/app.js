@@ -19,6 +19,7 @@ import { createInputNotices } from './input-notices.js';
 import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
 import { entryPath } from './entry-path.js';
 import { rtcIceServers } from './rtc-ice.js';
+import { rtcRouteKind, rtcRouteLabel } from './rtc-stats.js';
 
 const $ = id => document.getElementById(id);
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
@@ -105,13 +106,13 @@ $('copy-connection-trace')?.addEventListener('click', async () => {
   }
 });
 let relayProbeController, relayProbeAt = -Infinity;
-const directIssues = { 'heartbeat-suspect': '心跳延迟，正在复核连接', busy: '服务器协商繁忙，稍后重试', auth: '连接权限已变化，请重新登录或接管', target: '终端身份已变化，请重新选择目标', protocol: '连接参数未被服务器接受，请检查配置', 'signal-failed': '协商服务暂不可达，稍后重试', unsupported: '当前浏览器环境不支持直连', disabled: '服务端已关闭直连', signaling: '直连协商请求未完成',
-  negotiation: '直连未建立，等待后续探测', timeout: '直连协商超时，等待后续探测',
-  'signaling-timeout': '直连协商请求超时，等待后续探测',
-  'gathering-timeout': '直连地址收集超时，等待后续探测',
-  'ice-timeout': '直连 UDP 探测超时；请检查浏览器本地网络权限及 UDP 通道',
-  'channel-timeout': '直连 UDP 已接通，加密数据通道建立超时',
-  connection: '原直连已断开，正在恢复', heartbeat: '直连心跳无回复，已开始回退中转' };
+const directIssues = { 'heartbeat-suspect': '心跳延迟，正在复核连接', busy: '服务器协商繁忙，稍后重试', auth: '连接权限已变化，请重新登录或接管', target: '终端身份已变化，请重新选择目标', protocol: '连接参数未被服务器接受，请检查配置', 'signal-failed': '协商服务暂不可达，稍后重试', unsupported: '当前浏览器环境不支持 WebRTC', disabled: '服务端已关闭 WebRTC', signaling: 'WebRTC 协商请求未完成',
+  negotiation: 'WebRTC 未建立，等待后续探测', timeout: 'WebRTC 协商超时，等待后续探测',
+  'signaling-timeout': 'WebRTC 协商请求超时，等待后续探测',
+  'gathering-timeout': 'WebRTC 地址收集超时，等待后续探测',
+  'ice-timeout': 'WebRTC 路径探测超时；请检查网络权限、UDP 通道及中继配置',
+  'channel-timeout': 'WebRTC 路径已接通，加密数据通道建立超时',
+  connection: '原 WebRTC 通道已断开，正在恢复', heartbeat: 'WebRTC 心跳无回复，已开始回退 HTTPS / WebSocket' };
 let controlReady = false, controlPending = null, controlSequence = 0;
 let panelReady = false, terminalSwitchReady = false, terminalCreateReady = false, panelSequence = 0, panelRoute = 'https', rtcConfig;
 const panelRequests = new Map();
@@ -553,23 +554,25 @@ function renderConnection() {
   $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…', '终端已关闭'].includes(label));
   $('connection-status').lastChild.textContent = label;
   renderConnectionNotice();
-  $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? panelRoute === 'direct' ? '可访问（加密直连）' : '可访问' : panelState === 'offline' ? '连接中断' : '等待检测';
+  const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
+  const panelPath = panelRoute === 'service' ? rtcRouteLabel(serviceLink.state.route) : panelRoute === 'direct' ? rtcRouteLabel(route) : panelRoute === 'terminal' ? 'HTTPS / WebSocket' : 'HTTPS';
+  const routeStatus = value => ({ direct: '已建立加密直连', relay: '已建立 TURN 中继（端到端加密）', unknown: '已建立 WebRTC 加密通道，路径待确认' })[rtcRouteKind(value)];
+  $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? `可访问（${panelPath}）` : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
   $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
-  $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? terminalMode() ? 'WebRTC 加密直连 · 文字终端' : 'WebRTC 加密直连' : 'HTTPS / WebSocket 中转';
-  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? '网页终端加密通道' : controlReady ? 'WebRTC 加密直连' : 'HTTPS';
-  const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
-  $('file-transport').textContent = serviceLink.files ? '文件内容：WebRTC 加密直连（最多 50 MiB）' : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测直连' : '文件内容：HTTPS';
-  const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}`;
-  $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用直连';
+  $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? rtcRouteLabel(route) + (terminalMode() ? ' · 文字终端' : '') : 'HTTPS / WebSocket 中转';
+  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? '网页终端加密通道' : controlReady ? rtcRouteLabel(route) : 'HTTPS';
+  $('file-transport').textContent = serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（最多 50 MiB）` : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测 WebRTC' : '文件内容：HTTPS';
+  const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}（${({ host: '主机地址', srflx: 'NAT 映射地址', prflx: '对端发现地址', relay: 'TURN 中继地址' })[value.type] || '类型未知'}）`;
+  $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用 WebRTC';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
-  $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? '已建立加密直连' : directIssues[directIssue] || '尚未检测';
+  $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? routeStatus(route) : directIssues[directIssue] || '尚未检测';
   if (!owned && loggedIn && serviceProtocol === 1) {
     const service = serviceLink.state;
-    $('diag-panel').textContent = service.ready ? '可访问（加密直连）' : panelState === 'online' ? '可访问（HTTPS）' : '连接中断';
-    $('diag-transport').textContent = service.ready ? 'WebRTC 加密直连 · 受限服务' : 'HTTPS 中转 · 受限服务';
-    $('diag-direct-status').textContent = service.ready ? '已建立加密直连' : service.issue === 'connecting' ? '正在探测服务直连' : directIssues[service.issue] || '等待后续探测';
-    $('diag-network').textContent = service.route ? `${service.route.family} / ${service.route.protocol}` : '当前未使用直连';
+    $('diag-panel').textContent = service.ready ? `可访问（${rtcRouteLabel(service.route)}）` : panelState === 'online' ? '可访问（HTTPS）' : '连接中断';
+    $('diag-transport').textContent = service.ready ? `${rtcRouteLabel(service.route)} · 受限服务` : 'HTTPS 中转 · 受限服务';
+    $('diag-direct-status').textContent = service.ready ? routeStatus(service.route) : service.issue === 'connecting' ? '正在探测服务 WebRTC' : directIssues[service.issue] || '等待后续探测';
+    $('diag-network').textContent = service.route ? `${service.route.family} / ${service.route.protocol}` : service.ready ? '浏览器尚未提供路径详情' : '当前未使用 WebRTC';
     $('diag-peer').textContent = service.route ? `${endpoint(service.route.local)} ↔ ${endpoint(service.route.remote)}` : '—';
     $('diag-input-transport').textContent = '当前账号无桌面输入权限';
   }
@@ -678,10 +681,14 @@ async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
   }
   const service = serviceAction(path, method);
   if (service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
-    try { return await serviceLink.request(service, body || {}, signal); }
+    try { const value = await serviceLink.request(service, body || {}, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
-  if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) return framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
+  if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {
+    const route = frameTransport, value = await framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
+    if (path === '/api/state') panelRoute = route;
+    return value;
+  }
   const headers = { 'x-viewer-id': viewer, ...nodeHeaders() };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -706,6 +713,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload } = {}) {
     if (!signal?.aborted && data.access) updateAccess(data.access);
     const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; error.status = response.status; error.code = data.code; throw error;
   }
+  if (path === '/api/state' && !signal?.aborted) panelRoute = 'https';
   return data;
 }
 function cacheRTC(value) {
@@ -818,12 +826,12 @@ function assistantRequest(path, body, signal) {
   const action = { '/api/paste': 'paste', '/api/key': 'key', '/api/clipboard/read': 'clipboard' }[path];
   if (terminalMode() && ['paste', 'key'].includes(action) && !controlReady) return Promise.reject(Object.assign(new Error('网页终端未就绪，本次输入未发送'), { outcome: 'rejected' }));
   if (!controlReady || !action || (terminalMode() && action === 'clipboard')) return api(path, { method: 'POST', body, signal });
-  if (controlPending || signal?.aborted || controlSequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连通道未就绪，本次操作未发送'), { outcome: 'rejected' }));
+  if (controlPending || signal?.aborted || controlSequence >= 2147483647) return Promise.reject(Object.assign(new Error('输入通道未就绪，本次操作未发送'), { outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
     const id = ++controlSequence;
     const abort = () => {
       $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-cancel', frame: String(frameEpoch), id }, location.origin);
-      finishDirectControl(Object.assign(new Error('直连操作结果未知，请先查看桌面确认'), { outcome: 'unknown' }));
+      finishDirectControl(Object.assign(new Error('输入操作结果未知，请先查看桌面确认'), { outcome: 'unknown' }));
     };
     controlPending = { id, resolve, reject, signal, abort, timer: setTimeout(abort, 8000) };
     signal?.addEventListener('abort', abort, { once: true });
@@ -981,7 +989,6 @@ async function poll() {
   if (!loggedIn || accessExpired || pollController || terminalSwitching) return;
   const controller = new AbortController();
   pollController = controller;
-  const direct = panelReady && frameState === 'connected';
   const timeout = setTimeout(() => controller.abort(new Error('网络响应超时，请稍后重试')), 8000);
   clearTimeout(pollTimer);
   try {
@@ -999,7 +1006,7 @@ async function poll() {
       mine = true;
     }
     owned = mine;
-    panelRoute = direct ? 'direct' : 'https'; cacheRTC(state.rtc);
+    cacheRTC(state.rtc);
     panelState = 'online';
     desktopReady = state.desktop.ready === true;
     controlsState = state.controls || { available: false, maintenance: false, inputBusy: false };
@@ -1767,8 +1774,9 @@ window.addEventListener('message', event => {
     if (typeof event.data.issue === 'string' && (Object.hasOwn(directIssues, event.data.issue) || event.data.issue === '')) directIssue = event.data.issue;
     const route = event.data.details;
     const validEnd = value => value && (value.address === null || typeof value.address === 'string' && value.address.length <= 253 && /^[a-zA-Z0-9:.%-]+$/.test(value.address)) && (value.port === null || Number.isInteger(value.port) && value.port >= 1 && value.port <= 65535);
+    const copyEnd = value => ({ address: value.address, port: value.port, type: ['host', 'srflx', 'prflx', 'relay'].includes(value.type) ? value.type : 'unknown' });
     frameNetwork = route && ['IPv4', 'IPv6', 'unknown'].includes(route.family) && ['UDP', 'TCP', 'unknown'].includes(route.protocol) && validEnd(route.local) && validEnd(route.remote) && (route.rttMs === null || Number.isInteger(route.rttMs) && route.rttMs >= 0 && route.rttMs <= 600000)
-      ? { family: route.family, protocol: route.protocol, rttMs: route.rttMs, local: { address: route.local.address, port: route.local.port }, remote: { address: route.remote.address, port: route.remote.port } } : null;
+      ? { family: route.family, protocol: route.protocol, rttMs: route.rttMs, local: copyEnd(route.local), remote: copyEnd(route.remote) } : null;
     frameLatency.set(event.data.rttMs);
     renderConnection(); return;
   }
@@ -1815,7 +1823,7 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-control-result') {
     if (!controlPending || event.data.id !== controlPending.id) return;
-    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '直连操作失败'), { outcome: event.data.error?.outcome || 'unknown', status: event.data.error?.status });
+    const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '输入操作失败'), { outcome: event.data.error?.outcome || 'unknown', status: event.data.error?.status });
     finishDirectControl(error, event.data.value); return;
   }
   if (event.data?.type === 'codex-desktop-view') {
@@ -1855,7 +1863,7 @@ accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions
   lockEnabled: () => permissions.screenLockEnabled, claim, changed: updateAccess, activity: () => { renderInputControls(); scheduleViewport(); }, toast });
 forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online',
   prepareDownloads: () => { if (serviceProtocol !== 1 || !rtcConfig?.webrtc) return false; serviceLink.start(); return serviceLink.state.issue === 'connecting' || serviceLink.transport?.features?.helperDownloadsProtocol === 1; },
-  downloadClient: () => serviceLink.helperFiles, saveDownload: saveDirectFile,
+  downloadClient: () => serviceLink.helperFiles, downloadRoute: () => serviceLink.state.route, saveDownload: saveDirectFile,
   capabilities: () => ({ directions: permissions.canForward ? ['forward', 'reverse'] : ['reverse'], manageDevices: permissions.canManageDevices }) });
 function canLeaveNode() { return !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
 $('gateway-switch-button').addEventListener('click', () => {

@@ -19,6 +19,16 @@ export function selectedRoute(stats) {
     rttMs: Number.isFinite(pair.currentRoundTripTime) && pair.currentRoundTripTime >= 0 && pair.currentRoundTripTime <= 600 ? Math.round(pair.currentRoundTripTime * 1000) : null };
 }
 
+export function rtcRouteKind(route) {
+  const types = [route?.local?.type, route?.remote?.type];
+  if (types.includes('relay')) return 'relay';
+  return types.every(type => ['host', 'srflx', 'prflx'].includes(type)) ? 'direct' : 'unknown';
+}
+
+export function rtcRouteLabel(route) {
+  return { direct: 'WebRTC 加密直连', relay: 'WebRTC 加密中继（TURN）', unknown: 'WebRTC 加密通道（路径待确认）' }[rtcRouteKind(route)];
+}
+
 export function gatherCandidates(peer, signal) {
   if (signal.aborted) return Promise.reject(new Error('直连协商已取消'));
   if (peer.iceGatheringState === 'complete') return Promise.resolve();

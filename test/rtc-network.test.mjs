@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL } from '../panel/rtc-network.mjs';
-import { selectedRoute, gatherCandidates } from '../panel/public/rtc-stats.js';
+import { selectedRoute, gatherCandidates, rtcRouteKind, rtcRouteLabel } from '../panel/public/rtc-stats.js';
 
 const offer = candidates => ({ type: 'offer', sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
   'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'), ...candidates].join('\r\n') });
@@ -71,6 +71,26 @@ test('route diagnostics report the selected candidate pair rather than another s
   stats.get('local').address = '';
   assert.equal(selectedRoute(stats).local.address, null); assert.equal(selectedRoute(stats).family, 'IPv6');
   stats.get('selected').state = 'failed'; assert.equal(selectedRoute(stats), null);
+});
+
+test('route labels require candidate types and distinguish either TURN allocation from direct paths', () => {
+  const route = (local, remote) => ({ local: { type: local, address: '203.0.113.8', port: 49161 }, remote: { type: remote, address: '203.0.113.8', port: 49162 } });
+  for (const local of ['host', 'srflx', 'prflx']) for (const remote of ['host', 'srflx', 'prflx']) {
+    assert.equal(rtcRouteKind(route(local, remote)), 'direct');
+    assert.equal(rtcRouteLabel(route(local, remote)), 'WebRTC 加密直连');
+  }
+  for (const other of ['host', 'srflx', 'prflx', 'relay', 'unknown', undefined]) {
+    for (const pair of [route('relay', other), route(other, 'relay')]) {
+      assert.equal(rtcRouteKind(pair), 'relay');
+      assert.equal(rtcRouteLabel(pair), 'WebRTC 加密中继（TURN）');
+    }
+  }
+  for (const pair of [null, {}, route(undefined, 'host'), route('srflx', 'unknown'), route('host', 'invalid')]) {
+    assert.equal(rtcRouteKind(pair), 'unknown');
+    assert.equal(rtcRouteLabel(pair), 'WebRTC 加密通道（路径待确认）');
+  }
+  const hidden = route('host', 'srflx'); hidden.local.address = hidden.remote.address = null;
+  assert.equal(rtcRouteKind(hidden), 'direct'); // Address privacy and identical IPs do not determine the path.
 });
 
 test('STUN gathering has a fixed deadline and cancellation removes its listeners', async t => {

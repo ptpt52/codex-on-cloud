@@ -143,7 +143,7 @@ test('a silent OPEN direct connection loses an accepted result once, falls back 
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown', { timeout: 3500 });
     await expect.poll(() => app.terminalConnections, { timeout: 10000 }).toBe(2); hold.release();
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await diagnostics(page, RELAY);
-    await expect(page.locator('#diag-direct-status')).toHaveText('直连心跳无回复，已开始回退中转'); await page.locator('#close-connection').click();
+    await expect(page.locator('#diag-direct-status')).toHaveText('WebRTC 心跳无回复，已开始回退 HTTPS / WebSocket'); await page.locator('#close-connection').click();
     await network(frame); await expect.poll(() => app.terminalConnections, { timeout: 15000 }).toBe(3); await diagnostics(page, DIRECT);
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 1, rtc: 2 }); expect(app.terminalInputs).toEqual([{ terminalId: 'main', text: '\r' }]);
     await expect(page.locator('#mobile-input')).toHaveValue('切网仍保留'); expect(app.managementStats.restarts).toBe(0);

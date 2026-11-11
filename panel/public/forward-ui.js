@@ -3,10 +3,11 @@ import { nodeLink } from './node-scope.js';
 
 import { forwardReport, forwardFaultArea } from './forward-report.js';
 import { rtcHints } from './rtc-hints.js';
+import { rtcRouteKind, rtcRouteLabel } from './rtc-stats.js';
 
 // The browser grants one short-lived capability; raw TCP bytes never enter it.
 export function createForwardUI({ api, allowed, hints = () => ({}), capabilities = () => ({ directions: ['forward', 'reverse'], manageDevices: true }),
-  prepareDownloads = () => false, downloadClient = () => null, saveDownload }) {
+  prepareDownloads = () => false, downloadClient = () => null, downloadRoute = () => null, saveDownload }) {
   const $ = id => document.getElementById(id), dialog = $('forward-dialog'), confirmation = $('forward-confirm');
   let generation = 0, controller, timer, busy = false, codeId = '', codeExpires = 0, pendingStop = '', room = true;
   let platform = { os: forwardOS(navigator), arch: null }, detection, downloads = [];
@@ -15,7 +16,8 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   let policySignature = '', reportText = '';
   let downloadController, downloadMessage = '';
   function downloadStatus() {
-    $('forward-download-status').textContent = downloadMessage || (downloadClient() && globalThis.crypto?.subtle ? '助手下载：WebRTC 加密通道已就绪' : '助手下载：HTTPS；直连就绪后优先使用 WebRTC');
+    const path = { direct: '直连', relay: 'TURN 中继', unknown: '路径待确认' }[rtcRouteKind(downloadRoute())];
+    $('forward-download-status').textContent = downloadMessage || (downloadClient() && globalThis.crypto?.subtle ? `助手下载：WebRTC 加密通道已就绪（${path}）` : '助手下载：HTTPS；WebRTC 就绪后优先使用');
   }
   function cancelDownload() { const old = downloadController; downloadController = undefined; old?.abort(); downloadMessage = ''; downloadStatus(); }
   async function downloadHelper(file, href) {
@@ -40,10 +42,10 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
       if (versions.length > 1 || versions.length && !/^[a-f0-9]{32}$/.test(versions[0])) throw Error('助手版本信息无效，请刷新列表');
       const helper = { arch: file.arch, ...(versions.length ? { generation: versions[0] } : {}) };
       let lastUpdate = -Infinity;
-      downloadMessage = '正在通过 WebRTC 下载助手…'; downloadStatus();
+      downloadMessage = `正在通过 ${rtcRouteLabel(downloadRoute())} 下载助手…`; downloadStatus();
       const blob = await client.downloadHelper(helper, file.size, request.signal, (received, size) => {
         if (!live() || performance.now() - lastUpdate < 100 && received !== size) return;
-        lastUpdate = performance.now(); downloadMessage = '正在通过 WebRTC 下载助手：' + Math.floor(received * 100 / size) + '%'; downloadStatus();
+        lastUpdate = performance.now(); downloadMessage = `正在通过 ${rtcRouteLabel(downloadRoute())} 下载助手：` + Math.floor(received * 100 / size) + '%'; downloadStatus();
       });
       if (!live()) return;
       downloadMessage = '正在校验助手文件…'; downloadStatus();

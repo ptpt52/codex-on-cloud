@@ -2,7 +2,7 @@ import { SHORTCUT_BY_KEY } from './shortcuts.js';
 
 export const INPUT_NOTICE_LIMIT = 32;
 const sources = ['assistant', 'stream', 'history'];
-const paths = { direct: 'WebRTC 加密直连', terminal: '网页终端通道', https: 'HTTPS', relay: 'HTTPS / WebSocket 中转' };
+const paths = { direct: 'WebRTC 加密通道', terminal: '网页终端通道', https: 'HTTPS', relay: 'HTTPS / WebSocket 中转' };
 const reasons = {
   timeout: '等待操作结果超时。', connection: '操作连接发生变化，未收到可确认的执行结果。',
   invalid_response: '服务响应不完整，无法确认执行结果。', result: '未收到可确认的执行结果。',

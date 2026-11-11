@@ -70,7 +70,7 @@ test('terminal fallback displays the UDP timeout phase in connection status and 
     await page.clock.runFor(1600); await expect.poll(() => writes.rtc).toBe(1); await page.clock.runFor(12000);
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await page.locator('#connection-button').click();
     await expect(page.locator('#diag-transport')).toHaveText('HTTPS / WebSocket 文字终端');
-    await expect(page.locator('#diag-direct-status')).toHaveText('直连 UDP 探测超时；请检查浏览器本地网络权限及 UDP 通道');
+    await expect(page.locator('#diag-direct-status')).toHaveText('WebRTC 路径探测超时；请检查网络权限、UDP 通道及中继配置');
     expect(writes).toEqual({ login: 1, claim: 1, rtc: 1, ws: 1, input: 0 });
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.vncConnections).toBe(0);
   } finally { await app.close(); }

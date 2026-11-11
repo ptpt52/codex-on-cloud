@@ -232,10 +232,10 @@
       <div><dt>远程桌面</dt><dd id="diag-desktop">等待检测</dd></div>
       <div><dt>桌面画面</dt><dd id="diag-frame">等待连接</dd></div>
       <div><dt>画面路径</dt><dd id="diag-transport">等待画面连接</dd></div>
-      <div><dt>直连网络</dt><dd id="diag-network">等待检测</dd></div>
-      <div><dt>直连两端</dt><dd id="diag-peer">—</dd></div>
+      <div><dt>WebRTC 网络</dt><dd id="diag-network">等待检测</dd></div>
+      <div><dt>连接端点</dt><dd id="diag-peer" title="实际选中的 ICE 候选地址；TURN 中继地址不是设备地址。">—</dd></div>
       <div><dt>往返时间</dt><dd id="diag-latency">—</dd></div>
-      <div><dt>直连检测</dt><dd id="diag-direct-status">尚未检测</dd></div>
+      <div><dt>WebRTC 路径</dt><dd id="diag-direct-status">尚未检测</dd></div>
       <div><dt>输入助手路径</dt><dd id="diag-input-transport">等待画面连接</dd></div>
       <div><dt>实际分辨率</dt><dd id="diag-resolution">等待画面连接</dd></div>
       <div><dt>本机屏幕</dt><dd id="diag-awake">未开启保持亮屏</dd></div>
@@ -276,7 +276,7 @@
     <p class="muted">运行 Mac 或 Windows 助手，在本机与服务器之间访问已授权的 TCP 服务。反向模式可让服务器上的 Codex 访问你本地的 SSH、Telnet 等设备；新连接优先直连，不可用时走 WSS 中转。</p>
     <p id="forward-platform-note" class="muted">请选择运行助手的电脑版本。</p>
     <div id="forward-downloads" class="forward-downloads"></div>
-    <p id="forward-download-status" class="muted" role="status">助手下载：HTTPS；直连就绪后优先使用 WebRTC</p>
+    <p id="forward-download-status" class="muted" role="status">助手下载：HTTPS；WebRTC 就绪后优先使用</p>
     <p id="forward-mac-notice" class="muted" hidden><strong>Mac 首次运行：</strong>若提示“Apple 无法验证”，进入“系统设置 → 隐私与安全性”，对 codex-cloud-forward 点击“仍要打开”，确认后重新运行 Start.command。完整步骤见下方说明。</p>
     <details id="forward-mac-help" class="forward-mac-help" hidden>
       <summary>Mac 首次运行 / Apple 无法验证时怎么办</summary>

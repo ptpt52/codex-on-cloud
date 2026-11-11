@@ -1,7 +1,7 @@
 export const TRACE_LIMITS = Object.freeze({ events: 50, bytes: 16384 });
 export const TRACE_LABELS = Object.freeze({
   'relay-start': '开始连接中转', 'relay-open': '中转握手完成', 'relay-ready': '中转认证完成',
-  'direct-start': '开始探测直连', 'rtc-stage': '直连协商', 'direct-ready': '加密直连已就绪',
+  'direct-start': '开始探测 WebRTC', 'rtc-stage': 'WebRTC 协商', 'direct-ready': 'WebRTC 加密通道已就绪',
   'first-frame': '首屏准备完成', 'path-active': '数据通道已启用', 'path-lost': '通道已断开', 'retry': '等待重试',
   'heartbeat-timeout': '心跳未及时回复', 'network-change': '网络或前后台状态变化',
   'session-ended': '观看连接已结束', 'input-pressure': '输入队列达到上限',
