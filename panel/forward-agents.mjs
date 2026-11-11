@@ -30,7 +30,7 @@ export function agentInventory(value) {
 export function createForwardAgents(config, forwarding) {
   const identity = { get entry() { return config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : ''); }, id: config.nodeId || '' };
   const state = createForwardAgentState(config.dataDir, forwarding.validate, identity);
-  const sessions = new Map(), runtime = new Map(), inventories = new Map();
+  const sessions = new Map(), runtime = new Map(), inventories = new Map(), updates = new Map();
   const server = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: AGENT_LIMITS.message });
   let closed = false;
   function send(session, message) {
@@ -41,7 +41,9 @@ export function createForwardAgents(config, forwarding) {
   }
   function stopRuntime(entry) { if (entry.mapping) forwarding.stop({ id: entry.mapping }); runtime.delete(entry.ruleId); }
   function stopAgent(id) { for (const entry of runtime.values()) if (entry.agentId === id) stopRuntime(entry); }
-  function disconnect(id) { const session = sessions.get(id); if (session) { sessions.delete(id); session.ws?.terminate(); } inventories.delete(id); stopAgent(id); }
+  function disconnect(id) { clearTimeout(updates.get(id)); updates.delete(id); const session = sessions.get(id); if (session) { sessions.delete(id); session.ws?.terminate(); } inventories.delete(id); stopAgent(id); }
+  // At most one pending policy notification per connected helper (eight total).
+  function scheduleUpdate(id) { if (closed || updates.has(id)) return; updates.set(id, setTimeout(() => { updates.delete(id); reconcile(id, true); }, 20).unref()); }
   function reconcile(agentId, force = false) {
     if (closed) return;
     const agent = state.find(agentId), session = sessions.get(agentId);
@@ -90,10 +92,10 @@ export function createForwardAgents(config, forwarding) {
   function action(path, body) {
     let result;
     if (path === 'create') result = state.create(body);
-    else if (path === 'rekey') { result = state.rekey(body); disconnect(body.id); }
-    else if (path === 'remove') { result = state.remove(body); disconnect(body.id); }
-    else if (path === 'rule') { result = state.saveRule(body); reconcile(body.agentId, true); }
-    else if (path === 'rule/remove') { result = state.removeRule(body); reconcile(body.agentId, true); }
+    else if (path === 'rekey') { const previous = state.find(body?.id)?.keyHash; try { result = state.rekey(body); } finally { if (state.find(body?.id)?.keyHash !== previous) disconnect(body.id); } }
+    else if (path === 'remove') { try { result = state.remove(body); } finally { if (body?.id && !state.find(body.id)) disconnect(body.id); } }
+    else if (path === 'rule') { try { result = state.saveRule(body); } finally { reconcile(body?.agentId, true); } }
+    else if (path === 'rule/remove') { try { result = state.removeRule(body); } finally { reconcile(body?.agentId, true); } }
     else if (path === 'inventory') {
       if (!fields(body, ['id']) || !ID.test(body.id || '')) throw Object.assign(Error('助手标识无效'), { status: 400 });
       const session = sessions.get(body.id);
@@ -137,12 +139,12 @@ export function createForwardAgents(config, forwarding) {
           try {
             if (binary) throw Error();
             const value = JSON.parse(bytes.toString());
-            if (value?.type === 'inventory') { session.inventory = { ...agentInventory(value), updatedAt: Date.now() }; inventories.set(agent.id, session.inventory); }
+            if (value?.type === 'inventory') { if (bytes.length > AGENT_LIMITS.inventoryBytes) throw Error(); session.inventory = { ...agentInventory(value), updatedAt: Date.now() }; inventories.set(agent.id, session.inventory); }
             else if (value?.type === 'rule-result' && fields(value, ['type', 'id', 'mappingId', 'revision', 'error']) && ID.test(value.id) && ID.test(value.mappingId) && text(value.error, 256)) {
               const entry = runtime.get(value.id);
               if (entry?.agentId === agent.id && entry.mapping === value.mappingId && entry.revision === value.revision) {
                 entry.error = value.error;
-                if (value.error) { forwarding.stop({ id: entry.mapping }); entry.mapping = ''; entry.code = ''; entry.retryAt = Date.now() + 15000; reconcile(agent.id, true); }
+                if (value.error) { forwarding.stop({ id: entry.mapping }); entry.mapping = ''; entry.code = ''; entry.retryAt = Date.now() + 15000; scheduleUpdate(agent.id); }
               }
             } else throw Error();
           } catch { ws.close(1008, 'protocol_error'); ws.terminate(); }
@@ -152,6 +154,6 @@ export function createForwardAgents(config, forwarding) {
       });
     } catch { sessions.delete(agent.id); socket.destroy(); }
   }
-  function close() { closed = true; clearInterval(timer); for (const id of sessions.keys()) disconnect(id); server.close(); }
+  function close() { closed = true; clearInterval(timer); for (const timeout of updates.values()) clearTimeout(timeout); updates.clear(); for (const id of sessions.keys()) disconnect(id); server.close(); }
   return { list, action, upgrade, close };
 }

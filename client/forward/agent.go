@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -221,7 +222,12 @@ func (a *agentRuntime) apply(rules []managedRule) error {
 			defer close(worker.done)
 			// Entering the helper's revocable long-lived key authorizes this
 			// node to configure local TCP and serial targets for this process.
-			err := runWithRule(ctx, a.server, rule.Code, ruleOutput{rule.Name, a.output}, func(context.Context, readyMessage) error { return nil }, &rule)
+			var err error
+			if rule.Config.Serial != nil && !rule.Config.Serial.valid(runtime.GOOS) {
+				err = failure("serial_open_failed")
+			} else {
+				err = runWithRule(ctx, a.server, rule.Code, ruleOutput{rule.Name, a.output}, func(context.Context, readyMessage) error { return nil }, &rule)
+			}
 			result := ruleResult{Type: "rule-result", ID: rule.ID, MappingID: rule.MappingID, Revision: rule.Revision}
 			if err != nil && ctx.Err() == nil {
 				result.Error = safeAgentText(connectionFailure(err).Error(), 256)
@@ -239,7 +245,7 @@ func (a *agentRuntime) apply(rules []managedRule) error {
 		}()
 	}
 	if changed {
-		fmt.Fprintf(a.output, "当前正在执行 %d 条映射规则：\n", len(rules))
+		fmt.Fprintf(a.output, "当前配置 %d 条映射规则（启动结果见各规则状态）：\n", len(rules))
 		for _, r := range rules {
 			if r.Config.Serial != nil {
 				fmt.Fprintf(a.output, "- %s：服务器 127.0.0.1:%d → 串口 %s\n", r.Name, r.Config.LocalPort, r.Config.Serial.label())
@@ -361,8 +367,20 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 		return err
 	}
 	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
-	fmt.Fprintf(manager.output, "正在被控制台节点控制：%s（节点 %s）\n助手：%s · %s\n", entry, ready.Node.ID, ready.Name, ready.ID)
+	nodeLabel := ready.Node.ID
+	if nodeLabel == "" {
+		nodeLabel = "独立部署"
+	}
+	fmt.Fprintf(manager.output, "正在被控制台节点控制：%s（节点 %s）\n助手：%s · %s\n", entry, nodeLabel, ready.Name, ready.ID)
 	fmt.Fprintln(manager.output, "此 key 允许该节点动态配置本机网络及串口；仅监听回环地址。Ctrl+C 停止所有映射。")
+	// Replace queued stale results with the latest bounded state below.
+	for draining := true; draining; {
+		select {
+		case <-manager.results:
+		default:
+			draining = false
+		}
+	}
 	for _, worker := range manager.workers {
 		manager.mu.Lock()
 		result := worker.result

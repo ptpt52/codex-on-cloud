@@ -107,3 +107,23 @@ test('inventory rejects file paths, control characters, IPv6 injection and unbou
   assert.throws(() => agentInventory({ ...value, interfaces: [{ ...nic, name: '\u001b[31m', addresses: [] }] }));
   assert.throws(() => agentInventory({ ...value, interfaces: Array(129).fill({ ...nic, addresses: [] }) }));
 });
+
+test('batch rule failures coalesce policy snapshots and oversized inventory cannot replace the last bounded snapshot', async () => {
+  const app = await fixture(); let connection;
+  try {
+    await app.login(); await app.claim(); const a = await post(app, 'create', { name: '规则隔离' }); connection = await connect(app, a.key);
+    for (let i = 0; i < 16; i++) await post(app, 'rule', { agentId: a.id, name: '规则 ' + i, enabled: true, config: { localPort: 2222 + i, targetHost: '127.0.0.1', targetPort: 22 } });
+    const rules = await connection.rules(16), before = connection.messages.filter(m => m.type === 'rules').length;
+    for (const rule of rules) connection.ws.send(JSON.stringify({ type: 'rule-result', id: rule.id, mappingId: rule.mappingId, revision: rule.revision, error: 'serial_open_failed' }));
+    await until(() => connection.messages.filter(m => m.type === 'rules').length > before && connection.messages.filter(m => m.type === 'rules').at(-1).rules.length === 0);
+    assert.equal(connection.messages.filter(m => m.type === 'rules').length - before, 1);
+    assert.equal(connection.ws.readyState, 1); assert((await list(app)).agents[0].rules.every(r => r.state === 'failed'));
+    const inventory = { type: 'inventory', serialPorts: [], interfaces: [], truncated: false, error: '' };
+    connection.ws.send(JSON.stringify(inventory)); await until(async () => !!(await list(app)).agents[0].inventory);
+    const previous = (await list(app)).agents[0].inventory;
+    // Valid JSON and under the 48 KiB WS limit, but over the inventory bound.
+    const tooLarge = JSON.stringify(inventory).replace('"interfaces":[]', '"interfaces":[' + ' '.repeat(33 * 1024) + ']');
+    connection.ws.send(tooLarge); await until(() => connection.ws.readyState === 3);
+    assert.deepEqual((await list(app)).agents[0].inventory, previous);
+  } finally { connection?.ws.terminate(); await app.close(); }
+});

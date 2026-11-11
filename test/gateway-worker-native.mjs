@@ -17,7 +17,7 @@ const tools = process.env.WORKER_TOOLS;
 if (!tools) throw Error('请设置 WORKER_TOOLS，指向固定 wrangler@4.158.0 的工具目录');
 const require = createRequire(join(resolve(tools), 'package.json')); assert.equal(require('wrangler/package.json').version, '4.158.0');
 const { Miniflare, Log, LogLevel, convertV4MiniflareOptions } = require('miniflare');
-const root = await mkdtemp(join(tmpdir(), 'codex-gateway-worker-')); let runtime, socket, h;
+const root = await mkdtemp(join(tmpdir(), 'codex-gateway-worker-')); let runtime, socket, agentSocket, h;
 try {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening'); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   const origin = 'http://127.0.0.1:' + port; h = await gatewayHTTPFixture({ origin }); const a = await h.add(1), b = await h.add(2);
@@ -50,6 +50,9 @@ try {
   };
   const first = await panelLogin(a), viewer = crypto.randomUUID();
   const claim = await runtime.dispatchFetch(origin + '/api/desktop/claim', { method: 'POST', headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-csrf-token': first.csrf, 'x-viewer-id': viewer, 'content-type': 'application/json' }, body: JSON.stringify({ viewer }) }); assert.equal(claim.status, 200);
+  const created = await runtime.dispatchFetch(origin + '/api/forward/agents/create', { method: 'POST', headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-csrf-token': first.csrf, 'x-viewer-id': viewer, 'content-type': 'application/json' }, body: JSON.stringify({ name: '固定控制节点的助手' }) });
+  assert.equal(created.status, 200, await created.clone().text());
+  const grant = JSON.parse(Buffer.from((await created.json()).key.slice(6), 'base64url'));
   const bytes = Buffer.alloc(65536, 97);
   const uploaded = await runtime.dispatchFetch(origin + '/api/files/native.txt', { method: 'PUT', headers: { ...nodeHeaders(a), cookie: first.cookie, 'x-csrf-token': first.csrf, 'content-type': 'application/octet-stream', 'content-length': String(bytes.length), 'if-none-match': '*' }, body: bytes });
   assert.equal(uploaded.status, 200, await uploaded.text()); assert.deepEqual(a.files.get('native.txt'), bytes);
@@ -58,11 +61,18 @@ try {
   socket = new WebSocket('ws://127.0.0.1:' + port + '/session/connect?' + query, { origin, headers: { host: new URL(origin).host, cookie: first.cookie }, handshakeTimeout: 5000 });
   const welcome = once(socket, 'message'); await once(socket, 'open'); socket.send(JSON.stringify({ type: 'auth', csrf: first.csrf })); assert.equal(JSON.parse((await welcome)[0]).type, 'welcome');
   await select(b.gatewayEntry); assert.equal(socket.readyState, WebSocket.OPEN);
+  // A new native connection remains on its granting node after the browser's
+  // global selection changes. No browser cookie is passed to the helper.
+  agentSocket = new WebSocket('ws://127.0.0.1:' + port + '/forward/agent', 'codex-agent-v1', { origin, headers: { authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'a'.repeat(32) }, handshakeTimeout: 5000 });
+  const agentWelcome = once(agentSocket, 'message'); await once(agentSocket, 'open');
+  const agentReady = JSON.parse((await agentWelcome)[0]); assert.equal(agentReady.type, 'agent-ready'); assert.equal(agentReady.node.id, a.gatewayEntry.id);
+  assert.equal((await (await control('nodes')).json()).activeId, b.gatewayEntry.id);
+  agentSocket.close(1000, 'client_stopping'); await once(agentSocket, 'close'); agentSocket = undefined;
   const second = await panelLogin(b);
   const stale = await runtime.dispatchFetch(origin + '/api/files/native.txt?node=' + a.gatewayEntry.id, { headers: { host: new URL(origin).host, cookie: first.cookie + '; ' + second.cookie } }); assert.equal(stale.status, 409);
   socket.terminate(); socket = undefined;
   await runtime.dispose(); runtime = new Miniflare(convertV4MiniflareOptions(options)); await runtime.ready;
   const restored = await (await control('nodes')).json(); assert.equal(restored.nodes.length, 2); assert.equal(restored.activeId, b.gatewayEntry.id);
   assert.deepEqual(a.terminalInputs, []); assert.deepEqual(b.terminalInputs, []); assert.equal(a.managementStats.restarts + b.managementStats.restarts, 0);
-  console.log('PASS actual workerd/SQLite: independent gateway authentication, dynamic enrollment, atomic selection, streaming HTTP upload/download, WSS pass-through retained across selection, stale-node rejection, and persistent routing after Worker restart. No CF API or production input.');
-} finally { socket?.terminate(); await runtime?.dispose(); await h?.close(); await rm(root, { recursive: true, force: true }); }
+  console.log('PASS actual workerd/SQLite: independent gateway authentication, dynamic enrollment, atomic selection, streaming HTTP upload/download, WSS pass-through retained across selection, native helper pinned to its granting node, stale-node rejection, and persistent routing after Worker restart. No CF API or production input.');
+} finally { socket?.terminate(); agentSocket?.terminate(); await runtime?.dispose(); await h?.close(); await rm(root, { recursive: true, force: true }); }
