@@ -14,7 +14,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   const archive = document.createElement('pre'); archive.id = 'history-archive'; archive.hidden = true; archive.tabIndex = 0; archive.setAttribute('aria-label', '远端历史快照'); host.appendChild(archive);
   const newer = document.createElement('button'); newer.id = 'history-new-output'; newer.type = 'button'; newer.hidden = true;
   newer.textContent = '有新输出 · 回到实时'; host.appendChild(newer);
-  let program = false, reviewing = false, disposed = false, pixels = 0, lastPage = -Infinity, gesture, loading, notice = '';
+  let program = false, reviewing = false, inputPaused = false, disposed = false, pixels = 0, lastPage = -Infinity, gesture, loading, notice = '';
   // Remote program scrolling is independent of the local buffer and toggle.
   // Keep a flag, never a queue or an automatically replayed return key.
   let programScrolled = false;
@@ -26,11 +26,11 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   const listeners = [], subscriptions = [];
   const listen = (target, name, handler, options) => { target.addEventListener(name, handler, options); listeners.push(() => target.removeEventListener(name, handler, options)); };
   const floating = () => tools.ownerDocument !== document;
-  function placeTools() {
+  function placeTools(focus = false) {
     tools.dataset.composing = String(queryComposing);
     if (!window.frameElement) return;
     window.frameElement.dispatchEvent(new CustomEvent('codex-history-tools', { detail: {
-      frame: new URLSearchParams(location.search).get('frame'), open: toolsOpen, composing: queryComposing,
+      frame: new URLSearchParams(location.search).get('frame'), open: toolsOpen, composing: queryComposing, focus,
     } }));
   }
   // Respect alternate screens. Treating tmux's cursor-addressed redraws as
@@ -39,15 +39,16 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   function update() {
     if (disposed) return;
     const buffer = term.buffer.active, next = archiveOpen || !!loading || buffer.viewportY < buffer.baseY;
-    const different = next !== reviewing; reviewing = next;
+    reviewing = next;
+    const paused = reviewing || toolsOpen, different = paused !== inputPaused; inputPaused = paused;
     if (!reviewing) unseen = false;
     newer.hidden = !reviewing || !unseen;
     // Explicit paging controls can resume the program from a read-only view;
     // snapshot scroll limits must never disable those controls.
     const paging = program;
     mode.setAttribute('aria-pressed', String(program));
-    up.title = paging ? (reviewing ? '退出查找快照并向程序发送 PageUp，保持程序翻页开启' : '向程序发送 PageUp') : '本地回看，每次最多 3 行；到顶后按需补取历史';
-    down.title = paging ? (reviewing ? '退出查找快照并向程序发送 PageDown，保持程序翻页开启' : '向程序发送 PageDown') : '本地回看，每次最多 3 行';
+    up.title = paging ? '向程序发送 PageUp，保留查找工具和关键词' : '本地回看，每次最多 3 行；到顶后按需补取历史';
+    down.title = paging ? '向程序发送 PageDown，保留查找工具和关键词' : '本地回看，每次最多 3 行';
     up.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program && !programScrolled;
@@ -55,12 +56,13 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
-    if (program && reviewing) label += ' · 程序翻页已暂停，点上翻/下翻退出快照并继续';
+    if (program && reviewing) label += ' · 程序翻页已暂停，点上翻/下翻继续，保留查找工具';
+    if (toolsOpen && !reviewing) label += ' · 查找复制已展开，收起后可编辑输入';
     if (reviewing && unseen) label += ' · 有新输出';
     if (state.textContent !== label) { state.textContent = label; state.title = label; }
-    host.dataset.reviewing = String(reviewing);
+    host.dataset.reviewing = String(inputPaused);
     updateTools();
-    if (different) changed(reviewing);
+    if (different) changed(inputPaused);
   }
   function cancelRead() { const current = loading; loading = undefined; current?.abort(); }
   function clearDownload() { clearTimeout(downloadTimer); if (downloadURL) URL.revokeObjectURL(downloadURL); downloadURL = undefined; }
@@ -109,15 +111,17 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       const height = `${Math.max(44, Math.min(280, host.clientHeight - 44, Math.floor(host.clientHeight * .6)))}px`;
       tools.style.maxHeight = height; tools.style.setProperty('--history-panel-height', height);
     }
-    query.disabled = !view; previousMatch.disabled = nextMatch.disabled = !matches.length;
-    copyAll.disabled = copying || !view?.text.length; copySelection.disabled = copying || !selectedText();
-    download.disabled = !view?.text.length;
+    query.disabled = !view && !!loading;
+    previousMatch.disabled = nextMatch.disabled = !matches.length && (!!view || !!loading || !query.value);
+    const contentAvailable = view ? !!view.text.length : !loading;
+    copyAll.disabled = copying || !contentAvailable; copySelection.disabled = copying || !selectedText();
+    download.disabled = !contentAvailable;
     retryCopy.disabled = copying || !manual.open || !copyText.value;
     retryCopy.textContent = copying && manual.open ? '复制中…' : '复制到本机';
-    const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
-    const description = !view ? '等待历史读取完成' : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
+    const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !view && !loading ? query.value ? '回车查找当前画面' : '输入关键词查找当前画面' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
+    const description = !view ? loading ? '等待历史读取完成' : `实时画面 · ${result}` : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
     const feedback = !manual.hidden ? '手动复制窗口已打开' : copying ? '复制中…' : copyState.textContent;
-    findState.textContent = floating() && view ? feedback || result : description;
+    findState.textContent = floating() ? feedback || result : description;
     findState.title = feedback || description; findState.setAttribute('aria-label', feedback || description);
     // Only the read-only view yields space to these tools. The live terminal's
     // size stays fixed, avoiding a remote redraw when searching or copying.
@@ -148,7 +152,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     current = -1; setCurrent(matches.length ? 0 : -1, navigate && !!query.value);
   }
   function closeTools() {
-    toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); clearDownload(); search(); updateTools();
+    toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); clearDownload(); search(); update();
     placeTools();
   }
   function freezeLocal() {
@@ -159,19 +163,29 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function openTools(focus = false) {
     if (!archiveOpen && !loading) freezeLocal();
-    toolsOpen = true; tools.hidden = false; placeTools(); updateTools();
+    toolsOpen = true; tools.hidden = false; placeTools(focus); update();
     if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus && !query.disabled) focusControl(query);
   }
-  function resetLocalView({ preserveProgram = false } = {}) {
-    cancelRead(); closeTools(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
+  function resetLocalView() {
+    // The drawer and program preference are independent of the displayed view.
+    // Returning to the program must not dismiss tools or discard the query.
+    cancelRead(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
     archiveOpen = false; archive.hidden = true; unseen = false; notice = '';
-    if (!preserveProgram) program = false;
-    pixels = 0; term.scrollToBottom(); update();
+    pixels = 0; gesture = undefined; search(); term.scrollToBottom(); update();
+  }
+  function ensureView() {
+    if (!toolsOpen || disposed || view || loading) return false;
+    freezeLocal(); return true;
+  }
+  function findCurrent(navigate = false) {
+    if (!toolsOpen || disposed) return;
+    if (!ensureView()) search(navigate);
+    else if (navigate && query.value) setCurrent(matches.length ? 0 : -1, true);
   }
   function live() {
     const returnProgram = program || programScrolled;
-    resetLocalView({ preserveProgram: true });
+    resetLocalView();
     if (!returnProgram) return;
     // Ctrl+End returns Codex's owned transcript to its latest output. Plain
     // End moves the composer cursor; Escape can interrupt a running turn.
@@ -185,7 +199,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     update();
   }
   async function copy(text, label, source) {
-    if (copying || !text) return;
+    if (disposed || !toolsOpen || copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
     clearCopy(); const generation = copyGeneration; copying = true; updateTools();
     try {
@@ -225,25 +239,23 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     finally { if (loading === controller) { loading = undefined; update(); } }
   }
   function turn(direction, fullPage = false, explicit = false) {
-    notice = '';
     // Only an explicit toolbar action resumes remote paging. Wheel, touch and
     // keyboard navigation inside a frozen snapshot remain local.
-    if (explicit && program && reviewing) {
-      if (!allowed()) return;
-      resetLocalView({ preserveProgram: true });
-    }
-    if (!program || reviewing) {
-      if (archiveOpen && archiveLocal && direction < 0 && archive.scrollTop === 0) void fetchHistory(distance(fullPage));
-      else if (archiveOpen) archive.scrollBy(0, direction * distance(fullPage));
-      else if (direction < 0 && term.buffer.active.viewportY === 0) void fetchHistory(distance(fullPage));
-      else if (fullPage) term.scrollPages(direction);
-      else term.scrollLines(direction * buttonLines());
+    if (program && (explicit || !reviewing)) {
+      const now = performance.now();
+      if (!allowed() || (!explicit && now - lastPage < 160)) return;
+      // Also cancel a queued local search when already live, so its timer
+      // cannot freeze the previous page after this navigation was sent.
+      resetLocalView(); lastPage = now;
+      if (navigate(direction < 0 ? 'PageUp' : 'PageDown')) programScrolled = true;
       update(); return;
     }
-    const now = performance.now();
-    if (!allowed() || reviewing || (!explicit && now - lastPage < 160)) return;
-    lastPage = now;
-    if (navigate(direction < 0 ? 'PageUp' : 'PageDown')) programScrolled = true;
+    notice = '';
+    if (archiveOpen && archiveLocal && direction < 0 && archive.scrollTop === 0) void fetchHistory(distance(fullPage));
+    else if (archiveOpen) archive.scrollBy(0, direction * distance(fullPage));
+    else if (direction < 0 && term.buffer.active.viewportY === 0) void fetchHistory(distance(fullPage));
+    else if (fullPage) term.scrollPages(direction);
+    else term.scrollLines(direction * buttonLines());
     update();
   }
   function scroll(delta, deltaMode = 0) {
@@ -258,17 +270,26 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     else if (count < 0 && term.buffer.active.viewportY === 0) { pixels = 0; void fetchHistory(Math.min(distance(true), -count * line)); }
     else { pixels -= count * step; term.scrollLines(Math.max(-term.rows, Math.min(term.rows, count))); update(); }
   }
-  listen(mode, 'click', () => { const next = !program; if (!toolsOpen) resetLocalView(); program = next; pixels = 0; gesture = undefined; update(); });
+  listen(mode, 'click', () => {
+    const next = !program;
+    if (toolsOpen) cancelRead(); else resetLocalView();
+    program = next; pixels = 0; gesture = undefined; update();
+  });
   listen(up, 'click', () => turn(-1, false, true)); listen(down, 'click', () => turn(1, false, true)); listen(latest, 'click', live);
   listen(newer, 'click', live);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
   listen(document.getElementById('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });
-  const scheduleSearch = () => { clearCopy(); clearTimeout(searchTimer); searchTimer = setTimeout(() => search(true), 150); updateTools(); };
+  const scheduleSearch = () => { if (!toolsOpen) return; clearCopy(); clearTimeout(searchTimer); searchTimer = setTimeout(() => findCurrent(true), 150); updateTools(); };
   listen(query, 'input', event => { if (!queryComposing && !event.isComposing) scheduleSearch(); });
   listen(query, 'compositionstart', () => { queryComposing = true; clearTimeout(searchTimer); searchTimer = undefined; updateTools(); placeTools(); });
   listen(query, 'compositionend', () => { queryComposing = false; scheduleSearch(); placeTools(); });
   listen(query, 'blur', () => { if (queryComposing) { queryComposing = false; scheduleSearch(); placeTools(); } });
-  const moveMatch = direction => { clearCopy(); if (searchTimer !== undefined) search(); if (matches.length) setCurrent((current + direction + matches.length) % matches.length, true); };
+  const moveMatch = direction => {
+    if (!toolsOpen || disposed) return;
+    clearCopy(); const fresh = ensureView(), edited = searchTimer !== undefined || query.value !== appliedQuery;
+    if (edited) search();
+    if (matches.length) setCurrent(fresh || edited ? direction < 0 ? matches.length - 1 : 0 : (current + direction + matches.length) % matches.length, true);
+  };
   listen(previousMatch, 'click', () => moveMatch(-1)); listen(nextMatch, 'click', () => moveMatch(1));
   listen(query, 'keydown', event => { if (event.key === 'Enter' && !event.isComposing && !queryComposing && event.keyCode !== 229) { event.preventDefault(); event.stopImmediatePropagation(); moveMatch(event.shiftKey ? -1 : 1); } });
   const toolKeys = event => {
@@ -276,7 +297,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (manual.open) return;
     if (event.key === 'Escape' && toolsOpen && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault(); event.stopImmediatePropagation(); closeTools(); toggle.focus({ preventScroll: true });
-    } else if (reviewing && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
+    } else if (inputPaused && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
       event.preventDefault(); event.stopImmediatePropagation(); openTools(true);
     }
   };
@@ -285,10 +306,11 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(tools, 'codex-history-reset', clearCopy);
   listen(window, 'pageshow', () => { if (toolsOpen) placeTools(); });
   listen(copySelection, 'mousedown', event => event.preventDefault());
-  listen(copySelection, 'click', () => { void copy(selectedText(), '选区', copySelection); });
-  listen(copyAll, 'click', () => { void copy(view?.text || '', '当前快照', copyAll); });
+  listen(copySelection, 'click', () => { const text = selectedText(); if (text) { ensureView(); void copy(text, '选区', copySelection); } });
+  listen(copyAll, 'click', () => { ensureView(); void copy(view?.text || '', '当前快照', copyAll); });
   listen(download, 'click', () => {
-    if (disposed || !toolsOpen || !view?.text) return;
+    if (disposed || !toolsOpen) return;
+    ensureView(); if (!view?.text) return;
     const blob = new Blob([view.text], { type: 'text/plain;charset=utf-8' });
     if (blob.size > HISTORY_TEXT_LIMIT) { copyState.textContent = '快照超过 1 MiB，无法下载'; updateTools(); return; }
     clearDownload();
@@ -327,21 +349,21 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }, { capture: true, passive: false });
   for (const name of ['touchend', 'touchcancel']) listen(host, name, () => { gesture = undefined; pixels = 0; }, { capture: true });
   for (const name of ['paste', 'beforeinput', 'input', 'compositionstart']) listen(host, name, event => {
-    if (reviewing) { event.preventDefault(); event.stopImmediatePropagation(); }
+    if (inputPaused) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, { capture: true });
   listen(host, 'keydown', event => {
-    if (!reviewing || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!inputPaused || event.ctrlKey || event.altKey || event.metaKey) return;
     if (!['PageUp', 'PageDown', 'Home', 'End', 'Escape'].includes(event.key)) return;
     event.preventDefault(); event.stopImmediatePropagation();
     if (event.key === 'PageUp') turn(-1, true);
     else if (event.key === 'PageDown') turn(1, true);
     else if (event.key === 'Home') { if (archiveOpen) archive.scrollTop = 0; else term.scrollToTop(); }
-    else resetLocalView({ preserveProgram: true });
+    else resetLocalView();
     update();
   }, { capture: true });
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, get reviewing() { return reviewing; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) search(); cancelRead(); update(); placeTools(); },
+  return { update, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

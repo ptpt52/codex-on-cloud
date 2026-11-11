@@ -64,6 +64,8 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
   }
   function reset() {
     cancelAnimationFrame(layoutFrame);
+    entry?.panel.removeEventListener('pointerdown', focusField, true);
+    entry?.panel.removeEventListener('focusin', focusField);
     entry?.panel.dispatchEvent(new Event('codex-history-reset'));
     restore(); entry?.marker.remove(); entry = undefined; composing(false);
   }
@@ -97,11 +99,17 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     // handler. Use the same bounded layout callback after that event completes.
     if (entry.focus && focus) {
       const target = entry.focus; entry.focus = null;
-      if (!entry.panel.contains(document.activeElement)) {
+      if (target.getClientRects().length && !entry.panel.contains(document.activeElement)) {
         window.focus();
         HTMLElement.prototype.focus.call(target, { preventScroll: true });
       }
     } else if (entry.focus) schedule();
+  }
+  function focusField(event) {
+    if (!entry?.floating || !['INPUT', 'TEXTAREA'].includes(event.target.tagName)) return;
+    // Repair focus in the parent document's animation callback. An iframe
+    // callback cannot reliably activate an adopted input's context in Firefox.
+    entry.focus = event.target; schedule();
   }
   const onTools = event => {
     const detail = event.detail;
@@ -111,8 +119,10 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
       const panel = frame.contentDocument?.getElementById('history-tools');
       if (!panel || panel.tagName !== 'SECTION') return;
       const marker = panel.ownerDocument.createComment('history tools'); panel.before(marker);
-      entry = { panel, marker, frame: detail.frame, floating: false }; opened();
+      entry = { panel, marker, frame: detail.frame, floating: false };
+      panel.addEventListener('pointerdown', focusField, true); panel.addEventListener('focusin', focusField); opened();
     }
+    if (detail.focus === true) entry.focus = entry.panel.querySelector('#history-query');
     composing(detail.composing); layout();
   };
   frame.addEventListener('codex-history-tools', onTools);

@@ -221,7 +221,7 @@ test('opening local find freezes already received rows and styles without sendin
     output(app, 'LOCAL-12-NEW\r\n'); await expect(frame.locator('#history-new-output')).toBeVisible();
     expect(await archive.textContent()).toBe(before); expect(await archive.evaluate(element => element.scrollTop)).toBe(position); expect(await size(frame)).toEqual(dimensions);
     expect(app.terminalHistoryReads).toEqual([]); expect(app.terminalInputs).toEqual([]);
-    await frame.locator('#history-latest').click(); await expect(archive).toBeHidden(); await expect(page.locator('#history-tools')).toBeHidden();
+    await frame.locator('#history-latest').click(); await expect(archive).toBeHidden(); await expect(page.locator('#history-tools')).toBeVisible();
   } finally { await app.close(); }
 });
 
@@ -248,14 +248,14 @@ test('search remains local across reconnect, respects IME composition, and caps 
   } finally { await app.close(); }
 });
 
-test('a delayed clipboard denial cannot reopen tools or focus a hidden field after returning live', async ({ page }) => {
+test('a delayed clipboard denial cannot reopen the copy dialog or focus a hidden field after returning live', async ({ page }) => {
   const app = await fixture({ terminalHistory: 'COPY-REQUEST-ONLY\n' });
   try {
     const frame = await snapshot(page, app); await frame.locator('#history-tools-toggle').click();
     await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => new Promise((_resolve, reject) => { window.denyHistoryCopy = reject; }) } }));
     await page.locator('#history-copy-all').click(); await expect(page.locator('#history-copy-all')).toBeDisabled();
     await frame.locator('#history-latest').click(); await frame.evaluate(() => window.denyHistoryCopy(new Error('denied'))); await page.waitForTimeout(100);
-    await expect(page.locator('#history-tools')).toBeHidden(); await expect(page.locator('#history-copy-manual')).toBeHidden();
+    await expect(page.locator('#history-tools')).toBeVisible(); await expect(page.locator('#history-copy-manual')).toBeHidden();
     expect(await frame.evaluate(() => document.activeElement.id)).not.toBe('history-copy-text');
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
