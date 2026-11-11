@@ -7,9 +7,10 @@
 <body>
   <main id="state-view" class="login-view"><section class="login-panel" aria-labelledby="state-title"><div class="mark">CN</div><h1 id="state-title">正在加载管理中心</h1><p id="state-message" role="status">正在检查登录和节点状态…</p><button id="retry" class="primary" type="button" hidden>重试</button><a class="back-home" href="/">返回节点首页</a></section></main>
   <main id="login-view" class="login-view" hidden>
-    <form id="login-form" class="login-panel"><div class="mark">CN</div><h1>节点中继管理</h1><p id="login-message" class="muted" role="status">使用中心管理员密码登录。</p>
-      <label for="username">管理员</label><input id="username" name="username" autocomplete="username" value="admin" maxlength="100" required>
+    <form id="login-form" class="login-panel" name="login-center" method="post" action="/admin/api/login"><div class="mark">CN</div><h1>节点中继管理</h1><p id="login-message" class="muted" role="status">使用中心管理员密码登录。</p>
+      <label for="username">管理员</label><input id="username" name="username" autocomplete="username" value="admin" maxlength="160" required autocapitalize="none" autocorrect="off" spellcheck="false">
       <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="512" required>
+      <!--LOGIN_IDENTITY_HINT-->
       <button type="submit" class="primary">登录</button><a class="back-home" href="/">返回节点首页</a>
     </form>
   </main>

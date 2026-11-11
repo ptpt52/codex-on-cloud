@@ -63,6 +63,18 @@ test('central login, Host, Origin, CSRF and private state protect key management
   const disk = await readFile(join(h.directory, 'center', 'state.json'), 'utf8'); assert(!disk.includes(secret.key));
 });
 
+test('central login uses its own password-manager identity and still accepts the original username', async t => {
+  const h = await setup(t), html = await (await h.request('/admin/', { authenticated: false })).text();
+  assert.match(html, /value="admin@center"/);
+  assert.match(html, /autocomplete="section-coc-center username"/);
+  assert.match(html, /action="\/admin\/api\/login"/);
+  const send = (username, password = 'center_password_very_long_123') => h.request('/admin/api/login', { method: 'POST', authenticated: false, body: { username, password } });
+  assert.equal((await send('admin@node-a')).status, 401);
+  assert.equal((await send('admin@center', 'wrong_password_123')).status, 401);
+  const logged = await send('admin@center'); assert.equal(logged.status, 200); assert.equal((await logged.json()).username, 'admin');
+  assert.equal((await h.login()).status, 200);
+});
+
 test('login limits follow the forwarded client address and do not lock out another client', async t => {
   const h = await setup(t);
   for (let index = 0; index < 9; index++) assert.equal((await h.request('/admin/api/login', { method: 'POST', authenticated: false, headers: { 'x-forwarded-for': '198.51.100.8' }, body: { username: 'admin', password: 'wrong_password_123' } })).status, index < 8 ? 401 : 429);

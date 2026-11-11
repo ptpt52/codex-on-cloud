@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { normalizeEntryBasePath } from './entry-path.mjs';
+import { createLoginIdentity, renderLoginForm } from './login-identity.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
 export const UI_LIMITS = Object.freeze({ file: 4 * 1024 * 1024, total: 16 * 1024 * 1024, generations: 4 });
@@ -88,7 +89,7 @@ async function checkScripts(raw) {
     child.stdin.end(JSON.stringify(sources));
   });
 }
-export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '', gateway = false, gatewayOrigin = '', entryBasePath = '/' } = {}) {
+export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = '', gateway = false, gatewayOrigin = '', entryBasePath = '/', login = createLoginIdentity() } = {}) {
   if (nodeId && !/^[a-f0-9]{32}$/.test(nodeId)) throw Error('前端节点身份无效');
   entryBasePath = normalizeEntryBasePath(entryBasePath);
   if (gatewayOrigin) {
@@ -108,6 +109,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
         raw.set(route, { bytes, type });
       }
       const hash = createHash('sha256');
+      hash.update('login-identity:v1:' + JSON.stringify(login));
       if (nodeId) hash.update('node:' + nodeId);
       if (gateway) hash.update('gateway:v1');
       if (gatewayOrigin) hash.update('gateway-origin:' + gatewayOrigin);
@@ -127,6 +129,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
         let bytes = asset.bytes;
         if (asset.type.startsWith('text/html')) {
           let html = bytes.toString();
+          html = renderLoginForm(html, login, entryBasePath === '/' ? '/api/login' : entryBasePath + 'api/login');
           if (!/<head(?:\s[^>]*)?>/i.test(html) || !/<\/head>/i.test(html)) throw Error('前端 HTML 缺少资源版本插入位置');
           html = html.replace(/\b(src|href)=("|')([^"']+)\2/g, (match, attr, quote, value) => {
             const url = new URL(value, 'http://ui.local' + route);

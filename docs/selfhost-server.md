@@ -164,6 +164,18 @@ sudo ./scripts/selfhost-server.sh rollback
 https://<domain>/admin/
 ```
 
+同域名下，登录页会自动预填独立的登录标识，便于浏览器分别保存密码：
+
+| 入口 | 默认登录标识 |
+| --- | --- |
+| `/admin/` 管理中心 | `admin@center` |
+| `/node/a/` | `admin@node-a` |
+| `/node/b/` | `admin@node-b` |
+
+密码仍使用各入口原来的密码，原用户名 `admin` 也继续有效。自定义 `ADMIN_USER=operator` 的节点会预填 `operator@node-a`；临时账号可使用 `visitor@node-a`，仍保留临时权限。标识绑定固定路径，节点改名或重新授权不会改变它。
+
+想让浏览器分别记住密码，请保留预填登录名后保存。之前统一保存在 `admin` 下的记录需要手动修改或重新保存；网站无法替你迁移浏览器里的密码。浏览器仍可能列出同站点的其他账号，这不是域名级隔离，也不改变各节点的独立认证。
+
 中心管理员可以创建绑定固定 slug 的授权：
 
 - 一个 key 只对应一个逻辑节点。

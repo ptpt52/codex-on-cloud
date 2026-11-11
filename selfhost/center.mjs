@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAuth, cookieToken, sessionCookie } from '../panel/auth.mjs';
+import { canonicalLoginUsername, createLoginIdentity, renderLoginForm } from '../panel/login-identity.mjs';
 import { SelfhostRegistry } from './registry.mjs';
 import { selfhostError } from './protocol.mjs';
 import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
@@ -43,7 +44,7 @@ async function jsonBody(req, limit) {
   } catch { throw selfhostError(400, 'JSON 格式无效'); }
 }
 
-async function assets(helpFile) {
+async function assets(helpFile, login) {
   const result = new Map(); let total = 0;
   const help = helpFile ? await readHelpPage(helpFile, { optional: true }) : null;
   for (const [route, [name, type]] of ASSETS) {
@@ -57,6 +58,7 @@ async function assets(helpFile) {
     } finally { await handle.close(); }
     total += bytes.length; if (total > 1024 * 1024) throw Error('中心前端资源超过 1 MiB');
     if (route === '/') bytes = Buffer.from(bytes.toString('utf8').replace('<!-- custom-help-entry -->', help ? '<a id="help-entry" class="quiet home-admin" href="/help/">使用帮助</a>' : ''));
+    if (route === '/admin/') bytes = Buffer.from(renderLoginForm(bytes.toString('utf8'), login, '/admin/api/login'));
     result.set(route, { bytes, type });
   }
   if (help) result.set('/help/', { bytes: help, type: 'text/html; charset=utf-8', csp: HELP_PAGE_CSP });
@@ -74,7 +76,8 @@ export async function createSelfhostCenter({
   if (!password || typeof password !== 'string' || password.length < 16 || password.length > 512) throw Error('中心管理员密码长度无效');
   if (!frpToken || typeof frpToken !== 'string' || frpToken.length < 16 || frpToken.length > 512 || /[\r\n\0]/.test(frpToken)) throw Error('frp 接入密钥长度无效');
   const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center_admin', entryBasePath: '/admin/', sessionRevision: 'codex-selfhost-admin-v2' };
-  const web = await assets(helpFile), auth = await createAuth(authConfig);
+  const login = createLoginIdentity(username, 'center');
+  const web = await assets(helpFile, login), auth = await createAuth(authConfig);
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
   const proxyOnline = frpsAdmin ? frpsProxyProbe(frpsAdmin) : undefined;
   const failures = new Map(), joinRequests = new Map(), turnRequests = new Map(), publicRequests = new Map();
@@ -140,7 +143,7 @@ export async function createSelfhostCenter({
     if (path === '/admin/api/login' && req.method === 'POST') {
       if (!originAllowed(req)) throw selfhostError(403, '请求来源无效');
       const client = clientAddress(req); rate(failures, client, 8, 15 * 60_000);
-      const body = await jsonBody(req, 4096), valid = await auth.verify(body.username, body.password);
+      const body = await jsonBody(req, 4096), valid = await auth.verify(canonicalLoginUsername(body.username, login), body.password);
       if (!valid) throw selfhostError(401, '管理员用户名或密码错误');
       failures.delete(client);
       const created = await auth.create({ role: 'admin' });

@@ -137,7 +137,7 @@ async function copyApplication() {
   await rm(next, { recursive: true, force: true }); await mkdir(next, { recursive: true, mode: 0o755 });
   await cp(join(project, 'selfhost'), join(next, 'selfhost'), { recursive: true, force: true, dereference: false });
   await mkdir(join(next, 'panel'), { recursive: true, mode: 0o755 });
-  for (const file of ['auth.mjs', 'rtc-network.mjs']) await cp(join(project, 'panel', file), join(next, 'panel', file), { force: true });
+  for (const file of ['auth.mjs', 'login-identity.mjs', 'rtc-network.mjs']) await cp(join(project, 'panel', file), join(next, 'panel', file), { force: true });
   await mkdir(join(next, 'scripts'), { recursive: true, mode: 0o755 });
   await cp(join(project, 'scripts', 'state-files.mjs'), join(next, 'scripts', 'state-files.mjs'), { force: true });
   await mkdir(join(next, 'native'), { recursive: true, mode: 0o755 });

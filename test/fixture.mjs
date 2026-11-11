@@ -15,7 +15,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, selfhostNode = null, publicOrigin = '', entryBasePath = '/' } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, username = 'admin', password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, selfhostNode = null, publicOrigin = '', entryBasePath = '/' } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -204,7 +204,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const config = {
     uiRoot, uiValidate: false, mode, nodeId, sharedEntry, gatewayNode, selfhostNode, entryBasePath, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
     forwardPorts, forwardDownloadDir, forwardPeerFactory, agentPort: upstream.address().port,
-    dataDir: directory, username: 'admin', password,
+    dataDir: directory, username, password,
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
     tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
     serviceDiagnostics: serviceDiagnostics || (async () => ({ available: true, panel: { state: 'active', restarts: 0, limited: false }, manager: { state: 'active', restarts: 0, limited: false }, actions: { state: 'active', restarts: 0, limited: false }, terminal: { state: 'active', restarts: 0, limited: false }, files: { state: 'active', restarts: 0, limited: false } })),
@@ -273,7 +273,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   }
   async function request(path, options) { return rawRequest(entryPath(path), options); }
   async function login() {
-    const response = await request('/api/login', { method: 'POST', body: { username: 'admin', password } });
+    const response = await request('/api/login', { method: 'POST', body: { username, password } });
     cookie = response.headers.get('set-cookie').split(';')[0];
     const data = await response.json(); csrf = data.csrf;
     return { cookie, csrf };

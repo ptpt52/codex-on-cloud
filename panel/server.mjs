@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve, sep } from 'node:path';
 import { WebSocketServer, createWebSocketStream } from 'ws';
 import { createAuth, cookieToken as readCookieToken, sessionCookie, sessionCookieName, equal } from './auth.mjs';
+import { canonicalLoginUsername, createLoginIdentity, nodeLoginScope } from './login-identity.mjs';
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { createServiceDiagnostics } from './service-diagnostics.mjs';
 import { createDeviceDirectory } from './devices.mjs';
@@ -73,7 +74,8 @@ function reply(res, status, data, headers = {}) {
 
 export async function createPanel(config) {
   const entryBasePath = config.entryBasePath || '/';
-  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode, gatewayOrigin: config.gatewayNode?.origin || '', entryBasePath });
+  const login = createLoginIdentity(config.username, nodeLoginScope({ entryBasePath, nodeId: config.nodeId, sharedEntry: config.sharedEntry || !!config.gatewayNode }));
+  const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode, gatewayOrigin: config.gatewayNode?.origin || '', entryBasePath, login });
   const cookieToken = header => readCookieToken(header, config);
   const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
   const access = await createAccessControl(config);
@@ -330,7 +332,10 @@ export async function createPanel(config) {
       if (loginBusy >= 2) throw new HttpError(429, '正在验证登录，请稍后再试');
       let identity;
       loginBusy++;
-      try { identity = await auth.verify(body.username, body.password) ? { role: 'admin' } : await access.verifyTemporary(body.username, body.password); }
+      try {
+        const username = canonicalLoginUsername(body.username, login);
+        identity = await auth.verify(username, body.password) ? { role: 'admin' } : await access.verifyTemporary(username, body.password);
+      }
       finally { loginBusy--; }
       if (!identity) {
         const latest = failures.get(key);

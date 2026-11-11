@@ -13,6 +13,7 @@ test('a node entry boots, authenticates and starts its terminal without escaping
   try {
     await page.goto(origin + '/node/a/');
     await expect(page.locator('#login-view')).toBeVisible();
+    await expect(page.locator('#username')).toHaveValue('admin@node-a');
     expect(await page.locator('script[type="importmap"]').textContent()).toContain('/node/a/app.js?ui=');
     await page.locator('#password').fill(app.config.password);
     await page.locator('#login-button').click();

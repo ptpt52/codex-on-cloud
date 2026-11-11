@@ -20,11 +20,12 @@
       <div class="intro-bottom"><span class="status-dot"></span> 独立桌面 · 持久会话 · 浏览器访问</div>
     </section>
     <section class="login-side">
-      <form id="login-form" class="login-card">
+      <form id="login-form" class="login-card" name="login-default" method="post" action="/api/login">
         <div class="card-icon" aria-hidden="true">↗</div>
         <h2>进入工作空间</h2><p class="muted">登录后连接你的远程开发桌面。</p>
-        <label for="username">用户名</label><input id="username" name="username" autocomplete="username" value="admin" required maxlength="100">
+        <label for="username">用户名</label><input id="username" name="username" autocomplete="username" value="admin" required maxlength="160" autocapitalize="none" autocorrect="off" spellcheck="false">
         <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="512">
+        <!--LOGIN_IDENTITY_HINT-->
         <p id="login-error" class="error" role="alert"></p>
         <button id="login-refresh-button" class="secondary" type="button" hidden>刷新页面验证</button>
         <button id="login-button" class="primary" type="submit">连接工作空间 <span aria-hidden="true">→</span></button>

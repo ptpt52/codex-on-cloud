@@ -3,7 +3,7 @@
 <body><main>
   <header><div><span class="eyebrow">Codex on Cloud</span><h1>节点入口</h1><p class="muted">同一个网址，选择当前要使用的机器。</p></div><button id="logout" class="secondary" hidden>退出网关</button></header>
   <p id="boot-status" class="muted" role="status">正在核对网关登录…</p>
-  <section id="login" class="card" hidden><h2>登录节点网关</h2><p class="muted">使用网关密码。进入机器后，仍需使用该节点自己的登录。</p><form id="login-form"><label for="password">网关密码</label><input id="password" type="password" autocomplete="current-password" required maxlength="128"><button id="login-submit" type="submit">登录</button></form><p id="login-error" class="error" role="alert"></p></section>
+  <section id="login" class="card" hidden><h2>登录节点网关</h2><p class="muted">使用网关密码。进入机器后，仍需使用该节点自己的登录。</p><form id="login-form" name="login-gateway" method="post" action="/__nodes/api/login"><label for="gateway-username">登录标识</label><input id="gateway-username" name="username" autocomplete="section-coc-gateway username" value="admin@gateway" readonly><label for="password">网关密码</label><input id="password" name="password" type="password" autocomplete="section-coc-gateway current-password" required maxlength="128"><button id="login-submit" type="submit">登录</button></form><p id="login-error" class="error" role="alert"></p></section>
   <section id="workspace" hidden>
     <div class="card current"><div><span class="eyebrow">当前默认入口</span><h2 id="active-name">尚未选择</h2><p id="summary" class="muted"></p></div><a id="enter" class="button" href="/" hidden>进入当前节点 →</a></div>
     <p id="status" role="status" aria-live="polite"></p>
