@@ -62,3 +62,5 @@ sh /tmp/cf-latency.sh 6 -f /tmp/my-ipv6.txt
 同一目录使用原子锁阻止并发执行。常规完成、超时、Ctrl+C 或 TERM 会清理临时目录并释放锁；探测失败或解析失败保留原有结果并返回非零状态。断电或 SIGKILL 可能留下锁，确认没有旧任务运行后再手动清理该目录中的 `.lock` 和对应 `.run.*`；重启也会清除默认 `/tmp` 目录。
 
 验证覆盖 POSIX `/bin/sh`、BusyBox 1.27.2 ash 与其基本 applet、旧式 timeout、数值排序、零毫秒、部分失败、IPv6 清单、资源限制及下载校验失败。真实固定版工具另用隔离回环 TCP 端口验证建连、CSV 和未发送应用数据；候选生成验证将探测器替换为固定输出，不扫描外部网络。没有在 X-Wrt 路由器硬件上执行，不将 Linux 工具包检查当作全部机型的真机验收。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

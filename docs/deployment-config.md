@@ -95,3 +95,5 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 “连接状态”里的服务器 IP / 浏览器端 IP 直连提示也属于当前浏览器；它们随已认证协商发给服务端，作为额外 ICE 候选使用，不写 `.env`，不替换自动发现或部署时选择的监听地址。
 
 每份草稿 32768 字符、每节点最多 9 份；同一标签页最多持久保存 16 个节点、合计 2 MiB。这是浏览器草稿上限，不是中心可接入的节点数上限。文件上传、并发传输、WebRTC 端口与背压等属于代码中的资源或协议边界，不能在 `.env` 中随意设置，详见[文件](files.md)、[网络](lan.md)和[映射协议](forward-protocol.md)。终端保活会话不占 `MAX_TERMINALS` 名额。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

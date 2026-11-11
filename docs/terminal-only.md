@@ -32,3 +32,5 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 关闭网页、重连或更新 panel／manager 不主动结束原 shell。明确结束终端、停止／重启 terminal 宿主或重启主机会影响任务。所有用户终端关闭后，宿主仍保留；只有明确新开才创建新 shell，不自动重新提交旧工作。
 
 模式在首次部署时确定，已有桌面不能在线转换成纯终端。终端数默认 4、最多 8，调整方法见[配置参考](deployment-config.md#终端数量)。恢复、锁和服务关系见[生命周期](reliability.md)，隔离测试见[验证说明](verification.md)。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

@@ -91,6 +91,8 @@ npm run reset-password -- --admin --generate
 | 直连失败，中转正常 | [网络诊断](lan.md#常见问题)，分别检查 UDP 与浏览器权限 |
 | 文件服务失败 | 只维护 files 服务；不为文件故障重启任务宿主 |
 | 命令或上传结果未知 | 先核对远端状态或列表，再手动决定；不连续重试写操作 |
+| 浏览器提示草稿保存失败 | 离开或刷新前手动复制草稿；存储失败时不能保证阻止导航，见[浏览器存储](browser-preferences.md#刷新多个页面与存储失败) |
+| 节点中继 unit 报 Invalid slot / specifier | 检查安装路径是否包含 `%`、`$` 等 systemd 特殊字符；在普通路径部署，重新生成 unit 后验收 |
 
 ## 服务恢复与显式停止
 
@@ -104,3 +106,5 @@ systemctl --user start codex-cloud-panel.service
 文件服务同理替换为 `codex-cloud-files.service`。生命周期与可选入口服务见[服务恢复](reliability.md)。
 
 `npm run native:stop` 会停止工作台。重启 desktop / terminal 宿主或主机会影响其中任务，应先保存工作并安排维护；关闭浏览器和重载面板不等于停止任务宿主。
+
+[文档目录](README.md) · [部署选择](deployment.md)

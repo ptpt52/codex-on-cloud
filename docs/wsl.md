@@ -32,3 +32,5 @@ WSL 与 Windows 的配置和可用模式由系统版本决定，项目不替用�
 4. 对另一台局域网设备、蜂窝网络与公网 IPv6 分别验收；TCP 或 ping 成功不代表 UDP 直连成功。
 
 更多网络选项见[直连说明](lan.md)。测试中的 Windows 配置替身不等于 Windows／DrvFS 真机验收，见[验证范围](verification.md)。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

@@ -5,10 +5,11 @@
 ## 先核对现有工具
 
 ```bash
-command -v node npm go python3 git flock
+command -v node npm python3 git flock
 node --version
 npm --version
-go version
+# 只有构建端口映射助手才需要 Go
+if command -v go >/dev/null 2>&1; then go version; fi
 systemctl --user is-system-running
 ```
 
@@ -36,11 +37,12 @@ sudo apt-get install -y --no-install-recommends \
 
 ## 缺少工具时，安装固定版本
 
-以下为 Ubuntu x86_64 / ARM64 的普通用户安装示例。工具放在被 Git 忽略的 `data/host-tools` 中，每个版本使用独立目录；下载包最多 160 MiB，临时文件在退出时清理。已有目标目录时只验证版本，不覆盖或自动升级。仅需要网页终端时，可以跳过 Go 对应的安装段。
+以下为 Ubuntu x86_64 / ARM64 的普通用户安装示例。工具放在被 Git 忽略的 `data/host-tools` 中，每个版本使用独立目录；下载包最多 160 MiB，临时文件在退出时清理。已有目标目录时只验证版本，不覆盖或自动升级。默认只安装 Node.js；需要构建端口映射助手时，将代码中的 `tool_install_go=0` 改为 `tool_install_go=1`。不构建助手的桌面和纯终端节点都不需要 Go。
 
 ```bash
 (
   set -eu
+  tool_install_go=0
   case "$(uname -m)" in
     x86_64)
       tool_node_arch=x64
@@ -73,16 +75,18 @@ sudo apt-get install -y --no-install-recommends \
   fi
   test "$("$tool_root/$tool_node_dir/bin/node" --version)" = v24.22.2
 
-  if [ ! -e "$tool_root/go1.26.4" ]; then
-    curl -fL --retry 3 --connect-timeout 15 --max-time 300 \
-      --max-filesize 167772160 \
-      "https://go.dev/dl/go1.26.4.linux-$tool_go_arch.tar.gz" \
-      -o "$tool_tmp/go.tar.gz"
-    printf '%s  %s\n' "$tool_go_sha" "$tool_tmp/go.tar.gz" | sha256sum -c -
-    tar -xzf "$tool_tmp/go.tar.gz" -C "$tool_tmp"
-    mv -T "$tool_tmp/go" "$tool_root/go1.26.4"
+  if [ "$tool_install_go" = 1 ]; then
+    if [ ! -e "$tool_root/go1.26.4" ]; then
+      curl -fL --retry 3 --connect-timeout 15 --max-time 300 \
+        --max-filesize 167772160 \
+        "https://go.dev/dl/go1.26.4.linux-$tool_go_arch.tar.gz" \
+        -o "$tool_tmp/go.tar.gz"
+      printf '%s  %s\n' "$tool_go_sha" "$tool_tmp/go.tar.gz" | sha256sum -c -
+      tar -xzf "$tool_tmp/go.tar.gz" -C "$tool_tmp"
+      mv -T "$tool_tmp/go" "$tool_root/go1.26.4"
+    fi
+    test "$(GOTOOLCHAIN=local "$tool_root/go1.26.4/bin/go" env GOVERSION)" = go1.26.4
   fi
-  "$tool_root/go1.26.4/bin/go" version | grep -F 'go version go1.26.4 '
 )
 ```
 
@@ -97,7 +101,7 @@ export PATH="$PWD/data/host-tools/node-v24.22.2-linux-$tool_node_arch/bin:$PWD/d
 hash -r
 node --version
 npm --version
-go version
+if command -v go >/dev/null 2>&1; then go version; fi
 ```
 
 确认版本后可继续部署。后续终端需重新设置 PATH，或把对应的**实际绝对路径**加入当前用户的 `~/.profile`。不要原样把 `$PWD` 写进登录配置，它在其他目录中会指向不同位置。Node 路径会写入 systemd 用户服务，因此安装目录需要长期保留。
@@ -114,3 +118,5 @@ go version
 `--build-forward` 适用于最终入口已经确定的部署；安装器会在更改服务前检查固定 Go 版本，`--check --build-forward` 也会检查。首次自建接入应先部署、再接入、最后构建，避免助手绑定 localhost 或旧节点地址。
 
 入口变更后重新构建并下载。构建不重启工作台服务；节点在线或终端可用不等于助手已发布。中心服务器安装由[独立安装脚本](selfhost-server.md#中心安装)引导固定运行时，不使用本页的节点安装命令。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

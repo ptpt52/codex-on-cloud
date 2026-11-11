@@ -23,6 +23,16 @@ npm run test:compat
 
 兼容矩阵、系统库要求及真机边界见[浏览器兼容性](compatibility.md)。
 
+## 端口映射的重点回归
+
+只定位助手管理离线时的规则撤销问题，可先执行：
+
+```sh
+node --test test/forward-agent-policy.test.mjs
+```
+
+此规格使用真实面板 HTTP / WebSocket 和 TCP 回显，覆盖两种方向的编辑、停用、删除、旧授权拒绝及其他规则不受影响；桌面管理是 fixture。真实 Go 助手与直连网络另用 `npm run test:forward:agents`，不能由这项 Node 回归代替。
+
 ## 验证环境的区别
 
 | 检查 | 实际运行 | 不代表什么 |
@@ -65,3 +75,5 @@ WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
 HTTPS 已配置后，不以明文 localhost 登录代替真实入口验证。使用私有 CA 时让检测客户端信任该 CA，不通过跳过证书校验来判定 HTTPS 正常。
 
 手机键盘、剪贴板、后台恢复和真实跨机器网络应单独验收。不能用 fixture 通过代替这些结果，也不要为验收中断正在执行的生产任务。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

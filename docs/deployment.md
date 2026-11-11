@@ -2,6 +2,16 @@
 
 先选工作区，再选入口，最后添加可选功能。选择入口不会改变终端任务所在的机器。
 
+| 你的需要 | 起步组合 |
+| --- | --- |
+| 先在本机试用，或已有 SSH | 任一工作区 + 本机 / SSH，无需域名 |
+| 一台主机通过自己的域名访问 | 任一工作区 + Cloudflare 单节点 |
+| 多台机器共用根地址，在网页选择默认机器 | 混合工作区 + Cloudflare 网关 |
+| 不使用 Cloudflare，各节点能分别收藏和打开 | 自建中心 + 混合工作区节点 |
+| 只需接入别人已经建好的中心 | 只部署自己的节点，按[节点接入](selfhost-node.md)操作 |
+
+以下命令在工作台节点执行；自建中心的系统安装命令单独列在[中心部署](selfhost-server.md)。
+
 ## 1. 工作区模式
 
 | 模式 | 提供什么 | 额外依赖 | 适合 |
@@ -134,3 +144,5 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 - 自有 VPS 使用 Caddy、frps、coturn 和 systemd，不使用 Docker；公网入口见[独立公网服务器部署](selfhost-server.md)。
 
 配置细项见[配置参考](deployment-config.md)，日常更新与排障见[维护指南](operations.md)。
+
+[文档目录](README.md) · [维护排障](operations.md)

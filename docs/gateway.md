@@ -107,3 +107,5 @@ Worker 必须能探测各节点后端。后端不能被交互式 Access 登录�
 节点代理凭据在私有 `data/gateway-node.json`，网关密码在初始化机器的 `secrets/gateway_password`；目录与路由保存在该账户自己的 DO。勿提交或公开这些文件。构建文件也不携带原始密码或 CF 管理 Token。
 
 网关状态最多 128 KiB，接入码 16 个、有效会话 8 个；状态探测 4 秒，切换租约 15 秒，并发或过期结果不能覆盖新选择。控制请求最多 8 KiB；文件和 WebSocket 流不写入目录。私有节点配置最多 4 KiB，单份接入恢复记录最多 256 KiB。验证环境与生产验收分别记录，见[测试说明](verification.md)。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

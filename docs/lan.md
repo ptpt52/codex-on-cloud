@@ -106,3 +106,5 @@ Mac 上 ping 成功不等于 Chrome 获得本地网络权限。系统授权位�
 先验证网站和中转，再分别使用局域网、蜂窝网络和公网 IPv6 检查实际路径、断线恢复及原任务保留。启用自建中心 TURN 时，还需验证其 UDP、TCP、TLS 控制和 relay 数据路径。
 
 自动化中的真实 WebRTC / DTLS / UDP 与模拟 RFB、PTY 上游分开计入验证；它们不能代替另一台设备、运营商或真实手机验收。测试命令与范围见[验证方法](verification.md)，候选、安全边界与恢复协议见[开发参考](network-protocol.md)。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

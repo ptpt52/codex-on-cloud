@@ -64,4 +64,4 @@ https://desk.example.com/admin/
 
 中心只信任回环 Caddy 写入的 `X-Forwarded-For` 客户端地址；管理员登录、节点接入和 TURN 刷新分别按客户端限流，不会互相消耗或让一个外部地址锁住其他管理员。
 
-[返回文档目录](README.md) · [节点接入](selfhost-node.md) · [中心部署与维护](selfhost-server.md)
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

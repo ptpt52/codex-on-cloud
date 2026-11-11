@@ -41,3 +41,5 @@ systemctl --user start codex-cloud-panel.service
 - “快速切换待命”仅保留查看器及有限连接，不持有第二套任务。锁屏、退出与授权失效会按原规则撤销观看权限。
 
 详细维护见[操作指南](operations.md)，HTTP／WSS／WebRTC 约束见[架构](architecture.md)和[网络](lan.md)。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

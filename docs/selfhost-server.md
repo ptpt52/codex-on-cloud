@@ -6,6 +6,18 @@
 
 [部署组合](deployment.md) · [节点接入](selfhost-node.md) · [首页与管理操作](selfhost-admin.md)
 
+## 先确认安装角色与证书
+
+| 当前情况 | 操作 |
+| --- | --- |
+| 只把自己的电脑接入已有中心 | 直接阅读[节点接入](selfhost-node.md)，不在节点运行中心安装脚本 |
+| 新建统一入口服务器 | 依次核对[拓扑](#拓扑)、[端口](#端口)、[DNS](#dns)，再执行[中心安装](#中心安装) |
+| 使用自动签发证书 | 安装时提供域名、公网 IP、邮箱，开放 TCP 80 / 443；Certbot 负责续期 |
+| 已有域名证书与私钥 | 使用 `--cert-file` 与 `--key-file` 导入 PEM 内容；后续自行续期并重新安装加载 |
+| 更新已有中心 | 沿用原安装参数；[安装与恢复](#中心安装)和[中心管理](selfhost-admin.md)分别维护服务与授权 |
+
+中心域名统一提供 HTTPS；节点不需要单独的域名证书。证书链、私钥与 CA 公共证书的用途及导入示例见下文。
+
 ## 拓扑
 
 ```text
@@ -236,3 +248,5 @@ curl -fsS --max-time 15 https://desk.example.com/node/node-a/readyz
 ## 验证范围
 
 `npm run test:selfhost:edge` 使用真实 Caddy 验证本地 TLS、HTTP-01 路由和 Cookie 过滤；续期 shell 命令使用本地夹具，不访问 systemd 或公共 ACME。`npm run test:turn` 使用真实 coturn 做 UDP、TCP、TLS 强制 relay 数据往返。`npm run test:forward:entry` 编译真实 Go 助手并通过节点路径传输 TCP 数据，桌面管理使用夹具。它们都不替代正式服务器上的 DNS、安全组、公共 CA 签发、FRP 和 Cloudflare 部署检查。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

@@ -45,3 +45,5 @@ npm run native:activate -- --status
 该方式没有跨主机原子 DNS 锁，不要同时激活两台机器。回复未知时先用 `--status` 核对；必要时明确执行 `--resolve-unknown`，仅核对和收尾，不重新提交切换或撤销别人的新入口。
 
 节点按自己的身份隔离登录、草稿和请求；原任务不迁移。后续可按[独立域名迁移 SOP](gateway-migration.md)升级为固定网关节点。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

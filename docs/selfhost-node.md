@@ -2,7 +2,7 @@
 
 本页面向节点部署者：中心服务器已由管理员按[中心部署](selfhost-server.md)安装，自己只需要安装工作台并接入。桌面、终端、Codex 登录和工作区始终保留在节点机器上。
 
-先准备[节点工具与依赖](node-prerequisites.md)，在节点仓库根目录以普通 Linux 用户执行。不要用 sudo 运行节点的 npm 命令；`--install-deps` 与 `--enable-linger` 会在需要时单独使用 sudo。
+先准备[节点工具与依赖](node-prerequisites.md)，安装目录使用普通字母、数字和连字符，避免 `%`、`$` 等会被 systemd 解释的字符。在节点仓库根目录以普通 Linux 用户执行。不要用 sudo 运行节点的 npm 命令；`--install-deps` 与 `--enable-linger` 会在需要时单独使用 sudo。
 
 ## 1. 部署本机工作台
 
@@ -22,7 +22,13 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 npm run server:join
 ```
 
-命令会交互读取中心地址、slug 和隐藏输入的授权 key。key 不接受普通命令行参数，也不会写入磁盘。
+命令会交互读取中心地址、slug 和隐藏输入的授权 key。也可以预填非敏感参数：
+
+```sh
+npm run server:join -- --server https://desk.example.com --slug node-a
+```
+
+随后只需在隐藏提示中输入管理员提供的 key。key 不接受普通命令行参数，也不会写入磁盘。
 
 首次接入后，节点保存专用 credential，生成 `frpc.toml` 和独立 systemd user 服务。中继失败后每 15 秒重试，不因连续失败次数耗尽而永久停止；重新生成服务时也会清理旧的启动限流失败状态。SSH 退出后中继仍运行；建议确保已启用：
 
@@ -110,4 +116,4 @@ npm run server:leave -- --recover
 
 接入命令显示“配置已完成、入口尚未就绪”时，先运行 `server:doctor` 并修复提示的问题。验收应同时检查完整节点路径的 `/readyz`、浏览器登录、终端或桌面、文件中转以及启用的助手下载；不要仅检查 frpc 为 active。
 
-[返回文档目录](README.md) · [中心管理](selfhost-admin.md) · [维护指南](operations.md)
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

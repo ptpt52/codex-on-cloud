@@ -49,3 +49,5 @@ npm run test:compat -- --list
 6. 开启实际需要的文件、设备或映射功能，核对权限和原任务保留。
 
 只在空闲的测试终端发送验证输入，不能向工作中的 Codex 自动注入测试文字。Linux WebKit 不等于 iOS Safari；注入 composition / visualViewport 事件也不等于真实输入法、软键盘或系统权限验收。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

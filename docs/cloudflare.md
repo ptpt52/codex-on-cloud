@@ -94,3 +94,5 @@ journalctl --user -u codex-cloud-tunnel.service -n 50 --no-pager
 | 准备或发布中断 | [域名维护与恢复](dns-switch.md)，先核对记录再继续 |
 
 DNS、Tunnel 地址族和协议选项见[配置参考](deployment-config.md)。
+
+[文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)
