@@ -229,9 +229,9 @@ curl -fsS --max-time 15 https://desk.example.com/node/node-a/readyz
 
 中心通过 HTTPS 返回短期 TURN 凭据及固定公网 IPv4、UDP relay 端口范围。节点只在该地址范围内接收公网 IPv4 relay 候选；SDP、候选对和收包检查使用同一规则，ICE 消息完整性及 DTLS 校验保持启用。既有私网 IPv4、公网 IPv6 直连和 HTTPS/WSS 回退继续可用。TURN 控制连接支持 UDP、TCP 和 TLS；relay 对端流量使用 UDP。
 
-转发助手从 `0.7.3` 起支持 `https://desk.example.com/node/node-a/`。TCP、串口、反向映射及恢复连接均保留节点前缀，Origin 仍是 `https://desk.example.com`。更新节点后重新运行 `npm run build:forward` 并重新下载助手；构建使用 `.env` 的 `PUBLIC_ORIGIN` 与 `ENTRY_BASE_PATH`，也可显式指定完整节点 URL。旧根地址部署继续兼容。
+当前 `0.9.0` 转发助手支持 `https://desk.example.com/node/node-a/`。TCP、串口、反向映射及恢复连接均保留节点前缀，Origin 仍是 `https://desk.example.com`。更新节点后重新运行 `npm run build:forward` 并重新下载助手；构建使用 `.env` 的 `PUBLIC_ORIGIN` 与 `ENTRY_BASE_PATH`，也可显式指定完整节点 URL。也支持根路径入口。
 
-`0.8.0` 起支持[常驻助手和动态规则](forward.md#常驻助手一个进程多条规则)。key 包含完整节点路径，同一中心的多台节点不会相互覆盖助手归属；网页切换节点后，助手仍连接原授权节点。更新对应节点后台并下载新助手即可，中心仍按原节点路径转发。
+本版使用[固定八个助手和动态规则](forward.md#部署与启动)。key 包含完整节点路径，同一中心的多台节点不会相互覆盖助手归属；网页切换节点后，助手仍连接原授权节点。更新对应节点后台并下载新助手即可，中心仍按原节点路径转发。
 
 ## 验证范围
 

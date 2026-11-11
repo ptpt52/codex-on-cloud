@@ -61,13 +61,13 @@ ssh -N -L 36080:127.0.0.1:36080 user@your-server
 - **Cloudflare 多节点**：按[网关部署](docs/gateway.md)建立固定入口，再登记各节点；日常网页切换不使用 CF 管理 Token。已有独立域名按[迁移流程](docs/gateway-migration.md)接入。
 - **已有自建中心**：节点按[接入说明](docs/selfhost-node.md)领取 key、运行 `server:join`，不需要 CF 账户或每节点独立证书。需要自己提供中心时，先看[中心部署](docs/selfhost-server.md)。
 
-所有示例域名、IP 和用户名都需替换。TCP / 串口助手在最终入口接入后构建，构建需固定 Go 1.26.4，见[助手发布](docs/forward.md#构建)。
+所有示例域名、IP 和用户名都需替换。TCP / 串口助手在最终入口接入后构建，构建需固定 Go 1.26.4，见[助手发布](docs/forward.md#构建与全新替换)。
 
 ## 使用与维护
 
 [使用工作台](docs/usage.md) · [文件中转](docs/files.md) · [访问权限](docs/access.md) · [端口映射](docs/forward.md) · [日常维护](docs/operations.md)
 
-粘贴与 Enter 分开操作，终端粘贴使用 Ctrl+Shift+V。普通更新保留任务宿主；面板重启后，一次性映射需重新配对，常驻助手按已保存规则重建映射，旧 TCP 由客户端重连。仅前端资源更新可热发布，文档变更无需重启服务。
+粘贴与 Enter 分开操作，终端粘贴使用 Ctrl+Shift+V。普通更新保留任务宿主；面板重启后，助手按已保存规则重建映射，旧 TCP 由客户端重连。仅前端资源更新可热发布，文档变更无需重启服务。
 
 已有部署不能通过重复安装在线转换工作区模式。工作台拥有部署用户的本机权限，不提供文件系统沙箱；同一域名下的多节点必须相互信任。真实凭据、工作区和运行状态不进入 Git。
 

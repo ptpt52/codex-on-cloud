@@ -27,7 +27,7 @@ git pull --ff-only
 npm run deploy
 ```
 
-普通更新保留模式、密码和 `.env`，不会主动重启 desktop / terminal 任务宿主；files、manager、panel 可以更新。面板重启会断开观看连接及旧 TCP；一次性映射需重新配对，常驻助手使用原 key 重连并重建启用规则。业务客户端需重连，不重放旧字节，桌面与终端原任务保留。
+普通更新保留模式、密码和 `.env`，不会主动重启 desktop / terminal 任务宿主；files、manager、panel 可以更新。面板重启会断开观看连接及旧 TCP；助手使用原 key 重连并重建启用规则。业务客户端需重连，不重放旧字节，桌面与终端原任务保留。
 
 活动服务的依赖缺失或版本不符时，部署停止并保留任务；安排依赖维护，不在活动任务中随意运行 `npm ci` 或替换运行时。宿主脚本的更新需要另行安排明确维护重启，不能靠重装面板加载。
 
@@ -38,7 +38,7 @@ npm run deploy
 | 自建中心的节点 | `npm run deploy`，省略 Cloudflare 参数；不因遗留旧 Token 启动旧 CF 入口 |
 | Cloudflare Worker 网关 | [重新构建并发布原 Worker](gateway.md#更新与恢复)，保持账户、名称和 DO 身份 |
 | 自建中心应用 | [重复中心安装命令](selfhost-server.md#中心安装)，沿用原域名、证书模式和参数；失败按恢复记录处理 |
-| 仅 HTML / CSS / 浏览器脚本 | `npm run reload-ui`，然后保存草稿并手动刷新；无需重启服务或重新配对 |
+| 仅 HTML / CSS / 浏览器脚本 | `npm run reload-ui`，然后保存草稿并手动刷新；无需重启服务或重新接入助手 |
 | 仅仓库文档 | 无需部署服务；自行提供的中心 HTML 帮助页另按[帮助页更新](selfhost-server.md#自定义帮助页)加载 |
 
 前端更新要求后台能力配套，不能让旧后端获得新协议，见[版本配套](ui-updates.md)。
@@ -47,7 +47,7 @@ npm run deploy
 
 助手代码或入口变化后，在最终节点入口确定的情况下运行 `npm run build:forward`，再在网页核对四个平台下载。构建需固定 Go 1.26.4，单独构建不重启节点；浏览器页面更新不会自动替换用户已下载的 exe / ZIP。
 
-常驻助手需节点后台与 0.8.0 助手配套升级；CF 网关还需更新 Worker，支持助手固定到授权节点。持久期望规则和 key 摘要在私有 `data/panel/forward-agents.json`，最多 128 KiB，不加入 Git；备份按凭据配置保护。key 原文由使用者私密保存，遗失时网页重新生成，不从磁盘还原。跨节点不复制此配置，助手与其授权节点绑定。
+本版按全新安装替换，不迁移旧端口映射配置，操作见[全新替换](forward.md#构建与全新替换)。后台与 0.9.0 助手配套使用；CF 网关还需更新 Worker，支持助手固定到授权节点。持久规则和八个 key 的 secret 在私有 `data/panel/forward-agents.json`，最多 128 KiB，不加入 Git；备份按凭据配置保护。管理员可在对应助手页随时复制或刷新 key，首次初始化自动生成，普通部署不更换。跨节点不复制此配置，助手与其授权节点绑定。
 
 ## 密码与配置
 
@@ -61,7 +61,7 @@ npm run reset-password
 npm run reset-password -- --admin --generate
 ```
 
-忘记屏幕锁可用 `--screen` 重设或 `--unlock` 关闭；重置过程会停止并恢复面板，一次性映射需重新配对，常驻助手可重连重建规则。完整行为见[后台密码重置](access.md#后台密码重置)。这条命令不重置中心或 CF 网关密码，不改变 Codex 登录。
+忘记屏幕锁可用 `--screen` 重设或 `--unlock` 关闭；重置过程会停止并恢复面板，助手可重连重建规则。完整行为见[后台密码重置](access.md#后台密码重置)。这条命令不重置中心或 CF 网关密码，不改变 Codex 登录。
 
 `.env` 不是 shell 脚本。参数与生效服务见[配置参考](deployment-config.md)。Node 路径变化后重新 `npm run native:install` 生成服务路径，再按维护计划加载；不要删除仍被运行中服务使用的 Node 安装目录。
 

@@ -52,7 +52,7 @@ WEBRTC_STUN_URL=stun:stun.cloudflare.com:3478
 systemctl --user restart codex-cloud-panel.service
 ```
 
-面板重启保留桌面和终端任务；一次性映射需重新配对，常驻助手使用原 key 重建已启用规则，旧 TCP 由客户端重连。关闭 WebRTC 时设 `WEBRTC_ENABLED=0`；日常更新使用[维护流程](operations.md)，不要为调网络在活动任务中重装依赖。
+面板重启保留桌面和终端任务；助手使用原 key 重建已启用规则，旧 TCP 由客户端重连。关闭 WebRTC 时设 `WEBRTC_ENABLED=0`；日常更新使用[维护流程](operations.md)，不要为调网络在活动任务中重装依赖。
 
 ### UDP 与中继端口
 
@@ -76,7 +76,7 @@ WSL 镜像网络另需核对 `hostAddressLoopback`，见[WSL 说明](wsl.md)。I
 
 **恢复连接不重发粘贴、Enter、提示词、审批或结果未知的写操作。** “结果未知”时先检查远端实际状态。检测、复核、握手和首屏准备各有期限，不能把某个心跳超时值当成端到端恢复保证。交接协议及精确预算见[连接恢复参考](network-protocol.md)。
 
-端口映射区分管理通道与数据通道；当前助手在短暂管理断线时可保留健康数据连接，暂停新连接，按原授权恢复。已断开的 TCP 不迁移、不重放，见[映射恢复](forward.md#短暂断网恢复)。
+端口映射区分管理通道与数据通道；当前助手在短暂管理断线时可保留健康数据连接，暂停新连接，按原授权恢复。已断开的 TCP 不迁移、不重放，见[映射恢复](forward.md#连接规格与恢复)。
 
 ## 查看实际路径
 
