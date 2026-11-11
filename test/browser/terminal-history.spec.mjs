@@ -247,7 +247,7 @@ test('reconnect and cached page restoration keep the same renderer, history and 
   } finally { await app.close(); }
 });
 
-test('program paging is opt-in and rate bounded; returning live sends one Ctrl+End without Enter', async ({ page }) => {
+test('program paging stays enabled when returning live and sends one Ctrl+End per explicit click without Enter', async ({ page }) => {
   const app = await fixture();
   try {
     const frame = await seeded(page, app); await wheel(frame, -200); await reviewing(frame); expect(app.terminalInputs).toEqual([]);
@@ -259,12 +259,17 @@ test('program paging is opt-in and rate bounded; returning live sends one Ctrl+E
     await page.waitForTimeout(200); await frame.locator('#history-down').click(); await expect.poll(() => app.terminalInputs.at(-1).text).toBe('\x1b[6~');
     await page.locator('#desktop-mode').click(); await expect(frame.locator('#history-up')).toBeDisabled(); const before = app.terminalInputs.length;
     await wheel(frame, -200); expect(app.terminalInputs.length).toBe(before); await page.locator('#cancel-confirmation').click();
-    await frame.locator('#history-latest').click(); await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
+    await frame.locator('#history-latest').click(); await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
     await expect.poll(() => app.terminalInputs.length).toBe(before + 1);
     expect(app.terminalInputs.at(-1).text).toBe('\x1b[1;5F');
     expect(app.terminalInputs.every(value => ['\x1b[5~', '\x1b[6~', '\x1b[1;5F'].includes(value.text))).toBe(true);
-    await expect(frame.locator('#history-latest')).toBeDisabled();
-    await frame.locator('#history-latest').dispatchEvent('click'); expect(app.terminalInputs.length).toBe(before + 1);
+    await expect(frame.locator('#history-latest')).toBeEnabled();
+    await page.waitForTimeout(200); await frame.locator('#history-up').click();
+    await expect.poll(() => app.terminalInputs.length).toBe(before + 2); expect(app.terminalInputs.at(-1).text).toBe('\x1b[5~');
+    await frame.locator('#history-latest').click(); await expect.poll(() => app.terminalInputs.length).toBe(before + 3);
+    expect(app.terminalInputs.at(-1).text).toBe('\x1b[1;5F');
+    await frame.locator('#history-program').click(); await expect(frame.locator('#history-latest')).toBeDisabled();
+    await frame.locator('#history-latest').dispatchEvent('click'); expect(app.terminalInputs.length).toBe(before + 3);
   } finally { await app.close(); }
 });
 
@@ -280,12 +285,12 @@ test('program history can return live immediately and after paging is disabled o
     await frame.locator('#history-program').click(); await frame.locator('#history-latest').click();
     await expect.poll(() => position).toBe(0);
     expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[1;5F']);
-    await frame.locator('#history-program').click(); await frame.locator('#history-up').click();
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true'); await frame.locator('#history-up').click();
     await expect.poll(() => position).toBe(1);
     await frame.locator('#history-latest').click(); await expect.poll(() => position).toBe(0);
     expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[1;5F', '\x1b[5~', '\x1b[1;5F']);
     await page.waitForTimeout(200);
-    await frame.locator('#history-program').click(); await frame.locator('#history-up').click();
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true'); await frame.locator('#history-up').click();
     await expect.poll(() => position).toBe(1); const before = app.terminalInputs.length;
     await frame.locator('#history-program').click();
     await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
@@ -313,6 +318,7 @@ test('offline return-live never queues a program key or replays it when the conn
     // click directly to verify the guard even during that network/UI race.
     await frame.locator('#history-latest').dispatchEvent('click');
     await expect(frame.locator('#history-state')).toContainText('未发送');
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
     expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
     await frame.evaluate(() => {
       Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
@@ -323,6 +329,7 @@ test('offline return-live never queues a program key or replays it when the conn
     await frame.locator('#history-latest').click();
     await expect.poll(() => app.terminalInputs.length).toBe(2);
     expect(app.terminalInputs.at(-1).text).toBe('\x1b[1;5F');
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
   } finally { await app.close(); }
 });
 
@@ -486,6 +493,9 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     await frame.locator('#history-program').click(); await frame.locator('#history-up').click(); await page.waitForTimeout(200); await frame.locator('#history-down').click();
     await frame.locator('#history-latest').click();
     await expect.poll(() => readFile(keys, 'utf8').catch(() => '')).toBe('1b5b357e1b5b367e1b5b313b3546');
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
+    await frame.locator('#history-program').click(); // Local snapshot checks explicitly leave program paging.
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
     expect(await readFile(proof, 'utf8')).toBe('once\n');
     await openInput(page); await page.locator('#mobile-input').fill('for i in {1..1000}; do printf \'\\033[1;31mLARGE-HISTORY-%04d %080d\\033[0m\\n\' "$i" 0; done');
     await openInput(page); await page.locator('#paste-button').click(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success'); await openInput(page); await page.locator('[data-key="Enter"]').click();

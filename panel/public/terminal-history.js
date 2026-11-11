@@ -157,13 +157,15 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus && !query.disabled) focusControl(query);
   }
-  function resetLocalView() {
+  function resetLocalView({ preserveProgram = false } = {}) {
     cancelRead(); closeTools(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
-    archiveOpen = false; archive.hidden = true; unseen = false; notice = ''; program = false; pixels = 0; term.scrollToBottom(); update();
+    archiveOpen = false; archive.hidden = true; unseen = false; notice = '';
+    if (!preserveProgram) program = false;
+    pixels = 0; term.scrollToBottom(); update();
   }
   function live() {
     const returnProgram = program || programScrolled;
-    resetLocalView();
+    resetLocalView({ preserveProgram: true });
     if (!returnProgram) return;
     // Ctrl+End returns Codex's owned transcript to its latest output. Plain
     // End moves the composer cursor; Escape can interrupt a running turn.
