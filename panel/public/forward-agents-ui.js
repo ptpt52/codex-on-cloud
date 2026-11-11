@@ -4,10 +4,10 @@ const mask = prefix => Array.from({ length: 4 }, (_, i) => Math.max(0, Math.min(
 const endpoint = c => c.serial ? `${c.serial.path} @ ${c.serial.baud}` : `${c.targetHost.includes(':') ? '[' + c.targetHost + ']' : c.targetHost}:${c.targetPort}`;
 const node = (tag, text = '', className = '') => { const n = document.createElement(tag); n.textContent = text; n.className = className; return n; };
 
-export function createForwardAgentsUI({ api, allowed, visible, hints }) {
+export function createForwardAgentsUI({ api, allowed, canManage = () => true, visible, hints }) {
   const $ = id => document.getElementById(id), editor = $('forward-rule-dialog'), confirmation = $('forward-agent-confirm');
   let agents = [], selectedId = '', selectedSlot = 1, generation = 0, reading, pending, keyRequest, keyRevision = 0, policy = null, edit = null, confirming = null;
-  let inventorySignature = '', layoutFrame = 0, rowsAgent = '', permitted = false;
+  let inventorySignature = '', layoutFrame = 0, rowsAgent = '', permitted = false, managing = false;
   const rows = new Map(), tabs = [];
   const live = () => allowed() && visible(), selected = () => agents.find(a => a.id === selectedId);
   const message = text => { $('forward-agent-status').textContent = text; };
@@ -15,10 +15,16 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
   const busy = () => !!pending;
   function clearKey() { keyRevision = 0; keyRequest?.abort(); keyRequest = null; $('forward-agent-key').value = ''; }
   function update() {
-    if (!allowed() && permitted) reset();
-    permitted = allowed(); $('forward-agent-section').hidden = !permitted; $('forward-permission').hidden = permitted;
+    if (!allowed() && permitted || permitted && managing !== !!canManage()) reset();
+    permitted = !!allowed(); managing = !!canManage();
+    $('forward-agent-section').hidden = !permitted || !managing && !agents.length; $('forward-permission').hidden = permitted;
+    $('forward-agent-section').setAttribute('aria-label', managing ? '助手管理' : '可查看的助手 key');
+    for (const id of ['forward-agent-rekey', 'forward-agent-key-visibility', 'forward-rules-heading', 'forward-agent-rules', 'forward-agent-inventory', 'forward-diagnostics-copy']) $(id).hidden = !managing;
+    $('forward-agent-key-refresh').hidden = managing; $('forward-agent-key-readonly').hidden = managing;
     const agent = selected();
-    for (const id of ['forward-rule-add', 'forward-agent-rekey', 'forward-agent-inventory-refresh', 'forward-agent-key-copy']) $(id).disabled = !permitted || busy() || !agent || id === 'forward-agent-inventory-refresh' && !agent.online || id === 'forward-agent-key-copy' && !$('forward-agent-key').value;
+    for (const id of ['forward-rule-add', 'forward-agent-rekey', 'forward-agent-inventory-refresh', 'forward-agent-temporary-key-visible']) $(id).disabled = !permitted || !managing || busy() || !agent || id === 'forward-agent-inventory-refresh' && !agent.online;
+    $('forward-agent-key-copy').disabled = !permitted || busy() || !agent || !$('forward-agent-key').value;
+    $('forward-agent-key-refresh').disabled = !permitted || busy() || !agent || !!keyRequest;
     for (const tab of tabs) tab.disabled = !permitted || busy();
     $('forward-agent-overflow').disabled = !permitted || busy();
     for (const row of rows.values()) for (const button of row.root.querySelectorAll('button')) button.disabled = !permitted || busy();
@@ -33,30 +39,34 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
   function layout() {
     if (layoutFrame) return;
     layoutFrame = requestAnimationFrame(() => {
-      layoutFrame = 0; if (!live()) return;
-      const bar = $('forward-agent-bar'), more = $('forward-agent-overflow'), gap = 6;
-      const focused = document.activeElement;
-      tabs.forEach(tab => { tab.hidden = false; }); more.hidden = true;
-      const widths = tabs.map(tab => tab.getBoundingClientRect().width), available = bar.clientWidth;
-      let hidden = [];
-      if (widths.reduce((a, b) => a + b, 0) + gap * 7 > available + 1) {
-        more.hidden = false; let used = 0, fits = true;
-        const room = Math.max(0, available - more.getBoundingClientRect().width - gap);
-        for (const [i, tab] of tabs.entries()) { used += widths[i] + (i ? gap : 0); fits &&= used <= room + 1; tab.hidden = !fits; if (tab.hidden) hidden.push(i + 1); }
-      }
-      const signature = hidden.join(',') + ':' + selectedSlot;
-      if (more.dataset.signature !== signature) {
-        more.dataset.signature = signature;
-        more.replaceChildren(new Option('更多助手', ''), ...hidden.map(slot => new Option('助手' + slot, String(slot))));
-        more.value = hidden.includes(selectedSlot) ? String(selectedSlot) : '';
-      }
-      more.dataset.active = String(hidden.includes(selectedSlot));
-      more.setAttribute('aria-label', '更多助手' + (hidden.includes(selectedSlot) ? '，当前助手' + selectedSlot : ''));
-      let first = tabs.find(tab => !tab.hidden);
-      for (const [i, tab] of tabs.entries()) tab.tabIndex = !tab.hidden && i + 1 === selectedSlot ? 0 : -1;
-      if (!tabs.some(tab => tab.tabIndex === 0) && first) first.tabIndex = 0;
-      if (focused && tabs.includes(focused) && focused.hidden) more.focus({ preventScroll: true });
+      layoutFrame = 0; measureLayout();
     });
+  }
+  function measureLayout() {
+  if (!live()) return;
+  const bar = $('forward-agent-bar'), more = $('forward-agent-overflow'), gap = 6;
+  const focused = document.activeElement;
+  const availableTabs = tabs.filter(tab => agents.some(a => a.slot === Number(tab.dataset.slot)));
+  tabs.forEach(tab => { tab.hidden = !availableTabs.includes(tab); }); more.hidden = true;
+  const widths = availableTabs.map(tab => tab.getBoundingClientRect().width), available = bar.clientWidth;
+  let hidden = [];
+  if (widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, availableTabs.length - 1) > available + 1) {
+    more.hidden = false; let used = 0, fits = true;
+    const room = Math.max(0, available - more.getBoundingClientRect().width - gap);
+    for (const [i, tab] of availableTabs.entries()) { used += widths[i] + (i ? gap : 0); fits &&= used <= room + 1; tab.hidden = !fits; if (tab.hidden) hidden.push(Number(tab.dataset.slot)); }
+  }
+  const signature = hidden.join(',') + ':' + selectedSlot;
+  if (more.dataset.signature !== signature) {
+    more.dataset.signature = signature;
+    more.replaceChildren(new Option('更多助手', ''), ...hidden.map(slot => new Option('助手' + slot, String(slot))));
+    more.value = hidden.includes(selectedSlot) ? String(selectedSlot) : '';
+  }
+  more.dataset.active = String(hidden.includes(selectedSlot));
+  more.setAttribute('aria-label', '更多助手' + (hidden.includes(selectedSlot) ? '，当前助手' + selectedSlot : ''));
+  let first = tabs.find(tab => !tab.hidden);
+  for (const [i, tab] of tabs.entries()) tab.tabIndex = !tab.hidden && i + 1 === selectedSlot ? 0 : -1;
+  if (!tabs.some(tab => tab.tabIndex === 0) && first) first.tabIndex = 0;
+  if (focused && tabs.includes(focused) && focused.hidden) more.focus({ preventScroll: true });
   }
   new ResizeObserver(layout).observe($('forward-agent-bar'));
   for (let slot = 1; slot <= 8; slot++) {
@@ -65,8 +75,9 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     tab.addEventListener('click', () => choose(slot));
     tab.addEventListener('keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-      event.preventDefault(); const next = event.key === 'Home' ? 1 : event.key === 'End' ? 8 : (slot + (event.key === 'ArrowRight' ? 0 : 6)) % 8 + 1;
-      choose(next); requestAnimationFrame(() => (tabs[next - 1].hidden ? $('forward-agent-overflow') : tabs[next - 1]).focus());
+      const slots = agents.map(agent => agent.slot), index = slots.indexOf(slot); if (index < 0 || !slots.length) return;
+      event.preventDefault(); const next = event.key === 'Home' ? slots[0] : event.key === 'End' ? slots.at(-1) : slots[(index + (event.key === 'ArrowRight' ? 1 : slots.length - 1)) % slots.length];
+      choose(next); (tabs[next - 1].hidden ? $('forward-agent-overflow') : tabs[next - 1]).focus({ preventScroll: true });
     });
     tabs.push(tab); $('forward-agent-tabs').append(tab);
   }
@@ -95,15 +106,16 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     try {
       const value = await api('/api/forward/agents', { signal: request.signal });
       if (epoch !== generation || !live()) return;
-      if (value.protocol !== 2 || !Array.isArray(value.agents) || value.agents.length !== 8 || value.agents.some((a, i) => a.slot !== i + 1 || a.name !== '助手' + (i + 1))) throw Error('固定助手配置无效，请检查节点版本');
+      if (value.protocol !== 2 || !Array.isArray(value.agents) || value.agents.length > 8 || value.agents.some(a => !Number.isInteger(a.slot) || a.slot < 1 || a.slot > 8 || a.name !== '助手' + a.slot) || new Set(value.agents.map(a => a.slot)).size !== value.agents.length || (canManage() ? value.agents.length !== 8 || value.agents.some((a, i) => a.slot !== i + 1) : value.readOnly !== true)) throw Error('固定助手配置无效，请检查节点版本');
       agents = value.agents;
-      const agent = agents.find(a => a.slot === selectedSlot); if (selectedId !== agent.id) { selectedId = agent.id; clearKey(); }
-      render(); update(); void loadKey();
+      const agent = agents.find(a => a.slot === selectedSlot) || agents[0];
+      if (selectedId !== (agent?.id || '')) { selectedId = agent?.id || ''; selectedSlot = agent?.slot || 1; clearKey(); }
+      update(); render(); void loadKey();
     } catch (error) { if (epoch === generation && live() && !request.signal.aborted) message(error.message); }
     finally { clearTimeout(timeout); if (reading === request) reading = null; }
   }
   async function mutate(path, body) {
-    if (!live() || pending) return null;
+    if (!live() || !canManage() || pending) return null;
     reading?.abort(); reading = null;
     const epoch = generation, id = selectedId, request = pending = new AbortController(), timeout = setTimeout(() => request.abort(), 8000); update();
     try {
@@ -128,10 +140,22 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
   confirmation.addEventListener('keydown', event => { if (event.key === 'Enter' && event.target !== $('forward-agent-confirm-accept')) { event.preventDefault(); closeConfirm(); } });
   $('forward-agent-confirm-accept').addEventListener('click', async () => { const action = confirming; closeConfirm(); if (action && live()) { await action(); await refresh(); } });
   $('forward-agent-rekey').addEventListener('click', () => {
-    const agent = selected(); if (!agent) return;
-    confirm('刷新' + agent.name + '的 key', '旧 key 立即失效，该助手及其映射连接将断开；规则保留。其他助手不受影响。', async () => {
+    const agent = selected(); if (!agent || !canManage()) return;
+    confirm('重新生成' + agent.name + '的 key', '旧 key 立即失效，该助手及其映射连接将断开；规则保留。其他助手不受影响。', async () => {
       clearKey(); await mutate('rekey', { id: agent.id, revision: agent.keyRevision });
-    }, '刷新并断开');
+    }, '重新生成并断开');
+  });
+  $('forward-agent-key-refresh').addEventListener('click', () => { if (live() && !canManage() && !keyRequest) { clearKey(); void loadKey(); } });
+  $('forward-agent-temporary-key-visible').addEventListener('change', async () => {
+    const agent = selected(); if (!agent || !live() || !canManage()) return;
+    const visible = $('forward-agent-temporary-key-visible').checked;
+    const result = await mutate('visibility', { id: agent.id, revision: agent.visibilityRevision, visible });
+    if (result && typeof result.visible === 'boolean' && Number.isSafeInteger(result.revision) && result.visible === visible) {
+      agent.temporaryKeyVisible = result.visible; agent.visibilityRevision = result.revision;
+      message(visible ? '临时账号现在可查看和复制此助手的 key。' : '已关闭临时账号对此助手 key 的查看权限。');
+    } else if (result) message('设置响应不完整，请刷新列表核对；不会自动重试。');
+    render(); update();
+    await refresh();
   });
   $('forward-agent-key-copy').addEventListener('click', async () => {
     const key = $('forward-agent-key').value, epoch = generation; if (!key || !live()) return;
@@ -223,7 +247,10 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     const agent = selected(); if (!agent) return;
     $('forward-agent-panel').setAttribute('aria-labelledby', 'forward-agent-tab-' + agent.slot);
     $('forward-agent-panel').dataset.agentId = agent.id; $('forward-agent-heading').textContent = agent.name; $('forward-agent-key-label').textContent = agent.name + '授权 key';
-    for (const [i, tab] of tabs.entries()) { tab.setAttribute('aria-selected', String(i + 1 === agent.slot)); tab.dataset.online = String(agents[i].online); tab.title = '助手' + (i + 1) + (agents[i].online ? ' · 在线' : ' · 离线'); }
+    for (const [i, tab] of tabs.entries()) { const item = agents.find(a => a.slot === i + 1); tab.setAttribute('aria-selected', String(i + 1 === agent.slot)); tab.dataset.online = String(!!item?.online); tab.dataset.readonly = String(!canManage()); tab.title = '助手' + (i + 1) + (canManage() ? item?.online ? ' · 在线' : ' · 离线' : ''); }
+    $('forward-agent-connection').hidden = !canManage();
+    if (!canManage()) { $('forward-agent-network').hidden = true; measureLayout(); return; }
+    $('forward-agent-temporary-key-visible').checked = agent.temporaryKeyVisible === true;
     $('forward-agent-connection').textContent = agent.online ? '助手在线' : '助手离线';
     $('forward-agent-connection').dataset.online = String(agent.online);
     $('forward-rule-count').textContent = agent.rules.length + ' / 16';
@@ -279,10 +306,10 @@ export function createForwardAgentsUI({ api, allowed, visible, hints }) {
     }
     $('forward-agent-rules').querySelector('.forward-rule-empty')?.remove();
     if (!agent.rules.length) { const empty = node('div', '', 'forward-rule-empty'); empty.append(node('strong', '尚无规则，为' + agent.name + '添加第一条映射。'), node('p', '点击“新增规则”，选择访问方向并填写目标。助手离线时也可保存，上线后自动应用。', 'muted')); $('forward-agent-rules').append(empty); }
-    layout();
+    measureLayout();
   }
   function report() {
-    if (!live()) return '';
+    if (!live() || !canManage()) return '';
     const number = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
     const lines = ['Codex Cloud 助手诊断 v2', '地址、端口、网卡名、串口路径、规则名称、标识和 key 均已省略。'];
     for (const agent of agents) {

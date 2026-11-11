@@ -121,6 +121,7 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 #forward-agent-bar{margin:16px 0}
 .forward-agent-heading{display:flex;gap:12px;align-items:center;justify-content:space-between;margin:0 0 8px}
 .forward-agent-heading h3{margin:0}
+.forward-agent-tab[data-readonly=true]::before{display:none}
 .forward-connection-badge{flex:none;font-size:12px;line-height:1.5;padding:5px 10px;border-radius:20px;color:var(--muted);background:var(--surface-soft)}
 .forward-connection-badge[data-online=true]{color:var(--success);background:var(--success-soft)}
 .forward-network{font-size:12px;margin-bottom:12px}

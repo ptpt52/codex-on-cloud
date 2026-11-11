@@ -132,7 +132,7 @@
       <label for="temporary-username">临时用户名</label><input id="temporary-username" name="username" autocomplete="off" maxlength="64" placeholder="与管理员不同，例如 visitor">
       <label for="temporary-password">临时密码</label><input id="temporary-password" name="password" type="password" autocomplete="new-password" maxlength="128" placeholder="8–128 个字符；留空保留现有密码">
       <label for="temporary-duration">从本次保存起有效</label><select id="temporary-duration"><option value="3600000">1 小时</option><option value="21600000">6 小时</option><option value="86400000" selected>24 小时</option><option value="259200000">3 天</option><option value="604800000">7 天</option></select>
-      <p id="temporary-current" class="muted"></p><p class="muted">仅可配置“服务器访问本地设备”的映射，以及上传、下载共享中转文件；不能解锁桌面、使用终端或读取其他登录的映射。更新账号会撤销旧临时登录及其映射。</p>
+      <p id="temporary-current" class="muted"></p><p class="muted">可上传、下载共享中转文件，并查看管理员在各助手页开放的 key；不能解锁桌面、使用终端或管理助手规则。更新账号会撤销旧临时登录，不影响助手和保存的规则。</p>
       <div class="desktop-actions"><button id="temporary-save" class="primary" type="submit">保存临时账号</button><button id="temporary-copy" class="secondary" type="button" disabled>复制本次账号密码</button></div>
       <textarea id="temporary-share" readonly rows="4" hidden aria-label="临时访问信息"></textarea>
     </form><p id="access-status" class="muted" role="status"></p>
@@ -273,7 +273,7 @@
   </dialog>
   <dialog id="forward-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-title">
     <div class="dialog-heading"><h2 id="forward-title">端口映射</h2><button id="forward-close" class="quiet" type="button" aria-label="关闭端口映射">✕</button></div>
-    <p class="muted forward-intro">选择一台助手，管理这台电脑的网络和串口规则。</p>
+    <p id="forward-description" class="muted forward-intro">选择一台助手，管理这台电脑的网络和串口规则。</p>
     <details id="forward-download-section" class="forward-disclosure">
       <summary>下载助手与安装说明</summary>
     <p id="forward-platform-note" class="muted">请选择运行助手的电脑版本。</p>
@@ -294,11 +294,13 @@
         <div class="forward-agent-heading"><h3 id="forward-agent-heading">助手1</h3><p id="forward-agent-connection" class="forward-connection-badge"></p></div>
         <p id="forward-agent-network" class="muted forward-network"></p>
         <div class="forward-access">
-          <div class="forward-access-heading"><label id="forward-agent-key-label" for="forward-agent-key">助手1授权 key</label><button id="forward-agent-rekey" class="quiet forward-danger" type="button">刷新 key</button></div>
+          <div class="forward-access-heading"><label id="forward-agent-key-label" for="forward-agent-key">助手1授权 key</label><button id="forward-agent-rekey" class="quiet forward-danger" type="button">重新生成 key</button><button id="forward-agent-key-refresh" class="quiet" type="button" hidden>刷新 key</button></div>
           <div class="forward-key-line"><textarea id="forward-agent-key" rows="2" readonly autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true"></textarea><button id="forward-agent-key-copy" class="secondary" type="button">复制 key</button></div>
           <p class="muted">下载并打开助手 → 粘贴此 key → 保持窗口运行。同一 key 只接入一台电脑。</p>
+          <div id="forward-agent-key-visibility"><label class="access-checkbox"><input id="forward-agent-temporary-key-visible" type="checkbox">临时账号可查看此助手 key</label><p class="muted">仅控制网页查看权限。已复制的 key 不会随关闭可见或临时账号到期而失效；要撤销旧 key，请重新生成。</p></div>
+          <p id="forward-agent-key-readonly" class="muted" hidden>此助手的 key 由管理员开放。刷新只重新读取当前 key；规则和设备信息由管理员管理。</p>
         </div>
-        <div class="forward-rules-heading"><h3>映射规则 <span id="forward-rule-count" class="muted"></span></h3><button id="forward-rule-add" class="primary" type="button">新增规则</button></div>
+        <div id="forward-rules-heading" class="forward-rules-heading"><h3>映射规则 <span id="forward-rule-count" class="muted"></span></h3><button id="forward-rule-add" class="primary" type="button">新增规则</button></div>
         <div id="forward-agent-rules" class="forward-list"></div>
         <p id="forward-agent-status" class="muted" role="status"></p>
         <details id="forward-agent-inventory" class="forward-disclosure"><summary id="forward-agent-inventory-title">网卡和串口信息</summary><div id="forward-agent-inventory-body" class="forward-agent-inventory"></div><button id="forward-agent-inventory-refresh" class="secondary" type="button">刷新设备信息</button></details>
@@ -307,7 +309,7 @@
     <p id="forward-status" class="muted" role="status"></p>
     <div class="forward-footer"><span class="muted">状态自动更新</span><div><button id="forward-refresh" class="quiet" type="button">刷新列表</button><button id="forward-diagnostics-copy" class="quiet" type="button">复制诊断报告</button></div></div>
     <div id="forward-diagnostics" hidden><label for="forward-diagnostics-text">脱敏诊断报告</label><textarea id="forward-diagnostics-text" rows="8" readonly maxlength="32768"></textarea></div>
-    <details class="forward-disclosure forward-limits"><summary>连接方式与使用限制</summary><p class="muted">新连接优先加密直连，不可用时使用 WSS 中转。监听仅绑定 127.0.0.1。固定 8 个助手，每助手最多 16 条规则，全节点最多 32 条活动映射。网页退出或锁屏不撤销助手授权；刷新 key 会断开对应助手，规则保留。节点重启后按保存规则重建映射，已断开的 TCP 和串口字节不会重放。</p></details>
+    <details class="forward-disclosure forward-limits"><summary>连接方式与使用限制</summary><p class="muted">新连接优先加密直连，不可用时使用 WSS 中转。监听仅绑定 127.0.0.1。固定 8 个助手，每助手最多 16 条规则，全节点最多 32 条活动映射。网页退出或锁屏不撤销助手授权；管理员重新生成 key 会断开对应助手，规则保留。临时账号的“刷新 key”仅读取当前 key。节点重启后按保存规则重建映射，已断开的 TCP 和串口字节不会重放。</p></details>
   </dialog>
   <dialog id="forward-rule-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-rule-title">
     <div class="dialog-heading"><h2 id="forward-rule-title">新增规则</h2><button id="forward-rule-close" class="quiet" type="button" aria-label="关闭规则配置">✕</button></div>

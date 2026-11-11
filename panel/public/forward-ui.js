@@ -8,7 +8,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   const $ = id => document.getElementById(id), dialog = $('forward-dialog');
   let generation = 0, controller, timer, downloads = [], detection, downloadController, downloadMessage = '', downloadSignature = '';
   let platform = { os: forwardOS(navigator), arch: null };
-  const agentsUI = createForwardAgentsUI({ api, hints, allowed: () => allowed() && capabilities().manageDevices, visible: () => dialog.open && !document.hidden });
+  const agentsUI = createForwardAgentsUI({ api, hints, allowed: () => allowed() && (capabilities().manageDevices || capabilities().viewHelperKeys), canManage: () => capabilities().manageDevices, visible: () => dialog.open && !document.hidden });
   function downloadStatus() {
     const path = { direct: '直连', relay: 'TURN 中继', unknown: '路径待确认' }[rtcRouteKind(downloadRoute())];
     $('forward-download-status').textContent = downloadMessage || (downloadClient() && globalThis.crypto?.subtle ? `助手下载：WebRTC 加密通道已就绪（${path}）` : '助手下载：HTTPS；WebRTC 就绪后优先使用');
@@ -91,6 +91,8 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   function update() {
     $('forward-button').disabled = !allowed();
     if (!allowed()) reset();
+    $('forward-description').textContent = capabilities().temporary ? '选择管理员已开放的助手，查看或复制 key，再粘贴到对应电脑的助手。' : '选择一台助手，管理这台电脑的网络和串口规则。';
+    $('forward-permission').textContent = capabilities().temporary ? '管理员尚未开放可查看的助手 key。下方仍可下载助手。' : '解锁并接管工作台后，可管理助手、key 和规则。下方仍可下载助手。';
     agentsUI.update(); downloadStatus();
   }
   async function load() {
@@ -113,7 +115,7 @@ export function createForwardUI({ api, allowed, hints = () => ({}), capabilities
   function reset() { cancel(); cancelDownload(); agentsUI.reset(); if (dialog.open) dialog.close(); }
   $('forward-button').addEventListener('click', () => {
     cancel(); $('forward-status').textContent = ''; update(); if (!allowed()) return;
-    $('forward-download-section').open = !capabilities().manageDevices;
+    $('forward-download-section').open = !(capabilities().manageDevices || capabilities().viewHelperKeys);
     dialog.showModal(); $('forward-mac-help').open = platform.os === 'darwin'; prepareDownloads(); downloadStatus(); detectPlatform(); void load();
   });
   $('forward-close').addEventListener('click', () => dialog.close());

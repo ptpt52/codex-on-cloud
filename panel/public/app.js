@@ -26,7 +26,7 @@ let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), b
 let forwardingUI;
 let accessUI;
 let uploadPrompt, fileUploadController, fileListReader;
-let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canManageHelpers: false };
+let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canManageHelpers: false, canViewHelperKeys: false };
 let fastConnectEnabled = false;
 let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = null, frameSerial = 0;
 let draftStorage;
@@ -1864,7 +1864,7 @@ accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions
 forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: () => loggedIn && !accessExpired && navigator.onLine && panelState === 'online',
   prepareDownloads: () => { if (serviceProtocol !== 1 || !rtcConfig?.webrtc) return false; serviceLink.start(); return serviceLink.state.issue === 'connecting' || serviceLink.transport?.features?.helperDownloadsProtocol === 1; },
   downloadClient: () => serviceLink.helperFiles, downloadRoute: () => serviceLink.state.route, saveDownload: saveDirectFile,
-  capabilities: () => ({ manageDevices: permissions.canManageHelpers }) });
+  capabilities: () => ({ manageDevices: permissions.canManageHelpers, viewHelperKeys: permissions.canViewHelperKeys, temporary: permissions.role === 'temporary' }) });
 function canLeaveNode() { return !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
 $('gateway-switch-button').addEventListener('click', () => {
   const gatewayEntry = document.querySelector('meta[name="gateway-entry"]')?.content;

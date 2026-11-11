@@ -85,7 +85,7 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
   $('temporary-copy').addEventListener('click', async () => {
     if (!allowed() || !sharedCredential || busy || loading) return;
     const credential = sharedCredential, valid = () => allowed() && dialog.open && sharedCredential === credential && !busy && !loading;
-    const text = `工作台：${location.origin}\n临时账号：${credential.username}\n密码：${credential.password}\n到期：${new Date(credential.expires).toLocaleString()}\n仅允许服务器访问本地设备映射和文件中转。`;
+    const text = `工作台：${location.origin}\n临时账号：${credential.username}\n密码：${credential.password}\n到期：${new Date(credential.expires).toLocaleString()}\n允许共享文件中转，以及查看管理员单独开放的助手 key。`;
     try { await navigator.clipboard.writeText(text); if (valid()) $('access-status').textContent = '临时访问信息已复制。'; }
     catch { if (valid()) { $('temporary-share').value = text; $('temporary-share').hidden = false; $('temporary-share').focus(); $('temporary-share').select(); $('access-status').textContent = '请长按或使用系统复制；也可以再次点击复制按钮。'; } }
   });
