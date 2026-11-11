@@ -157,10 +157,10 @@ export async function createPanel(config) {
   const desktopAccess = (req, session, viewer) => session.role !== 'temporary' && (isOwner(req, session, viewer) || !access.screenEnabled && !owner);
   const accessState = (req, session) => ({ role: session.role || 'admin', full: isOwner(req, session), screenLockEnabled: access.screenEnabled,
     requiresUnlock: session.role !== 'temporary' && access.screenEnabled && !isOwner(req, session), canClaim: session.role !== 'temporary',
-    canManageHelpers: desktopAccess(req, session) });
+    canManageHelpers: desktopAccess(req, session), canViewHelperKeys: session.role === 'temporary' && forwardAgents.hasSharedKeys() });
   function denied(req, session) {
     const error = new HttpError(session.role === 'temporary' ? 403 : access.screenEnabled ? 423 : 409,
-      session.role === 'temporary' ? '临时账号只允许文件中转和连接状态查看' : access.screenEnabled ? '请先输入屏幕锁密码解锁' : '桌面已在另一页面打开，请先接管');
+      session.role === 'temporary' ? '临时账号仅可使用文件中转、查看连接状态及已开放的助手 key' : access.screenEnabled ? '请先输入屏幕锁密码解锁' : '桌面已在另一页面打开，请先接管');
     error.code = session.role === 'temporary' ? 'restricted_account' : access.screenEnabled ? 'screen_locked' : 'control_required';
     error.access = accessState(req, session); return error;
   }
@@ -383,7 +383,7 @@ export async function createPanel(config) {
     }
     if (path.startsWith('/api/')) {
       const session = requireSession(req);
-      const shared = ['/api/desktop/claim', '/api/files', '/api/forward'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/');
+      const shared = ['/api/desktop/claim', '/api/files', '/api/forward'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/') || req.method === 'GET' && ['/api/forward/agents', '/api/forward/agents/key'].includes(path);
       if (!shared && !desktopAccess(req, session)) { if (!['GET', 'HEAD'].includes(req.method)) requireWrite(req); throw denied(req, session); }
     }
     if (path === '/api/security' && req.method === 'GET') { const session = requireSession(req); if (!isOwner(req, session)) throw denied(req, session); return reply(res, 200, access.status()); }
@@ -431,13 +431,21 @@ export async function createPanel(config) {
       const downloads = await forwardDownloads.list(); requireSession(req);
       return reply(res, 200, { ports: forwarding.list().ports, allPorts: forwarding.list().allPorts, maxConnections: 8, downloads, managedHelpersProtocol: 2 });
     }
-    if (path === '/api/forward/agents' && req.method === 'GET') { requireDesktopRead(req); return reply(res, 200, forwardAgents.list()); }
+    if (path === '/api/forward/agents' && req.method === 'GET') {
+      const session = requireSession(req);
+      if (session.role === 'temporary') {
+        if (!forwardAgents.hasSharedKeys()) throw denied(req, session);
+        return reply(res, 200, forwardAgents.sharedKeys());
+      }
+      requireDesktopRead(req); return reply(res, 200, forwardAgents.list());
+    }
     if (path === '/api/forward/agents/key' && req.method === 'GET') {
-      requireDesktopRead(req);
+      const session = requireSession(req); if (session.role !== 'temporary') requireDesktopRead(req);
       if (url.searchParams.getAll('id').length !== 1 || [...url.searchParams.keys()].some(key => key !== 'id')) throw new HttpError(400, '助手标识无效');
+      if (session.role === 'temporary') return reply(res, 200, forwardAgents.sharedKey(url.searchParams.get('id')));
       return reply(res, 200, forwardAgents.action('key', { id: url.searchParams.get('id') }));
     }
-    if (/^\/api\/forward\/agents\/(?:rekey|rule|rule\/remove|inventory)$/.test(path) && req.method === 'POST') {
+    if (/^\/api\/forward\/agents\/(?:rekey|visibility|rule|rule\/remove|inventory)$/.test(path) && req.method === 'POST') {
       requireWrite(req); requireDesktopRead(req); const expected = owner, body = await jsonBody(req, 4096); requireWrite(req); requireDesktopRead(req);
       if (owner !== expected) throw new HttpError(409, '控制权已变化，本次助手配置未保存');
       return reply(res, 200, forwardAgents.action(path.slice('/api/forward/agents/'.length), body));

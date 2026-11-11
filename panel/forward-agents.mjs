@@ -81,7 +81,7 @@ export function createForwardAgents(config, forwarding) {
     return { protocol: 2, limits: { agents: AGENT_LIMITS.agents, rules: AGENT_LIMITS.rules, active: 32 }, node: identity,
       agents: state.all().map(agent => {
         const session = sessions.get(agent.id);
-        return { id: agent.id, slot: agent.slot, name: agent.name, keyRevision: agent.keyRevision, createdAt: agent.createdAt, online: session?.ws?.readyState === 1, connectedAt: session?.connectedAt || null,
+        return { id: agent.id, slot: agent.slot, name: agent.name, keyRevision: agent.keyRevision, temporaryKeyVisible: agent.temporaryKeyVisible, visibilityRevision: agent.visibilityRevision, createdAt: agent.createdAt, online: session?.ws?.readyState === 1, connectedAt: session?.connectedAt || null,
           inventory: session?.inventory || inventories.get(agent.id) || null,
           rules: agent.rules.map(rule => {
             const entry = runtime.get(rule.id), mapping = entry?.mapping && mappings.get(entry.mapping);
@@ -89,9 +89,17 @@ export function createForwardAgents(config, forwarding) {
           }) };
       }) };
   }
+  function sharedKeys() {
+    return { protocol: 2, readOnly: true, agents: state.all().filter(agent => agent.temporaryKeyVisible).map(({ id, slot, name, keyRevision }) => ({ id, slot, name, keyRevision })) };
+  }
+  function sharedKey(id) {
+    if (!state.find(id)?.temporaryKeyVisible) throw Object.assign(Error('该助手的 key 未向临时账号开放'), { status: 403 });
+    return state.key({ id });
+  }
   function action(path, body) {
     let result;
     if (path === 'key') result = state.key(body);
+    else if (path === 'visibility') result = state.visibility(body);
     else if (path === 'rekey') { const previous = state.find(body?.id)?.keyHash; try { result = state.rekey(body); } finally { if (state.find(body?.id)?.keyHash !== previous) disconnect(body.id); } }
     else if (path === 'rule') { try { result = state.saveRule(body); } finally { reconcile(body?.agentId, true); } }
     else if (path === 'rule/remove') { try { result = state.removeRule(body); } finally { reconcile(body?.agentId, true); } }
@@ -155,5 +163,5 @@ export function createForwardAgents(config, forwarding) {
     } catch { sessions.delete(agent.id); socket.destroy(); }
   }
   function close() { closed = true; clearInterval(timer); for (const timeout of updates.values()) clearTimeout(timeout); updates.clear(); for (const id of sessions.keys()) disconnect(id); server.close(); }
-  return { list, action, upgrade, close };
+  return { list, sharedKeys, sharedKey, hasSharedKeys: () => state.all().some(agent => agent.temporaryKeyVisible), action, upgrade, close };
 }

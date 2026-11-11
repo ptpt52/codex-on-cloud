@@ -30,6 +30,10 @@ test('multiple managed helpers receive only their own dynamic rules; revocation 
     const ar = await post(app, 'rule', rule(a.id)), br = await post(app, 'rule', rule(b.id, 22002));
     const [am] = await ca.rules(1), [bm] = await cb.rules(1);
     assert.equal(am.id, ar.id); assert.equal(bm.id, br.id); assert.notEqual(am.code, bm.code);
+    await post(app, 'visibility', { id: a.id, revision: a.visibilityRevision, visible: true });
+    await post(app, 'visibility', { id: a.id, revision: a.visibilityRevision + 1, visible: false });
+    assert.equal(ca.ws.readyState, 1); assert.equal((await slot(app)).key, a.key);
+    assert.equal((await list(app)).agents[0].rules[0].mapping.id, am.mappingId);
     const state = await list(app); assert(state.agents.slice(0, 2).every(a => a.online));
     assert(!JSON.stringify(state).includes(am.code)); assert(!JSON.stringify(state).includes(decode(a.key).secret));
     assert.equal((await (await app.request('/api/forward')).json()).managedHelpersProtocol, 2);

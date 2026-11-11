@@ -20,6 +20,49 @@ async function client(app,username='admin',password=app.config.password){
 }
 async function freePort(){const server=net.createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=server.address().port;await new Promise(r=>server.close(r));return port;}
 async function reverse(c){const agent=(await(await c.request('/api/forward/agents')).json()).agents[0];return c.request('/api/forward/agents/rule',{agentId:agent.id,name:'test device',enabled:true,config:{direction:'reverse',deviceName:'test device',protocol:'ssh',localPort:await freePort(),targetHost:'192.168.1.1',targetPort:22}});}
+
+test('temporary users can only read explicitly shared helper keys and never gain helper management or device data', async t => {
+  const app = await fixture(); t.after(() => app.close()); const admin = await client(app); await admin.claim();
+  const agents = (await (await admin.request('/api/forward/agents')).json()).agents;
+  await admin.request('/api/security/temporary-account', { enabled: true, username: 'visitor', password: 'test-guest-password' });
+  const guest = await client(app, 'visitor', 'test-guest-password');
+  assert.equal(guest.logged.access.canViewHelperKeys, false);
+  assert.equal((await guest.request('/api/forward/agents/key?id=' + agents[1].id)).status, 403);
+  for (const agent of [agents[1], agents[6]]) assert.equal((await admin.request('/api/forward/agents/visibility', { id: agent.id, revision: agent.visibilityRevision, visible: true })).status, 200);
+  const metadata = await (await guest.request('/api/forward/agents')).json();
+  assert.equal(metadata.readOnly, true); assert.deepEqual(metadata.agents.map(a => a.slot), [2, 7]);
+  for (const a of metadata.agents) assert.deepEqual(Object.keys(a).sort(), ['id', 'keyRevision', 'name', 'slot']);
+  const keyPath = '/api/forward/agents/key?id=' + agents[1].id;
+  const first = await guest.request(keyPath); assert.equal(first.headers.get('cache-control'), 'no-store');
+  const key = await first.json(); assert.deepEqual(await (await guest.request(keyPath)).json(), key, 'refresh reads the current key without rotating it');
+  for (const agent of agents.filter(a => ![2, 7].includes(a.slot))) assert.equal((await guest.request('/api/forward/agents/key?id=' + agent.id)).status, 403);
+  for (const path of ['visibility', 'rekey', 'rule', 'rule/remove', 'inventory']) assert.equal((await guest.request('/api/forward/agents/' + path, { id: agents[1].id, revision: 1, visible: true })).status, 403);
+  assert.equal((await admin.request('/api/forward/agents/key?id=' + agents[1].id)).status, 200);
+  const access = (await (await guest.request('/api/me')).json()).access; assert.equal(access.canViewHelperKeys, true); assert.equal(access.canManageHelpers, false); assert.equal(access.full, false);
+  await admin.request('/api/security/screen-lock', { enabled: true, password: 'test-screen-password' });
+  assert.equal((await guest.request(keyPath)).status, 200); assert.equal((await admin.request(keyPath)).status, 423);
+  assert.equal((await admin.request('/api/forward/agents/visibility', { id: agents[1].id, revision: 2, visible: false })).status, 423);
+  await admin.claim('test-screen-password');
+  await admin.request('/api/forward/agents/visibility', { id: agents[1].id, revision: 2, visible: false });
+  assert.equal((await guest.request(keyPath)).status, 403); assert.deepEqual((await (await guest.request('/api/forward/agents')).json()).agents.map(a => a.slot), [7]);
+  await admin.request('/api/forward/agents/visibility', { id: agents[6].id, revision: 2, visible: false });
+  assert.equal((await guest.request('/api/forward/agents')).status, 403);
+  assert.equal((await (await guest.request('/api/me')).json()).access.canViewHelperKeys, false);
+  await admin.request('/api/security/temporary-account', { enabled: false }); assert.equal((await guest.request(keyPath)).status, 401);
+  assert.deepEqual(app.inputCalls, []); assert.equal(app.managementStats.restarts, 0);
+});
+
+test('shared helper keys still require a live temporary session at every read', async t => {
+  const app = await fixture(); t.after(() => app.close()); const admin = await client(app); await admin.claim();
+  const agent = (await (await admin.request('/api/forward/agents')).json()).agents[0];
+  await admin.request('/api/forward/agents/visibility', { id: agent.id, revision: agent.visibilityRevision, visible: true });
+  await admin.request('/api/security/temporary-account', { enabled: true, username: 'visitor', password: 'test-guest-password', durationMs: 300000 });
+  const guest = await client(app, 'visitor', 'test-guest-password'), path = '/api/forward/agents/key?id=' + agent.id;
+  assert.equal((await guest.request(path)).status, 200);
+  const now = Date.now(); t.mock.method(Date, 'now', () => now + 300001);
+  assert.equal((await guest.request(path)).status, 401); assert.equal((await guest.request('/api/forward/agents')).status, 401);
+  assert.equal((await admin.request(path)).status, 200);
+});
 test('screen lock protects initial access and every takeover while status and files remain available and helper secrets stay protected',async t=>{
   const app=await fixture({forwardPorts:'*'});t.after(()=>app.close());const a=await client(app);assert.equal((await a.claim()).status,200);
   const original=await(await reverse(a)).json();

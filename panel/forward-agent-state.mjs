@@ -31,17 +31,17 @@ export function createForwardAgentState(directory, validateRule, identity) {
     const saved = JSON.parse(bytes.subarray(0, size));
     if (!fields(saved, ['version', 'agents']) || saved.version !== 2 || !Array.isArray(saved.agents) || saved.agents.length !== AGENT_LIMITS.agents) throw Error('助手配置格式无效');
     agents = saved.agents.map((value, index) => {
-      if (!fields(value, ['id', 'slot', 'secret', 'keyRevision', 'createdAt', 'rules']) || !id(value.id) || value.slot !== index + 1 || !/^[A-Za-z0-9_-]{43}$/.test(value.secret) || !Number.isSafeInteger(value.keyRevision) || value.keyRevision < 1 || !Number.isSafeInteger(value.createdAt) || !Array.isArray(value.rules) || value.rules.length > AGENT_LIMITS.rules) throw Error('助手槽位配置无效');
+      if (!fields(value, ['id', 'slot', 'secret', 'keyRevision', 'createdAt', 'rules', 'temporaryKeyVisible', 'visibilityRevision']) || !id(value.id) || value.slot !== index + 1 || !/^[A-Za-z0-9_-]{43}$/.test(value.secret) || !Number.isSafeInteger(value.keyRevision) || value.keyRevision < 1 || !Number.isSafeInteger(value.createdAt) || !Array.isArray(value.rules) || value.rules.length > AGENT_LIMITS.rules || value.temporaryKeyVisible !== undefined && typeof value.temporaryKeyVisible !== 'boolean' || value.visibilityRevision !== undefined && (!Number.isSafeInteger(value.visibilityRevision) || value.visibilityRevision < 1)) throw Error('助手槽位配置无效');
       const rules = value.rules.map(checkRule);
       if (new Set(rules.map(r => r.id)).size !== rules.length) throw Error('助手规则标识重复');
-      return decorate({ ...value, rules });
+      return decorate({ temporaryKeyVisible: false, visibilityRevision: 1, ...value, rules });
     });
     if (new Set(agents.flatMap(a => a.rules.map(r => r.id))).size !== agents.reduce((n, a) => n + a.rules.length, 0)) throw Error('助手规则标识重复');
     if (new Set(agents.map(a => a.id)).size !== agents.length) throw Error('助手标识重复');
   } catch (error) { if (error.code !== 'ENOENT') throw Error('助手配置无法读取：本版仅支持全新配置，请检查 data/panel/forward-agents.json', { cause: error }); }
   finally { if (fd !== undefined) closeSync(fd); }
   function persist(next) {
-    const bytes = Buffer.from(JSON.stringify({ version: 2, agents: next.map(({ id, slot, secret, keyRevision, createdAt, rules }) => ({ id, slot, secret, keyRevision, createdAt, rules })) }) + '\n');
+    const bytes = Buffer.from(JSON.stringify({ version: 2, agents: next.map(({ id, slot, secret, keyRevision, createdAt, rules, temporaryKeyVisible, visibilityRevision }) => ({ id, slot, secret, keyRevision, createdAt, rules, temporaryKeyVisible, visibilityRevision })) }) + '\n');
     if (bytes.length > AGENT_LIMITS.file) throw fail(409, '助手配置已达到 128 KiB 上限');
     parent();
     try { const s = lstatSync(temporary); if (!s.isFile() || s.uid !== process.getuid() || s.nlink !== 1) throw Error('助手配置临时文件无效'); unlinkSync(temporary); }
@@ -57,7 +57,7 @@ export function createForwardAgentState(directory, validateRule, identity) {
     } finally { if (created) { try { unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } } }
   }
   function decorate(value) { return { ...value, name: '助手' + value.slot, keyHash: hash(value.id + '.' + value.secret) }; }
-  if (!agents.length) persist(Array.from({ length: AGENT_LIMITS.agents }, (_, i) => decorate({ id: randomBytes(16).toString('hex'), slot: i + 1, secret: randomBytes(32).toString('base64url'), keyRevision: 1, createdAt: Date.now(), rules: [] })));
+  if (!agents.length) persist(Array.from({ length: AGENT_LIMITS.agents }, (_, i) => decorate({ id: randomBytes(16).toString('hex'), slot: i + 1, secret: randomBytes(32).toString('base64url'), keyRevision: 1, temporaryKeyVisible: false, visibilityRevision: 1, createdAt: Date.now(), rules: [] })));
   const find = value => agents.find(a => a.id === value);
   function requireAgent(value) { if (!id(value)) throw fail(400, '助手标识无效'); const agent = find(value); if (!agent) throw fail(404, '助手槽位不存在'); return agent; }
   function keyFor(agent) { return 'COCA2.' + Buffer.from(JSON.stringify({ version: 2, server: identity.entry, node: identity.id, agent: agent.id, secret: agent.secret })).toString('base64url'); }
@@ -73,10 +73,19 @@ export function createForwardAgentState(directory, validateRule, identity) {
       if (!fields(body, ['id']) || Object.keys(body).length !== 1) throw fail(400, '助手标识无效');
       const agent = requireAgent(body.id); return { id: agent.id, key: keyFor(agent), revision: agent.keyRevision };
     },
+    visibility(body) {
+      if (!fields(body, ['id', 'revision', 'visible']) || Object.keys(body).length !== 3 || typeof body.visible !== 'boolean') throw fail(400, '助手 key 可见设置无效');
+      const old = requireAgent(body.id);
+      if (body.revision !== old.visibilityRevision) throw fail(409, '可见设置已更新，请刷新后重试');
+      if (body.visible === old.temporaryKeyVisible) return { visible: old.temporaryKeyVisible, revision: old.visibilityRevision };
+      if (!Number.isSafeInteger(old.visibilityRevision + 1)) throw fail(409, '可见设置版本已达到上限');
+      const agent = { ...old, temporaryKeyVisible: body.visible, visibilityRevision: old.visibilityRevision + 1 }; change(agent);
+      return { visible: agent.temporaryKeyVisible, revision: agent.visibilityRevision };
+    },
     rekey(body) {
       if (!fields(body, ['id', 'revision']) || Object.keys(body).length !== 2) throw fail(400, '助手标识或 key 版本无效');
       const old = requireAgent(body.id);
-      if (body.revision !== old.keyRevision) throw fail(409, 'key 已刷新，请重新查看后操作');
+      if (body.revision !== old.keyRevision) throw fail(409, 'key 已重新生成，请重新查看后操作');
       if (!Number.isSafeInteger(old.keyRevision + 1)) throw fail(409, 'key 版本已达到上限');
       const agent = decorate({ ...old, secret: randomBytes(32).toString('base64url'), keyRevision: old.keyRevision + 1 }); change(agent);
       return { id: agent.id, key: keyFor(agent), revision: agent.keyRevision };

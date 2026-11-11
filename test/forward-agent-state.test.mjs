@@ -28,8 +28,34 @@ test('fresh state creates exactly eight stable slots and administrator-readable 
   const next = state.rekey({ id: a.id, revision: first.revision });
   assert.equal(state.authenticate(token(first.key)), null); assert(state.authenticate(token(next.key))); assert(state.authenticate(token(second.key)));
   assert.equal(open().all().length, 8); assert.equal(open().key({ id: a.id }).key, next.key);
-  assert.throws(() => state.rekey({ id: a.id, revision: first.revision }), /已刷新/);
+  assert.throws(() => state.rekey({ id: a.id, revision: first.revision }), /已重新生成/);
   assert.equal(typeof state.create, 'undefined'); assert.equal(typeof state.remove, 'undefined');
+});
+
+test('per-helper temporary key visibility is opt-in, persistent and independent of key and rule revisions', async t => {
+  const { open } = await setup(t), state = open(), [a, b] = state.all();
+  assert(state.all().every(agent => agent.temporaryKeyVisible === false && agent.visibilityRevision === 1));
+  const key = state.key({ id: a.id }), saved = state.saveRule(rule(a.id));
+  const visibility = state.visibility({ id: a.id, revision: 1, visible: true });
+  assert.deepEqual(visibility, { visible: true, revision: 2 });
+  assert.equal(open().find(a.id).temporaryKeyVisible, true); assert.equal(open().find(b.id).temporaryKeyVisible, false);
+  assert.equal(state.key({ id: a.id }).key, key.key); assert.equal(state.find(a.id).rules[0].revision, saved.revision);
+  assert.throws(() => state.visibility({ id: a.id, revision: 1, visible: false }), { status: 409 });
+  for (const visible of ['true', 1, null]) assert.throws(() => state.visibility({ id: a.id, revision: 2, visible }), { status: 400 });
+  const next = state.rekey({ id: a.id, revision: key.revision }); assert.notEqual(next.key, key.key);
+  assert.equal(state.find(a.id).temporaryKeyVisible, true); assert.equal(state.find(a.id).visibilityRevision, 2);
+  state.visibility({ id: a.id, revision: 2, visible: false }); assert.equal(open().find(a.id).temporaryKeyVisible, false);
+});
+
+test('existing fixed-slot state gains private-by-default visibility without replacing any key', async t => {
+  const { directory, open } = await setup(t), state = open(), keys = state.all().map(a => state.key({ id: a.id }).key);
+  const file = join(directory, 'forward-agents.json'), saved = JSON.parse(await readFile(file, 'utf8'));
+  for (const a of saved.agents) { delete a.temporaryKeyVisible; delete a.visibilityRevision; }
+  await writeFile(file, JSON.stringify(saved), { mode: 0o600 });
+  const reopened = open(); assert(reopened.all().every(a => !a.temporaryKeyVisible && a.visibilityRevision === 1));
+  assert.deepEqual(reopened.all().map(a => reopened.key({ id: a.id }).key), keys);
+  saved.agents[0].temporaryKeyVisible = 'false'; await writeFile(file, JSON.stringify(saved), { mode: 0o600 });
+  assert.throws(open, /助手配置无法读取/);
 });
 
 test('desired rules survive reopening and reject stale edits, shared listener conflicts and duplicate serial devices', async t => {
