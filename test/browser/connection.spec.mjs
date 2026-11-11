@@ -37,7 +37,7 @@ test('healthy polling cannot hide a disconnected framebuffer and diagnostics sho
     expect(state.desktop.ready).toBe(true);
     await expect(page.locator('#connection-status')).toContainText('画面重连中');
     await page.getByRole('button', { name: '连接状态', exact: true }).click();
-    await expect(page.locator('#diag-panel')).toHaveText('可访问');
+    await expect(page.locator('#diag-panel')).toHaveText('可访问（HTTPS）');
     await expect(page.locator('#diag-frame')).toHaveText('重连中');
     await expect(page.locator('#diag-resolution')).toContainText('上次连接');
     await page.getByRole('button', { name: '关闭连接状态' }).click();
