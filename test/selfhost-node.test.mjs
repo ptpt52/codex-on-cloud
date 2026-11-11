@@ -328,3 +328,15 @@ test('rollback confirms an absent relay unit after a failure before unit creatio
   assert.equal(await readFile(join(h.root, '.env'), 'utf8'), original);
   await assert.rejects(access(join(h.root, 'data/selfhost-node/join-recovery.json')));
 });
+
+test('explicit reauthorization prompts for the new key at the same fixed node without changing identity', async t => {
+  const h = await setup(t), submissions = []; let prompts = 0;
+  const common = { root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome, run: h.run, install: async () => '/opt/frpc',
+    promptKey: async () => { prompts++; return prompts === 1 ? key : 'coc_' + 'z'.repeat(43); },
+    request: async (_url, options) => { submissions.push(JSON.parse(options.body)); return new Response(JSON.stringify({ ...h.joined, credential: prompts > 1 ? 'cocn_' + 'z'.repeat(43) : credential })); } };
+  const first = await joinNode(common);
+  const next = await joinNode({ ...common, reauthorize: true });
+  assert.equal(prompts, 2); assert.equal(submissions[1].key, 'coc_' + 'z'.repeat(43)); assert.equal(submissions[1].credential, undefined);
+  assert.equal(next.connection.nodeId, first.connection.nodeId); assert.equal(next.connection.path, first.connection.path); assert.notEqual(next.connection.credential, first.connection.credential);
+  assert(h.calls.every(call => !call.includes('codex-cloud-desktop.service')));
+});

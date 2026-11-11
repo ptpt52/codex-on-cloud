@@ -184,15 +184,19 @@ export async function createSelfhostCenter({
       requireWrite(req, current); await auth.revoke(cookieToken(req.headers.cookie, authConfig));
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', authConfig, true) });
     }
+    if (path === '/api/overview' && req.method === 'GET') return reply(res, 200, { ...await registry.snapshot(), username, csrf: current.csrf, host: parsed.host, turn: !!turnSecret });
     if (path === '/api/status' && req.method === 'GET') return reply(res, 200, { ...await registry.status(), host: parsed.host, turn: !!turnSecret });
     if (path === '/api/keys' && req.method === 'GET') return reply(res, 200, { revision: (await registry.status()).revision, keys: await registry.list() });
     if (path === '/api/keys' && req.method === 'POST') {
       requireWrite(req, current); const body = await jsonBody(req, 4096), value = await registry.createKey(body);
       return reply(res, 201, value);
     }
+    const reissue = path.match(/^\/api\/keys\/([a-f0-9]{32})\/reissue$/);
+    if (reissue && req.method === 'POST') { requireWrite(req, current); return reply(res, 200, await registry.reissueKey(reissue[1], await jsonBody(req, 4096))); }
     const key = path.match(/^\/api\/keys\/([a-f0-9]{32})$/), node = path.match(/^\/api\/nodes\/([a-z0-9-]{1,48})\/disconnect$/);
-    if (key && req.method === 'DELETE') { requireWrite(req, current); await jsonBody(req, 1024); return reply(res, 200, await registry.revoke(key[1])); }
-    if (node && req.method === 'POST') { requireWrite(req, current); await jsonBody(req, 1024); return reply(res, 200, await registry.disconnect(node[1])); }
+    if (key && req.method === 'PATCH') { requireWrite(req, current); return reply(res, 200, await registry.updateKey(key[1], await jsonBody(req, 4096))); }
+    if (key && req.method === 'DELETE') { requireWrite(req, current); return reply(res, 200, await registry.revoke(key[1], await jsonBody(req, 1024))); }
+    if (node && req.method === 'POST') { requireWrite(req, current); return reply(res, 200, await registry.disconnect(node[1], await jsonBody(req, 1024))); }
     throw selfhostError(404, '资源不存在');
   }
 

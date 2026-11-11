@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readStateFile, writeStateFile } from '../scripts/state-files.mjs';
 import {
-  CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, displayName, entryBasePath, equalHash, expiration, nodeIdentity,
+  CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, displayName, entryBasePath, equalHash, keyExpiration, nodeIdentity,
   proxyName, publicKey, randomToken, selfhostError, slug, tokenHash,
 } from './protocol.mjs';
 
@@ -66,10 +66,11 @@ export class SelfhostRegistry {
   findKey(value, keyId) { return value.keys.find(item => item.id === keyId); }
 
   async createKey(input = {}) {
-    const name = displayName(input.name), nodeSlug = slug(input.slug), expiresAt = expiration(input.expiresAt, this.now());
+    const name = displayName(input.name), nodeSlug = slug(input.slug), expiresAt = keyExpiration(input, this.now());
     return this.mutate(({ value, now, close }) => {
+      this.checkRevision(value, input);
       if (value.keys.length >= SELFHOST_LIMITS.keys) throw selfhostError(429, '最多保存 ' + SELFHOST_LIMITS.keys + ' 个授权');
-      if (value.keys.some(item => item.slug === nodeSlug)) throw selfhostError(409, '该节点路径已有授权，不能重复创建');
+      if (value.keys.some(item => item.slug === nodeSlug)) throw selfhostError(409, '该节点路径已有授权，不能重复创建；请在原节点的更多操作中重新授权');
       const token = this.random('coc_'), item = { id: tokenHash(token).slice(0, 32), slug: nodeSlug, name, keyHash: tokenHash(token), credentialHash: null, createdAt: now, expiresAt, revokedAt: null };
       value.keys.push(item); this.audit(value, 'key_created', item, now);
       return { value: { ...publicKey(item, null, now), key: token }, close };
@@ -89,10 +90,21 @@ export class SelfhostRegistry {
     return live;
   }
 
-  async list() {
+  listed(now = this.now()) {
+    return this.value.keys.map(item => publicKey(item, this.visibleSession(this.sessions.get(item.slug), now), now)).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  }
+
+  visibleSession(session, now = this.now()) {
+    if (!session || session.status === 'grace' && session.graceUntil <= now || session.status === 'online' && session.lastSeenAt + SELFHOST_LIMITS.heartbeatMs <= now || ['connecting', 'authenticated'].includes(session.status) && session.connectedAt + SELFHOST_LIMITS.connectMs <= now) return null;
+    return session;
+  }
+
+  async list() { await this.queue; return this.listed(); }
+
+  async snapshot() {
     await this.queue;
-    const now = this.now();
-    return this.value.keys.map(item => publicKey(item, this.sessions.get(item.slug), now)).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    const now = this.now(), keys = this.listed(now);
+    return { revision: this.value.revision, keys, status: this.counts(keys, now) };
   }
 
   publicNodes() {
@@ -108,22 +120,53 @@ export class SelfhostRegistry {
     return nodes.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
   }
 
-  async status() {
-    const keys = await this.list(), now = this.now();
+  counts(keys, now) {
     return {
       revision: this.value.revision,
       maximumNodes: SELFHOST_LIMITS.nodes,
-      onlineNodes: keys.filter(item => ['online', 'connecting', 'authenticated'].includes(item.status)).length,
+      onlineNodes: keys.filter(item => item.status === 'online').length,
+      connectingNodes: keys.filter(item => ['connecting', 'authenticated'].includes(item.status)).length,
       graceNodes: keys.filter(item => item.status === 'grace').length,
       activeKeys: keys.filter(item => !item.revokedAt && (item.expiresAt === null || item.expiresAt > now)).length,
       totalKeys: keys.length,
     };
   }
 
+  async status() { return (await this.snapshot()).status; }
+
+  checkRevision(value, input) {
+    if (input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision !== value.revision)) throw selfhostError(409, '节点信息已变化，请刷新列表后重新确认操作');
+  }
+
+  async updateKey(keyId, input = {}) {
+    if (!Object.keys(input).some(key => ['name', 'expiresAt', 'neverExpires'].includes(key)) || Object.keys(input).some(key => !['name', 'expiresAt', 'neverExpires', 'revision'].includes(key))) throw selfhostError(400, '可修改显示名称和授权有效期，节点路径保持固定');
+    return this.mutate(({ value, sessions, now, close }) => {
+      this.checkRevision(value, input);
+      const item = this.findKey(value, keyId); if (!item) throw selfhostError(404, '节点授权不存在');
+      if (input.name !== undefined) item.name = displayName(input.name);
+      if (Object.hasOwn(input, 'expiresAt') || Object.hasOwn(input, 'neverExpires')) item.expiresAt = keyExpiration(input, now);
+      this.audit(value, 'key_updated', item, now);
+      return { value: publicKey(item, this.visibleSession(sessions.get(item.slug), now), now), close };
+    });
+  }
+
+  async reissueKey(keyId, input = {}) {
+    if (typeof input.neverExpires !== 'boolean' || Object.keys(input).some(key => !['expiresAt', 'neverExpires', 'revision'].includes(key))) throw selfhostError(400, '重新授权需明确选择有效期');
+    return this.mutate(({ value, sessions, now, close }) => {
+      this.checkRevision(value, input);
+      const item = this.findKey(value, keyId); if (!item) throw selfhostError(404, '节点授权不存在');
+      const expiresAt = keyExpiration(input, now), token = this.random('coc_');
+      item.keyHash = tokenHash(token); item.credentialHash = null; item.revokedAt = null; item.expiresAt = expiresAt;
+      if (sessions.delete(item.slug)) close.push({ slug: item.slug, reason: 'authorization_reissued' });
+      this.audit(value, 'key_reissued', item, now);
+      return { value: { ...publicKey(item, null, now), key: token }, close };
+    });
+  }
+
   async routeAllowed(nodeSlug) {
     await this.queue;
     const item = this.value.keys.find(key => key.slug === nodeSlug), session = this.sessions.get(nodeSlug), now = this.now();
-    return !!item && this.keyStatus(item, now) === 'ready' && session?.status === 'online';
+    return !!item && this.keyStatus(item, now) === 'ready' && this.visibleSession(session, now)?.status === 'online';
   }
 
   async turnAuthorized(input = {}) {
@@ -173,8 +216,9 @@ export class SelfhostRegistry {
     return this.mutate(draft => this.joinPlan(input, draft, this.now(), []));
   }
 
-  async revoke(keyId) {
+  async revoke(keyId, input = {}) {
     return this.mutate(({ value, sessions, now, close }) => {
+      this.checkRevision(value, input);
       const item = this.findKey(value, keyId); if (!item) throw selfhostError(404, '授权不存在');
       if (item.revokedAt) return { value: publicKey(item, sessions.get(item.slug), now), close };
       item.revokedAt = now; item.credentialHash = null; sessions.delete(item.slug); close.push({ slug: item.slug, reason: 'authorization_revoked' }); this.audit(value, 'key_revoked', item, now);
@@ -182,9 +226,10 @@ export class SelfhostRegistry {
     });
   }
 
-  async disconnect(nodeSlug) {
+  async disconnect(nodeSlug, input = {}) {
     return this.mutate(({ value, sessions, now, close }) => {
-      const item = this.value.keys.find(key => key.slug === nodeSlug); if (!item) throw selfhostError(404, '节点授权不存在');
+      this.checkRevision(value, input);
+      const item = value.keys.find(key => key.slug === nodeSlug); if (!item) throw selfhostError(404, '节点授权不存在');
       if (!sessions.delete(nodeSlug)) throw selfhostError(409, '节点当前未接入');
       close.push({ slug: nodeSlug, reason: 'disconnected_by_admin' }); this.audit(value, 'node_disconnected', item, now);
       return { value: { ok: true }, close };

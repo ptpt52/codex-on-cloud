@@ -341,7 +341,7 @@ export async function joinNode(options = {}) {
 }
 
 async function joinNodeLocked({
-  root, server, slug: wantedSlug, mode = 'desktop', panelPort, caFile, replace = false, switchExisting = false,
+  root, server, slug: wantedSlug, mode = 'desktop', panelPort, caFile, replace = false, reauthorize = false, switchExisting = false,
   request = centerRequest, run = command, install = installFrpc, promptKey, configHome,
 } = {}) {
   const nodeSlug = slug(wantedSlug), serverOrigin = origin(server), existingText = await optional(pathFor(root, 'connection.json'), 16384);
@@ -353,7 +353,7 @@ async function joinNodeLocked({
   const same = existing?.origin === serverOrigin && existing.slug === nodeSlug, body = { version: 1, slug: nodeSlug, node: { id: same ? existing.nodeId : randomBytes(16).toString('hex'), mode } };
   const previousRelay = existing ? await relayState(run) : null;
   const replacingRelay = !!previousRelay && !same;
-  if (same) body.credential = existing.credential;
+  if (same && !reauthorize) body.credential = existing.credential;
   else { const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key; }
   const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), unit = servicePath(configHome);
   const caPath = pathFor(root, 'frps-ca.pem'), paths = transactionPaths(root, configHome), before = {};

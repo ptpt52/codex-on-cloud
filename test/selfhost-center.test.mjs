@@ -196,3 +196,24 @@ test('public list polling has a separate per-client bounded rate limit', async t
   assert.equal((await h.request('/api/public/nodes', { authenticated: false, headers: { 'x-forwarded-for': '198.51.100.31' } })).status, 200);
   assert.equal((await h.login()).status, 200);
 });
+
+test('overview and lifecycle writes retain authentication, origin and CSRF boundaries', async t => {
+  const h = await setup(t);
+  assert.equal((await h.request('/admin/api/overview', { authenticated: false })).status, 401);
+  await h.login();
+  assert.equal((await h.request('/admin/api/keys', { method: 'POST', body: { name: '节点', slug: 'finite', neverExpires: false, expiresAt: null } })).status, 400);
+  const key = await (await h.request('/admin/api/keys', { method: 'POST', body: { name: '节点', slug: 'node-a', neverExpires: true, expiresAt: null } })).json();
+  const path = '/admin/api/keys/' + key.id;
+  for (const [method, url, body] of [['PATCH', path, { name: '改名' }], ['POST', path + '/reissue', { neverExpires: true }]]) {
+    assert.equal((await h.request(url, { method, body, authenticated: false })).status, 401);
+    assert.equal((await h.request(url, { method, body, headers: { 'x-csrf-token': '' } })).status, 403);
+    assert.equal((await h.request(url, { method, body, headers: { origin: 'https://evil.example.test' } })).status, 403);
+  }
+  const overview = await (await h.request('/admin/api/overview')).json();
+  assert.equal(overview.keys.length, 1); assert.equal(overview.revision, overview.status.revision); assert.equal(overview.csrf, h.csrf);
+  assert.equal((await h.request(path, { method: 'PATCH', body: { name: '新名称', revision: overview.revision } })).status, 200);
+  assert.equal((await h.request(path + '/reissue', { method: 'POST', body: { neverExpires: true, revision: overview.revision } })).status, 409);
+  const fresh = await (await h.request(path + '/reissue', { method: 'POST', body: { neverExpires: true } })).json();
+  assert.equal(fresh.id, key.id); assert.notEqual(fresh.key, key.key); assert.equal(fresh.name, '新名称');
+  const publicList = await (await h.request('/api/public/nodes', { authenticated: false })).json(); assert.deepEqual(publicList.nodes, []);
+});

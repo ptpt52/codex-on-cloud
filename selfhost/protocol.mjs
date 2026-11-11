@@ -44,6 +44,15 @@ export function expiration(value, now = Date.now()) {
   return value;
 }
 
+export function keyExpiration(input, now = Date.now()) {
+  if (input.neverExpires !== undefined) {
+    if (typeof input.neverExpires !== 'boolean') throw selfhostError(400, '授权期限选项无效');
+    const missing = input.expiresAt === null || input.expiresAt === undefined || input.expiresAt === '';
+    if (input.neverExpires ? !missing || input.expiresAt === '' : missing) throw selfhostError(400, '请选择有效的未来到期时间或明确选择无限期');
+  }
+  return expiration(input.expiresAt, now);
+}
+
 export const entryBasePath = value => '/node/' + slug(value) + '/';
 export const proxyName = value => 'node-' + slug(value);
 export const randomToken = prefix => prefix + randomBytes(32).toString('base64url');
