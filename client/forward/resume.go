@@ -15,6 +15,7 @@ const resumeWindow = 30 * time.Second
 const resumeAttempts = 8
 
 type resumeState struct {
+	expected              *managedRule
 	serial                *serialConfig
 	protocol              string
 	token, id             string
@@ -99,11 +100,14 @@ func run(ctx context.Context, server *url.URL, code string, writer io.Writer) er
 	return runWithReverse(ctx, server, code, writer, nil)
 }
 func runWithReverse(ctx context.Context, server *url.URL, code string, writer io.Writer, approve func(context.Context, readyMessage) error) error {
+	return runWithRule(ctx, server, code, writer, approve, nil)
+}
+func runWithRule(ctx context.Context, server *url.URL, code string, writer io.Writer, approve func(context.Context, readyMessage) error, expected *managedRule) error {
 	if !tokenPattern.MatchString(code) {
 		return errors.New("配对码格式不正确，请重新从网页复制")
 	}
 	output := &runOutput{writer: writer}
-	state := &resumeState{approve: approve}
+	state := &resumeState{approve: approve, expected: expected}
 	attempts := 0
 	for {
 		state.active = false

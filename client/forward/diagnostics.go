@@ -12,6 +12,10 @@ import (
 // Only fixed messages reach the console; TLS, proxy and network errors can
 // contain addresses or request metadata and must not be printed verbatim.
 var failureMessages = map[string]string{
+	"agent_key_invalid":            "助手授权 key 无效或已撤销，请向该节点管理员获取新的 key。",
+	"agent_already_connected":      "此 key 已有一个助手在线；不同助手请使用各自独立的 key。",
+	"agent_rule_mismatch":          "下发规则与映射握手不一致，本条映射未开启。",
+	"node_changed":                 "控制台节点身份不一致，请核对授权 key 和入口。",
 	"rtc_disabled":                 "管理员未启用直连，新连接使用 WSS 中转。",
 	"rtc_waiting_helper":           "等待新版助手启用直连探测。",
 	"rtc_connecting":               "正在探测加密直连；新连接可先使用 WSS 中转。",

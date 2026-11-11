@@ -78,10 +78,17 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 	if path == "/forward/data" {
 		handshakeTimeout = dataConnectTimeout
 	}
-	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{"codex-forward-v1"}}
+	protocol := "codex-forward-v1"
+	if path == "/forward/agent" {
+		protocol = "codex-agent-v1"
+	}
+	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{protocol}}
 	origin := *server
 	origin.Path = ""
 	headers := http.Header{"Authorization": {"Bearer " + token}, "Origin": {origin.String()}}
+	if node, ok := ctx.Value(forwardNodeContext{}).(string); ok && node != "" {
+		headers.Set("X-Codex-Forward-Node", node)
+	}
 	if path == "/forward/helper" || path == "/forward/resume" {
 		headers.Set("X-Codex-Forward-Resume", "1")
 		headers.Set("X-Codex-Forward-Reverse", "1")
@@ -100,12 +107,12 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 		}
 		return nil, dialFailure(err, response, path)
 	}
-	if c.Subprotocol() != "codex-forward-v1" {
+	if c.Subprotocol() != protocol {
 		c.Close()
 		return nil, errors.New("服务器转发协议不兼容")
 	}
 	c.SetReadLimit(chunkSize)
-	if path == "/forward/helper" || path == "/forward/resume" {
+	if path == "/forward/helper" || path == "/forward/resume" || path == "/forward/agent" {
 		c.SetReadLimit(48 * 1024)
 	}
 	readTimeout := 5 * time.Second
@@ -375,6 +382,9 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	if err != nil {
 		return err
 	}
+	if state.expected != nil && !state.expected.matches(ready) {
+		return failure("agent_rule_mismatch")
+	}
 	if err := state.accept(ready); err != nil {
 		return err
 	}
@@ -477,7 +487,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	label := "映射已开启"
 	if path == "/forward/resume" {
 		label = "映射已恢复"
-	} else {
+	} else if state.expected == nil {
 		output.print(2, "保持助手运行，Ctrl+C 停止。短暂断网自动恢复映射；停止、退出原登录或授权过期后需重新配对。")
 	}
 	if ready.Serial != nil {
@@ -546,6 +556,13 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--serial-list-worker" {
+		parent, err := strconv.Atoi(os.Args[2])
+		if err != nil || watchSerialParent(parent) != nil || runSerialListWorker(os.Stdout) != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "--serial-worker" {
 		parent, err := strconv.Atoi(os.Args[2])
 		if err != nil || watchSerialParent(parent) != nil {
@@ -600,6 +617,41 @@ func main() {
 		}
 		return strings.TrimSpace(string(line)), nil
 	}
+	fmt.Print("请粘贴助手授权 key（或旧版一次性配对码）：")
+	code, inputError := readLine()
+	if inputError == nil && strings.HasPrefix(code, "COCA1.") {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer cancel()
+		var err error
+		explicitServer := false
+		flag.Visit(func(value *flag.Flag) {
+			if value.Name == "server" {
+				explicitServer = true
+			}
+		})
+		if *allowReverse != "" {
+			err = errors.New("--allow-reverse 仅用于一次性配对；常驻 key 由授权节点统一管理目标")
+		}
+		if err == nil && explicitServer {
+			_, granted, keyError := parseAgentKey(code)
+			requested, serverError := serverURL(*server)
+			if keyError != nil || serverError != nil || granted.String() != requested.String() {
+				err = errors.New("--server 与授权 key 的节点入口不一致，请核对后重新输入")
+			}
+		}
+		if err == nil {
+			err = runAgent(ctx, code, os.Stdout)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "无法继续："+err.Error())
+			if info, statErr := os.Stdin.Stat(); (runtime.GOOS == "windows" || runtime.GOOS == "darwin") && statErr == nil && info.Mode()&os.ModeCharDevice != 0 {
+				fmt.Print("按 Enter 退出…")
+				readLine()
+			}
+			os.Exit(1)
+		}
+		return
+	}
 	if *server == "" {
 		fmt.Print("服务器地址（https://...）：")
 		*server, _ = readLine()
@@ -607,9 +659,7 @@ func main() {
 	u, err := serverURL(*server)
 	if err == nil {
 		fmt.Println("服务器：" + u.String())
-		fmt.Print("请在网页生成映射并粘贴配对码：")
-		var code string
-		code, err = readLine()
+		err = inputError
 		if err == nil {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer cancel()

@@ -140,7 +140,10 @@ export function createForwardAgents(config, forwarding) {
             if (value?.type === 'inventory') { session.inventory = { ...agentInventory(value), updatedAt: Date.now() }; inventories.set(agent.id, session.inventory); }
             else if (value?.type === 'rule-result' && fields(value, ['type', 'id', 'mappingId', 'revision', 'error']) && ID.test(value.id) && ID.test(value.mappingId) && text(value.error, 256)) {
               const entry = runtime.get(value.id);
-              if (entry?.agentId === agent.id && entry.mapping === value.mappingId && entry.revision === value.revision) entry.error = value.error;
+              if (entry?.agentId === agent.id && entry.mapping === value.mappingId && entry.revision === value.revision) {
+                entry.error = value.error;
+                if (value.error) { forwarding.stop({ id: entry.mapping }); entry.mapping = ''; entry.code = ''; entry.retryAt = Date.now() + 15000; reconcile(agent.id, true); }
+              }
             } else throw Error();
           } catch { ws.close(1008, 'protocol_error'); ws.terminate(); }
         });
