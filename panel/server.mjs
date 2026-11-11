@@ -115,6 +115,7 @@ export async function createPanel(config) {
   const forwardAgents = createForwardAgents(config, forwarding);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
   const fileTransfers = createFileTransfers();
+  const helperTransfers = createFileTransfers({ limit: 2, busyStatus: 429, busyMessage: '助手下载繁忙，请稍后重试' });
   const turnConfig = async () => {
     const node = config.selfhostNode;
     if (!config.webrtc || !node?.turnEndpoint) return null;
@@ -361,7 +362,7 @@ export async function createPanel(config) {
       closeSockets(state => state.session === session.hash);
       if (owner?.session === session.hash) owner = null;
       forwarding.refresh();
-      fileTransfers.revalidate(); services.revalidate();
+      fileTransfers.revalidate(); helperTransfers.revalidate(); services.revalidate();
       return reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', config, true) });
     }
     if (path === '/api/state' && req.method === 'GET') {
@@ -400,7 +401,7 @@ export async function createPanel(config) {
           else if (owner) owner.lockRevision = access.screenRevision;
         }
         forwarding.refresh();
-        fileTransfers.revalidate(); services.revalidate();
+        fileTransfers.revalidate(); helperTransfers.revalidate(); services.revalidate();
       }
       return reply(res, 200, { ...result, access: accessState(req, requireSession(req)) });
     }
@@ -444,7 +445,9 @@ export async function createPanel(config) {
     if (path.startsWith('/api/forward/download/') && req.method === 'GET') {
       requireSession(req);
       if (url.searchParams.getAll('generation').length > 1) throw new HttpError(400, '助手版本参数无效');
-      return forwardDownloads.serve(path.slice('/api/forward/download/'.length), res, url.searchParams.get('generation') ?? undefined);
+      const token = cookieToken(req.headers.cookie), transfer = helperTransfers.begin(req, res, () => !!auth.get(token));
+      try { return await forwardDownloads.serve(path.slice('/api/forward/download/'.length), res, url.searchParams.get('generation') ?? undefined, transfer); }
+      finally { transfer.finish(); }
     }
     if (path === '/api/terminals' && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
@@ -840,6 +843,7 @@ export async function createPanel(config) {
     forwardAgents.close(); await forwarding.close();
     await services.close();
     fileTransfers.close();
+    helperTransfers.close();
     clearInterval(expiration);
     closeSockets(() => true);
     await rtcClosing;

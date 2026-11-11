@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createFileTransfers } from '../panel/file-transfers.mjs';
+import { once } from 'node:events';
 
 function channel() {
   const req = new EventEmitter(), res = new EventEmitter();
@@ -19,4 +20,12 @@ test('file transfers cap concurrent streams, serialize temporary uploads, and re
   assert.equal(persistent.signal.aborted, false); assert.throws(upload.check, { status: 401 });
   const replacement = transfers.begin(next.req, next.res, () => true, true); replacement.finish();
   for (const transfer of others) transfer.finish(); admin.res.emit('close'); assert.equal(persistent.signal.aborted, true);
+});
+
+test('a transfer deadline closes a stalled response and releases its capacity', async t => {
+  const transfers = createFileTransfers({ limit: 1, timeoutMs: 20 }); t.after(() => transfers.close());
+  const first = channel(), transfer = transfers.begin(first.req, first.res, () => true);
+  await Promise.race([once(first.res, 'close'), new Promise((_, reject) => setTimeout(() => reject(Error('deadline did not close response')), 500))]);
+  assert.equal(transfer.signal.aborted, true); assert.equal(first.res.destroyed, true);
+  const second = channel(); transfers.begin(second.req, second.res, () => true).finish();
 });

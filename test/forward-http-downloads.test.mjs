@@ -4,8 +4,31 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import http from 'node:http';
+import { once } from 'node:events';
 import { fixture } from './fixture.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
+
+test('logout cancels slow helper downloads and releases both download slots', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'codex-forward-revocation-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const name = FORWARD_FILES['windows-amd64'], bytes = Buffer.alloc(32 * 1024 * 1024, 1);
+  await writeFile(join(directory, name), bytes);
+  await writeFile(join(directory, 'manifest.json'), JSON.stringify({ version: 1, files: [{ arch: 'windows-amd64', name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), build: 'slow-download-test' }] }));
+  const app = await fixture({ forwardDownloadDir: directory }); t.after(() => app.close()); await app.login();
+  const path = '/api/forward/download/windows-amd64', responses = [], clients = [];
+  app.panel.server.on('request', (req, res) => { if (req.url === path) responses.push(res); });
+  t.after(() => { for (const client of clients) client.destroy(); });
+  for (let index = 0; index < 2; index++) await new Promise((resolve, reject) => {
+    const client = http.get(app.config.origin + path, { headers: { cookie: app.cookie } }, res => { res.on('error', () => {}); res.pause(); resolve(); });
+    clients.push(client); client.on('error', reject);
+  });
+  assert.equal((await app.request(path)).status, 429);
+  await app.request('/api/logout', { method: 'POST', body: {} });
+  assert(responses.slice(0, 2).every(response => response.destroyed), 'revoked downloads must close even while their clients are paused');
+  await Promise.all(responses.slice(0, 2).map(response => response.closed ? undefined : once(response, 'close')));
+  await app.login();
+  const next = await app.request(path); assert.equal(next.status, 200); await next.body.cancel();
+});
 
 test('helper downloads require authentication and use only fixed bounded regular files',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'codex-forward-download-'));t.after(()=>rm(directory,{recursive:true,force:true}));

@@ -25,7 +25,7 @@ export function createForwardDownloads(directory, { server } = {}) {
         href: (base === '/' ? '' : base.slice(0, -1)) + '/api/forward/download/' + arch + (generation ? '?generation=' + generation : '') }));
     } catch { return []; }
   }
-  async function serve(arch, res, generation) {
+  async function serve(arch, res, generation, { signal = AbortSignal.timeout(300000), check = () => {} } = {}) {
     if (active >= 2) throw Object.assign(new Error('助手下载繁忙，请稍后重试'), { status: 429 });
     active++; let fd;
     try {
@@ -41,8 +41,9 @@ export function createForwardDownloads(directory, { server } = {}) {
       }
       const stat = await fd.stat();
       if (!stat.isFile() || stat.size !== item.size || stat.size > ARTIFACT_LIMITS.file) throw new Error('Invalid helper binary');
+      check(); signal.throwIfAborted();
       res.writeHead(200, { 'content-type': FORWARD_CLIENTS[arch].format === 'zip' ? 'application/zip' : 'application/octet-stream', 'content-length': stat.size, 'content-disposition': 'attachment; filename="' + item.name + '"', 'cache-control': 'no-store' });
-      const stream = fd.createReadStream({ start: 0, end: stat.size - 1 }); fd = null; await pipeline(stream, res);
+      const stream = fd.createReadStream({ start: 0, end: stat.size - 1 }); fd = null; await pipeline(stream, res, { signal });
     } finally { await fd?.close(); active--; }
   }
   return { list, serve };
