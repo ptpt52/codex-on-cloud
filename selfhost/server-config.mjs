@@ -30,6 +30,21 @@ http://${domain} {
 `;
 }
 
+export function caddyAcmeBootstrap(domain, webroot, previous) {
+  const fresh = caddyAcmeConfig(domain, webroot);
+  if (!previous) return fresh;
+  const site = fresh.slice(fresh.indexOf('http://')), marker = 'http://' + serverDomain(domain) + ' {';
+  if (!previous.includes(marker)) return previous + '\n' + site;
+  const start = previous.indexOf(marker), tail = previous.slice(start);
+  let depth = 0, end = -1;
+  for (let i = marker.length - 1; i < tail.length; i++) {
+    if (tail[i] === '{') depth++;
+    if (tail[i] === '}' && --depth === 0) { end = i; break; }
+  }
+  if (end < 0 || tail.slice(end + 1).trim()) throw Error('已有 HTTP 配置无法安全更新，请检查 Caddyfile');
+  return previous.slice(0, start) + site;
+}
+
 export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [], webroot = '/var/lib/codex-selfhost/acme' } = {}) {
   domain = serverDomain(domain);
   if (!Array.isArray(adminCidrs) || adminCidrs.some(cidr => typeof cidr !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-fA-F:]+\/\d{1,3}$/.test(cidr))) throw Error('管理页访问 CIDR 无效');

@@ -9,15 +9,26 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { promisify } from 'node:util';
 import {
-  SELFHOST_VERSIONS, caddyAcmeConfig, caddyConfig, caddyUnit, centerEnvironment, centerUnit,
+  SELFHOST_VERSIONS, caddyAcmeBootstrap, caddyConfig, caddyUnit, centerEnvironment, centerUnit,
   certbotHook, coturnConfig, coturnUnit, frpsConfig, frpsUnit, serverDomain, serverEmail,
 } from '../selfhost/server-config.mjs';
 import { resolveAdminCidrs, serverSettings } from '../selfhost/server-settings.mjs';
 import { probeLocalHttps, validateServerCertificate } from '../selfhost/certificates.mjs';
 import { readHelpPage } from '../selfhost/help-page.mjs';
+import { serverUpdate } from '../selfhost/server-update.mjs';
+import { acquireFileLock } from '../native/file-lock.mjs';
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
+const SERVICES = ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service'];
+const CERT_HOOK = '/etc/letsencrypt/renewal-hooks/deploy/codex-selfhost';
+const UPDATE_FILES = [
+  ...['server.env', 'server-settings.json', 'Caddyfile', 'frps.toml', 'turnserver.conf', 'help.html'].map(file => join(ETC, file)),
+  ...['fullchain.pem', 'privkey.pem', 'turn-fullchain.pem', 'turn-privkey.pem'].map(file => join(ETC, 'tls', file)),
+  ...SERVICES.map(file => join('/etc/systemd/system', file)), CERT_HOOK,
+];
+const updateOptions = () => ({ directory: join(ROOT, 'update-backup'), files: UPDATE_FILES,
+  application: { current: join(ROOT, 'app'), previous: join(ROOT, 'app.previous'), failed: join(ROOT, 'app.failed') }, services: SERVICES, run: command });
 const ARCHITECTURES = {
   x64: { node: 'x64', nodeSha: '48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75', frp: 'amd64', frpArchiveSha: 'daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804', frpsSha: '4ad311e0630cf12945041143b926f515458836e896ff93c253d43c98cf304b89' },
   arm64: { node: 'arm64', nodeSha: 'eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8', frp: 'arm64', frpArchiveSha: '02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf', frpsSha: '07d0a010dc60ba759d857365307a89dce1df215c5cdddee92ce355140461bf18' },
@@ -132,7 +143,7 @@ async function installBinaries({ caddyFile, frpsFile } = {}) {
   for (const name of ['node', 'caddy', 'frps']) { await chown(join(ROOT, 'bin', name), 0, 0); await chmod(join(ROOT, 'bin', name), 0o755); }
 }
 
-async function copyApplication() {
+async function copyApplication(beforeActivate = async () => {}) {
   const app = join(ROOT, 'app'), previous = join(ROOT, 'app.previous'), next = join(ROOT, 'app.next-' + process.pid);
   await rm(next, { recursive: true, force: true }); await mkdir(next, { recursive: true, mode: 0o755 });
   await cp(join(project, 'selfhost'), join(next, 'selfhost'), { recursive: true, force: true, dereference: false });
@@ -147,9 +158,11 @@ async function copyApplication() {
   await requiredCommand('chmod', ['-R', 'u=rwX,go=rX', next]); await requiredCommand('chown', ['-R', 'root:root', next]);
   let moved = false;
   try {
+    await beforeActivate();
     if ((await command('test', ['-d', app])).ok) { await rm(previous, { recursive: true, force: true }); await rename(app, previous); moved = true; }
     await rename(next, app);
   } catch (error) { if (moved && !(await command('test', ['-e', app])).ok) await rename(previous, app); throw error; }
+  finally { await rm(next, { recursive: true, force: true }); }
 }
 
 async function rollbackApplication() {
@@ -213,59 +226,74 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
   if (!certFile) email = serverEmail(email);
   const addresses = await resolve4(domain, { ttl: true }).catch(() => []);
   if (!addresses.some(item => item.address === publicIp)) throw Error(`DNS 尚未将 ${domain} 指向 ${publicIp}；未更改服务器`);
-  await requiredCommand('apt-get', ['update'], { timeout: 300000 });
-  await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ca-certificates', 'curl', 'tar', 'xz-utils', `caddy=${SELFHOST_VERSIONS.caddyPackage}`, `certbot=${SELFHOST_VERSIONS.certbot}`, `coturn=${SELFHOST_VERSIONS.coturn}`], { timeout: 300000 });
-  await command('systemctl', ['disable', '--now', 'coturn']);
-  await command('systemctl', ['disable', '--now', 'caddy']);
-  const { uid, gid } = await ensureUser();
-  for (const [path, mode, owner, group] of [[ROOT, 0o755, 0, 0], [join(ROOT, 'bin'), 0o755, 0, 0], [ETC, 0o750, 0, gid], [DATA, 0o750, uid, gid], [join(DATA, 'acme'), 0o755, 0, 0], [join(DATA, 'center'), 0o700, uid, gid], [join(ETC, 'tls'), 0o750, 0, gid]]) await ensureDirectory(path, mode, owner, group);
-  await installBinaries({ caddyFile, frpsFile }); await copyApplication();
-  if (helpPage) await safeWrite(join(ETC, 'help.html'), helpPage, 0o640, 0, gid);
-  for (const [file, bytes] of [['admin_password', randomBytes(32).toString('hex') + '\n'], ['frp_token', randomBytes(32).toString('hex') + '\n'], ['frps_admin_password', randomBytes(24).toString('hex') + '\n'], ['turn_secret', randomBytes(32).toString('hex') + '\n']]) {
-    try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o600, uid, gid); }
-  }
-  for (const file of ['admin_password', 'frp_token', 'turn_secret']) { await chmod(join(ETC, file), 0o600); await chown(join(ETC, file), uid, gid); }
-  await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), uid, gid);
-  const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
-  await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, publicIp, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
-  await safeWrite(settingsPath, serverSettings(adminCidrs), 0o600, 0, 0);
-  await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);
-  await safeWrite(join(ETC, 'turnserver.conf'), coturnConfig({ domain, publicIp, privateIp: localIpv4, secret: turnSecret }), 0o640, 0, (await requiredCommand('id', ['-g', 'turnserver'])).stdout ? Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout) : gid);
-  await safeWrite('/etc/systemd/system/codex-selfhost-center.service', centerUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
-  await safeWrite('/etc/systemd/system/codex-selfhost-frps.service', frpsUnit({ root: ROOT, configDirectory: ETC }), 0o644);
-  await safeWrite('/etc/systemd/system/codex-selfhost-caddy.service', caddyUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
-  await safeWrite('/etc/systemd/system/codex-selfhost-coturn.service', coturnUnit({ configDirectory: ETC }), 0o644);
-  await requiredCommand('systemctl', ['daemon-reload']);
-  const hook = '/etc/letsencrypt/renewal-hooks/deploy/codex-selfhost';
-  if (certFile) {
-    await installImportedCertificate({ domain, ...importedCertificate });
-    const existingHook = await readFile(hook, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
-    if (existingHook?.includes('# Managed by codex-selfhost.') || existingHook?.includes('systemctl restart codex-selfhost-frps.service')) await unlink(hook);
-  } else {
-    await mkdir(dirname(hook), { recursive: true, mode: 0o755 }); await safeWrite(hook, certbotHook(domain, { configDirectory: ETC, restart: false }), 0o755);
-    await safeWrite(join(ETC, 'Caddyfile'), caddyAcmeConfig(domain, join(DATA, 'acme')), 0o644);
+  await ensureDirectory(ROOT, 0o755, 0, 0);
+  const lease = await acquireFileLock(join(ROOT, 'update.lock'));
+  let update;
+  try {
+    update = await serverUpdate(updateOptions());
+    await requiredCommand('apt-get', ['update'], { timeout: 300000 });
+    await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ca-certificates', 'curl', 'tar', 'xz-utils', `caddy=${SELFHOST_VERSIONS.caddyPackage}`, `certbot=${SELFHOST_VERSIONS.certbot}`, `coturn=${SELFHOST_VERSIONS.coturn}`], { timeout: 300000 });
+    await command('systemctl', ['disable', '--now', 'coturn']);
+    await command('systemctl', ['disable', '--now', 'caddy']);
+    const { uid, gid } = await ensureUser();
+    for (const [path, mode, owner, group] of [[ROOT, 0o755, 0, 0], [join(ROOT, 'bin'), 0o755, 0, 0], [ETC, 0o750, 0, gid], [DATA, 0o750, uid, gid], [join(DATA, 'acme'), 0o755, 0, 0], [join(DATA, 'center'), 0o700, uid, gid], [join(ETC, 'tls'), 0o750, 0, gid]]) await ensureDirectory(path, mode, owner, group);
+    await installBinaries({ caddyFile, frpsFile }); await copyApplication(() => update.applicationChanging());
+    if (helpPage) await safeWrite(join(ETC, 'help.html'), helpPage, 0o640, 0, gid);
+    for (const [file, bytes] of [['admin_password', randomBytes(32).toString('hex') + '\n'], ['frp_token', randomBytes(32).toString('hex') + '\n'], ['frps_admin_password', randomBytes(24).toString('hex') + '\n'], ['turn_secret', randomBytes(32).toString('hex') + '\n']]) {
+      try { await lstat(join(ETC, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; await safeWrite(join(ETC, file), bytes, 0o600, uid, gid); }
+    }
+    for (const file of ['admin_password', 'frp_token', 'turn_secret']) { await chmod(join(ETC, file), 0o600); await chown(join(ETC, file), uid, gid); }
+    await chmod(join(ETC, 'frps_admin_password'), 0o600); await chown(join(ETC, 'frps_admin_password'), uid, gid);
+    const frpToken = (await readFile(join(ETC, 'frp_token'), 'utf8')).trim(), frpsPassword = (await readFile(join(ETC, 'frps_admin_password'), 'utf8')).trim(), turnSecret = (await readFile(join(ETC, 'turn_secret'), 'utf8')).trim();
+    await safeWrite(join(ETC, 'server.env'), centerEnvironment({ domain, publicIp, dataDirectory: DATA, configDirectory: ETC }), 0o640, 0, gid);
+    await safeWrite(settingsPath, serverSettings(adminCidrs), 0o600, 0, 0);
+    await safeWrite(join(ETC, 'frps.toml'), frpsConfig({ token: frpToken, adminPassword: frpsPassword }), 0o640, 0, gid);
+    await safeWrite(join(ETC, 'turnserver.conf'), coturnConfig({ domain, publicIp, privateIp: localIpv4, secret: turnSecret }), 0o640, 0, (await requiredCommand('id', ['-g', 'turnserver'])).stdout ? Number((await requiredCommand('id', ['-g', 'turnserver'])).stdout) : gid);
+    await safeWrite('/etc/systemd/system/codex-selfhost-center.service', centerUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
+    await safeWrite('/etc/systemd/system/codex-selfhost-frps.service', frpsUnit({ root: ROOT, configDirectory: ETC }), 0o644);
+    await safeWrite('/etc/systemd/system/codex-selfhost-caddy.service', caddyUnit({ root: ROOT, configDirectory: ETC, dataDirectory: DATA }), 0o644);
+    await safeWrite('/etc/systemd/system/codex-selfhost-coturn.service', coturnUnit({ configDirectory: ETC }), 0o644);
+    await requiredCommand('systemctl', ['daemon-reload']);
+    const hook = CERT_HOOK;
+    if (certFile) {
+      await installImportedCertificate({ domain, ...importedCertificate });
+      const existingHook = await readFile(hook, 'utf8').catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+      if (existingHook?.includes('# Managed by codex-selfhost.') || existingHook?.includes('systemctl restart codex-selfhost-frps.service')) await unlink(hook);
+    } else {
+      await mkdir(dirname(hook), { recursive: true, mode: 0o755 }); await safeWrite(hook, certbotHook(domain, { configDirectory: ETC, restart: false }), 0o755);
+      await safeWrite(join(ETC, 'Caddyfile'), caddyAcmeBootstrap(domain, join(DATA, 'acme'), existingCaddy), 0o644);
+      await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
+      for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
+      await requiredCommand('systemctl', ['restart', 'codex-selfhost-caddy.service']);
+      const certificate = join('/etc/letsencrypt/live', domain, 'fullchain.pem');
+      if (!(await command('test', ['-f', certificate])).ok) await requiredCommand('certbot', ['certonly', '--webroot', '--webroot-path', join(DATA, 'acme'), '--domain', domain, '--non-interactive', '--agree-tos', '--email', email], { timeout: 300000 });
+      // Bootstrap only copies the certificate. Activate services after writing the final config.
+      await requiredCommand(hook, [], { timeout: 60000 });
+      await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
+    }
+    await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, frpHttpPort: 18080, redirectHttp: !certFile, adminCidrs }), 0o644);
     await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
     for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
-    await requiredCommand('systemctl', ['restart', 'codex-selfhost-caddy.service']);
-    const certificate = join('/etc/letsencrypt/live', domain, 'fullchain.pem');
-    if (!(await command('test', ['-f', certificate])).ok) await requiredCommand('certbot', ['certonly', '--webroot', '--webroot-path', join(DATA, 'acme'), '--domain', domain, '--non-interactive', '--agree-tos', '--email', email], { timeout: 300000 });
-    // Bootstrap only copies the certificate. Activate services after writing the final config.
-    await requiredCommand(hook, [], { timeout: 60000 });
-    await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
-  }
-  await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, frpHttpPort: 18080, redirectHttp: !certFile, adminCidrs }), 0o644);
-  await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
-  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
-  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
-  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['restart', unit]);
-  await localHttpsHealth(domain);
-  for (const port of [7000, 3478, 5349]) await listenTcp(port);
-  if (configureUfw) {
-    await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ufw'], { timeout: 120000 });
-    for (const rule of [['allow', 'from', sshCidr, 'to', 'any', 'port', '22', 'proto', 'tcp'], ['allow', '80/tcp'], ['allow', '443/tcp'], ['allow', '7000/tcp'], ['allow', '3478/tcp'], ['allow', '3478/udp'], ['allow', '5349/tcp'], ['allow', '49160:49223/udp']]) await requiredCommand('ufw', rule);
-    await requiredCommand('ufw', ['--force', 'enable']);
-  }
-  return { domain, root: ROOT, config: ETC, data: DATA, versions: SELFHOST_VERSIONS };
+    for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
+    for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['restart', unit]);
+    await localHttpsHealth(domain);
+    for (const port of [7000, 3478, 5349]) await listenTcp(port);
+    if (configureUfw) {
+      await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ufw'], { timeout: 120000 });
+      for (const rule of [['allow', 'from', sshCidr, 'to', 'any', 'port', '22', 'proto', 'tcp'], ['allow', '80/tcp'], ['allow', '443/tcp'], ['allow', '7000/tcp'], ['allow', '3478/tcp'], ['allow', '3478/udp'], ['allow', '5349/tcp'], ['allow', '49160:49223/udp']]) await requiredCommand('ufw', rule);
+      await requiredCommand('ufw', ['--force', 'enable']);
+    }
+    await update.commit();
+    return { domain, root: ROOT, config: ETC, data: DATA, versions: SELFHOST_VERSIONS };
+  } catch (error) {
+    if (update) {
+      if (update.committed) throw Error('更新已生效，但备份清理未完成：' + error.message + '。请运行 sudo ./scripts/selfhost-server.sh recover');
+      try { await update.rollback(); }
+      catch (failure) { throw Error(error.message + '；恢复未完成：' + failure.message + '。请运行 sudo ./scripts/selfhost-server.sh recover'); }
+      throw Error(error.message + '；原配置、应用与服务状态已恢复');
+    }
+    throw error;
+  } finally { await lease.release(); }
 }
 
 async function status() {
@@ -285,7 +313,20 @@ try {
     } });
     if (values.help) console.log('用法：\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --email 证书通知邮箱\nsudo ./scripts/selfhost-server.sh install --domain 节点中心域名 --public-ip 服务器公网IPv4 --cert-file fullchain.pem --key-file privkey.pem\n可选：--private-ip TURN私网IPv4；不填时按默认路由自动识别\n可选帮助页：--help-file /path/help.html（复制到配置目录，省略时保留已有页面）\n可选本地固定版本二进制：--frps-file /path/frps --caddy-file /path/caddy\n可选：--admin-cidr 管理网段1,管理网段2（或 none 清除） --configure-ufw --ssh-cidr 运维网段\n未传 --admin-cidr 时沿用已保存或旧 Caddyfile 中的管理网段。\n或 ./scripts/selfhost-server.sh status\nTURN 首版固定使用 IPv4；IPv6 直连仍由浏览器与节点 ICE 独立协商。默认不修改防火墙。');
     else if (commandName === 'install') console.log(JSON.stringify(await configure({ domain: values.domain, email: values.email, publicIp: values['public-ip'], privateIp: values['private-ip'], certFile: values['cert-file'], keyFile: values['key-file'], caddyFile: values['caddy-file'], frpsFile: values['frps-file'], helpFile: values['help-file'], configureUfw: values['configure-ufw'], sshCidr: values['ssh-cidr'], adminCidr: values['admin-cidr'] }), null, 2));
-    else if (commandName === 'rollback') { if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心回滚必须以 root 运行'); console.log(JSON.stringify(await rollbackApplication(), null, 2)); }
+    else if (commandName === 'rollback') {
+      if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心回滚必须以 root 运行');
+      const lease = await acquireFileLock(join(ROOT, 'update.lock'));
+      try {
+        if ((await command('test', ['-d', join(ROOT, 'update-backup')])).ok) throw Error('存在未完成的服务器更新，请先运行 selfhost-server.sh recover');
+        console.log(JSON.stringify(await rollbackApplication(), null, 2));
+      } finally { await lease.release(); }
+    }
+    else if (commandName === 'recover') {
+      if (process.platform !== 'linux' || process.getuid?.() !== 0) throw Error('中心恢复必须以 root 运行');
+      const lease = await acquireFileLock(join(ROOT, 'update.lock'));
+      try { const result = await (await serverUpdate({ ...updateOptions(), recover: true })).rollback(); console.log(result?.committed ? '更新已生效，备份清理完成' : '服务器更新前的配置、应用与服务状态已恢复'); }
+      finally { await lease.release(); }
+    }
     else if (commandName === 'status') console.log(JSON.stringify(await status(), null, 2));
     else throw Error('未知命令：' + commandName);
   }

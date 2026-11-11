@@ -143,6 +143,12 @@ sudo ./scripts/selfhost-server.sh rollback
 
 回滚只切回上一版中心应用并重启中心服务；证书、授权状态、节点任务和已有工作区不会被删除。
 
+安装更新由独立锁串行执行。证书切换期间保留已有 HTTPS，签发失败时恢复原配置、应用目录和原服务状态。更新备份仅位于服务器私有的 `/opt/codex-selfhost/update-backup`，最多 32 个配置文件、合计 8 MiB，恢复清单最多 32 KiB；不会备份节点工作区。成功或恢复完成后自动删除备份。若恢复未完成，备份保留并阻止再次安装，排除故障后执行：
+
+```bash
+sudo ./scripts/selfhost-server.sh recover
+```
+
 私有文件：
 
 ```text
