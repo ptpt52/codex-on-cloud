@@ -87,7 +87,7 @@ test('terminal and file WebRTC remain direct through the fixed gateway without H
   try {
     await page.route('**/api/files/**', route => { bodies++; return route.abort(); }); await page.goto(h.origin); await nodeLogin(page, a);
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
-    await page.locator('#files-button').click(); await expect(page.locator('#file-transport')).toContainText('WebRTC', { timeout: 15000 });
+    await page.locator('#files-button').click(); await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /, { timeout: 15000 });
     await page.locator('#upload-input').setInputFiles({ name: 'direct.txt', mimeType: 'text/plain', buffer: Buffer.from('direct through gateway') }); await expect(page.locator('#upload-status')).toContainText('上传完成：direct.txt');
     expect(a.files.get('direct.txt').toString()).toBe('direct through gateway'); expect(bodies).toBe(0); expect(a.terminalInputs).toEqual([]);
   } finally { await h.close(); }

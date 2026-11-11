@@ -112,7 +112,7 @@ test('scoped login supports both terminal and file WebRTC after switching the fi
       if (node === h.b) { h.select(node); await page.reload(); await h.login(page); }
       await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
       await page.locator('#files-button').click();
-      await expect(page.locator('#file-transport')).toContainText('WebRTC', { timeout: 15000 });
+      await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /, { timeout: 15000 });
       await page.locator('#upload-input').setInputFiles({ name: 'direct.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
       await expect(page.locator('#upload-status')).toContainText('上传完成：direct.txt');
       expect(node.files.get('direct.txt').toString()).toBe(content);
