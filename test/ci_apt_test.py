@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github/scripts/prepare-apt.py"
@@ -33,7 +34,7 @@ class CiAptTests(unittest.TestCase):
         source.write_text(original)
         CI_APT.prepare_apt(self.root)
         expected = original.replace("mirror+file:/etc/apt/apt-mirrors.txt", "https://archive.ubuntu.com/ubuntu").replace(
-            "mirror+file:///etc/apt/security-mirrors.txt", "https://security.ubuntu.com/ubuntu"
+            "mirror+file:///etc/apt/security-mirrors.txt", "https://archive.ubuntu.com/ubuntu"
         )
         self.assertEqual(source.read_text(), expected)
         CI_APT.prepare_apt(self.root)
@@ -56,10 +57,39 @@ class CiAptTests(unittest.TestCase):
         CI_APT.prepare_apt(self.root)
         self.assertEqual(source.read_text(), original.replace(
             "http://azure.archive.ubuntu.com/ubuntu/", "https://archive.ubuntu.com/ubuntu", 1
-        ).replace("http://security.ubuntu.com/ubuntu", "https://security.ubuntu.com/ubuntu").replace(
+        ).replace("http://security.ubuntu.com/ubuntu", "https://archive.ubuntu.com/ubuntu").replace(
             "deb http://archive.ubuntu.com/ubuntu", "deb https://archive.ubuntu.com/ubuntu"
         ))
         self.assertEqual(vendor.read_text(), vendor_text)
+
+    def test_dns_failure_uses_an_independent_verified_mirror_and_is_idempotent(self):
+        probes = []
+        def probe(archive):
+            probes.append(archive)
+            return archive == CI_APT.ARCHIVES[1]
+        archive = CI_APT.choose_archive(probe)
+        self.assertEqual(probes, list(CI_APT.ARCHIVES[:2]))
+        source = self.root / "sources.list.d/ubuntu.sources"
+        original = "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble noble-updates noble-security\nComponents: main\n"
+        source.write_text(original)
+        CI_APT.prepare_apt(self.root, archive)
+        self.assertEqual(source.read_text(), original.replace("mirror+file:/etc/apt/apt-mirrors.txt", archive))
+        CI_APT.prepare_apt(self.root, archive)
+        self.assertEqual(source.read_text(), original.replace("mirror+file:/etc/apt/apt-mirrors.txt", archive))
+        with self.assertRaisesRegex(RuntimeError, "No reachable Ubuntu archive"):
+            CI_APT.choose_archive(lambda archive: False)
+
+    def test_archive_probe_requires_a_bounded_download_and_valid_ubuntu_signature(self):
+        downloaded = subprocess.CompletedProcess([], 0, stdout=b"signed-index")
+        verified = subprocess.CompletedProcess([], 0)
+        with patch.object(CI_APT.subprocess, "run", side_effect=[downloaded, verified]) as run:
+            self.assertTrue(CI_APT.archive_available(CI_APT.ARCHIVES[1]))
+            self.assertIn("--max-filesize", run.call_args_list[0].args[0])
+            self.assertEqual(run.call_args_list[1].args[0], ["gpgv", "--keyring", CI_APT.KEYRING, "-"])
+        with patch.object(CI_APT.subprocess, "run", side_effect=[downloaded, subprocess.CalledProcessError(1, "gpgv")]):
+            self.assertFalse(CI_APT.archive_available(CI_APT.ARCHIVES[1]))
+        with patch.object(CI_APT.subprocess, "run", side_effect=subprocess.TimeoutExpired("curl", 50)):
+            self.assertFalse(CI_APT.archive_available(CI_APT.ARCHIVES[1]))
 
     def test_unknown_sources_fail_before_writing_network_configuration(self):
         source = self.root / "sources.list"
