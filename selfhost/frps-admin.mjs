@@ -1,3 +1,5 @@
+import { readResponseBytes } from '../native/response-body.mjs';
+
 const MAX_BODY = 16 * 1024;
 
 export function frpsProxyProbe({ endpoint, username = 'admin', password, request = fetch } = {}) {
@@ -9,8 +11,7 @@ export function frpsProxyProbe({ endpoint, username = 'admin', password, request
     const response = await request(new URL('/api/proxy/http/' + encodeURIComponent(name), base), { headers: { authorization, accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(1500) });
     if (response.status === 404) return false;
     if (!response.ok) throw Error('frps 管理查询失败（HTTP ' + response.status + '）');
-    const text = await response.text();
-    if (Buffer.byteLength(text) > MAX_BODY) throw Error('frps 管理响应超过大小上限');
+    const text = (await readResponseBytes(response, MAX_BODY, 'frps 管理响应超过大小上限')).toString('utf8');
     let value; try { value = JSON.parse(text); } catch { throw Error('frps 管理响应格式无效'); }
     if (!value || typeof value.status !== 'string') throw Error('frps 管理响应缺少代理状态');
     if (value.status === 'online') return true;

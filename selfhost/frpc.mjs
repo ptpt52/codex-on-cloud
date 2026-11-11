@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { readResponseBytes } from '../native/response-body.mjs';
 
 const exec = promisify(execFile);
 export const FRP_VERSION = '0.72.0';
@@ -33,8 +34,7 @@ export async function installFrpc({ root, arch = process.arch, platform = proces
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const response = await request(`https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${frpArch}.tar.gz`, { redirect: 'follow', signal: AbortSignal.timeout(60000) });
   if (!response.ok) throw Error('frpc 下载失败（HTTP ' + response.status + '）');
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > 64 * 1024 * 1024) throw Error('frpc 下载超过 64 MiB');
+  const bytes = await readResponseBytes(response, 64 * 1024 * 1024, 'frpc 下载超过 64 MiB');
   if (sha256(bytes) !== pinned.archive) throw Error('frpc 下载校验失败，未安装');
   const archive = join(directory, `.frp-${FRP_VERSION}-${process.pid}.tar.gz`), unpack = join(directory, `.unpack-${process.pid}`), next = join(directory, `.frpc-${process.pid}`);
   let handle;

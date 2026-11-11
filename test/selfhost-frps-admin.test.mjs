@@ -28,3 +28,13 @@ test('frps proxy probe distinguishes online, offline and missing proxies with lo
   assert.match(seen[0].authorization, /^Basic /);
   assert.throws(() => frpsProxyProbe({ endpoint: 'http://203.0.113.5:7500', password: 'frps_password_very_long_123' }), /回环/);
 });
+
+test('frps probe cancels an oversized streaming response before reading it all', async () => {
+  let pulled = 0, cancelled = false;
+  const probe = frpsProxyProbe({ endpoint: 'http://127.0.0.1:17500', password: 'frps_password_very_long_123', request: async () => new Response(new ReadableStream({
+    pull(controller) { if (++pulled <= 40) controller.enqueue(new Uint8Array(1024)); else controller.close(); },
+    cancel() { cancelled = true; },
+  })) });
+  await assert.rejects(probe('node-a'), /超过大小上限/);
+  assert.equal(cancelled, true); assert(pulled <= 18, 'only the limit, one excess chunk and at most one prefetched chunk may be read');
+});

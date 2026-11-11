@@ -17,6 +17,7 @@ import { probeLocalHttps, validateServerCertificate } from '../selfhost/certific
 import { readHelpPage } from '../selfhost/help-page.mjs';
 import { serverUpdate } from '../selfhost/server-update.mjs';
 import { acquireFileLock } from '../native/file-lock.mjs';
+import { readResponseBytes } from '../native/response-body.mjs';
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
@@ -94,8 +95,7 @@ async function download(url, algorithm, expected, maximum = 128 * 1024 * 1024) {
     try {
       const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(300000) });
       if (!response.ok) throw Error('HTTP ' + response.status);
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > maximum) throw Error('文件超过大小上限');
+      const bytes = await readResponseBytes(response, maximum, '文件超过大小上限');
       if (sha(algorithm, bytes) !== expected) throw Error('校验不一致');
       return bytes;
     } catch (error) { last = error; if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 1000)); }
@@ -153,6 +153,7 @@ async function copyApplication(beforeActivate = async () => {}) {
   await cp(join(project, 'scripts', 'state-files.mjs'), join(next, 'scripts', 'state-files.mjs'), { force: true });
   await mkdir(join(next, 'native'), { recursive: true, mode: 0o755 });
   await cp(join(project, 'native', 'file-lock.mjs'), join(next, 'native', 'file-lock.mjs'), { force: true });
+  await cp(join(project, 'native', 'response-body.mjs'), join(next, 'native', 'response-body.mjs'), { force: true });
   await cp(join(project, 'native', 'file_lock.py'), join(next, 'native', 'file_lock.py'), { force: true });
   await cp(join(project, 'package.json'), join(next, 'package.json'), { force: true });
   await requiredCommand('chmod', ['-R', 'u=rwX,go=rX', next]); await requiredCommand('chown', ['-R', 'root:root', next]);
