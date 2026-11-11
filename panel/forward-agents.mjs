@@ -58,15 +58,19 @@ export function createForwardAgents(config, forwarding) {
   function scheduleUpdate(id) { if (closed || updates.has(id)) return; updates.set(id, setTimeout(() => { updates.delete(id); reconcile(id, true); }, 20).unref()); }
   function reconcile(agentId, force = false) {
     if (closed) return;
-    const agent = state.find(agentId), session = currentSession(agentId);
-    if (!agent || !session || session.ws?.readyState !== 1) return;
-    const mappings = new Map(forwarding.list(item => item.authorization?.helperId === agentId).mappings.map(m => [m.id, m]));
+    const agent = state.find(agentId);
+    if (!agent) return;
     let changed = force;
+    // Policy revocation is local and immediate, even while the helper's
+    // management link is offline and independent data connections remain live.
     for (const entry of runtime.values()) {
       if (entry.agentId !== agentId) continue;
       const rule = agent.rules.find(r => r.id === entry.ruleId);
       if (!rule?.enabled || rule.revision !== entry.revision) { stopRuntime(entry); changed = true; }
     }
+    const session = currentSession(agentId);
+    if (!session || session.ws?.readyState !== 1) return;
+    const mappings = new Map(forwarding.list(item => item.authorization?.helperId === agentId).mappings.map(m => [m.id, m]));
     for (const rule of agent.rules.filter(r => r.enabled)) {
       let entry = runtime.get(rule.id);
       if (entry?.mapping && !mappings.has(entry.mapping)) { entry.mapping = ''; entry.code = ''; entry.retryAt = Date.now() + 15000; changed = true; }
@@ -75,7 +79,11 @@ export function createForwardAgents(config, forwarding) {
       runtime.set(rule.id, entry);
       try {
         const grantedHash = agent.keyHash;
-        const result = forwarding.create(rule.config, 'agent:' + agent.id + ':' + rule.id, () => closed ? 'server_stopping' : state.find(agent.id)?.keyHash === grantedHash ? '' : 'authorization_revoked', { role: 'admin', helperId: agent.id, ruleId: rule.id });
+        const result = forwarding.create(rule.config, 'agent:' + agent.id + ':' + rule.id, () => {
+          if (closed) return 'server_stopping';
+          const current = state.find(agent.id), saved = current?.rules.find(r => r.id === rule.id);
+          return current?.keyHash === grantedHash && saved?.enabled && saved.revision === rule.revision ? '' : 'authorization_revoked';
+        }, { role: 'admin', helperId: agent.id, ruleId: rule.id });
         entry.mapping = result.id; entry.code = result.code; entry.error = ''; entry.retryAt = 0;
       } catch (error) { entry.error = String(error.message).slice(0, 256); entry.retryAt = Date.now() + 15000; }
       changed = true;
