@@ -77,3 +77,13 @@ test('program mouse is opt-in, strictly boolean and fits the bounded shared brow
   assert.ok(source.text.length <= BROWSER_PREFERENCES_LIMIT);
   preferences.update({ terminalMouseReporting: false }); assert.equal(createBrowserPreferences(source).value.terminalMouseReporting, false);
 });
+
+test('desktop IME defaults on, accepts only booleans and stays within the browser preference bound', () => {
+  assert.equal(decodeBrowserPreferences(null).desktopIme, true);
+  assert.equal(decodeBrowserPreferences(JSON.stringify({ layout: 2, desktopIme: 0 })).desktopIme, true);
+  const source = storage(), preferences = createBrowserPreferences(source);
+  preferences.update({ desktopIme: false, terminalMouseReporting: true, terminalFontSize: 28, zoom: 1.9999999999999998 });
+  assert.equal(createBrowserPreferences(source).value.desktopIme, false);
+  assert.equal(createBrowserPreferences(source).value.terminalMouseReporting, true);
+  assert.ok(source.text.length <= BROWSER_PREFERENCES_LIMIT);
+});

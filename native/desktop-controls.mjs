@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readPreferences, writePreferences, preferenceRevision, validatePreferences } from './preferences.mjs';
-import { validateInput, executeInput, runInputCommand } from './input.mjs';
+import { validateInput, executeInput, runInputCommand, focusedInputTarget } from './input.mjs';
 import { createTerminalManager } from './terminals.mjs';
 import { clipboardSource, readClipboard } from './clipboard.mjs';
 import { createViewportResizer, viewportSize } from './viewport.mjs';
@@ -128,7 +128,7 @@ export function createDesktopControls(config, dependencies = {}) {
   const performInput = dependencies.performInput || (body => body.action === 'terminal' ? openTerminal() : executeInput(body, env, async (command, args, options) => {
     if (body.terminalId && command === 'xdotool') await terminals.assertFocused(body);
     return runInputCommand(command, args, options);
-  }, dependencies.actions ? text => dependencies.actions('/clipboard', { text }) : undefined));
+  }, dependencies.actions ? text => dependencies.actions('/clipboard', { text }) : undefined, () => focusedInputTarget(run)));
   async function input(body) {
     let value;
     try { value = validateInput(body); } catch (error) { throw new ControlError(400, error.message); }

@@ -113,7 +113,7 @@ const directIssues = { 'heartbeat-suspect': '心跳延迟，正在复核连接',
   'ice-timeout': 'WebRTC 路径探测超时；请检查网络权限、UDP 通道及中继配置',
   'channel-timeout': 'WebRTC 路径已接通，加密数据通道建立超时',
   connection: '原 WebRTC 通道已断开，正在恢复', heartbeat: 'WebRTC 心跳无回复，已开始回退 HTTPS / WebSocket' };
-let controlReady = false, controlPending = null, controlSequence = 0;
+let controlReady = false, controlPending = null, controlSequence = 0, desktopTextInput = false, desktopTextFrame = '', desktopTextSequence = 0;
 let panelReady = false, terminalSwitchReady = false, terminalCreateReady = false, panelSequence = 0, panelRoute = 'https', rtcConfig;
 const panelRequests = new Map();
 let transportSwitching = false, switchTimer;
@@ -251,6 +251,13 @@ function renderTerminalSelection() {
 function closeWorkspacePanel(name = workspacePanels.active) {
   shortcutMenu.close();
   updateDisplayPreferences(name === 'tools' ? { controlsCollapsed: true } : terminalMode() ? { terminalInputCollapsed: true } : { collapsed: true });
+  restoreDesktopFocus();
+}
+function restoreDesktopFocus() {
+  if (!terminalMode() && !workspacePanels.active && canInput(true) && !inputBusy && !confirmation && !document.querySelector('dialog[open]')) {
+    const frame = $('desktop-frame'); frame.focus({ preventScroll: true });
+    frame.contentWindow.postMessage({ type: 'codex-desktop-focus', frame: String(frameEpoch) }, location.origin);
+  }
 }
 function hideWorkspacePanels() {
   if (workspacePanels.active) updateDisplayPreferences({ controlsCollapsed: true, collapsed: true, terminalInputCollapsed: true });
@@ -262,6 +269,7 @@ function toggleWorkspacePanel(name) {
   updateDisplayPreferences({ controlsCollapsed: name !== 'tools' || !opening,
     ...(terminalMode() ? { terminalInputCollapsed: name !== 'input' || !opening } : { collapsed: name !== 'input' || !opening }) });
   if (opening) { workspacePanels.focus(); if (name === 'input') $('mobile-input').focus({ preventScroll: true }); }
+  else restoreDesktopFocus();
 }
 function sendDisplayPreferences() {
   if (standbyFrame) sendStandbyPreferences();
@@ -269,8 +277,8 @@ function sendDisplayPreferences() {
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), standby: false, rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
-    busy: inputBusy || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
+    csrf, desktopIme: displayPreferences.desktopIme, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
+    busy: (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
@@ -280,6 +288,7 @@ function renderDisplayControls() {
   for (const control of $('workspace-tools').querySelectorAll('[data-tools-mode]')) control.hidden = control.dataset.toolsMode !== toolsMode;
   $('mode-standby-option').hidden = terminalOnly;
   $('mode-standby').checked = displayPreferences.modeStandby;
+  $('desktop-ime').checked = displayPreferences.desktopIme;
   $('mode-standby').disabled = !modeStandbyEnabled || modeChangeBusy() || !!confirmation;
   $('display-controls').setAttribute('aria-label', terminalMode() ? '网页终端显示控制' : '桌面显示控制');
   $('browser-preferences-note').textContent = browserPreferences.persisted ? '显示偏好仅保存到当前浏览器，所有终端共用。' : '浏览器未能保存偏好；当前页面仍可使用，刷新后可能恢复默认。';
@@ -459,8 +468,8 @@ $('auto-resolution').addEventListener('change', () => {
   updateDisplayPreferences({ autoResolution: enabled, zoom: enabled ? 'fit' : 'width' });
   renderDesktopSettings(); scheduleViewport();
 });
-function canInput() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && terminalSelectionState === 'ready' && (!terminalMode() || !terminalReviewing) && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+function canInput(focused = false) {
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready') && (!terminalMode() || !terminalReviewing) && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function canManageTerminals() {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
@@ -1196,13 +1205,14 @@ function inputMessage(outcome, message, notice) {
   renderConnectionNotice();
 }
 async function inputAction(path, body, label, success, destination) {
-  if (inputBusy || inputComposing || frameComposing || !canInput()) return;
+  const focused = !terminalMode() && body?.target === 'focused';
+  if (inputBusy || inputComposing || frameComposing || !canInput(focused)) return { outcome: 'rejected' };
   if (['/api/key', '/api/paste'].includes(path)) {
     try { body = { ...body, ...(destination || inputDestination()) }; }
-    catch (error) { return inputMessage('rejected', error.message); }
+    catch (error) { inputMessage('rejected', error.message); return { outcome: 'rejected' }; }
   }
   const controller = new AbortController(); inputController = controller;
-  const notice = { key: `assistant:${++inputNoticeSequence}`, source: 'assistant', mode: displayPreferences.mode, target: noticeTarget(),
+  const notice = { key: `assistant:${++inputNoticeSequence}`, source: 'assistant', mode: displayPreferences.mode, target: focused ? '' : noticeTarget(),
     action: path === '/api/paste' ? 'paste' : path === '/api/key' ? 'key' : 'terminal', keyName: body.key,
     path: controlReady && ['/api/paste', '/api/key'].includes(path) ? frameTransport === 'direct' ? 'direct' : 'terminal' : 'https' };
   const timeout = setTimeout(() => controller.abort(), 8000);
@@ -1214,10 +1224,13 @@ async function inputAction(path, body, label, success, destination) {
     const result = await assistantRequest(path, body, controller.signal);
     if (inputController !== controller) return;
     if (result.outcome !== 'success') throw new Error('missing input result');
+    if (desktopTextInput) controlsState.inputBusy = false;
     inputMessage('success', success);
+    return result;
   } catch (error) {
     if (inputController === controller) inputMessage(error.outcome === 'rejected' ? 'rejected' : 'unknown', error.outcome === 'rejected' ? `未发送：${error.message}` : `${label}结果未知，请先查看桌面确认，避免重复执行。`,
       { ...notice, reason: controller.signal.aborted ? 'timeout' : error.code === 'invalid_response' ? 'invalid_response' : error.code === 'input_connection_changed' ? 'connection' : 'result' });
+    return { outcome: error.outcome === 'rejected' ? 'rejected' : 'unknown' };
   } finally {
     clearTimeout(timeout);
     if (inputController === controller) { inputController = null; inputBusy = false; renderInputControls(); renderDesktopSettings(); }
@@ -1399,6 +1412,7 @@ $('terminal-font-down').addEventListener('click', () => updateDisplayPreferences
 $('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));
 $('terminal-width-mode').addEventListener('change', () => updateDisplayPreferences({ terminalWidthMode: $('terminal-width-mode').value }));
 $('terminal-mouse-reporting').addEventListener('change', () => updateDisplayPreferences({ terminalMouseReporting: $('terminal-mouse-reporting').checked }));
+$('desktop-ime').addEventListener('change', () => updateDisplayPreferences({ desktopIme: $('desktop-ime').checked }));
 $('terminal-history-rows').addEventListener('change', () => {
   const rows = Number($('terminal-history-rows').value);
   if (HISTORY_ROWS.includes(rows)) updateDisplayPreferences({ terminalHistoryRows: rows });
@@ -1778,6 +1792,21 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {
     frameComposing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
+  }
+  if (event.data?.type === 'codex-desktop-input-state' && !terminalMode() && typeof event.data.composing === 'boolean') {
+    frameComposing = event.data.composing; renderInputControls(); return;
+  }
+  if (event.data?.type === 'codex-desktop-text' && !terminalMode()) {
+    const value = event.data, destination = event.source, sourceFrame = String(frameEpoch);
+    if (!Number.isSafeInteger(value.id) || value.id < 1 || value.id > 2147483647) return;
+    if (desktopTextFrame !== sourceFrame) { desktopTextFrame = sourceFrame; desktopTextSequence = 0; }
+    if (value.id <= desktopTextSequence) return;
+    desktopTextSequence = value.id;
+    const respond = outcome => destination.postMessage({ type: 'codex-desktop-text-result', frame: sourceFrame, id: value.id, outcome }, location.origin);
+    if (!displayPreferences.desktopIme || desktopTextInput || inputBusy || !canInput(true) || typeof value.text !== 'string' || !value.text || /[\x00-\x08\x0b-\x1f\x7f]/.test(value.text) || new TextEncoder().encode(value.text).length > 32768) return respond('rejected');
+    desktopTextInput = true;
+    void inputAction('/api/paste', { text: value.text, target: 'focused' }, '输入文字', '文字已输入，Enter 单独提交', {}).then(result => respond(result?.outcome || 'unknown')).finally(() => { desktopTextInput = false; sendDisplayPreferences(); });
+    return;
   }
   if (event.data?.type === 'codex-pointer-options') {
     if (!terminalMode() && canInput() && ['viewport', 'remote'].includes(event.data.scrollTarget)) updateDisplayPreferences({ scrollTarget: event.data.scrollTarget });

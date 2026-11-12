@@ -62,6 +62,8 @@
         <p id="browser-preferences-note" class="muted settings-help" role="status">显示偏好仅保存到当前浏览器，所有终端共用。</p>
         <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" data-tools-mode="desktop" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
       <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
+        <label data-tools-mode="desktop" class="desktop-ime-option"><input id="desktop-ime" type="checkbox" checked>本机输入法直输中文</label>
+        <p class="muted" data-tools-mode="desktop">点击桌面输入位置后使用本机输入法，选字确认不会提交命令。中文输入会更新远程文字剪贴板。触屏设备可使用“输入”助手。</p>
         <div id="terminal-view-controls" class="terminal-view-controls" data-tools-mode="terminal" hidden>
           <div class="terminal-target-controls"><label for="terminal-view-select">终端<select id="terminal-view-select" aria-label="网页终端目标"></select></label><button id="terminal-view-manage" class="view-button" type="button">管理</button></div>
           <label for="terminal-width-mode">宽度适配<select id="terminal-width-mode" aria-label="终端宽度适配"><option value="viewport">界面适应宽度</option><option value="scale">内容放大适宽</option><option value="manual">手动字号</option></select></label>

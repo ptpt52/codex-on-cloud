@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import WebSocket from 'ws';
-import { validateInput, executeInput, runInputCommand } from '../native/input.mjs';
+import { validateInput, executeInput, runInputCommand, focusedInputTarget } from '../native/input.mjs';
 import { fixture } from './fixture.mjs';
 import { SHORTCUTS } from '../panel/public/shortcuts.js';
 
@@ -150,6 +150,28 @@ test('input validation and fixed commands preserve literal stdin and never appen
   await executeInput(validateInput({ action: 'paste', text, target: 'application' }), {}, async (_command, args) => { if (args[0] === 'key') assert.equal(args.at(-1), 'ctrl+v'); });
   await assert.rejects(runInputCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: process.env, timeout: 50 }), /timed out/);
   await assert.rejects(runInputCommand('/nonexistent/codex-test-input', [], { env: process.env, timeout: 50 }));
+});
+
+test('focused desktop text chooses the receiving window shortcut and refuses focus changes before paste', async () => {
+  for (const [properties, target] of [
+    ['WM_CLASS(STRING) = "xterm", "codex-on-cloud-terminal-aux3"', 'terminal'],
+    ['WM_CLASS(STRING) = "editor", "Editor"', 'application'],
+  ]) {
+    const commands = [], read = async (command, args) => { commands.push({ command, args }); return command === 'xdotool' ? '1234' : properties; };
+    const focus = () => focusedInputTarget(read);
+    assert.deepEqual(await focus(), { window: '1234', target });
+    const writes = [];
+    await executeInput(validateInput({ action: 'paste', target: 'focused', text: '中文 `literal` $(literal)' }), {}, async (command, args, options) => writes.push({ command, args, input: options.input }), undefined, focus);
+    assert.equal(writes[0].input, '中文 `literal` $(literal)');
+    assert.deepEqual(writes[1].args, ['key', '--clearmodifiers', target === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v']);
+    assert.ok(commands.every(value => !value.args.includes('windowactivate')));
+  }
+  let reads = 0; const writes = [];
+  await assert.rejects(executeInput({ action: 'paste', target: 'focused', text: '不要粘贴到新窗口' }, {}, async (command, args) => writes.push({ command, args }), undefined,
+    async () => ({ window: ++reads === 1 ? '1234' : '5678', target: 'terminal' })), error => error.outcome === 'rejected' && error.status === 409);
+  assert.deepEqual(writes.map(value => value.command), ['xclip']);
+  for (const invalid of ['0', '-1', '1234; command', '999999999999999', '4294967296']) await assert.rejects(focusedInputTarget(async () => invalid));
+  assert.throws(() => validateInput({ action: 'paste', text: '中文', target: 'focused', terminalId: 'main', terminalToken: '%0:4000' }));
 });
 
 test('shortcut catalog uses fixed argv, preserves newline versus Enter and refuses arbitrary chords', async () => {

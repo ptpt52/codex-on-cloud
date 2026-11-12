@@ -8,6 +8,10 @@ body { touch-action: none; }
 #pan-layer[hidden] { display: none; }
 #status { position: fixed; inset: auto 12px 12px; margin: 0; padding: 10px; background: #222222e6; color: #eeeeee; font: 13px sans-serif; pointer-events: none; }
 #status[hidden] { display: none; }
+#desktop-input { position: fixed; left: 8px; top: 8px; width: 1px; height: 20px; padding: 0; border: 0; opacity: 0; pointer-events: none; resize: none; overflow: hidden; font: 16px/24px sans-serif; z-index: 4; }
+#desktop-input.composing { width: min(240px, calc(100vw - 16px)); height: 28px; padding: 2px 6px; box-sizing: border-box; background: #222222; color: #fff; outline: 1px solid #f7971d; opacity: 1; }
+#desktop-input-status { position: fixed; inset: auto 8px 8px auto; max-width: calc(100% - 32px); margin: 0; padding: 6px 9px; border-radius: 6px; background: #222222df; color: #eee; font: 12px/1.5 sans-serif; pointer-events: none; z-index: 4; }
+#desktop-input-status[hidden] { display: none; }
 #handoff-picture { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
 #handoff-picture[hidden] { display: none; }
 #touch-cursor { position: fixed; width: 18px; height: 18px; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: #f7971d; box-shadow: 0 0 0 2px #231815, 0 2px 6px #0008; pointer-events: none; z-index: 2; }

@@ -226,6 +226,10 @@ jobs:
       - name: Delay the initial framebuffer before resizing
         run: npm run test:browser -- test/browser/viewport-frame.spec.mjs
       - run: npm run test:pointer
+      - run: npm run test:desktop-input
+      - run: npm run test:desktop-input
+        env:
+          DESKTOP_IME_TEST_DIRECT: '1'
       - run: npm run test:forward
       - run: npm run test:forward:agents
       - run: npm run test:serial

@@ -41,6 +41,7 @@
     "test:display": "node test/terminal-native.mjs",
     "test:viewport": "node test/viewport-native.mjs",
     "test:pointer": "node test/pointer-native.mjs",
+    "test:desktop-input": "node test/desktop-input-native.mjs",
     "test:lifecycle": "node test/lifecycle-native.mjs",
     "test:supervision": "node test/desktop-supervision-native.mjs",
     "test:recovery": "node test/recovery-native.mjs",

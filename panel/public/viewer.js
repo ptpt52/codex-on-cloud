@@ -10,6 +10,7 @@ import { createStreamClient } from './stream-client.js';
 import { afterFirstFrame } from './first-frame.js';
 import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
+import { createDesktopInput } from '/desktop-input.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -32,6 +33,16 @@ let networkDetails = null, directIssue = '', statsPending = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 let lastInteraction = -Infinity, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
+let desktopText, desktopFocusFrame = 0;
+const desktopInput = createDesktopInput({ screen, field: document.getElementById('desktop-input'), status: document.getElementById('desktop-input-status'),
+  current: () => canvas, allowed: () => viewing && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
+  paste: (text, id) => new Promise(resolve => {
+    desktopText = { id, resolve, timer: setTimeout(() => {
+      if (desktopText?.id !== id) return;
+      desktopText = undefined; resolve({ outcome: 'unknown' });
+    }, 8500) };
+    parent.postMessage({ type: 'codex-desktop-text', frame, id, text }, location.origin);
+  }), changed: value => { parent.postMessage({ type: 'codex-desktop-input-state', frame, ...value }, location.origin); reportView(); } });
 const pointerControls = createDesktopPointer({ viewport, screen, cursor: document.getElementById('touch-cursor'), controls: document.getElementById('pointer-controls'),
   changed: () => { lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); },
   chooseScroll: scrollTarget => parent.postMessage({ type: 'codex-pointer-options', frame, scrollTarget }, location.origin) });
@@ -81,7 +92,7 @@ function reportView() {
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
     const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height,
-      resizeReady, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800 };
+      resizeReady, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && performance.now() - lastInteraction >= 800 };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -99,6 +110,7 @@ function applyView() {
   cancelAnimationFrame(layoutFrame);
   const nextCanvas = screen.querySelector('canvas');
   if (nextCanvas !== canvas) {
+    desktopInput.cancel();
     canvasObserver.disconnect();
     canvas = nextCanvas;
     if (canvas) canvasObserver.observe(canvas);
@@ -118,10 +130,12 @@ function applyView() {
   if (rfb) {
     // Resize the local container through public APIs; remote pixels and input coordinates stay intact.
     rfb.scaleViewport = true;
+    rfb.focusOnClick = preferences.desktopIme === false || matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches;
     if (rfb.viewOnly !== (preferences.pan || preferences.blocked || streamPaused)) rfb.viewOnly = preferences.pan || preferences.blocked || streamPaused;
   }
   if (!preferences.pan && !preferences.blocked) stopDrag();
   panLayer.hidden = !preferences.pan && !preferences.blocked;
+  desktopInput.update(preferences.desktopIme !== false);
   layoutFrame = requestAnimationFrame(() => {
     if (!viewing || !canvas?.width || !canvas?.height) return;
     if (restoringView && viewAnchor?.zoom === preferences.zoom && (manual || widthFit)) {
@@ -150,6 +164,24 @@ viewportObserver.observe(viewport);
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame) return;
+  if (value.type === 'codex-desktop-focus') {
+    if (document.hidden || parent.document.activeElement !== window.frameElement) return;
+    if (!desktopInput.focus() && viewing && !preferences.blocked && !preferences.pan && !preferences.busy) {
+      rfb?.focus({ preventScroll: true });
+      cancelAnimationFrame(desktopFocusFrame);
+      desktopFocusFrame = requestAnimationFrame(() => {
+        // Firefox can finish the previous layout after focusing its canvas.
+        // Restore only this explicitly requested focus, while the frame still
+        // owns focus; never pull it back from another panel or browser tab.
+        if (viewing && !preferences.blocked && !preferences.pan && !preferences.busy && !desktopInput.composing && !desktopInput.busy && !document.hidden && document.hasFocus() && !document.activeElement?.matches('input,textarea,select,[contenteditable="true"]') && parent.document.activeElement === window.frameElement) rfb?.focus({ preventScroll: true });
+      });
+    }
+    return;
+  }
+  if (value.type === 'codex-desktop-text-result') {
+    if (!desktopText || value.id !== desktopText.id || !['success', 'rejected', 'unknown'].includes(value.outcome)) return;
+    const request = desktopText; desktopText = undefined; clearTimeout(request.timer); request.resolve({ outcome: value.outcome }); return;
+  }
   if (value.type === 'codex-direct-probe') { networkChanged(); return; }
   if (value.type !== 'codex-desktop-options') return;
   if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
@@ -168,8 +200,9 @@ window.addEventListener('message', event => {
   if (['viewport', 'remote'].includes(value.scrollTarget)) preferences.scrollTarget = value.scrollTarget;
   // Let an already held key/pointer release on the old stream. A handoff is
   // refused below if native input raced with the parent's idle confirmation.
-  preferences.blocked = preferences.standby || (value.handoff === true && (pressedKeys.size || pressedPointers.size || pointerControls.busy) ? false : value.blocked);
+  preferences.blocked = preferences.standby || (value.handoff === true && (pressedKeys.size || pressedPointers.size || pointerControls.busy || desktopInput.composing || desktopInput.busy) ? false : value.blocked);
   preferences.busy = value.busy === true;
+  preferences.desktopIme = value.desktopIme !== false;
   preferences.revision = value.revision ?? 0;
   if (streamEnabled && typeof value.csrf === 'string' && value.csrf.length <= 256 && value.csrf && !streamCsrf) { streamCsrf = value.csrf; void connect(); }
   if (wasStandby !== preferences.standby) { lastReport = ''; reportControl(); reportNetwork(); }
@@ -277,7 +310,7 @@ function monitorDirect(delay = 3000) {
   healthTimer = setTimeout(tick, delay);
 }
 function idleForSwitch() {
-  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800;
+  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && performance.now() - lastInteraction >= 800;
 }
 function scheduleProbe(delay = probeDelay) {
   if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;
@@ -351,6 +384,7 @@ async function probeDirect() {
   }
 }
 function attachViewer(direct, channel) {
+  desktopInput.cancel();
   frameReadiness?.(); frameReadiness = undefined;
   pointerControls.update(canvas, false, preferences);
   rememberView(); stopHealth();
@@ -402,6 +436,7 @@ function attachViewer(direct, channel) {
     if (rfb !== instance || stopping) return;
     frameReadiness?.(); frameReadiness = undefined;
     stopHealth(); viewing = false; connecting = false;
+    desktopInput.update();
     pointerControls.update(canvas, false, preferences);
     if (switching && switchingFrom === instance) return;
     if (switching) finishSwitch();
@@ -447,6 +482,7 @@ async function connect() {
           releaseMouse = false;
         }
         if (rfb) rfb.viewOnly = value || preferences.pan || preferences.blocked;
+        desktopInput.update();
         parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
       },
       changed: () => {
@@ -490,6 +526,9 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  cancelAnimationFrame(desktopFocusFrame);
+  desktopInput.cancel();
+  if (desktopText) { clearTimeout(desktopText.timer); desktopText.resolve({ outcome: 'unknown' }); desktopText = undefined; }
   frameReadiness?.(); frameReadiness = undefined;
   frameHold.clear();
   streamClient?.close();

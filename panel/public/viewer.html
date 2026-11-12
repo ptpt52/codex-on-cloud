@@ -11,6 +11,8 @@
     <div id="screen"></div>
   </div>
   <div id="pan-layer" tabindex="0" role="region" aria-label="拖动查看桌面，点击和按键不会发送到远程桌面" hidden></div>
+  <textarea id="desktop-input" aria-label="远程桌面键盘输入，支持本机中文输入法" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false" rows="1" maxlength="32768"></textarea>
+  <p id="desktop-input-status" role="status" hidden></p>
   <div id="touch-cursor" aria-hidden="true" hidden></div>
   <div id="pointer-controls" role="group" aria-label="桌面触控操作" hidden>
     <button id="pointer-left" type="button">左键</button><button id="pointer-right" type="button">右键</button><button id="pointer-drag" type="button" aria-pressed="false">拖动</button>

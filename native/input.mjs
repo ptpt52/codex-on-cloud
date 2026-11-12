@@ -21,7 +21,7 @@ export function validateInput(body) {
   if (body?.action === 'paste') {
     if (typeof body.text !== 'string' || !body.text || body.text.includes('\0') || Buffer.byteLength(body.text) > 32 * 1024) throw new Error('请输入不超过 32 KiB 的文字');
     const target = body.target ?? 'terminal';
-    if (!['terminal', 'application'].includes(target)) throw new Error('粘贴目标无效');
+    if (!['terminal', 'application', 'focused'].includes(target)) throw new Error('粘贴目标无效');
     const terminal = terminalTarget(body);
     if (terminal.terminalId && target !== 'terminal') throw new Error('指定终端时请使用终端粘贴');
     return { action: 'paste', text: body.text, target, ...terminal };
@@ -40,11 +40,24 @@ export function runInputCommand(command, args, { env, input, timeout = 2000 }) {
     child.stdin.end(input);
   });
 }
-export async function executeInput(body, env, run = runInputCommand, writeClipboard) {
+export async function focusedInputTarget(run) {
+  const window = await run('xdotool', ['getwindowfocus']);
+  if (!/^[1-9]\d{0,9}$/.test(window) || Number(window) > 0xffffffff) throw new Error('没有可接收文字的窗口');
+  const properties = await run('xprop', ['-id', window, 'WM_CLASS']);
+  if (!/^WM_CLASS\(STRING\) = /.test(properties) || properties.length > 4096) throw new Error('无法识别输入窗口');
+  const terminal = /"(?:codex-on-cloud-terminal(?:-aux[1-7])?|[Xx][Tt]erm|UXTerm|[Xx]fce4-terminal)"/.test(properties);
+  return { window, target: terminal ? 'terminal' : 'application' };
+}
+export async function executeInput(body, env, run = runInputCommand, writeClipboard, focus) {
   if (body.action === 'paste') {
+    const destination = body.target === 'focused' ? await focus() : null;
     if (writeClipboard) await writeClipboard(body.text);
     else await run('xclip', ['-selection', 'clipboard', '-i'], { env, input: body.text });
-    await run('xdotool', ['key', '--clearmodifiers', body.target === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v'], { env });
+    if (destination) {
+      const after = await focus();
+      if (after.window !== destination.window || after.target !== destination.target) throw Object.assign(new Error('桌面输入窗口已变化，文字未粘贴'), { status: 409, outcome: 'rejected' });
+    }
+    await run('xdotool', ['key', '--clearmodifiers', (destination?.target || body.target) === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v'], { env });
   } else if (body.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) {
     const keys = KEYS[body.key];
     await run('xdotool', ['key', '--clearmodifiers', ...(Array.isArray(keys) ? ['--delay', body.key === 'Escape Escape' ? '80' : '0', ...keys] : [keys])], { env });

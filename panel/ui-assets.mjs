@@ -18,6 +18,7 @@ export const ASSETS = new Map([
   ['/entry-path.js', ['entry-path.js', 'text/javascript; charset=utf-8']],
   ['/node-scope.js', ['node-scope.js', 'text/javascript; charset=utf-8']],
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
+  ['/desktop-input.js', ['desktop-input.js', 'text/javascript; charset=utf-8']],
   ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
   ['/rtc-ice.js', ['rtc-ice.js', 'text/javascript; charset=utf-8']],
   ['/service-link.js', ['service-link.js', 'text/javascript; charset=utf-8']],

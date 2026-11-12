@@ -3,12 +3,12 @@ import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS } from './terminal-history-limits.js
 export const BROWSER_PREFERENCES_KEY = 'codex-cloud.display.v1';
 export const BROWSER_PREFERENCES_LIMIT = 512;
 const defaults = Object.freeze({ layout: 2, zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true,
-  autoResolution: false, keepAwake: false, modeStandby: false, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport',
+  autoResolution: false, keepAwake: false, modeStandby: false, desktopIme: true, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport',
   terminalHistoryRows: DEFAULT_HISTORY_ROWS, terminalMouseReporting: false, terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' });
 const oneOf = values => value => values.includes(value);
 const boolean = value => typeof value === 'boolean';
 const fields = Object.freeze({ zoom: value => ['fit', 'width'].includes(value) || typeof value === 'number' && Number.isFinite(value) && value >= .1 && value <= 2,
-  pan: boolean, collapsed: boolean, controlsCollapsed: boolean, autoResolution: boolean, keepAwake: boolean, modeStandby: boolean,
+  pan: boolean, collapsed: boolean, controlsCollapsed: boolean, autoResolution: boolean, keepAwake: boolean, modeStandby: boolean, desktopIme: boolean,
   mode: oneOf(['desktop', 'terminal']), terminalFontSize: value => Number.isInteger(value) && value >= 10 && value <= 28,
   terminalWidthMode: oneOf(['viewport', 'scale', 'manual']), terminalHistoryRows: oneOf(HISTORY_ROWS), terminalMouseReporting: boolean,
   terminalInputCollapsed: boolean, pointerMode: oneOf(['touch', 'trackpad']), scrollTarget: oneOf(['viewport', 'remote']) });
