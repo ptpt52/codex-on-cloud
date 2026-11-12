@@ -237,13 +237,13 @@ test('opening find and copy on the live terminal keeps the original text input e
   const app = await fixture();
   try {
     const frame = await seeded(page, app);
-    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
+    const terminalInput = frame.locator('.xterm-helper-textarea');
+    await expect(terminalInput).toBeEditable();
     await frame.locator('#history-tools-toggle').click();
     await expect(page.locator('#history-tools')).toBeVisible();
-    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
+    await expect(terminalInput).toBeEditable();
     await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
-    await openInput(page);
-    await page.locator('[data-key="Enter"]').click();
+    await terminalInput.press('Enter');
     await expect.poll(() => app.terminalInputs.length).toBe(1);
     expect(app.terminalInputs[0].text).toBe('\r');
     await expect(frame.locator('#history-state')).toContainText('终端仍可输入');
