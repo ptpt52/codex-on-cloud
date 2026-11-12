@@ -2,7 +2,7 @@
 // Nothing survives a focus/connection change or gets retried after an unknown result.
 export function createDesktopInput({ screen, field, status, current, allowed, paste, changed }) {
   const MAX_EVENTS = 64, MAX_BYTES = 32768;
-  let enabled = true, composing = false, generation = 0, pending, queue = [], bytes = 0, sequence = 0, lastCommit = '', resetTimer, reported = '', printable;
+  let enabled = true, composing = false, generation = 0, pending, queue = [], bytes = 0, sequence = 0, lastCommit = '', compositionInput = false, reported = '', printable, blockedReason = '';
   const suppressed = new Set(), accepted = new Set(), delivered = new Map();
   const ready = () => enabled && allowed() && !!current() && !document.hidden && navigator.onLine;
   const show = text => { status.textContent = text; status.hidden = !text; };
@@ -16,7 +16,7 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
   const report = () => { const busy = !!pending || !!queue.length, key = `${composing}:${busy}`; if (key !== reported) { reported = key; changed({ composing, busy }); } };
   const clearField = () => { field.value = ''; field.classList.remove('composing'); };
   function cancel(message = '') {
-    generation++; queue = []; bytes = 0; composing = false; lastCommit = ''; printable = undefined; suppressed.clear(); accepted.clear(); clearTimeout(resetTimer); clearField(); release(); report(); show(message);
+    generation++; queue = []; bytes = 0; composing = false; lastCommit = ''; compositionInput = false; printable = undefined; suppressed.clear(); accepted.clear(); blockedReason = message; clearField(); release(); report(); show(message);
   }
   function fail(message) { cancel(message); }
   function drain() {
@@ -44,8 +44,9 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     });
   }
   function enqueue(entry) {
-    if (pending && pending.generation !== generation) return;
+    if (pending && pending.generation !== generation) return show(blockedReason || '上一次输入尚未结束，本次内容未发送，请稍后重试。');
     if (!ready()) return show('输入暂不可用，请稍后重新输入。');
+    if (blockedReason && !(entry.kind === 'key' && entry.type === 'keyup')) { blockedReason = ''; show('键盘控制远程桌面 · 支持本机输入法'); }
     if (queue.length + (pending ? 1 : 0) >= MAX_EVENTS || bytes + (entry.size || 0) > MAX_BYTES) return fail('输入超过缓冲上限，部分内容未发送，请核对远端。');
     bytes += entry.size || 0; queue.push({ ...entry, canvas: current(), generation }); drain(); report();
   }
@@ -62,7 +63,7 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     const code = event.code || event.key;
     if (event.key.length > 64 || code.length > 64) { event.preventDefault(); return fail('按键数据无效，未发送。'); }
     const releaseAccepted = event.type === 'keyup' && accepted.has(code);
-    if (!releaseAccepted && (event.isComposing || composing || event.keyCode === 229 || event.key === 'Process')) {
+    if (!releaseAccepted && (event.isComposing || composing || event.keyCode === 229 || ['Process', 'Dead', 'Compose', 'Unidentified'].includes(event.key))) {
       if (event.type === 'keydown' && suppressed.size < 64) suppressed.add(code);
       if (event.type === 'keyup') suppressed.delete(code);
       return;
@@ -89,12 +90,18 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
   field.addEventListener('compositionend', event => {
     if (!composing) return clearField();
     composing = false; report(); lastCommit = event.data || ''; text(lastCommit); clearField(); report();
-    clearTimeout(resetTimer); resetTimer = setTimeout(() => { lastCommit = ''; }, 1000);
+  });
+  field.addEventListener('beforeinput', event => {
+    compositionInput = composing || event.isComposing || /Composition/.test(event.inputType);
   });
   field.addEventListener('input', event => {
+    const echo = compositionInput || /Composition/.test(event.inputType); compositionInput = false;
     if (composing || event.isComposing) return;
     const value = field.value;
-    if (lastCommit && (value === lastCommit || event.data === lastCommit)) { lastCommit = ''; clearField(); return; }
+    // Only the final composition event is an echo. A following insertText or
+    // paste with the same characters is a separate user input, even immediately.
+    if (echo && lastCommit && (value === lastCommit || !value && event.data === lastCommit)) { lastCommit = ''; clearField(); return; }
+    lastCommit = '';
     const candidate = printable; printable = undefined;
     if (candidate && candidate.generation === generation && candidate.canvas === current() && value === candidate.value.key && /^[\x20-\x7e]$/.test(value)) {
       if (accepted.size < 64) accepted.add(candidate.code);

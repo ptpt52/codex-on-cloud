@@ -31,11 +31,13 @@ async function compose(frame, value) {
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
     el.value = value; el.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: value, isComposing: true, bubbles: true }));
     el.dispatchEvent(new CompositionEvent('compositionend', { data: value, bubbles: true }));
-    el.value = value; el.dispatchEvent(new InputEvent('input', { inputType: 'insertFromComposition', data: value, bubbles: true }));
+    const echo = new InputEvent('input', { inputType: 'insertFromComposition', data: value, bubbles: true });
+    if (!echo.inputType) Object.defineProperty(echo, 'inputType', { value: 'insertFromComposition' });
+    el.value = value; el.dispatchEvent(echo);
     el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
   }, value);
 }
-let server, browser, app, switchedWindow, forceFocusChange = false;
+let server, browser, app, switchedWindow, childWindow, forceFocusChange = false, forceChildFocus = false;
 const direct = process.env.DESKTOP_IME_TEST_DIRECT === '1';
 try {
   for (let number = 94; number < 200; number++) {
@@ -75,7 +77,10 @@ while time.monotonic() < deadline:
   server = net.createServer(socket => { vncConnections++; socket.pause(); socket.on('error', () => {}); start('x11vnc', vncArguments(env.DISPLAY, env.XAUTHORITY), [socket, socket, 'ignore']); socket.destroy(); });
   server.listen(socketPath); await once(server, 'listening'); await chmod(socketPath, 0o600);
   app = await fixture({ rfb: true, webrtc: direct, fastConnect: direct, seamless: direct, inputHook: body => executeInput(body, env, runInputCommand,
-    async text => { await runInputCommand('xclip', ['-selection', 'clipboard', '-i'], { env, input: text }); if (forceFocusChange) await run('xdotool', ['windowfocus', switchedWindow]); },
+    async text => {
+      await runInputCommand('xclip', ['-selection', 'clipboard', '-i'], { env, input: text });
+      if (forceFocusChange || forceChildFocus) await run('xdotool', ['windowfocus', forceChildFocus ? childWindow : switchedWindow]);
+    },
     () => focusedInputTarget(run)) });
   app.config.vncSocket = socketPath;
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
@@ -108,8 +113,8 @@ while time.monotonic() < deadline:
   assert.equal(terminal.exitCode, null); assert.equal(vncConnections, 1);
   console.log(`PASS (${direct ? 'resumable WebRTC' : 'WebSocket relay'}): real Xvfb/x11vnc/noVNC/xterm received exact Chinese/emoji once, no candidate Enter, followed by native ASCII and an independent Enter.`);
   if (process.env.DESKTOP_IME_TEST_TK_PYTHON) {
-    const gui = join(directory, 'application.py'), appProof = join(directory, 'application.txt');
-    await writeFile(gui, `import tkinter as tk, sys
+    const gui = join(directory, 'application.py'), appProof = join(directory, 'application.txt'), childProof = join(directory, 'child.txt'), ids = join(directory, 'widgets.json');
+    await writeFile(gui, `import tkinter as tk, sys, json
 from pathlib import Path
 root = tk.Tk(className='CodexImeApp')
 root.title('codex-ime-app')
@@ -117,24 +122,40 @@ root.geometry('500x150+0+0')
 value = tk.StringVar()
 field = tk.Entry(root, textvariable=value, font=('sans', 18))
 field.pack(fill='both', expand=True)
+second = tk.StringVar()
+other = tk.Entry(root, textvariable=second)
+other.pack(fill='both', expand=True)
 def save(*args): Path(sys.argv[1]).write_text(value.get(), encoding='utf-8')
+def save_child(*args): Path(sys.argv[2]).write_text(second.get(), encoding='utf-8')
 value.trace_add('write', save)
+second.trace_add('write', save_child)
 save()
+save_child()
+root.update_idletasks()
+Path(sys.argv[3]).write_text(json.dumps({'first': field.winfo_id(), 'second': other.winfo_id()}))
 field.focus_force()
 root.mainloop()
 `);
-    start(process.env.DESKTOP_IME_TEST_TK_PYTHON, [gui, appProof]);
+    start(process.env.DESKTOP_IME_TEST_TK_PYTHON, [gui, appProof, childProof, ids]);
     await eventually(async () => { switchedWindow = await run('xdotool', ['search', '--name', '^codex-ime-app$']); return /^\d+$/.test(switchedWindow); });
     await run('xdotool', ['windowfocus', switchedWindow]);
     // Restore browser keyboard focus without changing the real X11 focus.
     await frame.locator('#desktop-input').focus(); await compose(frame, '普通应用中文');
     await eventually(async () => await readFile(appProof, 'utf8') === '普通应用中文');
+    const widgets = JSON.parse(await readFile(ids, 'utf8')); childWindow = String(widgets.second);
+    await run('xdotool', ['windowfocus', String(widgets.first)]);
+    assert.equal((await focusedInputTarget(run)).window, String(widgets.first));
+    forceChildFocus = true; await compose(frame, '不要进入另一输入框');
+    await eventually(() => frame.locator('#desktop-input-status').evaluate(el => el.textContent.includes('未发送')));
+    assert.equal(await run('xdotool', ['getwindowfocus', '-f']), childWindow);
+    assert.equal(await readFile(childProof, 'utf8'), ''); assert.equal(await readFile(appProof, 'utf8'), '普通应用中文');
+    forceChildFocus = false; await frame.locator('#desktop-input').focus();
     const before = await received();
     await run('xdotool', ['windowfocus', terminalWindow]); forceFocusChange = true;
     await compose(frame, '窗口变化不应误粘贴');
     await eventually(() => frame.locator('#desktop-input-status').evaluate(el => el.textContent.includes('未发送')));
     assert.equal(await received(), before); assert.equal(await readFile(appProof, 'utf8'), '普通应用中文');
-    console.log('PASS: actual Tk entry received Chinese with Ctrl+V; changing focus during clipboard preparation rejected the paste into either window.');
+    console.log('PASS: actual Tk entry received Chinese with Ctrl+V; changing the focused X11 child or application during clipboard preparation rejected the paste.');
   } else console.log('SKIP: generic GUI proof needs DESKTOP_IME_TEST_TK_PYTHON pointing to Python with Tk.');
   assert.equal(app.managementStats.restarts, 0);
   console.log('Boundary: input-method composition events are injected; native OS candidate selection and production Codex are not operated.');

@@ -26,7 +26,11 @@ async function compose(frame, text) {
     el.value = text; el.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: text, isComposing: true, bubbles: true }));
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
     el.dispatchEvent(new CompositionEvent('compositionend', { data: text, bubbles: true }));
-    el.value = text; el.dispatchEvent(new InputEvent('input', { inputType: 'insertFromComposition', data: text, bubbles: true }));
+    const echo = new InputEvent('input', { inputType: 'insertFromComposition', data: text, bubbles: true });
+    // Chromium normalizes this Safari event type to an empty string in the
+    // constructor; retain the actual Safari type for the cross-engine fixture.
+    if (!echo.inputType) Object.defineProperty(echo, 'inputType', { value: 'insertFromComposition' });
+    el.value = text; el.dispatchEvent(echo);
     el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
   }, text);
 }
@@ -71,6 +75,52 @@ test('Chrome IME protocol commits real composition event sequences exactly once'
     await client.send('Input.insertText', { text: '系统事件中文' });
     await expect.poll(() => app.inputCalls).toEqual([{ action: 'paste', target: 'focused', text: '系统事件中文' }]);
     await expect(frame.locator('#desktop-input')).toHaveValue(''); await client.detach();
+  } finally { await app.close(); }
+});
+
+test('identical committed text after composition is not mistaken for a composition echo', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    const frame = await login(page, app);
+    // Chromium reports its final input before compositionend, with no echo
+    // afterwards. The next insertText can legitimately repeat the same value.
+    await frame.locator('#desktop-input').evaluate(el => {
+      el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      el.value = '。'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: '。', isComposing: true, bubbles: true }));
+      el.dispatchEvent(new CompositionEvent('compositionend', { data: '。', bubbles: true }));
+    });
+    await frame.locator('#desktop-input').evaluate(el => {
+      el.value = '。'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '。', bubbles: true }));
+    });
+    await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['。', '。']);
+  } finally { await app.close(); }
+});
+
+test('beforeinput links a late insertText echo to its composition without suppressing a new insertion', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    const frame = await login(page, app);
+    await frame.locator('#desktop-input').evaluate(el => {
+      el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '同', isComposing: true, bubbles: true }));
+      el.dispatchEvent(new CompositionEvent('compositionend', { data: '同', bubbles: true }));
+      el.value = '同'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '同', bubbles: true }));
+      el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '同', bubbles: true }));
+      el.value = '同'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '同', bubbles: true }));
+    });
+    await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['同', '同']);
+  } finally { await app.close(); }
+});
+
+test('dead and unidentified input-method keys leave composition to the browser without leaking keys', async ({ page }) => {
+  const app = await fixture({ rfb: true }), sent = keys(page);
+  try {
+    const frame = await login(page, app);
+    for (const key of ['Dead', 'Compose', 'Unidentified']) expect(await frame.locator('#desktop-input').evaluate((el, key) => el.dispatchEvent(new KeyboardEvent('keydown', { key, code: 'Quote', bubbles: true, cancelable: true })), key)).toBe(true);
+    await compose(frame, 'é中文');
+    await frame.locator('#desktop-input').dispatchEvent('keyup', { key: 'Dead', code: 'Quote', bubbles: true, cancelable: true });
+    await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['é中文']);
+    expect(sent.filter(value => value.down)).toEqual([]);
   } finally { await app.close(); }
 });
 
@@ -137,6 +187,22 @@ test('a cancelled composition and a focus change discard uncommitted text', asyn
     await frame.locator('#desktop-input').dispatchEvent('compositionend', { data: '不要发送' });
     expect(app.inputCalls).toEqual([]); await expect(frame.locator('#desktop-input')).toHaveValue('');
   } finally { await app.close(); }
+});
+
+test('returning before an abandoned paste finishes explicitly rejects new text instead of silently losing it', async ({ page }) => {
+  let release; const hold = new Promise(resolve => release = resolve);
+  const app = await fixture({ rfb: true, inputHook: async () => hold });
+  try {
+    const frame = await login(page, app); await compose(frame, '第一段');
+    await expect.poll(() => app.inputCalls.length).toBe(1);
+    await openTools(page); await closePanels(page); await frame.locator('#desktop-input').focus();
+    await compose(frame, '第二段');
+    await expect(frame.locator('#desktop-input-status')).toContainText('本次内容未发送');
+    expect(app.inputCalls.map(value => value.text)).toEqual(['第一段']); release();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    await compose(frame, '第三段');
+    await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['第一段', '第三段']);
+  } finally { release(); await app.close(); }
 });
 
 test('direct desktop text follows focus even when the input assistant remembers a closed terminal', async ({ page }) => {

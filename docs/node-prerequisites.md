@@ -20,6 +20,7 @@ systemctl --user is-system-running
 | Git、CA 证书 | 系统包 | 克隆仓库、助手版本信息、HTTPS 下载 |
 | Go | 固定 **1.26.4** | 构建端口映射助手 |
 | Codex CLI | 自行安装和登录，不由项目升级 | 桌面模式安装检查必需；纯终端模式可选 |
+| x11-utils（含 xdpyinfo、xprop、xwininfo） | 桌面部署依赖包，`--install-deps` 会安装 | 显示就绪、桌面尺寸和中文输入焦点检查 |
 
 `--install-deps` 安装工作区所需的 apt 基础包，不安装 Node.js、Go 或 Codex。Ubuntu 的默认 `nodejs` / `golang-go` 包不一定满足项目版本，不能用“apt 安装成功”代替版本核对。
 

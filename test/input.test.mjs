@@ -174,6 +174,33 @@ test('focused desktop text chooses the receiving window shortcut and refuses foc
   assert.throws(() => validateInput({ action: 'paste', text: '中文', target: 'focused', terminalId: 'main', terminalToken: '%0:4000' }));
 });
 
+test('focused paste detects a changed input child within the same application window', async () => {
+  let leaf = '1235'; const calls = [];
+  const read = async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'xprop') return args[1] === '1234' ? 'WM_CLASS(STRING) = "form", "FormApp"' : 'WM_CLASS:  not found.';
+    if (command === 'xwininfo') return 'Parent window id: 0x4d2';
+    return args.includes('-f') ? leaf : '1234';
+  };
+  const focus = () => focusedInputTarget(read);
+  const sent = [];
+  await assert.rejects(executeInput({ action: 'paste', target: 'focused', text: '只发给原输入框' }, {}, async (...args) => sent.push(args),
+    async () => { leaf = '1236'; }, focus), error => error.outcome === 'rejected' && error.status === 409);
+  assert.deepEqual(sent, []);
+  assert.ok(calls.some(value => value.command === 'xdotool' && value.args.includes('-f')));
+});
+
+test('focused window inspection bounds ancestor traversal and per-command output and time', async () => {
+  let queries = 0, parent = 100;
+  await assert.rejects(focusedInputTarget(async (command, _args, options) => {
+    queries++; assert.ok(options.timeout > 0 && options.timeout <= 500); assert.equal(options.maxBuffer, 16384);
+    if (command === 'xdotool') return '100';
+    if (command === 'xprop') return 'WM_CLASS:  not found.';
+    return 'Parent window id: 0x' + (++parent).toString(16);
+  }), /无法识别输入窗口/);
+  assert.ok(queries <= 33);
+});
+
 test('shortcut catalog uses fixed argv, preserves newline versus Enter and refuses arbitrary chords', async () => {
   const calls = [];
   for (const { key } of SHORTCUTS) {

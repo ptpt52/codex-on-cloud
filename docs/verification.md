@@ -33,6 +33,8 @@ DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 
 浏览器规格验证中文提交一次、选字 Enter 隔离、按键顺序、焦点恢复、偏好、缓冲上限和结果未知后不重发。原生规格使用隔离 Xvfb、x11vnc、noVNC 和项目同款粘贴绑定的 xterm，检查实际收到的中文 / emoji 字节、英文按键及独立 Enter；桌面管理与认证使用 fixture，不操作生产任务。
 
+输入专项也覆盖合成结束后再次插入相同文字、迟到的合成回声、死键 / 未识别输入法按键及在途请求未完成时返回输入。X11 焦点检查保留实际子窗口 ID，仅在查找窗口类型时向父窗口遍历，最多 16 层、每次检查 1.5 秒；读取命令单次最多 500 毫秒和 16 KiB 输出。
+
 可将 `DESKTOP_IME_TEST_TK_PYTHON` 指向已安装 Tk 的 Python，再运行原生规格，验证真实普通应用的 Ctrl+V 及剪贴板准备期间换窗拒绝；未设置时会明确跳过此部分。所有组合事件由测试注入，不代表真实系统输入法候选窗、手机系统键盘或生产 Codex 已验收。
 
 中文与数字、空格的顺序、全角标点、输入框清理和点击位置附近的候选窗处理，参考了 [WechatOnCloud 的输入法实现](https://github.com/Gloridust/WechatOnCloud/blob/86d82519c5e6b28aae7ef3caa279086afa244d4d/panel/web/src/pages/Desktop.tsx#L27)。本项目的等待缓冲限制为 64 项、文字合计 32 KiB，结果未知时清理后续输入；原有远程剪贴板按键路径保留。

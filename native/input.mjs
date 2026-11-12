@@ -41,12 +41,30 @@ export function runInputCommand(command, args, { env, input, timeout = 2000 }) {
   });
 }
 export async function focusedInputTarget(run) {
-  const window = await run('xdotool', ['getwindowfocus']);
+  const deadline = Date.now() + 1500;
+  const query = (command, args) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('输入窗口检查超时');
+    return run(command, args, { timeout: Math.min(500, remaining), maxBuffer: 16384 });
+  };
+  // Keep the real X11 input child for the focus check. Its WM_CLASS may live
+  // on an ancestor; checking only that ancestor would miss a widget change.
+  const window = await query('xdotool', ['getwindowfocus', '-f']);
   if (!/^[1-9]\d{0,9}$/.test(window) || Number(window) > 0xffffffff) throw new Error('没有可接收文字的窗口');
-  const properties = await run('xprop', ['-id', window, 'WM_CLASS']);
-  if (!/^WM_CLASS\(STRING\) = /.test(properties) || properties.length > 4096) throw new Error('无法识别输入窗口');
-  const terminal = /"(?:codex-on-cloud-terminal(?:-aux[1-7])?|[Xx][Tt]erm|UXTerm|[Xx]fce4-terminal)"/.test(properties);
-  return { window, target: terminal ? 'terminal' : 'application' };
+  let client = window;
+  for (let depth = 0; depth < 16; depth++) {
+    const properties = await query('xprop', ['-id', client, 'WM_CLASS']);
+    if (properties.length > 4096) throw new Error('输入窗口信息过大');
+    if (/^WM_CLASS\(STRING\) = /.test(properties)) {
+      const terminal = /"(?:codex-on-cloud-terminal(?:-aux[1-7])?|[Xx][Tt]erm|UXTerm|[Xx]fce4-terminal)"/.test(properties);
+      return { window, target: terminal ? 'terminal' : 'application' };
+    }
+    const tree = await query('xwininfo', ['-id', client, '-children']);
+    const parent = Number.parseInt(tree.match(/Parent window id:\s+(0x[0-9a-f]+)/i)?.[1], 16);
+    if (!Number.isInteger(parent) || parent <= 0 || parent > 0xffffffff || String(parent) === client) break;
+    client = String(parent);
+  }
+  throw new Error('无法识别输入窗口');
 }
 export async function executeInput(body, env, run = runInputCommand, writeClipboard, focus) {
   if (body.action === 'paste') {
