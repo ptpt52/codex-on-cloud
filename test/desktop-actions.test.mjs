@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { createDesktopActionServer, desktopActionClient } from '../native/desktop-actions.mjs';
+import { createDesktopActions, createDesktopActionServer, desktopActionClient } from '../native/desktop-actions.mjs';
 import { executeInput } from '../native/input.mjs';
 import { serviceUnits } from '../native/service-units.mjs';
 
@@ -29,6 +29,19 @@ test('a failed desktop clipboard acknowledgement never sends the paste key or re
   const commands = [], writes = [];
   await assert.rejects(executeInput({ action: 'paste', text: 'unchanged', target: 'terminal' }, {}, async (...args) => commands.push(args), async text => { writes.push(text); throw Error('lost acknowledgement'); }));
   assert.deepEqual(writes, ['unchanged']); assert.deepEqual(commands, []);
+});
+
+test('stopping desktop actions during a terminal probe cannot launch a late child', async () => {
+  let release, entered, spawns = 0;
+  const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const actions = createDesktopActions({ root: '/synthetic' }, { TMUX_SOCKET: '/synthetic/tmux.sock' }, {
+    spawnProcess() { spawns++; throw Error('must not launch after shutdown'); },
+    async run(command) { if (command === 'tmux') { entered(); await hold; return ''; } throw Error('no X window'); },
+  });
+  const pending = actions.perform('/terminal', { id: 'main' });
+  await started; actions.close(); release();
+  await assert.rejects(pending, { status: 503, message: '桌面执行服务已停止' });
+  assert.equal(spawns, 0);
 });
 
 test('generated services separate desktop children and bound only panel failure recovery', () => {

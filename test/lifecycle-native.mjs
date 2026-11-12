@@ -1,7 +1,7 @@
 // Separate real process groups model stopping all manager descendants. Actual
 // desktop/worker/manager entrypoints, private X11, xterm, tmux and selection.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, cp, writeFile, readFile, lstat, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, cp, rename, writeFile, readFile, lstat, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, execFile } from 'node:child_process';
@@ -33,6 +33,11 @@ const clientConfig = { managerSocket: join(runtime, 'manager.sock'), agentSecret
 try {
   for (const part of ['run', 'secrets', 'workspace', 'data/desktop']) await mkdir(join(root, part), { recursive: true });
   for (const part of ['native', 'desktop']) await cp(join(source, part), join(root, part), { recursive: true });
+  // Keep the worker's child alive briefly after its X window closes, as can
+  // happen while a loaded CI host reaps xterm. Only the isolated copy is used.
+  const terminalHelper = join(root, 'desktop/open-codex-terminal');
+  await rename(terminalHelper, terminalHelper + '-real');
+  await writeFile(terminalHelper, '#!/usr/bin/env bash\nset -u\n"$(dirname -- "$0")/open-codex-terminal-real" "$@"\nresult=$?\nsleep 0.8\nexit "$result"\n', { mode: 0o700 });
   await mkdir(join(root, 'panel/public'), { recursive: true });
   await cp(join(source, 'panel/public/terminal-slots.js'), join(root, 'panel/public/terminal-slots.js'));
   await writeFile(join(root, 'data/desktop/fonts.conf'), '<fontconfig><include>/etc/fonts/fonts.conf</include></fontconfig>');

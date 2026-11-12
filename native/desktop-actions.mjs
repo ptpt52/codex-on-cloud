@@ -21,6 +21,7 @@ export function createDesktopActions(config, env, { spawnProcess = spawn, run = 
     async perform(path, body) {
       if (stopped) throw reject(503, '桌面执行服务已停止');
       if (path === '/terminal') {
+        const deadline = performance.now() + 2500;
         if (Object.keys(body).join(',') !== 'id') throw reject(400, '终端参数无效');
         const definition = TERMINALS.find(item => item.id === body.id);
         if (!definition) throw reject(400, '终端目标无效');
@@ -33,7 +34,10 @@ export function createDesktopActions(config, env, { spawnProcess = spawn, run = 
         // Give that fixed child time to exit; never report a closed window as
         // successfully reopened or spawn a second still-starting terminal.
         const previous = windows.get(body.id);
-        for (let n = 0; alive(previous) && n < 20; n++) await new Promise(resolve => setTimeout(resolve, 25));
+        // Share a bounded budget with the probes above, leaving time to reply
+        // before the 3-second action socket deadline even on a busy host.
+        while (!stopped && alive(previous) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+        if (stopped) throw reject(503, '桌面执行服务已停止');
         if (alive(previous)) throw reject(409, '终端窗口正在启动或关闭，请稍后查看');
         const child = start(join(config.root, 'desktop', 'open-codex-terminal'), [body.id]);
         windows.set(body.id, child); child.stdin.end();
