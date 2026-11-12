@@ -76,7 +76,7 @@ test('periodic probes replace a silently lost OPEN socket without waiting for cl
     await expect.poll(() => frame.evaluate(() => window.terminalHealthTest.opened), { timeout: 15000, intervals: [100] }).toBe(2);
     await online(page);
     expect(await frame.evaluate(() => window.terminalHealthTest.closeCalls)).toBeGreaterThan(0);
-    await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#terminal-font-label')).toHaveText('17');
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#terminal-font-label')).toHaveText(page.viewportSize().width <= 700 ? '12' : '17');
     await expect(page.locator('#mobile-input')).toHaveValue('网络恢复后仍保留这段草稿');
     expect((await app.controls.listTerminals()).terminals.map(({ id, token }) => ({ id, token }))).toEqual(before);
     expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0); expect(counts).toEqual({ login: 1, claim: 1, input: 0 });

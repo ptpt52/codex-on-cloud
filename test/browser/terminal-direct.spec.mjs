@@ -69,7 +69,7 @@ test('real terminal UDP/DTLS shares the original task, routes Chinese paste and 
     await page.keyboard.insertText('直输中文'); await expect.poll(() => app.terminalInputs.at(-1).text).toBe('直输中文');
     await page.locator('#toggle-input-button').click(); await openTools(page); await page.locator('#terminal-font-up').click();
     await openTools(page); await page.locator('#terminal-view-select').selectOption('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线', { timeout: 15000 });
-    await expect(page.locator('#terminal-font-label')).toHaveText('16'); await expect(page.locator('#mobile-input')).toHaveValue('');
+    await expect(page.locator('#terminal-font-label')).toHaveText(page.viewportSize().width <= 700 ? '11' : '16'); await expect(page.locator('#mobile-input')).toHaveValue('');
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 0, rtc: 2 }); expect(app.terminalConnections).toBe(2); expect(app.vncConnections).toBe(0);
     expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
     expect((await app.controls.listTerminals()).terminals.find(value => value.id === 'main').token).toBe('%0:4000');
@@ -105,7 +105,7 @@ test('periodic probing keeps WSS and its sole PTY alive until direct activation,
     expect(app.terminalConnections).toBe(1); await expect(page.locator('#connection-status')).toContainText('终端在线');
     hold.release(); await expect.poll(() => app.terminalConnections, { timeout: 15000 }).toBe(2);
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await diagnostics(page, DIRECT);
-    await expect(page.locator('#terminal-font-label')).toHaveText('16'); await expect(page.locator('#mobile-input')).toHaveValue('自动换通道保留草稿');
+    await expect(page.locator('#terminal-font-label')).toHaveText(page.viewportSize().width <= 700 ? '11' : '16'); await expect(page.locator('#mobile-input')).toHaveValue('自动换通道保留草稿');
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 1, rtc: 3 }); expect(app.terminalInputs).toEqual([]); expect(app.vncConnections).toBe(0);
   } finally { hold.release(); await app.close(); }
 });

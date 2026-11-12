@@ -10,6 +10,7 @@ async function terminal(page) { await page.locator('#terminal-mode').click(); aw
 
 test('text mode shares the original task, uses native terminal input and separate paste/Enter, fits the viewport and returns to the desktop', async ({ page }, info) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, viewport: true });
+  const initialFont = page.viewportSize().width <= 700 ? 10 : 15;
   try {
     await page.addInitScript(() => { window.terminalSizeReports = 0; window.addEventListener('message', event => { if (event.data?.type === 'codex-terminal-size') window.terminalSizeReports++; }); });
     await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('中文\n第二行'); await terminal(page);
@@ -33,7 +34,7 @@ test('text mode shares the original task, uses native terminal input and separat
     const stageBox = await page.locator('#desktop-stage').boundingBox(), cardBox = await page.locator('#desktop-card').boundingBox();
     expect(stageBox.height).toBeGreaterThanOrEqual(240); expect(stageBox.y + stageBox.height).toBeLessThanOrEqual(cardBox.y + cardBox.height + 1);
     await page.locator('#toggle-input-button').click();
-    await openTools(page); await page.locator('#terminal-font-up').click(); await expect(page.locator('#terminal-font-label')).toHaveText('16');
+    await openTools(page); await page.locator('#terminal-font-up').click(); await expect(page.locator('#terminal-font-label')).toHaveText(String(initialFont + 1));
     await page.screenshot({ path: `test-results/${info.project.name}-web-terminal.png` });
     expect((await app.controls.get()).actual).toEqual(desktopGeometry); expect(app.managementStats.restarts).toBe(0);
     await page.locator('#desktop-mode').click(); await page.locator('#accept-confirmation').click(); await expect(page.locator('#connection-status')).toContainText('桌面在线');

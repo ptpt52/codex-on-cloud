@@ -41,7 +41,7 @@ test('tools show only the active mode settings and switching modes preserves bot
     await expect(page.locator('#fit-button')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#pointer-mode')).toHaveValue('trackpad');
     await mode(page, 'terminal'); await tools(page, 'terminal');
-    await expect(page.locator('#terminal-font-label')).toHaveText('16');
+    await expect(page.locator('#terminal-font-label')).toHaveText(page.viewportSize().width <= 700 ? '11' : '16');
     await expect(page.locator('#terminal-width-mode')).toHaveValue('manual');
     await expect(page.locator('#terminal-history-rows')).toHaveValue('5000');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

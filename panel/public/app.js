@@ -138,7 +138,7 @@ $('mobile-input').addEventListener('blur', () => { inputComposing = false; rende
 
 let browserStorage;
 try { browserStorage = localStorage; } catch {}
-const browserPreferences = createBrowserPreferences(browserStorage), displayPreferences = browserPreferences.value;
+const browserPreferences = createBrowserPreferences(browserStorage, { compact: matchMedia('(max-width: 700px)').matches }), displayPreferences = browserPreferences.value;
 const directHints = createRTCHints(browserStorage);
 let workspaceInitialized = false, serviceProtocol = 0;
 const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection(),

@@ -29,6 +29,20 @@ test('separate browsers are isolated and stale pages merge only changed fields w
   assert.equal(stale.value.terminalFontSize, 15); assert.equal(stale.value.keepAwake, false);
   assert.equal(createBrowserPreferences(otherStorage).value.terminalFontSize, 15); assert.equal(otherStorage.text, null);
 });
+
+test('compact browsers default to size 10 while saved fonts and stale-tab merges retain user choices', () => {
+  const options = { compact: true }, source = storage(), first = createBrowserPreferences(source, options), stale = createBrowserPreferences(source, options);
+  assert.equal(first.value.terminalFontSize, 10);
+  assert.equal(createBrowserPreferences(storage()).value.terminalFontSize, 15);
+  for (const text of [null, '{', JSON.stringify({ layout: 2, terminalFontSize: 9 })]) assert.equal(decodeBrowserPreferences(text, options).terminalFontSize, 10);
+  first.update({ terminalFontSize: 18 }); stale.update({ controlsCollapsed: false });
+  assert.equal(createBrowserPreferences(source, options).value.terminalFontSize, 18);
+  assert.equal(createBrowserPreferences(source).value.terminalFontSize, 18);
+  assert.equal(stale.value.terminalFontSize, 10);
+  const denied = createBrowserPreferences({ getItem() { throw Error('denied'); } }, options);
+  assert.equal(denied.value.terminalFontSize, 10); denied.update({ terminalFontSize: 11 });
+  assert.equal(denied.value.terminalFontSize, 11); assert.equal(denied.persisted, false);
+});
 test('unavailable browser storage keeps in-page preferences and never persists unrecognized fields', () => {
   const denied = { getItem() { throw Error('denied'); }, setItem() { throw Error('denied'); } };
   for (const source of [undefined, denied]) {

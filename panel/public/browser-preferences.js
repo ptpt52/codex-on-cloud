@@ -16,8 +16,8 @@ function pick(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(fields).filter(([key, valid]) => Object.hasOwn(value, key) && valid(value[key])).map(([key]) => [key, value[key]]));
 }
-export function decodeBrowserPreferences(text) {
-  const value = { ...defaults };
+export function decodeBrowserPreferences(text, { compact = false } = {}) {
+  const value = { ...defaults, terminalFontSize: compact ? 10 : defaults.terminalFontSize };
   try {
     if (typeof text !== 'string' || text.length > BROWSER_PREFERENCES_LIMIT) return value;
     const stored = JSON.parse(text), valid = pick(stored);
@@ -30,11 +30,11 @@ export function decodeBrowserPreferences(text) {
 // One origin-scoped entry, shared by terminal slots, never sent to the server.
 // Open pages keep their view; updates merge only the fields the user changed
 // with the latest stored entry, so a stale tab cannot reset another preference.
-export function createBrowserPreferences(storage) {
+export function createBrowserPreferences(storage, options = {}) {
   let persisted = !!storage;
   const read = () => {
-    try { const text = storage?.getItem(BROWSER_PREFERENCES_KEY); persisted = !!storage; return decodeBrowserPreferences(text); }
-    catch { persisted = false; return { ...defaults }; }
+    try { const text = storage?.getItem(BROWSER_PREFERENCES_KEY); persisted = !!storage; return decodeBrowserPreferences(text, options); }
+    catch { persisted = false; return decodeBrowserPreferences(null, options); }
   };
   const value = read();
   return { value, get persisted() { return persisted; }, update(change) {
