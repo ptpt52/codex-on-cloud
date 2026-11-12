@@ -40,14 +40,17 @@ for (const alternate of [false, true]) for (const toolsFirst of [false, true]) t
       await expect(archive).toBeHidden(); await expect(page.locator('#history-tools')).toBeVisible();
       await expect(page.locator('#history-query')).toHaveValue('PROGRAM-PAGE');
       await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
-      await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
+      await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
       // Paint a different received page. Find/copy must read this page rather
       // than reusing the snapshot from before the remote paging request.
       const marker = 'PROGRAM-PAGE-' + ++index;
       output(app, '\x1b[2J\x1b[H' + marker + '\r\n'); await expect.poll(() => firstLine(frame)).toBe(marker);
       if (index === 2) await page.locator('#history-copy-all').click();
       else if (index === 3) await page.locator('#history-find-next').click();
-      else if (index === 4) { await frame.locator('.xterm-helper-textarea').press('Control+f'); await expect(page.locator('#history-query')).toBeFocused(); }
+      else if (index === 4) {
+        await frame.locator('.xterm-helper-textarea').press('Control+f'); await expect(page.locator('#history-query')).toBeFocused();
+        await page.locator('#history-query').press('Enter');
+      }
       else {
         await page.locator('#history-query').click();
         await expect(page.locator('#history-query')).toBeFocused();
@@ -86,7 +89,8 @@ test('copy and download capture the current page while program and local paging 
     await frame.locator('#terminal').dispatchEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true });
     await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
     await expect(page.locator('#history-tools')).toBeVisible(); await expect(page.locator('#history-query')).toHaveValue('LIVE');
-    await frame.locator('.xterm-helper-textarea').press('x'); expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~', 'x']);
     await frame.locator('#history-program').click(); await frame.locator('#history-up').click();
     await expect(frame.locator('#history-archive')).toContainText('LOCAL-HISTORY');
     await expect(page.locator('#history-tools')).toBeVisible(); await page.locator('#history-query').fill('LOCAL');

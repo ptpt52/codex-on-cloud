@@ -305,7 +305,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (manual.open) return;
     if (event.key === 'Escape' && toolsOpen && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault(); event.stopImmediatePropagation(); closeTools(); toggle.focus({ preventScroll: true });
-    } else if (inputPaused && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
+    } else if ((inputPaused || toolsOpen) && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
       event.preventDefault(); event.stopImmediatePropagation(); openTools(true);
     }
   };
