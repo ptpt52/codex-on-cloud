@@ -2,6 +2,40 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { login, open, choose, discard } from './forward-support.mjs';
 
+test('Web and HTTPS port presets work in both directions, preserve manual ports on edit and stay out of serial rules', async ({ page }) => {
+  const app = await fixture({ rfb: true, forwardPorts: '*' });
+  try {
+    await login(page, app); await open(page);
+    for (const [direction, port] of [['forward', '80'], ['reverse', '443']]) {
+      const name = direction === 'forward' ? 'Web 服务' : 'HTTPS 服务';
+      await page.locator('#forward-rule-add').click(); await page.locator('#forward-rule-name').fill(name);
+      await page.locator('#forward-direction').selectOption(direction);
+      const local = await page.locator('#forward-local').inputValue();
+      await page.locator('#forward-port-preset').selectOption(port);
+      await expect(page.locator('#forward-target')).toHaveValue(port); await expect(page.locator('#forward-local')).toHaveValue(local);
+      await expect(page.locator('#forward-rule-preview')).toContainText('127.0.0.1:' + port);
+      if (direction === 'reverse') await expect(page.locator('#forward-protocol')).toHaveValue('tcp');
+      await page.locator('#forward-create').click(); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
+      const row = page.locator('#forward-agent-rules article').filter({ hasText: name });
+      await row.getByRole('button', { name: '编辑规则', exact: true }).click();
+      await expect(page.locator('#forward-port-preset')).toHaveValue(port); await expect(page.locator('#forward-target')).toHaveValue(port);
+      await page.locator('#forward-port-preset').selectOption(''); await expect(page.locator('#forward-target')).toBeFocused();
+      const custom = direction === 'forward' ? '8080' : '8443';
+      await page.locator('#forward-target').fill(custom); await expect(page.locator('#forward-port-preset')).toHaveValue('');
+      await page.locator('#forward-create').click(); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
+      await row.getByRole('button', { name: '编辑规则', exact: true }).click();
+      await expect(page.locator('#forward-target')).toHaveValue(custom); await expect(page.locator('#forward-port-preset')).toHaveValue('');
+      if (direction === 'reverse') {
+        await page.locator('#forward-protocol').selectOption('serial');
+        await expect(page.locator('#forward-port-preset')).toBeHidden(); await expect(page.locator('#forward-port-preset')).toBeDisabled();
+        await page.locator('#forward-protocol').selectOption('tcp'); await expect(page.locator('#forward-target')).toHaveValue(custom);
+      }
+      await discard(page);
+    }
+    expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 test('daily actions stay in the first viewport while installation and advanced information are collapsed', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {

@@ -341,7 +341,7 @@
       </div>
       <label for="forward-local"><span id="forward-local-label">助手电脑监听端口</span><input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
       <label for="forward-host"><span id="forward-target-label">目标 IP（节点侧）</span><input id="forward-host" type="text" value="127.0.0.1" maxlength="64" placeholder="192.168.1.10 或 IPv6" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="forward-target-note" required></label>
-      <label for="forward-target">目标端口<input id="forward-target" type="number" min="1" max="65535" value="22" required></label>
+      <div id="forward-target-fields" class="forward-target-fields"><label for="forward-target">目标端口</label><div class="forward-target-inputs"><input id="forward-target" type="number" min="1" max="65535" value="22" required><select id="forward-port-preset" aria-label="目标端口预设"><option value="">自定义端口</option><option value="80">Web（HTTP，80）</option><option value="443">HTTPS（443）</option></select></div></div>
     <fieldset class="forward-wide" id="forward-serial-fields" hidden disabled>
       <legend>助手电脑上的串口</legend>
       <label id="forward-serial-choice-label" for="forward-serial-choice" hidden>从助手串口列表选择<select id="forward-serial-choice"><option value="">也可在下方手动填写</option></select></label>

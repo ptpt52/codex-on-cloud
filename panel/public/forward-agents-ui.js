@@ -172,7 +172,8 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   function renderDirection() {
     const reverse = $('forward-direction').value === 'reverse', serial = reverse && $('forward-protocol').value === 'serial';
     $('forward-device-fields').hidden = !reverse; $('forward-serial-fields').hidden = !serial; $('forward-serial-fields').disabled = !serial || busy(); $('forward-serial-choice-label').hidden = !serial;
-    for (const id of ['forward-host', 'forward-target']) { $(id).closest('label').hidden = serial; $(id).disabled = serial || busy(); }
+    $('forward-host').closest('label').hidden = serial; $('forward-target-fields').hidden = serial;
+    for (const id of ['forward-host', 'forward-target', 'forward-port-preset']) $(id).disabled = serial || busy();
     $('forward-local-label').textContent = reverse ? '节点主机监听端口' : '助手电脑监听端口';
     $('forward-target-label').textContent = reverse ? '目标 IP（助手侧）' : '目标 IP（节点侧）';
     $('forward-target-note').textContent = serial ? '在节点主机连接监听端口，访问该助手电脑上的串口；客户端接入后才打开串口。' : reverse ? '在节点主机连接监听端口，访问助手电脑可达的目标 IP。目标填写 127.0.0.1 时指助手电脑自身。' : '在助手电脑连接监听端口，访问节点主机可达的目标 IP。目标填写 127.0.0.1 时指节点主机自身。';
@@ -195,6 +196,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-form').reset(); $('forward-rule-name').value = rule?.name || ''; $('forward-rule-enabled').checked = rule ? rule.enabled : true;
     $('forward-direction').value = c.direction === 'reverse' ? 'reverse' : 'forward'; $('forward-protocol').value = c.protocol || 'ssh';
     $('forward-local').value = c.localPort || 2222; $('forward-host').value = c.targetHost || '127.0.0.1'; $('forward-target').value = c.targetPort || 22;
+    syncPortPreset();
     $('forward-server-ip').value = edit.serverHint;
     $('forward-helper-ip').value = rule ? c.hints?.browser || '' : hints().browser || '';
     const serial = c.serial || { path: '', baud: 115200, dataBits: 8, parity: 'none', stopBits: 1, dtr: false, rts: false };
@@ -224,6 +226,15 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   editor.addEventListener('close', () => { edit = null; $('forward-form').reset(); $('forward-rule-error').textContent = ''; });
   $('forward-direction').addEventListener('change', () => { if ($('forward-local').value === '2222' && $('forward-direction').value === 'reverse') $('forward-local').value = '22001'; else if ($('forward-local').value === '22001' && $('forward-direction').value !== 'reverse') $('forward-local').value = '2222'; renderDirection(); });
   $('forward-protocol').addEventListener('change', renderDirection);
+  function syncPortPreset() { $('forward-port-preset').value = ['80', '443'].includes($('forward-target').value) ? $('forward-target').value : ''; }
+  $('forward-target').addEventListener('input', syncPortPreset);
+  $('forward-port-preset').addEventListener('change', () => {
+    if ($('forward-port-preset').value) {
+      $('forward-target').value = $('forward-port-preset').value;
+      if ($('forward-direction').value === 'reverse') $('forward-protocol').value = 'tcp';
+    } else { $('forward-target').focus(); $('forward-target').select(); }
+    renderDirection();
+  });
   $('forward-serial-choice').addEventListener('change', () => { if ($('forward-serial-choice').value) $('forward-serial-path').value = $('forward-serial-choice').value; });
   $('forward-serial-path').addEventListener('input', () => { $('forward-serial-choice').value = selected()?.inventory?.serialPorts.includes($('forward-serial-path').value) ? $('forward-serial-path').value : ''; });
   function serialOptions() {
