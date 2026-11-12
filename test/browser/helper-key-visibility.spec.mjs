@@ -3,6 +3,35 @@ import { fixture } from '../fixture.mjs';
 import { login, open, choose } from './forward-support.mjs';
 
 const guestPassword = 'test-only-helper-key-visitor';
+test('late key copy failures never select a different helper key or replace a newer copy result', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app); await open(page);
+    await page.evaluate(() => {
+      window.keyCopies = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText() { return new Promise((resolve, reject) => window.keyCopies.push({ resolve, reject })); } } });
+    });
+    await page.locator('#forward-agent-key-copy').click(); await choose(page, 2);
+    await page.evaluate(() => window.keyCopies[0].reject(Error('synthetic stale key copy failure')));
+    await expect(page.locator('#forward-agent-status')).not.toContainText('手动复制');
+    await expect(page.locator('#forward-agent-key')).not.toBeFocused();
+    await page.locator('#forward-agent-key-copy').click(); await choose(page, 1); await choose(page, 2);
+    await page.evaluate(() => window.keyCopies[1].reject(Error('synthetic replaced key copy failure')));
+    await expect(page.locator('#forward-agent-status')).not.toContainText('手动复制');
+    await page.locator('#forward-agent-key-copy').click(); await page.locator('#forward-agent-key-copy').click();
+    await page.evaluate(() => window.keyCopies[3].resolve());
+    await expect(page.locator('#forward-agent-status')).toContainText('key 已复制');
+    await page.evaluate(() => window.keyCopies[2].reject(Error('synthetic older key copy failure')));
+    await expect(page.locator('#forward-agent-status')).toContainText('key 已复制');
+    await page.locator('#forward-agent-key-copy').click();
+    await page.evaluate(() => window.keyCopies[4].reject(Error('synthetic current key copy failure')));
+    await expect(page.locator('#forward-agent-status')).toContainText('手动复制已选中的 key');
+    await expect(page.locator('#forward-agent-key')).toBeFocused();
+    expect(await page.locator('#forward-agent-key').evaluate(input => input.selectionStart === 0 && input.selectionEnd === input.value.length)).toBe(true);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 async function guestLogin(page, app) {
   await page.goto(app.config.origin + app.config.entryBasePath);
   await page.locator('#username').fill('visitor'); await page.locator('#password').fill(guestPassword); await page.locator('#login-button').click();

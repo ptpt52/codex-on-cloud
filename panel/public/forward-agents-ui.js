@@ -12,13 +12,13 @@ const node = (tag, text = '', className = '') => { const n = document.createElem
 export function createForwardAgentsUI({ api, allowed, canManage = () => true, visible, hints }) {
   const $ = id => document.getElementById(id), editor = $('forward-rule-dialog'), confirmation = $('forward-agent-confirm');
   let agents = [], selectedId = '', selectedSlot = 1, generation = 0, reading, pending, keyRequest, keyRevision = 0, policy = null, edit = null, confirming = null;
-  let inventorySignature = '', layoutFrame = 0, rowsAgent = '', permitted = false, managing = false, statusKnown = false;
+  let inventorySignature = '', layoutFrame = 0, rowsAgent = '', permitted = false, managing = false, statusKnown = false, keyCopyAttempt = null;
   const rows = new Map(), tabs = [];
   const live = () => allowed() && visible(), selected = () => agents.find(a => a.id === selectedId);
   const message = text => { $('forward-agent-status').textContent = text; };
   const currentRule = id => selected()?.rules.find(r => r.id === id);
   const busy = () => !!pending;
-  function clearKey() { keyRevision = 0; keyRequest?.abort(); keyRequest = null; $('forward-agent-key').value = ''; }
+  function clearKey() { keyCopyAttempt = null; keyRevision = 0; keyRequest?.abort(); keyRequest = null; $('forward-agent-key').value = ''; }
   function update() {
     if (!allowed() && permitted || permitted && managing !== !!canManage()) reset();
     permitted = !!allowed(); managing = !!canManage();
@@ -169,9 +169,11 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     await refresh();
   });
   $('forward-agent-key-copy').addEventListener('click', async () => {
-    const key = $('forward-agent-key').value, epoch = generation; if (!key || !live()) return;
-    try { await navigator.clipboard.writeText(key); if (epoch === generation && live() && key === $('forward-agent-key').value) message('key 已复制。请在对应电脑的助手窗口粘贴。'); }
-    catch { if (epoch === generation && live()) { $('forward-agent-key').focus(); $('forward-agent-key').select(); message('请手动复制已选中的 key。'); } }
+    const key = $('forward-agent-key').value, epoch = generation, agentId = selectedId; if (!key || !live()) return;
+    const attempt = keyCopyAttempt = {};
+    const current = () => epoch === generation && agentId === selectedId && keyCopyAttempt === attempt && live() && key === $('forward-agent-key').value;
+    try { await navigator.clipboard.writeText(key); if (current()) message('key 已复制。请在对应电脑的助手窗口粘贴。'); }
+    catch { if (current()) { $('forward-agent-key').focus(); $('forward-agent-key').select(); message('请手动复制已选中的 key。'); } }
   });
   $('forward-agent-inventory-refresh').addEventListener('click', async () => { const agent = selected(); if (agent && await mutate('inventory', { id: agent.id })) message('已请求刷新设备信息。'); });
   function renderDirection() {
