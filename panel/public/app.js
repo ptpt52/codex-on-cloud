@@ -296,7 +296,10 @@ function renderDisplayControls() {
   $('desktop-ime').checked = displayPreferences.desktopIme;
   $('mode-standby').disabled = !modeStandbyEnabled || modeChangeBusy() || !!confirmation;
   $('display-controls').setAttribute('aria-label', terminalMode() ? '网页终端显示控制' : '桌面显示控制');
-  $('browser-preferences-note').textContent = browserPreferences.persisted ? '显示偏好仅保存到当前浏览器，所有终端共用。' : '浏览器未能保存偏好；当前页面仍可使用，刷新后可能恢复默认。';
+  $('tools-display-title').textContent = terminalMode() ? '终端显示' : '画面显示';
+  const preferencesNote = browserPreferences.persisted ? '显示偏好仅存于当前浏览器，所有终端共用。' : '浏览器未能保存显示偏好，刷新后可能恢复默认。';
+  if ($('browser-preferences-note').textContent !== preferencesNote) $('browser-preferences-note').textContent = preferencesNote;
+  $('browser-preferences-note').dataset.saved = String(browserPreferences.persisted);
   for (const id of ['toggle-controls-button', 'toggle-input-button', 'fullscreen-button']) $(id).hidden = loggedIn && !owned;
   $('desktop-mode').hidden = $('terminal-mode').hidden = terminalOnly || loggedIn && !owned;
   $('desktop-mode').parentElement.hidden = terminalOnly || loggedIn && !owned;

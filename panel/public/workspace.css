@@ -80,26 +80,51 @@
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .panel-heading h2 { margin: 0; font-size: 16px; }
 .panel-heading button { min-width: 44px; min-height: 44px; }
-.tools-panel { inset: 116px 16px 42px auto; width: min(380px, calc(100vw - 32px)); }
-.tools-panel .desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.tools-panel .display-controls { display: flex; flex-direction: column; align-items: stretch; padding: 16px 0 0; margin-top: 16px; border: 0; border-top: 1px solid var(--line); background: none; gap: 18px; }
-.tools-panel .zoom-controls { display: flex; flex-wrap: wrap; flex: none; justify-content: flex-start; gap: 8px; }
-.tools-panel .view-actions { width: auto; display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
-.tools-panel .terminal-view-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-.tools-panel .terminal-view-controls label { width: 100%; }
-.tools-panel .terminal-view-controls select { flex: 1; max-width: 100%; }
-.tools-panel label:has(#terminal-mouse-reporting) { min-height: 44px; cursor: pointer; }
-.desktop-ime-option { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 12px; cursor: pointer; }
-#terminal-mouse-note { font-size: 12px; line-height: 1.5; }
-.terminal-target-controls, .terminal-font-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.terminal-target-controls label { flex: 1; }
+.tools-panel { inset: 116px 16px 42px auto; width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.tools-panel .tools-heading { flex: none; gap: 8px; margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.tools-heading > div { min-width: 0; flex: 1; }
+.tools-heading > button { flex: none; }
+.tools-panel .tools-help { display: block; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.tools-heading #browser-preferences-note { margin-top: 4px; font-size: 11px; }
+.tools-heading #browser-preferences-note[data-saved=false] { color: var(--warning); }
+.tools-body { flex: 1 1 auto; min-height: 0; padding: 0 16px 14px; overflow: auto; overscroll-behavior: contain; scroll-padding-block: 12px; }
+.tools-panel .tools-group { display: grid; gap: 10px; margin: 0; padding: 14px 0; }
+.tools-panel .tools-group + .tools-group { border-top: 1px solid var(--line); }
+.tools-group > h3 { margin: 0; color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.5; }
+.tools-panel .desktop-actions { gap: 8px; }
+.tools-panel .desktop-actions.tools-quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); }
+.tools-panel .view-button { min-height: 44px; min-width: 44px; padding: 8px; font-size: 12px; }
+.tools-panel .tools-quick-actions > button { min-width: 0; padding-inline: 4px; }
+.tools-panel .display-controls { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; justify-content: stretch; padding: 14px 0; margin: 0; border: 0; background: none; gap: 10px; }
+.tools-panel .zoom-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.tools-panel .zoom-controls > button { min-width: 0; padding-inline: 4px; }
+.tools-panel .zoom-adjustments { display: flex; grid-column: 1 / -1; align-items: center; gap: 6px; }
+.tools-field-caption { flex: 1; font-size: 12px; }
+.tools-panel .zoom-label { min-width: 60px; font-size: 13px; }
+.tools-panel .zoom-step { font-size: 18px; }
+.tools-panel .view-actions { display: flex; width: auto; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 10px; }
+.tools-inline-option > button { flex: none; }
+.tools-inline-option > .tools-help { flex: 1 1 120px; min-width: 0; }
+.tools-panel .terminal-view-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.tools-panel .terminal-view-controls label:not(.tools-check-option) { display: grid; width: 100%; align-items: start; gap: 6px; font-size: 12px; }
+.tools-panel .terminal-view-controls select, .tools-panel .pointer-options select, .tools-panel .workspace-layout-option select { width: 100%; min-width: 0; min-height: 44px; max-width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 14px; }
+.terminal-target-controls, .terminal-font-controls { display: flex; grid-column: 1 / -1; align-items: center; gap: 8px; min-width: 0; }
+.tools-panel .terminal-target-controls { align-items: flex-end; }
+.terminal-target-controls label { flex: 1; min-width: 0; }
 .terminal-target-controls > button { flex: none; }
-.terminal-font-controls > span { font-size: 12px; }
-.terminal-font-controls output { min-width: 36px; text-align: center; }
-.pointer-options { display: grid; gap: 12px; }
-.pointer-options label { display: grid; gap: 6px; font-size: 12px; }
-.pointer-options select { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 16px; }
-.pointer-options .muted { font-size: 12px; }
+.terminal-font-controls > span { flex: 1; font-size: 12px; }
+.terminal-font-controls output { min-width: 48px; text-align: center; font-size: 13px; }
+.tools-panel .tools-check-option { display: flex; grid-column: 1 / -1; align-items: flex-start; gap: 10px; min-height: 44px; margin: 0; cursor: pointer; font-size: 12px; white-space: normal; }
+.tools-check-option > input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
+.tools-check-option > span { flex: 1; min-width: 0; }
+.tools-check-option strong { display: block; font-size: 12px; font-weight: 500; line-height: 1.5; }
+.tools-check-option .tools-help { margin-top: 3px; }
+.pointer-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.pointer-options label { display: grid; min-width: 0; gap: 6px; font-size: 12px; }
+.pointer-options > p { grid-column: 1 / -1; }
+.tools-panel .workspace-layout-option { display: grid; gap: 6px; margin: 0; font-size: 12px; }
+.tools-panel .tools-access-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tools-access-actions > button { min-width: 0; }
 .input-dock.workspace-panel { inset: auto 16px calc(42px + var(--workspace-keyboard-inset, 0px)) auto; width: min(660px, calc(100vw - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 130px); display: flex; flex-direction: column; overflow: hidden; }
 .input-dock .panel-heading { flex: none; }
 .assistant-directions { display: flex; gap: 8px; margin-bottom: 12px; flex: none; }
@@ -149,7 +174,8 @@
   .desktop-header-actions { width: auto; gap: 4px; }
   .fullscreen-entry { display: none; }
   .workspace-panel { left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); width: auto; border-radius: 16px; padding: 12px; max-height: min(70dvh, calc(100dvh - 118px)); }
-  .tools-panel { top: auto; }
+  .tools-panel { top: auto; padding: 0; max-height: min(84dvh, calc(var(--workspace-visible-height, 100dvh) - 116px)); }
+  .tools-panel .terminal-view-controls select, .tools-panel .pointer-options select, .tools-panel .workspace-layout-option select { font-size: 16px; }
   .input-dock.workspace-panel, .clipboard-dialog { top: auto; left: 8px; right: 8px; bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--workspace-keyboard-inset, 0px)); width: auto; max-height: min(70dvh, calc(var(--workspace-visible-height, 100dvh) - 16px)); margin: 0; }
   .input-dock .terminal-destination { grid-template-columns: minmax(0, 1fr) 100px; }
   .input-dock .composer .primary { min-width: 76px; height: auto; min-height: 44px; align-self: stretch; }
@@ -169,6 +195,9 @@
   .terminal-session-button { min-width: 72px; padding-inline: 6px; }
 }
 @media (max-width: 360px) {
+  .tools-panel .pointer-options { grid-template-columns: minmax(0, 1fr); }
+  .tools-panel .tools-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tools-panel #terminal-button[hidden] ~ #tools-fullscreen-button { grid-column: 1 / -1; }
   .input-dock .keys { gap: 4px; }
   .input-dock .keys button { font-size: 11px; padding-inline: 4px; }
   .input-dock .keys .shortcuts-entry { min-width: 80px; }
@@ -284,6 +313,7 @@
 .sidebar-footer .workspace-footer { display: flex; flex-direction: column; gap: 4px; padding: 0 3px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .sidebar-footer .workspace-footer .status-dot { display: none; }
 .sidebar-layout .workspace-panel { left: calc(var(--workspace-sidebar-width) + 16px); right: auto; top: 16px; bottom: 16px; width: min(380px, calc(100vw - var(--workspace-sidebar-width) - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 32px); }
+.sidebar-layout .tools-panel { width: min(420px, calc(100vw - var(--workspace-sidebar-width) - 32px)); }
 .sidebar-layout .input-dock.workspace-panel { top: auto; bottom: calc(16px + var(--workspace-keyboard-inset, 0px)); width: min(660px, calc(100vw - var(--workspace-sidebar-width) - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 32px); }
 .sidebar-layout .desktop-card:fullscreen { border-radius: 0; }
 .sidebar-layout .desktop-card:fullscreen .workspace-panel { left: calc(var(--workspace-sidebar-width) + 8px); }

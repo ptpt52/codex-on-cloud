@@ -94,6 +94,9 @@ test('unavailable browser storage keeps controls usable and reports that prefere
   try {
     await setup(page, { denied: true }); await login(page, app); await openTools(page);
     await expect(page.locator('#browser-preferences-note')).toContainText('未能保存');
+    await page.locator('#access-settings-button').focus();
+    await expect(page.locator('#browser-preferences-note')).toBeInViewport();
+    await expect(page.locator('#close-controls-button')).toBeInViewport();
     await page.locator('#terminal-font-up').click(); await expect(page.locator('#terminal-font-label')).toHaveText(String(defaultFont(page) + 1));
     await page.locator('#terminal-mouse-reporting').check(); await expect(page.locator('#terminal-mouse-reporting')).toBeChecked();
     await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
