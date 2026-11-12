@@ -323,7 +323,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
         actions.append(copy, button('编辑规则', () => { const value = currentRule(rule.id); if (value) openEditor(value); }), toggle, remove);
         root.append(heading, detail, state, transport, actions, copyText); $('forward-agent-rules').append(root); row = { root, title, badge, detail, state, transport, toggle, copy, copyText }; rows.set(rule.id, row);
       }
-      row.copy.textContent = rule.config.direction === 'reverse' ? '复制 AI 提示词' : '复制连接信息';
+      const copyLabel = rule.config.direction === 'reverse' ? '复制 AI 提示词' : '复制连接信息'; if (row.copy.textContent !== copyLabel) row.copy.textContent = copyLabel;
       row.copyText.setAttribute('aria-label', rule.name + (rule.config.direction === 'reverse' ? '的 AI 提示词' : '的连接信息'));
       if (row.copyRevision !== rule.revision) { row.copyText.value = ''; row.copyText.hidden = true; }
       row.title.textContent = rule.name; row.root.setAttribute('aria-label', rule.name);
