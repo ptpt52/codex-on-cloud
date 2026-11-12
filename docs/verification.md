@@ -56,7 +56,7 @@ npm install --prefix /tmp/codex-worker-tools --no-save --ignore-scripts \
 WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
 ```
 
-`npm run test:rtc:nat` 需要 Linux 的 `iproute2`、`nftables`、固定 Go 和 Chrome，以及可用的 user / network namespace；缺少网络隔离条件时明确跳过，其他缺失依赖报错。`NAT_TEST_REQUIRED=1` 将缺少隔离条件也视为失败；CI 使用 `NAT_TEST_ROOT=1` 在 sudo 下只创建隔离网络，不修改主机网络。
+`npm run test:rtc:nat` 需要 Linux 的 `iproute2`、`nftables`、固定 Go 和 Playwright 对应的 Chromium（`npx playwright install chromium`），也可用 `CHROME_PATH` 指定自己的 Chrome。缺少网络隔离条件时明确跳过，其他缺失依赖报错。`NAT_TEST_REQUIRED=1` 将缺少隔离条件也视为失败；CI 使用 `NAT_TEST_ROOT=1` 在 sudo 下只创建隔离网络，不修改主机网络。浏览器路径在提权前解析并显式传入，不依赖 root 的缓存或系统浏览器版本。
 
 原生检查命令及依赖见[CI 说明](ci.md)。`test:native` 会操作目标桌面、发送测试文字并重载面板，只能在专用验收实例使用。
 

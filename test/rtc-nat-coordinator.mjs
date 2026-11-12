@@ -18,15 +18,17 @@ stun.on('message', (bytes, peer) => {
 stun.bind(3478, '13.0.0.1'); await once(stun, 'listening');
 function worker(pid, args, env = {}) {
   const child = spawn('nsenter', ['-t', pid, '-n', '--', ...args], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
-  children.push(child); let stderr = '', size = 0;
+  children.push(child); let stderr = '', size = 0, stage = 'startup';
   child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-16384); });
   const listeners = new Set(), lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
     size += Buffer.byteLength(line); if (size > 131072) { child.kill(); return; }
     if (!line.startsWith('{')) return;
-    const value = JSON.parse(line); for (const listener of listeners) listener(value);
+    const value = JSON.parse(line);
+    if (value.type === 'stage') { stage = value.stage; return; }
+    for (const listener of listeners) listener(value);
   });
-  return { child, listeners, write: record => child.stdin.write(JSON.stringify(record) + '\n'), error: () => stderr };
+  return { child, listeners, write: record => child.stdin.write(JSON.stringify(record) + '\n'), error: () => `[${stage}] ${stderr}` };
 }
 let server, client;
 try {
@@ -41,7 +43,7 @@ try {
   let offers = 0, answers = 0;
   const result = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(Error('NAT flow timeout: ' + server.error() + client.error())), 35000);
-    const fail = error => { clearTimeout(timer); reject(error); };
+    const fail = error => { clearTimeout(timer); reject(Error(`${error.message}; offers=${offers}, answers=${answers}; server ${server.error()}; client ${client.error()}`)); };
     client.listeners.add(value => {
       if (['offer', 'rtc_offer'].includes(value.type)) { offers++; server.write(value); }
       else if (value.type === 'done') { clearTimeout(timer); resolve(value); }

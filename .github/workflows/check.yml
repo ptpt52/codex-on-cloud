@@ -102,6 +102,7 @@ jobs:
         run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends caddy=2.6.2-6ubuntu0.24.04.3 coturn=4.6.1-1build4 iproute2 nftables
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm run test:selfhost:edge
       - run: npm run test:turn
       - name: Actual isolated Linux NAT with Chrome and Go helpers

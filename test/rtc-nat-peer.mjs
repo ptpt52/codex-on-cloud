@@ -9,14 +9,18 @@ const [role, mode] = process.argv.slice(2), emit = value => process.stdout.write
 const input = createInterface({ input: process.stdin }), token = 't'.repeat(43);
 const reflexiveOnly = sdp => sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || / typ srflx(?: |$)/.test(line)).join('\r\n');
 let peer, browser, ended = false;
-const timeout = setTimeout(() => { emit({ type: 'error', message: 'NAT peer timeout' }); process.exitCode = 1; input.close(); void peer?.destroy(); void browser?.close(); }, 30000);
+let stage = 'startup';
+const phase = value => { stage = value; emit({ type: 'stage', stage }); };
+const timeout = setTimeout(() => { emit({ type: 'error', message: `NAT peer timeout (${role}: ${stage})` }); process.exitCode = 1; input.close(); void peer?.destroy(); void browser?.close(); }, 30000);
 async function close() { if (ended) return; ended = true; clearTimeout(timeout); await peer?.destroy(); await browser?.close(); input.close(); }
 input.on('close', () => { void close(); });
 try {
   if (role === 'answer') {
+    phase('waiting-for-offer');
     input.on('line', line => { void (async () => {
       assert.ok(Buffer.byteLength(line) <= 49152); const record = JSON.parse(line);
       if (!['offer', 'rtc_offer'].includes(record.type)) return;
+      phase('answering');
       const address = rtcAddress(); assert.equal(address, process.env.NAT_TEST_SERVER_ADDRESS);
       const options = { address, stunUrl: 'stun:13.0.0.1:3478', valid: () => !ended, closed() {} };
       peer = mode === 'go' ? createForwardPeer({ ...options, id: record.id, authenticate: value => value === token,
@@ -28,14 +32,19 @@ try {
       const sdp = reflexiveOnly(typeof answer === 'string' ? answer : answer.sdp);
       assert.match(sdp, /11\.0\.0\.2 45000 typ srflx/);
       emit({ type: mode === 'go' ? 'rtc_answer' : 'answer', id: record.id, sdp });
+      phase('waiting-for-data');
     })().catch(error => { emit({ type: 'error', message: error.message }); void close(); }); });
     emit({ type: 'ready' });
   } else {
-    browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    phase('launching-browser');
+    browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, timeout: 15000, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    phase('creating-page');
     const page = await browser.newPage();
-    await page.exposeFunction('natSignal', emit);
+    page.on('pageerror', error => emit({ type: 'error', message: error.message }));
+    await page.exposeFunction('natSignal', value => value.type === 'stage' ? phase(value.stage) : emit(value));
     input.on('line', line => { const value = JSON.parse(line); if (value.type === 'answer') void page.evaluate(sdp => window.natPeer.setRemoteDescription({ type: 'answer', sdp }), value.sdp).catch(error => emit({ type: 'error', message: error.message })); });
     const result = await page.evaluate(async blocked => {
+      await window.natSignal({ type: 'stage', stage: 'creating-offer' });
       const pc = window.natPeer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:13.0.0.1:3478' }] });
       const channel = pc.createDataChannel('codex-files', { protocol: 'files-v1', ordered: true }); channel.binaryType = 'arraybuffer';
       let total = 0;
@@ -53,9 +62,11 @@ try {
         };
       });
       await pc.setLocalDescription(await pc.createOffer());
+      await window.natSignal({ type: 'stage', stage: 'gathering-candidates' });
       await new Promise(resolve => { if (pc.iceGatheringState === 'complete') resolve(); else { const timer = setTimeout(resolve, 2000); pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(timer); resolve(); } }; } });
       if (!pc.localDescription.sdp.includes('12.0.0.2 45100 typ srflx')) throw Error('Browser STUN mapping missing');
       await window.natSignal({ type: 'offer', sdp: pc.localDescription.sdp });
+      await window.natSignal({ type: 'stage', stage: 'waiting-for-data' });
       const result = await done;
       if (!blocked) {
         const rows = [...(await pc.getStats()).values()], pair = rows.find(row => row.type === 'candidate-pair' && row.nominated && row.state === 'succeeded');

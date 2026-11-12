@@ -5,7 +5,7 @@ import sys
 import time
 
 # Refuse direct execution: no host interface or firewall may be changed.
-if len(sys.argv) != 4 or str(os.stat('/proc/self/ns/net').st_ino) == sys.argv[3]:
+if len(sys.argv) != 5 or str(os.stat('/proc/self/ns/net').st_ino) == sys.argv[3]:
     raise RuntimeError('This test must run in a fresh isolated network namespace')
 
 def run(*args, input=None):
@@ -84,7 +84,7 @@ table inet filter {{
 ''')
         if os.environ.get('NAT_TEST_DEBUG') == '1':
             capture = subprocess.Popen(['nsenter', '-t', str(client_b), '-n', '--', 'tcpdump', '-ni', 'any', '-c', '120', '-l', 'udp and not port 53 and not port 5353'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        test_env = dict(os.environ, NAT_TEST_SERVER_ADDRESS='100.64.1.2' if mode == 'go' else '10.0.1.2')
+        test_env = dict(os.environ, NAT_TEST_SERVER_ADDRESS='100.64.1.2' if mode == 'go' else '10.0.1.2', CHROME_PATH=sys.argv[4])
         result = subprocess.run([sys.argv[1], 'test/rtc-nat-coordinator.mjs', mode,
                                  str(client_a), str(client_b), sys.argv[2]],
                                 timeout=60, check=True, env=test_env)
