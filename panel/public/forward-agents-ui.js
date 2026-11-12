@@ -3,6 +3,7 @@ import { rtcHints } from './rtc-hints.js';
 import { reverseForwardPrompt, FORWARD_PROMPT_LIMIT } from './forward-prompt.js';
 import { entryURL } from './entry-path.js';
 import { nodeIdentity } from './node-scope.js';
+import { FORWARD_TYPES, forwardRuleType, forwardRuleDefaults, forwardRuleName } from './forward-rule-form.js';
 const states = { active: '已生效', pending: '等待规则通道', connecting: '正在建立映射', recovering: '规则通道恢复中', disabled: '已停用', failed: '未生效', offline: '等待助手上线', starting: '正在下发' };
 const mask = prefix => Array.from({ length: 4 }, (_, i) => Math.max(0, Math.min(255, 256 - 2 ** Math.max(0, 8 - Math.max(0, prefix - i * 8))))).join('.');
 const endpoint = c => c.serial ? `${c.serial.path} @ ${c.serial.baud}` : `${c.targetHost.includes(':') ? '[' + c.targetHost + ']' : c.targetHost}:${c.targetPort}`;
@@ -33,6 +34,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-agent-overflow').disabled = !permitted || busy();
     for (const row of rows.values()) for (const button of row.root.querySelectorAll('button')) button.disabled = !permitted || busy();
     if (editor.open) {
+      refreshDraftDefaults();
       const stale = edit?.rule && currentRule(edit.rule.id)?.revision !== edit.rule.revision;
       $('forward-create').disabled = !permitted || busy() || !!stale || !policy;
       for (const control of editor.querySelectorAll('input,select')) control.disabled = busy();
@@ -174,9 +176,9 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   $('forward-agent-inventory-refresh').addEventListener('click', async () => { const agent = selected(); if (agent && await mutate('inventory', { id: agent.id })) message('已请求刷新设备信息。'); });
   function renderDirection() {
     const reverse = $('forward-direction').value === 'reverse', serial = reverse && $('forward-protocol').value === 'serial';
-    $('forward-device-fields').hidden = !reverse; $('forward-serial-fields').hidden = !serial; $('forward-serial-fields').disabled = !serial || busy(); $('forward-serial-choice-label').hidden = !serial;
-    $('forward-host').closest('label').hidden = serial; $('forward-target-fields').hidden = serial;
-    for (const id of ['forward-host', 'forward-target', 'forward-port-preset']) $(id).disabled = serial || busy();
+    $('forward-protocol').querySelector('option[value="serial"]').disabled = !reverse;
+    $('forward-serial-fields').hidden = !serial; $('forward-serial-fields').disabled = !serial || busy(); $('forward-serial-choice-label').hidden = !serial;
+    for (const id of ['forward-host', 'forward-target']) { $(id).closest('label').hidden = serial; $(id).disabled = serial || busy(); }
     $('forward-local-label').textContent = reverse ? '节点主机监听端口' : '助手电脑监听端口';
     $('forward-target-label').textContent = reverse ? '目标 IP（助手侧）' : '目标 IP（节点侧）';
     $('forward-target-note').textContent = serial ? '在节点主机连接监听端口，访问该助手电脑上的串口；客户端接入后才打开串口。' : reverse ? '在节点主机连接监听端口，访问助手电脑可达的目标 IP。目标填写 127.0.0.1 时指助手电脑自身。' : '在助手电脑连接监听端口，访问节点主机可达的目标 IP。目标填写 127.0.0.1 时指节点主机自身。';
@@ -195,11 +197,10 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   function openEditor(rule = null) {
     const agent = selected(); if (!agent || !live() || busy()) return;
     const c = rule?.config || {}, reverse = rule ? c.direction === 'reverse' : true;
-    edit = { agentId: agent.id, rule, serverHint: rule ? c.hints?.server || '' : hints().server || '' };
+    edit = { agentId: agent.id, rule, autoPort: !rule, autoName: !rule, serverHint: rule ? c.hints?.server || '' : hints().server || '' };
     $('forward-form').reset(); $('forward-rule-name').value = rule?.name || ''; $('forward-rule-enabled').checked = rule ? rule.enabled : true;
-    $('forward-direction').value = reverse ? 'reverse' : 'forward'; $('forward-protocol').value = c.protocol || 'ssh';
+    $('forward-direction').value = reverse ? 'reverse' : 'forward'; $('forward-protocol').value = rule ? forwardRuleType(c) : 'ssh';
     $('forward-local').value = c.localPort || (reverse ? 22001 : 2222); $('forward-host').value = c.targetHost || '127.0.0.1'; $('forward-target').value = c.targetPort || 22;
-    syncPortPreset();
     $('forward-server-ip').value = edit.serverHint;
     $('forward-helper-ip').value = rule ? c.hints?.browser || '' : hints().browser || '';
     const serial = c.serial || { path: '', baud: 115200, dataBits: 8, parity: 'none', stopBits: 1, dtr: false, rts: false };
@@ -207,12 +208,22 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-serial-dtr').checked = serial.dtr; $('forward-serial-rts').checked = serial.rts;
     serialOptions(); $('forward-rule-error').textContent = ''; $('forward-rule-title').textContent = agent.name + (rule ? ' · 编辑规则' : ' · 新增规则');
     $('forward-rule-advanced').open = false;
-    editor.showModal(); update(); edit.initial = draftValues(); $('forward-rule-name').focus();
+    editor.showModal(); update(); edit.initial = draftValues(); $('forward-rule-name').focus(); $('forward-rule-name').select();
+  }
+  function refreshDraftDefaults() {
+    if (!edit || edit.rule) return;
+    const pristine = edit.initial === draftValues(), next = forwardRuleDefaults(agents, edit.agentId, $('forward-direction').value, $('forward-protocol').value, policy || {});
+    if (edit.autoPort && $('forward-local').value !== String(next.localPort ?? '')) $('forward-local').value = next.localPort ?? '';
+    if (edit.autoName) {
+      const named = edit.autoPort ? next.name : forwardRuleName(agents, edit.agentId, $('forward-protocol').value, $('forward-local').value);
+      if ($('forward-rule-name').value !== named) $('forward-rule-name').value = named;
+    }
+    if (pristine) edit.initial = draftValues();
   }
   function draftValues() {
     const reverse = $('forward-direction').value === 'reverse', serial = reverse && $('forward-protocol').value === 'serial';
     const fields = ['rule-name', 'rule-enabled', 'direction', 'local', 'server-ip', 'helper-ip'];
-    if (reverse) fields.push('protocol');
+    fields.push('protocol');
     fields.push(...(serial ? ['serial-path', 'serial-baud', 'serial-bits', 'serial-parity', 'serial-stop', 'serial-dtr', 'serial-rts'] : ['host', 'target']));
     return JSON.stringify(fields.map(id => { const n = $('forward-' + id); return [id, n.type === 'checkbox' ? n.checked : n.value]; }));
   }
@@ -227,16 +238,16 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   $('forward-rule-close').addEventListener('click', () => closeEditor()); $('forward-rule-cancel').addEventListener('click', () => closeEditor());
   editor.addEventListener('cancel', event => { event.preventDefault(); closeEditor(); });
   editor.addEventListener('close', () => { edit = null; $('forward-form').reset(); $('forward-rule-error').textContent = ''; });
-  $('forward-direction').addEventListener('change', () => { if ($('forward-local').value === '2222' && $('forward-direction').value === 'reverse') $('forward-local').value = '22001'; else if ($('forward-local').value === '22001' && $('forward-direction').value !== 'reverse') $('forward-local').value = '2222'; renderDirection(); });
-  $('forward-protocol').addEventListener('change', renderDirection);
-  function syncPortPreset() { $('forward-port-preset').value = ['80', '443'].includes($('forward-target').value) ? $('forward-target').value : ''; }
-  $('forward-target').addEventListener('input', syncPortPreset);
-  $('forward-port-preset').addEventListener('change', () => {
-    if ($('forward-port-preset').value) {
-      $('forward-target').value = $('forward-port-preset').value;
-      if ($('forward-direction').value === 'reverse') $('forward-protocol').value = 'tcp';
-    } else { $('forward-target').focus(); $('forward-target').select(); }
-    renderDirection();
+  $('forward-rule-name').addEventListener('input', () => { if (edit) edit.autoName = false; });
+  $('forward-local').addEventListener('input', () => { if (edit) edit.autoPort = false; refreshDraftDefaults(); });
+  $('forward-direction').addEventListener('change', () => {
+    if ($('forward-direction').value === 'forward' && $('forward-protocol').value === 'serial') $('forward-protocol').value = 'tcp';
+    refreshDraftDefaults(); renderDirection();
+  });
+  $('forward-protocol').addEventListener('change', () => {
+    const port = FORWARD_TYPES[$('forward-protocol').value].port;
+    if (port) $('forward-target').value = port;
+    refreshDraftDefaults(); renderDirection();
   });
   $('forward-serial-choice').addEventListener('change', () => { if ($('forward-serial-choice').value) $('forward-serial-path').value = $('forward-serial-choice').value; });
   $('forward-serial-path').addEventListener('input', () => { $('forward-serial-choice').value = selected()?.inventory?.serialPorts.includes($('forward-serial-path').value) ? $('forward-serial-path').value : ''; });
@@ -252,13 +263,16 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     event.preventDefault(); if (!edit || !live() || busy()) return;
     if (edit.rule && currentRule(edit.rule.id)?.revision !== edit.rule.revision) { update(); return; }
     const reverse = $('forward-direction').value === 'reverse', serial = reverse && $('forward-protocol').value === 'serial';
-    let config = { localPort: Number($('forward-local').value) };
+    let config = { localPort: Number($('forward-local').value), protocol: $('forward-protocol').value };
     try {
       config.hints = rtcHints({ server: $('forward-server-ip').value.trim(), browser: $('forward-helper-ip').value.trim() });
-      if (reverse) Object.assign(config, { direction: 'reverse', protocol: $('forward-protocol').value, deviceName: $('forward-rule-name').value.trim() });
+      if (reverse) Object.assign(config, { direction: 'reverse', deviceName: $('forward-rule-name').value.trim() });
       if (serial) config.serial = { path: $('forward-serial-path').value.trim(), baud: Number($('forward-serial-baud').value), dataBits: Number($('forward-serial-bits').value), parity: $('forward-serial-parity').value, stopBits: Number($('forward-serial-stop').value), dtr: $('forward-serial-dtr').checked, rts: $('forward-serial-rts').checked };
       else Object.assign(config, { targetHost: $('forward-host').value.trim(), targetPort: Number($('forward-target').value) });
     } catch (error) { $('forward-rule-advanced').open = true; $('forward-rule-error').textContent = error.message; $('forward-rule-error').focus(); return; }
+    // A submitted draft is now explicit intent. Keep it intact if the reply is
+    // lost; a later list refresh must not turn it into a different new rule.
+    edit.autoPort = false; edit.autoName = false;
     const draft = edit, result = await mutate('rule', { agentId: edit.agentId, ...(edit.rule ? { id: edit.rule.id, revision: edit.rule.revision } : {}), name: $('forward-rule-name').value.trim(), enabled: $('forward-rule-enabled').checked, config });
     if (result && edit === draft) { closeEditor(true); message(!result.enabled ? '规则已保存，当前停用。' : selected()?.online ? '规则已保存，应用结果见规则状态。' : '规则已保存，等待助手接入后自动应用。'); }
     await refresh();

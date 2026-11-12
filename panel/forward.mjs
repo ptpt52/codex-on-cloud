@@ -136,7 +136,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   function list(visible = () => true, viewer) {
     if (typeof visible !== 'function') visible = () => true;
     refresh();
-    return { ports: ports(), allPorts: allPorts(), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
+    return { ports: ports(), allPorts: allPorts(), reservedPorts: [config.port, config.agentPort, config.fileAgentPort, config.tunnelMetricsPort].filter(Number.isInteger), limit: FORWARD_LIMITS.mappings, maxConnections: FORWARD_LIMITS.connections,
       mappings: [...mappings.values()].filter(visible).map(item => ({ id: item.id, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item),
         createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer, ...(item.authorization.helperId ? { helperId: item.authorization.helperId, ruleId: item.authorization.ruleId } : {}) },
         hints: { ...item.hints }, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections,

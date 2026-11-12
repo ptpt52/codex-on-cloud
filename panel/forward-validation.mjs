@@ -38,12 +38,12 @@ export function normalizeForwardRule(config, body, policy = true) {
   try { hints = rtcHints(body?.hints); } catch (error) { throw fail(400, error.message); }
   if (body && Object.hasOwn(body, 'hints')) { body = { ...body }; delete body.hints; }
   const reversed = body?.direction === 'reverse', serial = reversed && body.protocol === 'serial' ? serialConfig(body.serial) : null;
-  const fieldsValid = serial ? Object.keys(body).sort().join(',') === 'deviceName,direction,localPort,protocol,serial' : body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
+  const fieldsValid = serial ? Object.keys(body).sort().join(',') === 'deviceName,direction,localPort,protocol,serial' : body && (reversed ? Object.keys(body).every(key => ['direction', 'localPort', 'targetHost', 'targetPort', 'deviceName', 'protocol'].includes(key)) : ['localPort,targetPort', 'localPort,targetHost,targetPort', 'localPort,protocol,targetPort', 'localPort,protocol,targetHost,targetPort'].includes(Object.keys(body).sort().join(',')));
   if (!fieldsValid || !Number.isInteger(body.localPort) || body.localPort < 1024 || body.localPort > 65535 || policy && reversed && blockedPort(body.localPort)) throw fail(400, '监听端口需在 1024–65535 之间，不能占用工作台管理端口');
   if (!serial && (!Number.isInteger(body.targetPort) || body.targetPort < 1 || body.targetPort > 65535 || policy && (!reversed && blockedPort(body.targetPort) || !allPorts() && !ports().includes(body.targetPort)))) throw fail(400, '目标端口需在 1–65535 之间且符合服务器端口限制，不能映射工作台管理端口');
   const targetHost = serial ? undefined : forwardTargetHost(body.targetHost);
   const deviceName = reversed ? forwardDeviceName(body.deviceName ?? '本地设备') : undefined;
-  if (reversed && (body.protocol !== undefined && !['ssh', 'telnet', 'tcp', 'serial'].includes(body.protocol))) throw fail(400, '映射协议无效');
+  if (body.protocol !== undefined && !['ssh', 'telnet', 'http', 'https', 'tcp', ...(reversed ? ['serial'] : [])].includes(body.protocol)) throw fail(400, '映射协议无效');
   body = { ...body, ...(!serial ? { targetHost } : {}), ...(reversed ? { deviceName } : {}) };
   return { body, hints, reversed, serial, targetHost, deviceName };
 }

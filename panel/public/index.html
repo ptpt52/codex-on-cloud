@@ -337,11 +337,11 @@
       <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction" aria-describedby="forward-direction-note forward-target-note"><option value="reverse">节点主机访问助手侧网络/串口</option><option value="forward">助手电脑访问节点侧网络</option></select></label>
       <p id="forward-direction-note" class="muted forward-wide">节点主机：运行网页终端 / AI 的主机。助手电脑：运行下载助手的电脑。</p>
       <div id="forward-device-fields" class="forward-device-fields forward-wide">
-          <label for="forward-protocol">设备协议<select id="forward-protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="tcp">其他 TCP</option><option value="serial">串口</option></select></label>
+          <label for="forward-protocol">连接类型<select id="forward-protocol"><option value="ssh">SSH（默认 22）</option><option value="telnet">Telnet（默认 23）</option><option value="http">Web / HTTP（默认 80）</option><option value="https">HTTPS（默认 443）</option><option value="tcp">自定义 TCP</option><option value="serial">串口</option></select></label>
       </div>
       <label for="forward-local"><span id="forward-local-label">节点主机监听端口</span><input id="forward-local" type="number" min="1024" max="65535" value="22001" required></label>
       <label for="forward-host"><span id="forward-target-label">目标 IP（助手侧）</span><input id="forward-host" type="text" value="127.0.0.1" maxlength="64" placeholder="192.168.1.10 或 IPv6" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="forward-target-note" required></label>
-      <div id="forward-target-fields" class="forward-target-fields"><label for="forward-target">目标端口</label><div class="forward-target-inputs"><input id="forward-target" type="number" min="1" max="65535" value="22" required><select id="forward-port-preset" aria-label="目标端口预设"><option value="">自定义端口</option><option value="80">Web（HTTP，80）</option><option value="443">HTTPS（443）</option></select></div></div>
+      <label for="forward-target">目标端口<input id="forward-target" type="number" min="1" max="65535" value="22" required></label>
     <fieldset class="forward-wide" id="forward-serial-fields" hidden disabled>
       <legend>助手电脑上的串口</legend>
       <label id="forward-serial-choice-label" for="forward-serial-choice" hidden>从助手串口列表选择<select id="forward-serial-choice"><option value="">也可在下方手动填写</option></select></label>

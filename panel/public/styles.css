@@ -202,6 +202,5 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 #forward-dialog,#forward-rule-dialog{max-height:min(90dvh,calc(var(--workspace-visible-height,100dvh) - 24px))}
 #forward-agent-overflow{font-size:16px}
 .forward-copy-text{box-sizing:border-box;width:100%;min-height:160px;max-height:320px;margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:12px/1.6 ui-monospace,Consolas,monospace;resize:vertical}
-.forward-target-fields{flex:1;min-width:230px;font-size:12px}.forward-target-fields>label{display:block}.forward-target-inputs{display:flex;gap:6px}.forward-target-inputs input{width:80px;min-width:65px;flex:1}.forward-target-inputs select{width:auto;min-width:0;flex:2}@media(max-width:700px){.forward-target-fields{flex-basis:100%}}
 .forward-connection-badge[data-online=true],.forward-rule-state[data-state=active]{color:#116b3c}
 @media(prefers-color-scheme:dark){.forward-connection-badge[data-online=true],.forward-rule-state[data-state=active]{color:var(--success)}}

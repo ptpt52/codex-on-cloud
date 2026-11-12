@@ -32,10 +32,10 @@ export function reverseForwardPrompt(rule, agent, { statusKnown = true, nodeURL 
     if (c.protocol === 'ssh') lines.push('目标协议：SSH。请先确认 SSH 用户名，并校验目标设备的主机指纹；不要关闭主机指纹检查。',
       '连接示例（在节点主机执行，先将 USER 替换为目标设备用户名）：ssh -o HostKeyAlias=codex-cloud-' + rule.id + ' -p ' + c.localPort + ' USER@127.0.0.1');
     else if (c.protocol === 'telnet') lines.push('目标协议：Telnet。连接示例（在节点主机执行）：telnet 127.0.0.1 ' + c.localPort);
-    else if (c.targetPort === 443) lines.push('常见用途为 HTTPS，请先确认目标服务的实际协议和证书域名。映射仅透传 TCP，不终止 TLS。',
+    else if (c.protocol === 'https' || c.protocol !== 'http' && c.targetPort === 443) lines.push(c.protocol === 'https' ? '目标协议：HTTPS，请先确认服务证书域名。映射仅透传 TCP，不终止 TLS。' : '常见用途为 HTTPS，请先确认目标服务的实际协议和证书域名。映射仅透传 TCP，不终止 TLS。',
       '若为 HTTPS，将 SERVICE_HOST 替换为证书域名，保留 SNI、Host 和证书校验；在节点主机执行：',
-      `curl --connect-to 'SERVICE_HOST:443:127.0.0.1:${c.localPort}' 'https://SERVICE_HOST/'`);
-    else if (c.targetPort === 80) lines.push('常见用途为 Web / HTTP，请先确认目标服务的实际协议。若为 HTTP，在节点主机执行：curl http://' + local + '/');
+      `curl --connect-to 'SERVICE_HOST:${c.targetPort}:127.0.0.1:${c.localPort}' 'https://SERVICE_HOST${c.targetPort === 443 ? '' : ':' + c.targetPort}/'`);
+    else if (c.protocol === 'http' || c.targetPort === 80) lines.push((c.protocol === 'http' ? '目标协议：HTTP。在节点主机执行：curl http://' : '常见用途为 Web / HTTP，请先确认目标服务的实际协议。若为 HTTP，在节点主机执行：curl http://') + local + '/');
     else lines.push('目标为 TCP 服务；请先确认应用协议，再选择对应客户端，连接节点主机的 ' + local + '。');
   }
   lines.push('', '使用要点：',

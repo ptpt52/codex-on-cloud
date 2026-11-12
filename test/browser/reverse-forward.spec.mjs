@@ -9,7 +9,7 @@ test('reverse Web prompts explain the scoped topology, fall back to selectable t
     const key = await page.locator('#forward-agent-key').inputValue();
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText() { throw Error('synthetic clipboard denied'); } } }));
     await page.locator('#forward-rule-add').click(); await page.locator('#forward-rule-name').fill('助手 Web 服务');
-    await page.locator('#forward-host').fill('192.168.50.3'); await page.locator('#forward-port-preset').selectOption('443');
+    await page.locator('#forward-host').fill('192.168.50.3'); await page.locator('#forward-protocol').selectOption('https');
     await page.locator('#forward-create').click(); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
     await page.getByRole('button', { name: '复制 AI 提示词', exact: true }).click();
     const text = page.locator('.forward-copy-text'); await expect(text).toBeVisible(); await expect(text).toBeFocused();

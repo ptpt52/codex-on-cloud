@@ -40,6 +40,14 @@ test('serial prompts describe raw bytes, parameters and physical device on the h
   assert.match(text, /nc 127\.0\.0\.1 22001/); assert.ok(!text.includes('undefined'));
 });
 
+test('explicit Web service types survive nonstandard ports and keep the HTTPS authority and mapped listener distinct', () => {
+  const https = reverseForwardPrompt(rule({ protocol: 'https', targetPort: 8443 }), agent);
+  assert.match(https, /目标协议：HTTPS/);
+  assert.ok(https.includes("--connect-to 'SERVICE_HOST:8443:127.0.0.1:22001' 'https://SERVICE_HOST:8443/'"));
+  const http = reverseForwardPrompt(rule({ protocol: 'http', targetPort: 443 }), agent);
+  assert.match(http, /目标协议：HTTP/); assert.match(http, /curl http:\/\/127\.0\.0\.1:22001\//); assert.ok(!http.includes('--connect-to'));
+});
+
 test('offline, stale, disabled and error snapshots never claim an active mapping and generated text has a fixed bound', () => {
   assert.match(reverseForwardPrompt(rule(), { ...agent, online: false }), /助手离线；等待助手上线/);
   assert.match(reverseForwardPrompt(rule(), agent, { statusKnown: false }), /助手状态未确认；映射状态未确认/);

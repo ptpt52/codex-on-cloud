@@ -95,8 +95,8 @@ try {
   await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.online), 'helpers did not connect');
   const firstPort = await freePort(), secondPort = await freePort(), thirdPort = await freePort();
   const target = { targetHost: '127.0.0.1', targetPort: echo.address().port };
-  const first = await post(app, 'rule', { agentId: a.id, name: 'A-SSH', enabled: true, config: { ...target, localPort: firstPort } });
-  let second = await post(app, 'rule', { agentId: a.id, name: 'A-设备', enabled: true, config: { direction: 'reverse', protocol: 'tcp', deviceName: '设备', ...target, localPort: secondPort } });
+  const first = await post(app, 'rule', { agentId: a.id, name: 'A-Web', enabled: true, config: { ...target, protocol: 'http', localPort: firstPort } });
+  let second = await post(app, 'rule', { agentId: a.id, name: 'A-设备', enabled: true, config: { direction: 'reverse', protocol: 'https', deviceName: '设备', ...target, localPort: secondPort } });
   await post(app, 'rule', { agentId: b.id, name: 'B-SSH', enabled: true, config: { ...target, localPort: thirdPort } });
   if (!tlsMode) {
     // Two rules in A share a peer. Only B competes for the negotiation slot.
@@ -220,7 +220,7 @@ try {
   assert.deepEqual(helperB.exit, { code: 0, signal: null });
   await until(async () => !(await listing(app)).agents[1].online, 'terminal hangup retained online status');
   await until(() => relayed.destroyed, 'terminal hangup retained an active mapping');
-  assert(helperA.output.includes('正在被控制台节点控制')); assert(helperA.output.includes('A-SSH')); assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
+  assert(helperA.output.includes('正在被控制台节点控制')); assert(helperA.output.includes('A-Web')); assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
   console.log('✓ two real helpers, '+(tlsMode?'TLS/WSS 8 MiB and certificate validation':'forward/reverse Pion paths')+', '+entryPath+', NIC inventory, live UI publication, isolated edits, preserved TCP during control reconnect, key revocation and saved rules restored over relay after panel restart');
 } catch (error) {
   for (const child of children) console.error(child.output.slice(-6000), child.errors.slice(-2000)); throw error;

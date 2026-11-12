@@ -85,7 +85,7 @@ func (r managedRule) valid() bool {
 	if c.Serial != nil {
 		return c.Direction == "reverse" && c.Protocol == "serial" && (c.Serial.valid("windows") || c.Serial.valid("darwin")) && c.TargetPort == 0 && c.TargetHost == ""
 	}
-	return (c.Protocol == "" || c.Protocol == "tcp" || c.Protocol == "ssh" || c.Protocol == "telnet") && net.ParseIP(c.TargetHost) != nil && c.TargetPort >= 1 && c.TargetPort <= 65535
+	return (c.Protocol == "" || c.Protocol == "tcp" || c.Protocol == "ssh" || c.Protocol == "telnet" || c.Protocol == "http" || c.Protocol == "https") && net.ParseIP(c.TargetHost) != nil && c.TargetPort >= 1 && c.TargetPort <= 65535
 }
 
 func (r managedRule) matches(ready readyMessage) bool {
@@ -101,7 +101,7 @@ func (r managedRule) matches(ready readyMessage) bool {
 	if c.Serial != nil {
 		return ready.Protocol == "serial"
 	}
-	// TCP runtime handshakes omit the descriptive ssh/telnet/tcp label.
+	// TCP runtime handshakes may omit the descriptive application protocol label.
 	if ready.Protocol != "" && ready.Protocol != "tcp" && ready.Protocol != c.Protocol {
 		return false
 	}

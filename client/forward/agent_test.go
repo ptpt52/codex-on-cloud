@@ -75,6 +75,22 @@ func TestManagedRuleCannotChangeTargetDuringItsMappingHandshake(t *testing.T) {
 	}
 }
 
+func TestWebRuleLabelsRetainTCPHandshakeTargetValidation(t *testing.T) {
+	for _, direction := range []string{"", "reverse"} {
+		for _, protocol := range []string{"http", "https"} {
+			rule := managedRule{ID: strings.Repeat("a", 32), MappingID: strings.Repeat("b", 32), Code: strings.Repeat("c", 43), Revision: 1, Name: "Web", Config: agentRuleConfig{Direction: direction, DeviceName: "Web", Protocol: protocol, LocalPort: 22001, TargetHost: "127.0.0.1", TargetPort: 8443}}
+			ready := readyMessage{ID: rule.MappingID, Direction: direction, DeviceName: "Web", LocalPort: 22001, TargetHost: "127.0.0.1", TargetPort: 8443}
+			if !rule.valid() || !rule.matches(ready) {
+				t.Fatal("Web rule must retain its TCP runtime handshake", direction, protocol)
+			}
+			ready.TargetPort = 443
+			if rule.matches(ready) {
+				t.Fatal("Web service label must not permit a changed target")
+			}
+		}
+	}
+}
+
 func TestAgentHandshakeUsesDedicatedProtocolAndPinsEveryNativeConnection(t *testing.T) {
 	for _, path := range []string{"/forward/agent", "/forward/helper", "/forward/resume", "/forward/data"} {
 		protocol := "codex-forward-v1"
