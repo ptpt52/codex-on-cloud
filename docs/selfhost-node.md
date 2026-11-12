@@ -46,11 +46,11 @@ sudo loginctl enable-linger YOUR_LINUX_USER
 npm run build:forward
 ```
 
-需要固定 Go 1.26.4。登录 `https://desk.example.com/node/node-a/`，在“端口映射”中核对四个平台下载，并下载实际使用的版本。节点在线、登录页可打开或终端可用，不等于助手已发布；入口改变后需要重新构建并下载。完整用法见[端口映射](forward.md#构建与全新替换)。
+需要固定 Go 1.26.4。选了 TCP / 串口助手时，本节为必做步骤；不使用助手时才可跳过。登录 `https://desk.example.com/node/node-a/`，在“端口映射”中核对四个平台下载，并下载实际使用的版本。节点在线、登录页可打开或终端可用，不等于助手已发布；入口改变后需要重新构建并下载。完整用法见[端口映射](forward.md#构建与全新替换)，完成标准见[共用检查清单](deployment-checklist.md)。
 
 ## 日常更新与状态
 
-接入后的日常更新直接运行 `npm run deploy`，省略 Cloudflare 参数。自建入口不会因保留旧 `tunnel_token` 而安装或启动 cloudflared；旧凭据仅保留供明确退出或恢复原入口时使用。
+接入后的日常更新运行 `npm run deploy`，助手代码同时更新时增加 `--build-forward`，均省略 Cloudflare 参数。自建入口不会因保留旧 `tunnel_token` 而安装或启动 cloudflared；旧凭据仅保留供明确退出或恢复原入口时使用。
 
 接入命令会区分“配置已完成、入口待就绪”和“入口已就绪”。`server:doctor` 除检查中心及本地服务，还通过完整节点路径检查任务和文件服务，并核对节点身份；只有进程处于 active 不再视为入口正常。
 

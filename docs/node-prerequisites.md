@@ -33,7 +33,7 @@ sudo apt-get install -y --no-install-recommends \
   git ca-certificates curl tar xz-utils python3 tmux util-linux
 ```
 
-克隆自己的仓库并进入根目录；仓库地址见 [README](../README.md)。后续工具安装命令都在该目录执行。已有 Node.js 22+ 且 `npm --version` 正常时，可继续使用，不必换成下文版本。
+克隆自己的仓库并进入根目录；仓库地址见 [README](../README.md)。构建助手需要 `.git` 中的提交标识，不能仅解压源码 ZIP 后跳过 Git 检查。后续工具安装命令都在该目录执行。已有 Node.js 22+ 且 `npm --version` 正常时，可继续使用，不必换成下文版本。
 
 ## 缺少工具时，安装固定版本
 
@@ -117,6 +117,6 @@ if command -v go >/dev/null 2>&1; then go version; fi
 
 `--build-forward` 适用于最终入口已经确定的部署；安装器会在更改服务前检查固定 Go 版本，`--check --build-forward` 也会检查。首次自建接入应先部署、再接入、最后构建，避免助手绑定 localhost 或旧节点地址。
 
-入口变更后重新构建并下载。构建不重启工作台服务；节点在线或终端可用不等于助手已发布。中心服务器安装由[独立安装脚本](selfhost-server.md#中心安装)引导固定运行时，不使用本页的节点安装命令。
+入口变更后重新构建并下载。构建不重启工作台服务；节点在线或终端可用不等于助手已发布。人工和 AI 的全部步骤见[部署检查清单](deployment-checklist.md)。中心服务器安装由[独立安装脚本](selfhost-server.md#中心安装)引导固定运行时，不使用本页的节点安装命令。
 
 [文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

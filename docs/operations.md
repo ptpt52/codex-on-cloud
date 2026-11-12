@@ -38,16 +38,25 @@ npm run deploy
 | 自建中心的节点 | `npm run deploy`，省略 Cloudflare 参数；不因遗留旧 Token 启动旧 CF 入口 |
 | Cloudflare Worker 网关 | [重新构建并发布原 Worker](gateway.md#更新与恢复)，保持账户、名称和 DO 身份 |
 | 自建中心应用 | [重复中心安装命令](selfhost-server.md#中心安装)，沿用原域名、证书模式和参数；失败按恢复记录处理 |
-| 仅 HTML / CSS / 浏览器脚本 | `npm run reload-ui`，然后保存草稿并手动刷新；无需重启服务或重新接入助手 |
+| 仅既有 HTML / CSS / 浏览器脚本内容 | `npm run reload-ui`，然后保存草稿并手动刷新；新增后端资源注册项时需更新 panel，见[前端更新](ui-updates.md) |
+| 桌面 actions 服务代码 | 单独安排 `systemctl --user restart codex-cloud-actions.service`；其持有的窗口与剪贴板会受影响，tmux 任务保留，不重启 desktop |
 | 仅仓库文档 | 无需部署服务；自行提供的中心 HTML 帮助页另按[帮助页更新](selfhost-server.md#自定义帮助页)加载 |
 
 前端更新要求后台能力配套，不能让旧后端获得新协议，见[版本配套](ui-updates.md)。
 
 ### 端口映射助手
 
-助手代码或入口变化后，在最终节点入口确定的情况下运行 `npm run build:forward`，再在网页核对四个平台下载。构建需固定 Go 1.26.4，单独构建不重启节点；浏览器页面更新不会自动替换用户已下载的 exe / ZIP。
+助手代码或入口变化后，在最终节点入口确定的情况下重新构建。需要同时更新后台和助手时使用：
 
-本版按全新安装替换，不迁移旧端口映射配置，操作见[全新替换](forward.md#构建与全新替换)。后台与 0.9.0 助手配套使用；CF 网关还需更新 Worker，支持助手固定到授权节点。持久规则和八个 key 的 secret 在私有 `data/panel/forward-agents.json`，最多 128 KiB，不加入 Git；备份按凭据配置保护。管理员可在对应助手页随时复制或重新生成 key，首次初始化自动生成，普通部署不更换。临时账号能否查看 key 由各助手页的开关分别控制，默认关闭；临时账号的刷新只重新读取当前 key。跨节点不复制此配置，助手与其授权节点绑定。
+```sh
+npm run deploy -- --build-forward
+```
+
+仅构建可用 `npm run build:forward`，不重启节点。构建需固定 Go 1.26.4；然后登录最终入口，按[四平台检查](deployment-checklist.md#3-需要助手时完成构建与发布)核对下载，并在助手电脑重新下载、启动。普通 `npm run deploy` 和浏览器刷新都不会替换用户已下载的 exe / ZIP。
+
+已有固定槽位 v2 配置普通升级保留八个 key 和规则，不执行清理或重新生成 key。只有明确废弃旧格式时才按[全新替换](forward.md#构建与全新替换)操作。后台与助手应使用相配构建，不能仅凭基础版本号 `0.9.0` 判断已更新；以下载项和程序的 `0.9.0+<提交标识>` 核对。CF 网关涉及助手路由能力更新时，还需更新 Worker。
+
+私有 `data/panel/forward-agents.json` 最多 128 KiB，含八个 key 的 secret 和规则；按凭据保护，不加入 Git，不跨节点复制。首次初始化生成 key，普通部署不更换；管理员需要撤销时才重新生成。临时账号的查看权限由各助手页分别控制，“刷新 key”只重新读取当前 key。
 
 ## 密码与配置
 

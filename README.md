@@ -24,7 +24,7 @@
 
 只用一台机器，可先选本机 / SSH 或独立域名；需要多个节点，再选 CF 网关或自建中心。Cloudflare 网关切换全局默认节点；自建中心为各节点保留固定路径，可分别打开。两种方案都不迁移任务或文件。
 
-完整组合与命令见[部署选择](docs/deployment.md)。中心服务器的安装命令与工作台节点不同；接入已有中心只需按[节点接入](docs/selfhost-node.md)操作。
+完整组合与命令见[部署选择](docs/deployment.md)，执行时按[部署检查清单](docs/deployment-checklist.md)逐项验收。中心服务器的安装命令与工作台节点不同；接入已有中心只需按[节点接入](docs/selfhost-node.md)操作。
 
 ## 快速安装一个节点
 
@@ -45,7 +45,7 @@ npm run deploy -- --mode desktop --install-deps --enable-linger
 npm run deploy -- --mode terminal --install-deps --enable-linger
 ```
 
-系统依赖已齐可省略 `--install-deps`；不需要无人登录运行时可省略 `--enable-linger`。仅这两项按需使用 sudo；它们不安装 Node、Go 或 Codex。
+系统依赖已齐可省略 `--install-deps`；不需要无人登录运行时可省略 `--enable-linger`。仅这两项按需使用 sudo；它们不安装 Node、Go 或 Codex。**以上命令不构建端口映射助手**：需要助手下载时，还须在最终入口确定后完成[助手构建与四平台验收](docs/deployment-checklist.md#3-需要助手时完成构建与发布)。
 
 访问 `http://localhost:36080`，在部署主机的私有文件 `secrets/credentials.txt` 查看账号密码。远程主机可先在自己的电脑运行：
 
@@ -72,5 +72,22 @@ ssh -N -L 36080:127.0.0.1:36080 user@your-server
 粘贴与 Enter 分开操作，终端粘贴使用 Ctrl+Shift+V。普通更新保留任务宿主；面板重启后，助手按已保存规则重建映射，旧 TCP 由客户端重连。仅前端资源更新可热发布，文档变更无需重启服务。
 
 已有部署不能通过重复安装在线转换工作区模式。工作台拥有部署用户的本机权限，不提供文件系统沙箱；同一域名下的多节点必须相互信任。真实凭据、工作区和运行状态不进入 Git。
+
+## 交给 AI 部署
+
+支持 `AGENTS.md` 的编码助手可读取仓库部署指引；其他 AI 请明确要求先读该文件和[共用检查清单](docs/deployment-checklist.md)。可复制下面的请求，填写自己的选择：
+
+```text
+请先阅读 AGENTS.md 和 docs/deployment-checklist.md，再部署本仓库。
+工作区（部署节点时）：desktop / terminal（选一项）
+入口：本机或 SSH / CF 单节点 / CF 网关 / 已有自建中心 / 新建自建中心（选一项）
+端口映射助手：需要 / 不需要（选一项）
+域名、节点 slug 等：填写自己的信息；已有部署优先读取现有配置。
+凭据通过私有文件或交互输入提供，不打印到聊天或日志。
+请按清单验证实际入口和所选功能；需要助手时必须构建并核对四个平台下载。
+未完成、无法验证或需要我操作的步骤请明确列出，不以进程启动成功代替部署完成。
+```
+
+人工执行使用同一份清单。仓库指引能减少遗漏，但不能保证所有 AI 都会自动读取，也不能代替目标设备和实际网络验收。
 
 [完整文档目录](docs/README.md) · [配置参考](docs/deployment-config.md) · [架构与安全边界](docs/architecture.md) · [测试与验证](docs/verification.md)

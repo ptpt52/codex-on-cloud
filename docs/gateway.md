@@ -63,6 +63,8 @@ npm run gateway:join -- \
 
 在选择页点击“检查并切换”。登记本身不会改变默认节点。进入工作台后，使用该机器原来的账号密码；网关密码与节点密码分别管理。
 
+需要 TCP / 串口助手时，在该节点完成 `gateway:join` 后执行 `npm run build:forward`，再从网关中的对应节点核对四个平台下载。不得继续使用绑定旧独立域名的下载包；完整完成标准见[共用检查清单](deployment-checklist.md#3-需要助手时完成构建与发布)。后续新节点也执行同一步骤。
+
 ## 4. 增加与切换节点
 
 节点 B 先独立部署到 `node-b.example.com`，选择桌面或纯终端模式，保存接入码，再执行：
@@ -81,7 +83,7 @@ npm run gateway:join -- \
 
 ## 更新与恢复
 
-- **更新节点**：运行 `npm run deploy`，省略 `--domain`；网关成员拒绝旧 DNS 发布／接管以及不兼容的 `--origin`。
+- **更新节点**：运行 `npm run deploy`，助手代码同时更新时增加 `--build-forward`，省略 `--domain`；网关成员拒绝旧 DNS 发布／接管以及不兼容的 `--origin`。
 - **更新网关**：重新 `gateway:build`，确认发布到原账户和 Worker，再执行上面的 deploy／secret 命令。构建不自动部署。
 - **常驻映射助手**：升级该功能时同步更新 Worker、节点后台和 0.9.0 助手。助手的控制、数据及恢复连接固定到签发 key 的节点；切换浏览器默认节点不改变助手归属，不需要 CF Token。旧 Worker 不支持固定路由时可能连接错误节点并被身份检查拒绝，不能只热更新网页。
 - **路由协议升级**：按上面的 `immediate` 参数发布，使 DO 路由逻辑同时更新；否则 Cloudflare 默认可延迟五分钟。新网关会再次核对固定节点身份，旧 DO 不认识新参数时返回 503，不转发到默认节点。原目录仍保留。见[Cloudflare 代码更新说明](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)。
