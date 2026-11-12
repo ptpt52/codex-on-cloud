@@ -173,8 +173,9 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     const reverse = $('forward-direction').value === 'reverse', serial = reverse && $('forward-protocol').value === 'serial';
     $('forward-device-fields').hidden = !reverse; $('forward-serial-fields').hidden = !serial; $('forward-serial-fields').disabled = !serial || busy(); $('forward-serial-choice-label').hidden = !serial;
     for (const id of ['forward-host', 'forward-target']) { $(id).closest('label').hidden = serial; $(id).disabled = serial || busy(); }
-    $('forward-local-label').textContent = reverse ? '服务器回环端口' : '助手本机端口';
-    $('forward-target-note').textContent = serial ? '串口位于该助手电脑上；实际客户端接入后才打开设备。' : reverse ? '目标从该助手电脑访问。服务器只监听 127.0.0.1，目标使用原服务的认证。' : '目标从节点服务器访问，127.0.0.1 指服务器自身。';
+    $('forward-local-label').textContent = reverse ? '节点主机监听端口' : '助手电脑监听端口';
+    $('forward-target-label').textContent = reverse ? '目标 IP（助手侧）' : '目标 IP（节点侧）';
+    $('forward-target-note').textContent = serial ? '在节点主机连接监听端口，访问该助手电脑上的串口；客户端接入后才打开串口。' : reverse ? '在节点主机连接监听端口，访问助手电脑可达的目标 IP。目标填写 127.0.0.1 时指助手电脑自身。' : '在助手电脑连接监听端口，访问节点主机可达的目标 IP。目标填写 127.0.0.1 时指节点主机自身。';
     $('forward-port-policy').textContent = policy?.allPorts ? 'TCP 目标端口：允许所有非管理端口。' : 'TCP 目标端口：' + (policy?.ports?.join('、') || '已禁用；串口不受此限制。');
     $('forward-port-policy').hidden = serial || !!policy?.allPorts;
     const saveLabel = busy() ? '正在保存…' : !statusKnown || !selected()?.online || !$('forward-rule-enabled').checked ? '保存规则' : '保存并应用';
@@ -183,7 +184,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-rule-effect').textContent = !$('forward-rule-enabled').checked ? '保存为停用规则，暂不建立映射。' : !statusKnown ? '助手状态未确认。规则会保存，助手接入后自动应用。' : !selected()?.online ? '助手当前离线。规则会保存，接入后自动应用。' : edit?.rule ? '保存将重建这一条规则，关闭它的现有连接；其他规则继续运行。' : '保存后自动下发给' + (selected()?.name || '助手') + '。';
     const local = $('forward-local').value || '监听端口', host = $('forward-host').value.trim() || '目标 IP', target = $('forward-target').value || '目标端口';
     const destination = serial ? ($('forward-serial-path').value.trim() || '选择或填写串口') + ' @ ' + $('forward-serial-baud').value : (host.includes(':') ? '[' + host + ']' : host) + ':' + target;
-    $('forward-rule-preview').textContent = (reverse ? '节点服务器' : (selected()?.name || '助手') + '本机') + ' 127.0.0.1:' + local + ' → ' + (reverse ? (selected()?.name || '助手') + '上的' : '节点服务器上的 ') + destination;
+    $('forward-rule-preview').textContent = (reverse ? '节点主机' : '助手电脑（' + (selected()?.name || '助手') + '）') + ' 127.0.0.1:' + local + ' → ' + (reverse ? '助手侧' + (serial ? '串口' : '网络') + '（' + (selected()?.name || '助手') + '） ' : '节点侧网络 ') + destination;
     const hintsLabel = $('forward-server-ip').value.trim() || $('forward-helper-ip').value.trim() ? '已设置' : '自动探测';
     if ($('forward-hints-summary').textContent !== hintsLabel) $('forward-hints-summary').textContent = hintsLabel;
   }
@@ -297,13 +298,13 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
           const value = currentRule(rule.id); if (!value || !live()) return;
           const c = value.config, address = '127.0.0.1:' + c.localPort;
           const command = c.serial ? 'nc 127.0.0.1 ' + c.localPort : c.protocol === 'ssh' ? 'ssh -o HostKeyAlias=codex-cloud-' + value.id + ' -p ' + c.localPort + ' USER@127.0.0.1' : c.protocol === 'telnet' ? 'telnet 127.0.0.1 ' + c.localPort : address;
-          const text = `${value.name}\n${c.direction === 'reverse' ? '服务器' : '助手本机'}入口：${address}\n目标：${c.direction === 'reverse' ? '助手电脑' : '节点服务器'} ${endpoint(c)}\n${command}`;
+          const text = `${value.name}\n连接位置：${c.direction === 'reverse' ? '节点主机（运行网页终端 / AI 的主机）' : '助手电脑（' + (selected()?.name || '助手') + '）'}\n连接地址：${address}\n目标：${c.direction === 'reverse' ? c.serial ? '助手侧串口' : '助手侧网络' : '节点侧网络'} ${endpoint(c)}\n${command}`;
           try { await navigator.clipboard.writeText(text); if (live()) message('连接信息已复制，不含 key 或密码。'); } catch { if (live()) message('无法使用剪贴板，请按规则中显示的回环端口连接。'); }
         }), button('编辑规则', () => { const value = currentRule(rule.id); if (value) openEditor(value); }), toggle, remove);
         root.append(heading, detail, state, transport, actions); $('forward-agent-rules').append(root); row = { root, title, badge, detail, state, transport, toggle }; rows.set(rule.id, row);
       }
       row.title.textContent = rule.name; row.root.setAttribute('aria-label', rule.name);
-      row.detail.textContent = (rule.config.direction === 'reverse' ? '节点服务器' : '助手本机') + ` 127.0.0.1:${rule.config.localPort} → ` + (rule.config.direction === 'reverse' ? agent.name + '上的 ' : '节点服务器上的 ') + endpoint(rule.config);
+      row.detail.textContent = (rule.config.direction === 'reverse' ? '节点主机' : '助手电脑（' + agent.name + '）') + ` 127.0.0.1:${rule.config.localPort} → ` + (rule.config.direction === 'reverse' ? '助手侧' + (rule.config.serial ? '串口' : '网络') + '（' + agent.name + '） ' : '节点侧网络 ') + endpoint(rule.config);
       const m = rule.mapping, p = m?.direct;
       row.badge.textContent = rule.error || m?.error ? '需要检查' : states[rule.state] || '等待状态'; row.badge.dataset.state = rule.error || m?.error ? 'warning' : rule.state;
       row.state.textContent = rule.error || (m?.error ? '最近连接错误：' + m.error : m?.state === 'active' ? m.targetStatus?.state === 'reachable' ? '目标最近连接成功' : '监听已就绪，目标尚未连接验证。' : ''); row.state.hidden = !row.state.textContent; row.state.dataset.error = String(!!(rule.error || m?.error));

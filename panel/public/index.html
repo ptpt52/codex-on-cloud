@@ -334,15 +334,16 @@
     <form id="forward-form" class="forward-form">
       <label class="forward-wide" for="forward-rule-name">规则名称<input id="forward-rule-name" maxlength="48" autocomplete="off" placeholder="例如：办公室 SSH、路由器串口" required></label>
       <label class="forward-wide forward-checkbox"><input id="forward-rule-enabled" type="checkbox" checked>启用规则</label>
-      <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction"><option value="forward">本机访问服务器网络</option><option value="reverse">服务器 / Codex 访问本地设备</option></select></label>
+      <label class="forward-wide" for="forward-direction">访问方向<select id="forward-direction" aria-describedby="forward-direction-note forward-target-note"><option value="forward">助手电脑访问节点侧网络</option><option value="reverse">节点主机访问助手侧网络/串口</option></select></label>
+      <p id="forward-direction-note" class="muted forward-wide">节点主机：运行网页终端 / AI 的主机。助手电脑：运行下载助手的电脑。</p>
       <div id="forward-device-fields" class="forward-device-fields forward-wide" hidden>
           <label for="forward-protocol">设备协议<select id="forward-protocol"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="tcp">其他 TCP</option><option value="serial">串口</option></select></label>
       </div>
-      <label for="forward-local"><span id="forward-local-label">本机端口</span><input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
-      <label for="forward-host">目标 IP<input id="forward-host" type="text" value="127.0.0.1" maxlength="64" placeholder="192.168.1.10 或 IPv6" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="forward-target-note" required></label>
+      <label for="forward-local"><span id="forward-local-label">助手电脑监听端口</span><input id="forward-local" type="number" min="1024" max="65535" value="2222" required></label>
+      <label for="forward-host"><span id="forward-target-label">目标 IP（节点侧）</span><input id="forward-host" type="text" value="127.0.0.1" maxlength="64" placeholder="192.168.1.10 或 IPv6" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="forward-target-note" required></label>
       <label for="forward-target">目标端口<input id="forward-target" type="number" min="1" max="65535" value="22" required></label>
     <fieldset class="forward-wide" id="forward-serial-fields" hidden disabled>
-      <legend>本地助手上的串口</legend>
+      <legend>助手电脑上的串口</legend>
       <label id="forward-serial-choice-label" for="forward-serial-choice" hidden>从助手串口列表选择<select id="forward-serial-choice"><option value="">也可在下方手动填写</option></select></label>
       <label for="forward-serial-path">设备名称<input id="forward-serial-path" type="text" maxlength="192" placeholder="COM3 或 /dev/cu.usbserial-xxx" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
       <label for="forward-serial-baud">波特率<select id="forward-serial-baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option><option>230400</option><option>460800</option><option>921600</option></select></label>
@@ -357,7 +358,7 @@
       <details id="forward-rule-advanced" class="forward-wide forward-disclosure">
         <summary>高级：直连地址提示 <span id="forward-hints-summary" class="muted"></span></summary>
         <div class="forward-advanced-fields">
-          <label for="forward-server-ip">服务器直连 IP（可选）<input id="forward-server-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空自动探测"></label>
+          <label for="forward-server-ip">节点主机直连 IP（可选）<input id="forward-server-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空自动探测"></label>
           <label for="forward-helper-ip">助手端 IP（可选）<input id="forward-helper-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空自动探测"></label>
           <p class="muted">新规则会预填当前连接的地址提示；可按实际助手电脑修改。清空后仅使用自动探测，不改变目标 IP 或已有规则。</p>
         </div>

@@ -16,9 +16,9 @@ test('daily actions stay in the first viewport while installation and advanced i
     await expect(page.locator('#forward-create')).toBeInViewport();
     await page.locator('#forward-direction').selectOption('reverse'); await page.locator('#forward-protocol').selectOption('serial');
     await expect(page.locator('#forward-create')).toBeInViewport();
-    await expect(page.locator('#forward-rule-preview')).toContainText('节点服务器 127.0.0.1:22001');
+    await expect(page.locator('#forward-rule-preview')).toContainText('节点主机 127.0.0.1:22001');
     await page.locator('#forward-serial-path').fill('COM8');
-    await expect(page.locator('#forward-rule-preview')).toContainText('助手1上的COM8 @ 115200');
+    await expect(page.locator('#forward-rule-preview')).toContainText('助手侧串口（助手1） COM8 @ 115200');
     await discard(page); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });

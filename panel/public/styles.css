@@ -169,7 +169,7 @@ a{color:var(--accent-ink)}.files-dialog{background:var(--surface)}
 .forward-rule-preview p{font-family:ui-monospace,Consolas,monospace;margin-top:4px}
 .forward-advanced-fields{display:grid;gap:10px;padding:4px 0 12px}
 .forward-advanced-fields label{display:block}
-.forward-advanced-fields p,#forward-target-note,#forward-port-policy{font-size:12px}
+.forward-advanced-fields p,#forward-direction-note,#forward-target-note,#forward-port-policy{font-size:12px}
 .forward-rule-footer{position:sticky;bottom:-25px;z-index:3;background:var(--surface);border-top:1px solid var(--line);padding:12px 0 2px;margin-top:8px}
 .forward-rule-footer>.muted{font-size:12px}
 .forward-rule-footer .confirmation-actions{margin-top:12px}
