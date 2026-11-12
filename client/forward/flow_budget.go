@@ -6,6 +6,8 @@ import (
 )
 
 const directPeerBytes = 512 * 1024
+const directReservedBytes = 128 * 1024
+const directSmallRecord = 256
 const directWindowLegacy = 4
 const directWindowMax = 16
 
@@ -20,21 +22,45 @@ type creditWaiter struct {
 	err     error
 }
 type flowBudget struct {
-	mu                sync.Mutex
-	used, limit, peak int
-	waiting           []*creditWaiter
-	closed            bool
+	mu                               sync.Mutex
+	used, bulk, limit, reserve, peak int
+	waiting                          []*creditWaiter
+	closed                           bool
 }
 
-func newFlowBudget() *flowBudget { return &flowBudget{limit: directPeerBytes} }
+func newFlowBudget() *flowBudget {
+	return &flowBudget{limit: directPeerBytes, reserve: directReservedBytes}
+}
+func (b *flowBudget) bulkBytes(size int) int {
+	if b.reserve > 0 && size <= directSmallRecord {
+		return 0
+	}
+	return size
+}
+func (b *flowBudget) fits(size int) bool {
+	return b.used+size <= b.limit && b.bulk+b.bulkBytes(size) <= b.limit-b.reserve
+}
+func (b *flowBudget) canOpen() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.closed && len(b.waiting) == 0 && b.fits(chunkSize)
+}
 func (b *flowBudget) grant() {
+	blocked := [2]bool{}
 	for index := 0; index < len(b.waiting); {
 		request := b.waiting[index]
-		if b.used+request.size > b.limit {
-			break
+		kind := 0
+		if b.bulkBytes(request.size) == 0 {
+			kind = 1
+		}
+		if blocked[kind] || !b.fits(request.size) {
+			blocked[kind] = true
+			index++
+			continue
 		}
 		b.waiting = append(b.waiting[:index], b.waiting[index+1:]...)
 		b.used += request.size
+		b.bulk += b.bulkBytes(request.size)
 		b.peak = max(b.peak, b.used)
 		request.granted = true
 		close(request.ready)
@@ -60,6 +86,7 @@ func (b *flowBudget) acquire(size int, done <-chan struct{}, deadline time.Time)
 		defer b.mu.Unlock()
 		if request.granted {
 			b.used -= size
+			b.bulk -= b.bulkBytes(size)
 			request.granted = false
 		} else {
 			for i, item := range b.waiting {
@@ -91,13 +118,14 @@ func (b *flowBudget) acquire(size int, done <-chan struct{}, deadline time.Time)
 		return failure("rtc_health_timeout")
 	}
 }
-func (b *flowBudget) release(size int) {
+func (b *flowBudget) release(size, bulk int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if size < 0 || size > b.used {
+	if size < 0 || size > b.used || bulk < 0 || bulk > size || bulk > b.bulk || size-bulk > b.used-b.bulk {
 		panic("invalid peer flow credit")
 	}
 	b.used -= size
+	b.bulk -= bulk
 	b.grant()
 }
 func (b *flowBudget) close() {

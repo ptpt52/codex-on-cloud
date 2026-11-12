@@ -160,6 +160,7 @@ type directSignal struct {
 	STUN         string `json:"stun"`
 	HintRevision string `json:"hintRevision"`
 	Window       int    `json:"window"`
+	Preflight    int    `json:"preflight"`
 	Hints        struct {
 		Server  string `json:"server"`
 		Browser string `json:"browser"`
@@ -172,23 +173,25 @@ type directSignal struct {
 	Reason    string `json:"reason"`
 }
 
-func directReady(data []byte, offered int) (int, bool) {
+func directReady(data []byte, offered, offeredPreflight int) (int, bool, bool) {
 	var record struct {
 		Type      string `json:"type"`
 		Window    int    `json:"window"`
 		PeerBytes int    `json:"peerWindowBytes"`
+		Preflight int    `json:"preflight"`
 	}
 	var fields map[string]json.RawMessage
 	if len(data) > 2048 || json.Unmarshal(data, &record) != nil || json.Unmarshal(data, &fields) != nil || record.Type != "ready" || fields["type"] == nil {
-		return 0, false
+		return 0, false, false
 	}
 	if len(fields) == 1 {
-		return directWindowLegacy, true
+		return directWindowLegacy, false, true
 	}
-	if len(fields) != 3 || fields["window"] == nil || fields["peerWindowBytes"] == nil || !validWindow(record.Window) || !validWindow(offered) || record.Window > offered || record.PeerBytes != directPeerBytes {
-		return 0, false
+	preflight := fields["preflight"] != nil
+	if len(fields) != 3 && !(len(fields) == 4 && preflight) || preflight && (record.Preflight != 1 || offeredPreflight != 1) || fields["window"] == nil || fields["peerWindowBytes"] == nil || !validWindow(record.Window) || !validWindow(offered) || record.Window > offered || record.PeerBytes != directPeerBytes {
+		return 0, false, false
 	}
-	return record.Window, true
+	return record.Window, preflight, true
 }
 
 type directPeer struct {
@@ -204,6 +207,7 @@ type directPeer struct {
 	opening          int
 	draining         bool
 	window           int
+	preflight        bool
 	writer           *directWriter
 }
 
@@ -248,7 +252,7 @@ func (m *directManager) accept(value directSignal) {
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
-		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision && m.config.Window == value.Window {
+		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision && m.config.Window == value.Window && m.config.Preflight == value.Preflight {
 			m.mu.Unlock()
 			return
 		}
@@ -498,6 +502,9 @@ func (m *directManager) negotiate() (reason string) {
 		record := map[string]any{"type": "auth", "id": id, "token": m.token}
 		if validWindow(config.Window) {
 			record["window"] = config.Window
+			if config.Preflight == 1 {
+				record["preflight"] = 1
+			}
 		}
 		bytes, _ := json.Marshal(record)
 		if healthWriter.SendText(string(bytes)) != nil {
@@ -524,7 +531,7 @@ func (m *directManager) negotiate() (reason string) {
 			}
 			return
 		}
-		window, valid := directReady(message.Data, config.Window)
+		window, preflight, valid := directReady(message.Data, config.Window, config.Preflight)
 		if !message.IsString || !valid {
 			p.close()
 			return
@@ -532,6 +539,7 @@ func (m *directManager) negotiate() (reason string) {
 		m.mu.Lock()
 		if m.peer == p && !p.ready {
 			p.window = window
+			p.preflight = preflight
 			p.ready = true
 		}
 		m.mu.Unlock()
@@ -609,6 +617,10 @@ func (m *directManager) negotiate() (reason string) {
 func (m *directManager) Open(ctx context.Context) *directChannel {
 	m.mu.Lock()
 	p := m.peer
+	if p != nil && p.writer != nil && !p.writer.budget.canOpen() {
+		m.mu.Unlock()
+		return nil
+	}
 	// Reserve before creating a DataChannel. Concurrent rules must neither
 	// exceed the shared peer's 24-stream budget nor race idle peer replacement.
 	if m.shared && p != nil && len(p.streams)+p.opening >= 24 {
@@ -643,7 +655,7 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 		m.mu.Unlock()
 		return nil
 	}
-	stream := newScheduledDirectChannel(dc, func() bool { return m.peerAlive(p) }, p.window, p.writer)
+	stream := newScheduledDirectChannel(dc, func() bool { return m.peerAlive(p) }, p.window, p.writer, p.preflight)
 	m.mu.Lock()
 	p.opening--
 	if stream == nil {
@@ -674,10 +686,32 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 	defer timer.Stop()
 	select {
 	case <-opened:
-		stream.SetReadDeadline(time.Now().Add(5 * time.Second))
-		return stream
+		if !p.preflight {
+			stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+			return stream
+		}
+		select {
+		case ready := <-stream.preflight:
+			if ready {
+				stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+				return stream
+			}
+			stream.Close()
+			return nil
+		case <-ctx.Done():
+		case <-stream.done:
+			stream.Close()
+			return nil
+		case <-timer.C:
+		}
 	case <-ctx.Done():
 	case <-stream.done:
+		// A negotiated preflight can decline and close before OnOpen's
+		// callback runs. No target was opened and the peer is still healthy.
+		if p.preflight {
+			stream.Close()
+			return nil
+		}
 	case <-timer.C:
 	}
 	stream.Close()

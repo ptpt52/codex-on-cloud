@@ -9,7 +9,7 @@ function raw(name = '', packets = []) { return { readyState:'open', bufferedAmou
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 test('expanded forwarding windows are negotiated bounds, preserve ACK validation, and return peer credit on close', async () => {
-  const budget = createFlowBudget(32768), a = raw(), b = raw(), left = forwardChannel(a, { window:16, budget }), right = forwardChannel(b, { window:16, budget });
+  const budget = createFlowBudget(32768,0), a = raw(), b = raw(), left = forwardChannel(a, { window:16, budget }), right = forwardChannel(b, { window:16, budget });
   let deliveredA = 0, deliveredB = 0;
   a.send = () => { deliveredA++; }; b.send = () => { deliveredB++; };
   for (let i=0;i<2;i++) left.send(Buffer.alloc(16384));
@@ -26,6 +26,40 @@ test('expanded forwarding windows are negotiated bounds, preserve ACK validation
     assert.equal(socket.readyState,1); channel.onMessage.emit(Buffer.from('excess')); assert.equal(socket.readyState,3);
   }
   assert.throws(()=>forwardChannel(raw(),{window:17}),/window/);
+});
+
+test('slow bulk flows cannot consume the small-message reserve or block new ready and interactive records', async () => {
+  const budget=createFlowBudget(),flows=[];
+  for(let n=0;n<4;n++) {const channel=raw(),socket=forwardChannel(channel,{window:8,budget});flows.push(socket);for(let i=0;i<8;i++)socket.send(Buffer.alloc(16384));}
+  assert.equal(budget.used,384*1024);assert.equal(budget.canOpen(),false);
+  const channel=raw(),socket=forwardChannel(channel,{window:8,budget}),packets=[];channel.send=value=>packets.push(value);
+  socket.send('{"type":"ready"}');socket.send(Buffer.from('ping'));await Promise.resolve();
+  assert.deepEqual(packets.map(value=>value.toString()),['{"type":"ready"}','ping']);
+  socket.terminate();for(const flow of flows)flow.terminate();assert.equal(budget.used,0);assert.equal(budget.canOpen(),true);
+  const owner=Symbol();assert.equal(budget.acquire(owner,384*1024),true);
+  for(let n=0;n<512;n++)assert.equal(budget.acquire(owner,256),true);
+  assert.equal(budget.used,512*1024);assert.equal(budget.acquire(owner,1),false);
+  budget.release(128*1024,0);budget.release(384*1024,384*1024);budget.close();
+});
+
+test('a stream resuming on small credit cannot jump ahead of an older bulk waiter when its next record is large', async () => {
+  const budget=createFlowBudget(65536,16384),owner=Symbol(),fill=48*1024-1024;
+  assert.equal(budget.acquire(owner,fill),true);
+  const packets=[],a=raw('older',packets),b=raw('newer',packets),older=forwardChannel(a,{budget}),newer=forwardChannel(b,{budget});
+  older.send(Buffer.alloc(16384));newer.send('{"type":"ready"}');newer.send(Buffer.alloc(1024));await Promise.resolve();
+  assert.deepEqual(packets.map(packet=>packet.name),['newer']);
+  budget.release(16384,16384);await Promise.resolve();
+  assert.deepEqual(packets.map(packet=>packet.name),['newer','older','newer']);
+  older.terminate();newer.terminate();budget.release(fill-16384,fill-16384);assert.equal(budget.used,0);
+});
+
+test('a sendable heartbeat and ACK bypass a larger blocked control head without reordering business data', async () => {
+  const packets=[],a=raw('control',packets),h=raw('health',packets),b=raw('ack',packets),writer=createRTCWriter({valid:()=>true});
+  const control=writer.channel(a,{control:true}),health=writer.channel(h,{control:true}),ack=writer.channel(b);
+  a.bufferedAmount=RTC_WRITE_LIMITS.native+RTC_WRITE_LIMITS.reserve-32;
+  control.send(Buffer.alloc(16384));health.send(Buffer.alloc(4));ack.send('{"type":"ack","id":1}');await turn();
+  assert.deepEqual(packets.map(packet=>packet.name),['health','ack']);
+  a.bufferedAmount=0;a.bufferedAmountLow.emit();await turn();assert.equal(packets.at(-1).name,'control');writer.close();
 });
 
 test('RTC scheduler withholds TCP callbacks until actual admission and flushes final ACKs before a graceful close', async () => {

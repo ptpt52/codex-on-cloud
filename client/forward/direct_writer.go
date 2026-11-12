@@ -224,6 +224,14 @@ func (w *directWriter) take() (*scheduledChannel, *directWrite) {
 		if len(group.queue) == 0 || group.closed && !group.queue[0].ack {
 			continue
 		}
+		request := group.queue[0]
+		limit := uint64(128 * 1024)
+		if request.priority {
+			limit += 65536
+		}
+		if request.ctx.Err() == nil && native+uint64(len(request.data)) > limit {
+			continue
+		}
 		if index < 0 || group.queue[0].priority {
 			index = i
 		}
@@ -236,13 +244,6 @@ func (w *directWriter) take() (*scheduledChannel, *directWrite) {
 	}
 	group := w.groups[index]
 	request := group.queue[0]
-	limit := uint64(128 * 1024)
-	if request.priority {
-		limit += 65536
-	}
-	if request.ctx.Err() == nil && native+uint64(len(request.data)) > limit {
-		return nil, nil
-	}
 	group.queue = group.queue[1:]
 	group.bytes -= len(request.data)
 	w.queued -= len(request.data)

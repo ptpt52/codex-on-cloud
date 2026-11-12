@@ -29,6 +29,7 @@ func waitBudget(t *testing.T, b *flowBudget, count int) {
 
 func TestPeerCreditFairnessCancellationAndBounds(t *testing.T) {
 	b := newFlowBudget()
+	b.reserve = 0
 	done := make(chan struct{})
 	if err := b.acquire(directPeerBytes, done, time.Time{}); err != nil {
 		t.Fatal(err)
@@ -38,17 +39,17 @@ func TestPeerCreditFairnessCancellationAndBounds(t *testing.T) {
 	waitBudget(t, b, 1)
 	go func() { second <- b.acquire(1, done, time.Time{}) }()
 	waitBudget(t, b, 2)
-	b.release(1)
+	b.release(1, 1)
 	select {
 	case <-second:
 		t.Fatal("new small stream jumped ahead of an older blocked stream")
 	default:
 	}
-	b.release(16383)
+	b.release(16383, 16383)
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
-	b.release(1)
+	b.release(1, 1)
 	if err := <-second; err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +64,12 @@ func TestPeerCreditFairnessCancellationAndBounds(t *testing.T) {
 		t.Fatal("closed stream waited for credit")
 	}
 	waitBudget(t, b, 0)
-	b.release(directPeerBytes)
+	b.release(directPeerBytes, directPeerBytes)
 	if b.used != 0 {
 		t.Fatal("credit leaked on cancellation")
 	}
 	if err := b.acquire(1, make(chan struct{}), time.Now().Add(-time.Second)); err == nil {
-		b.release(1)
+		b.release(1, 1)
 	}
 	if b.used != 0 {
 		t.Fatal("expired reservation leaked credit")
@@ -81,20 +82,117 @@ func TestPeerCreditFairnessCancellationAndBounds(t *testing.T) {
 
 func TestDirectWindowNegotiationRejectsUnknownFieldsAndUnagreedBounds(t *testing.T) {
 	for _, record := range []string{`{"type":"ready","window":8,"peerWindowBytes":524288}`, `{"type":"ready","window":16,"peerWindowBytes":524288}`} {
-		if window, ok := directReady([]byte(record), 16); !ok || window < 8 {
+		if window, _, ok := directReady([]byte(record), 16, 0); !ok || window < 8 {
 			t.Fatal("valid negotiation refused")
 		}
 	}
-	if window, ok := directReady([]byte(`{"type":"ready"}`), 0); !ok || window != 4 {
+	if window, _, ok := directReady([]byte(`{"type":"ready"}`), 0, 0); !ok || window != 4 {
 		t.Fatal("legacy peer lost its four-record bound")
 	}
 	for _, record := range []string{`{"TYPE":"ready"}`, `{"type":"ready","window":32,"peerWindowBytes":524288}`, `{"type":"ready","Window":8,"peerWindowBytes":524288}`, `{"type":"ready","window":8,"peerWindowBytes":1}`, `{"type":"ready","window":8,"peerWindowBytes":524288,"extra":1}`} {
-		if _, ok := directReady([]byte(record), 16); ok {
+		if _, _, ok := directReady([]byte(record), 16, 0); ok {
 			t.Fatal("accepted invalid negotiation:", record)
 		}
 	}
-	if _, ok := directReady([]byte(`{"type":"ready","window":16,"peerWindowBytes":524288}`), 8); ok {
+	if _, _, ok := directReady([]byte(`{"type":"ready","window":16,"peerWindowBytes":524288}`), 8, 0); ok {
 		t.Fatal("peer enlarged the offered window")
+	}
+}
+
+func TestSmallMessagesAndPreflightProgressWithBulkCreditExhausted(t *testing.T) {
+	b := newFlowBudget()
+	done := make(chan struct{})
+	if err := b.acquire(directPeerBytes-directReservedBytes, done, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if b.canOpen() {
+		t.Fatal("bulk-exhausted peer admitted another direct stream")
+	}
+	waiting := make(chan error, 1)
+	go func() { waiting <- b.acquire(chunkSize, done, time.Time{}) }()
+	waitBudget(t, b, 1)
+	if err := b.acquire(256, done, time.Now().Add(time.Second)); err != nil {
+		t.Fatal("small setup record blocked behind bulk:", err)
+	}
+	b.release(256, 0)
+	close(done)
+	if err := <-waiting; err == nil {
+		t.Fatal("canceled bulk write consumed the reserve")
+	}
+	b.release(directPeerBytes-directReservedBytes, directPeerBytes-directReservedBytes)
+	if !b.canOpen() {
+		t.Fatal("released peer stayed busy")
+	}
+	if b.used != 0 || b.bulk != 0 {
+		t.Fatal("credit leaked")
+	}
+	ready := []byte(`{"type":"ready","window":8,"peerWindowBytes":524288,"preflight":1}`)
+	if _, preflight, ok := directReady(ready, 16, 1); !ok || !preflight {
+		t.Fatal("preflight capability not negotiated")
+	}
+	if _, _, ok := directReady(ready, 16, 0); ok {
+		t.Fatal("unsolicited preflight capability accepted")
+	}
+}
+
+func TestLocalCapacityPreflightChoosesRelayWithoutDrainingThePeer(t *testing.T) {
+	w := newDirectWriter(context.Background())
+	t.Cleanup(func() { w.close(); <-w.done })
+	charge := directPeerBytes - directReservedBytes
+	if err := w.budget.acquire(charge, make(chan struct{}), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	peer := &directPeer{available: true, writer: w}
+	manager := &directManager{peer: peer, write: func(any) error { t.Fatal("capacity preflight sent a failed-peer signal"); return nil }}
+	if manager.Open(context.Background()) != nil || !peer.available || peer.draining || peer.channels != 0 {
+		t.Fatal("busy peer created a stream or was marked unhealthy")
+	}
+	w.budget.release(charge, charge)
+}
+
+func TestPreflightIsSeparateFromBusinessRecordsAndCannotBeRepeated(t *testing.T) {
+	for _, ready := range []string{"true", "false"} {
+		raw := &scheduledTestChannel{packets: make(chan string, 4)}
+		c := newFlowChannel(raw, func() bool { return true })
+		c.preflight = make(chan bool, 1)
+		c.receive(webrtc.DataChannelMessage{IsString: true, Data: []byte(`{"type":"preflight","ready":` + ready + `}`)})
+		if got := <-c.preflight; got != (ready == "true") {
+			t.Fatal("wrong preflight result")
+		}
+		if c.received != 0 || len(c.queue) != 0 {
+			t.Fatal("preflight leaked into target protocol")
+		}
+		c.receive(webrtc.DataChannelMessage{IsString: true, Data: []byte(`{"type":"preflight","ready":true}`)})
+		select {
+		case <-c.done:
+		default:
+			t.Fatal("repeated preflight accepted")
+		}
+	}
+}
+
+func TestSendableHeartbeatBypassesLargerBlockedControlHead(t *testing.T) {
+	w := newDirectWriter(context.Background())
+	t.Cleanup(func() { w.close(); <-w.done })
+	packets := make(chan string, 4)
+	raw := &scheduledTestChannel{buffer: 128*1024 + 65536 - 4, name: "control", packets: packets}
+	control := w.channel(raw, true)
+	health := w.channel(&scheduledTestChannel{name: "health", packets: packets}, true)
+	large := make(chan error, 1)
+	go func() { large <- control.Send(make([]byte, 16384)) }()
+	deadline := time.Now().Add(time.Second)
+	for control.BufferedAmount() == 128*1024+65536-4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if err := health.Send([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-packets; got != "health:ping" {
+		t.Fatal("small heartbeat hidden by large control head:", got)
+	}
+	control.Close()
+	if err := <-large; err == nil {
+		t.Fatal("blocked control exceeded native cap")
 	}
 }
 

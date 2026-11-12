@@ -20,7 +20,7 @@ export function forwardChannel(channel, { transport = 'direct', shared = false, 
     ended = true;
     for (const subscription of subscriptions) subscription.unSubscribe();
     for (const item of outgoing.splice(0)) queueMicrotask(() => item.callback?.(new Error('Direct channel closed')));
-    budget?.forget(owner); if (budget) budget.release([...held.values()].reduce((sum, bytes) => sum + bytes, 0)); held.clear();
+    budget?.forget(owner); if (budget) budget.release([...held.values()].reduce((sum, bytes) => sum + bytes, 0), [...held.values()].reduce((sum, bytes) => sum + budget.bulkBytes(bytes), 0)); held.clear();
     incoming.length = 0; queued = 0;
     if (graceful && channel.closeAfterFlush) channel.closeAfterFlush(); else channel.close();
     socket.emit('close');
@@ -36,7 +36,7 @@ export function forwardChannel(channel, { transport = 'direct', shared = false, 
       while (outgoing.length && sent - acked < window) {
         if (sent >= 2147483647) throw new Error('Direct sequence limit');
         const item = outgoing[0], size = Buffer.byteLength(item.bytes);
-        if (budget && !budget.acquire(owner, size)) { budget.wait(owner, flush); return; }
+        if (budget && !budget.acquire(owner, size)) { budget.wait(owner, flush, size); return; }
         outgoing.shift(); queued -= size; sent++; if (budget) held.set(sent, size);
         try { send(item.bytes, error => { item.callback?.(error); if (error) finish(); }); }
         catch (error) { queueMicrotask(() => item.callback?.(error)); throw error; }
@@ -81,7 +81,7 @@ export function forwardChannel(channel, { transport = 'direct', shared = false, 
       if (record?.type === 'ack') {
         if (Object.keys(record).sort().join(',') !== 'id,type' || !Number.isInteger(record.id) || record.id <= acked || record.id > sent) return finish();
         acked = record.id;
-        if (budget) { let released = 0; for (const [id, bytes] of held) if (id <= acked) { released += bytes; held.delete(id); } budget.release(released); }
+        if (budget) { let released = 0, bulk = 0; for (const [id, bytes] of held) if (id <= acked) { released += bytes; bulk += budget.bulkBytes(bytes); held.delete(id); } budget.release(released, bulk); }
         flush(); return;
       }
     }

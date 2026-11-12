@@ -45,6 +45,8 @@ type directChannel struct {
 	window                                     int
 	budget                                     *flowBudget
 	held                                       map[uint32]int
+	preflight                                  chan bool
+	preflightSeen                              bool
 }
 
 func newDirectChannel(dc *webrtc.DataChannel, alive func() bool) *directChannel {
@@ -54,7 +56,7 @@ func newDirectChannel(dc *webrtc.DataChannel, alive func() bool) *directChannel 
 	dc.OnMessage(c.receive)
 	return c
 }
-func newScheduledDirectChannel(dc *webrtc.DataChannel, alive func() bool, window int, writer *directWriter) *directChannel {
+func newScheduledDirectChannel(dc *webrtc.DataChannel, alive func() bool, window int, writer *directWriter, preflight bool) *directChannel {
 	sender := writer.channel(dc, false)
 	if sender == nil {
 		return nil
@@ -64,6 +66,9 @@ func newScheduledDirectChannel(dc *webrtc.DataChannel, alive func() bool, window
 	c.queue = make(chan directRecord, window)
 	c.budget = writer.budget
 	c.held = make(map[uint32]int)
+	if preflight {
+		c.preflight = make(chan bool, 1)
+	}
 	dc.OnClose(func() { c.finish(io.EOF) })
 	dc.OnError(func(error) { c.finish(c.unavailable()) })
 	dc.OnMessage(c.receive)
@@ -93,15 +98,16 @@ func (c *directChannel) finish(err error) {
 	c.ended = true
 	c.cause = err
 	graceful := err == io.EOF && c.sent == c.acked && c.received == c.credited
-	released := 0
+	released, bulk := 0, 0
 	for id, size := range c.held {
 		released += size
+		bulk += c.budget.bulkBytes(size)
 		delete(c.held, id)
 	}
 	close(c.done)
 	c.mu.Unlock()
 	if c.budget != nil {
-		c.budget.release(released)
+		c.budget.release(released, bulk)
 	}
 	// Pion can invoke callbacks from its SCTP read loop; close outside that loop.
 	go func() {
@@ -140,24 +146,44 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 			c.finish(failure("protocol_error"))
 			return
 		}
+		if record.Type == "preflight" {
+			var value struct {
+				Ready *bool `json:"ready"`
+			}
+			var fields map[string]json.RawMessage
+			json.Unmarshal(message.Data, &fields)
+			err := json.Unmarshal(message.Data, &value)
+			c.mu.Lock()
+			valid := !c.ended && c.preflight != nil && !c.preflightSeen && err == nil && value.Ready != nil && len(fields) == 2 && fields["ready"] != nil && fields["type"] != nil
+			if valid {
+				c.preflightSeen = true
+				c.preflight <- *value.Ready
+			}
+			c.mu.Unlock()
+			if !valid {
+				c.finish(failure("protocol_error"))
+			}
+			return
+		}
 		if record.Type == "ack" {
 			var fields map[string]json.RawMessage
 			json.Unmarshal(message.Data, &fields)
 			c.mu.Lock()
 			valid := len(fields) == 2 && record.ID > c.acked && record.ID <= c.sent
-			released := 0
+			released, bulk := 0, 0
 			if valid {
 				c.acked = record.ID
 				for id, size := range c.held {
 					if id <= record.ID {
 						released += size
+						bulk += c.budget.bulkBytes(size)
 						delete(c.held, id)
 					}
 				}
 			}
 			c.mu.Unlock()
 			if c.budget != nil {
-				c.budget.release(released)
+				c.budget.release(released, bulk)
 			}
 			if !valid {
 				c.finish(failure("protocol_error"))
@@ -171,6 +197,11 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 		}
 	}
 	c.mu.Lock()
+	if c.preflight != nil && !c.preflightSeen {
+		c.mu.Unlock()
+		c.finish(failure("protocol_error"))
+		return
+	}
 	c.received++
 	id := c.received
 	window := c.window
@@ -276,7 +307,7 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 			if c.ended {
 				c.mu.Unlock()
 				if c.budget != nil {
-					c.budget.release(len(bytes))
+					c.budget.release(len(bytes), c.budget.bulkBytes(len(bytes)))
 				}
 				return c.unavailable()
 			}

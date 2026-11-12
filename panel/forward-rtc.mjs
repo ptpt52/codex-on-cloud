@@ -17,7 +17,7 @@ export function forwardNegotiationFailure(pc) {
 
 // Managed rules share one helper peer; one-time mappings retain their own peer.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, maxWindow = 8 }) {
+export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, maxWindow = 8, flowBudget = createFlowBudget() }) {
   if (!validTransferWindow(maxWindow)) throw Error('Invalid maximum forward window');
   const allowed = host => peerAddress(host, !!ipv6Address);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl);
@@ -25,9 +25,9 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: [40016, 40047],
     iceFilterStunResponse: (_message, [host]) => allowed(host), iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host), maxMessageSize: 16384 });
   const sockets = new Set();
-  const budget = createFlowBudget();
+  const budget = flowBudget;
   const writer = createRTCWriter({ valid: () => authorized(), failed: () => { void handle.destroy('buffer_limit'); } });
-  let window = 4;
+  let window = 4, preflight = false;
   let ended = false, closing, control, authenticated = false, draining = false, timer, pingTimer, deadline, nonce = 0, pending = 0, sentAt = 0, successes = 0;
   let current = { id, available: false, family: null, rttMs: null, reason: 'rtc_connecting' };
   const authorized = () => !ended && valid();
@@ -99,10 +99,11 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
         if (!authenticated) {
           let record; try { if (Buffer.isBuffer(bytes) || Buffer.byteLength(bytes) > 256) throw new Error(); record = JSON.parse(bytes); } catch { return void handle.destroy('protocol_error'); }
           const fields = record && Object.keys(record).sort().join(',');
-          if (!record || !['id,token,type', 'id,token,type,window'].includes(fields) || record.type !== 'auth' || record.id !== id || !authenticate(record.token) || record.window !== undefined && !validTransferWindow(record.window)) return void handle.destroy('protocol_error');
+          if (!record || !['id,token,type', 'id,token,type,window', 'id,preflight,token,type,window'].includes(fields) || record.type !== 'auth' || record.id !== id || !authenticate(record.token) || record.window !== undefined && !validTransferWindow(record.window) || record.preflight !== undefined && record.preflight !== 1) return void handle.destroy('protocol_error');
           window = Math.min(record.window ?? 4, maxWindow);
+          preflight = record.preflight === 1;
           authenticated = true; clearTimeout(timer);
-          try { control.send(JSON.stringify({ type: 'ready', ...(record.window === undefined ? {} : { window, peerWindowBytes: 512 * 1024 }) })); } catch { return void handle.destroy(); }
+          try { control.send(JSON.stringify({ type: 'ready', ...(record.window === undefined ? {} : { window, peerWindowBytes: 512 * 1024 }), ...(preflight ? { preflight: 1 } : {}) })); } catch { return void handle.destroy(); }
           probe(); return;
         }
         if (!Buffer.isBuffer(bytes) || bytes.length !== 4) return void handle.destroy('protocol_error');
@@ -119,25 +120,43 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     if (channel.label !== 'codex-forward-data' || channel.protocol !== 'forward-data-v1' || !authenticated) return void handle.destroy('protocol_error');
     if (sockets.size >= (shared ? 24 : 8)) { channel.close(); return; }
     let queued; try { queued = writer.channel(channel); } catch { channel.close(); return; }
-    const socket = forwardChannel(queued, { window, budget }); sockets.add(socket);
-    const timeout = setTimeout(() => socket.terminate(), 5000).unref();
-    socket.once('close', () => { clearTimeout(timeout); sockets.delete(socket); });
-    socket.once('message', (bytes, binary) => {
-      clearTimeout(timeout);
-      if (shared) {
-        let record; try { if (!binary) record = JSON.parse(bytes.toString()); } catch {}
-        if (!authorized() || !current.available || !record || record.type !== 'open') return socket.terminate();
-        connect(socket, record); return;
+    function prepare() {
+      if (!authorized() || sockets.size >= (shared ? 24 : 8)) { queued.close(); return; }
+      if (preflight) {
+        const ready = current.available && !draining && budget.canOpen();
+        try { queued.send(JSON.stringify({ type: 'preflight', ready })); }
+        catch { queued.close(); return; }
+        // This response precedes open and never connects the target. A busy
+        // peer can safely send this new TCP through the existing WSS standby.
+        if (!ready) { queued.closeAfterFlush(); return; }
       }
-      let streamId;
-      if (reverse) {
-        let record; try { record = JSON.parse(bytes.toString()); } catch {}
-        if (!record || Object.keys(record).sort().join(',') !== 'id,type' || record.type !== 'open' || typeof record.id !== 'string' || !/^[a-f0-9]{32}$/.test(record.id)) { socket.close(4000, 'protocol_error'); return; }
-        streamId = record.id;
-      }
-      if (!authorized() || !current.available || binary || !reverse && bytes.toString() !== '{"type":"open"}') { socket.close(4000, 'rtc_unavailable'); return; }
-      connect(socket, streamId);
-    });
+      const socket = forwardChannel(queued, { window, budget }); sockets.add(socket);
+      const timeout = setTimeout(() => socket.terminate(), 5000).unref();
+      socket.once('close', () => { clearTimeout(timeout); sockets.delete(socket); });
+      socket.once('message', (bytes, binary) => {
+        clearTimeout(timeout);
+        if (shared) {
+          let record; try { if (!binary) record = JSON.parse(bytes.toString()); } catch {}
+          if (!authorized() || !current.available || !record || record.type !== 'open') return socket.terminate();
+          connect(socket, record); return;
+        }
+        let streamId;
+        if (reverse) {
+          let record; try { record = JSON.parse(bytes.toString()); } catch {}
+          if (!record || Object.keys(record).sort().join(',') !== 'id,type' || record.type !== 'open' || typeof record.id !== 'string' || !/^[a-f0-9]{32}$/.test(record.id)) { socket.close(4000, 'protocol_error'); return; }
+          streamId = record.id;
+        }
+        if (!authorized() || !current.available || binary || !reverse && bytes.toString() !== '{"type":"open"}') { socket.close(4000, 'rtc_unavailable'); return; }
+        connect(socket, streamId);
+      });
+    }
+    if (channel.readyState === 'open') prepare();
+    else {
+      const subscription = channel.stateChange.subscribe(state => {
+        if (state === 'open' || state === 'closed') subscription.unSubscribe();
+        if (state === 'open') prepare();
+      });
+    }
   });
   return handle;
 }

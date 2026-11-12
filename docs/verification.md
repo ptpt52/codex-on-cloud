@@ -31,7 +31,7 @@ npm run test:compat
 node --test test/forward-agent-policy.test.mjs
 ```
 
-此规格使用真实面板 HTTP / WebSocket 和 TCP 回显，覆盖两种方向的编辑、停用、删除、旧授权拒绝及其他规则不受影响；桌面管理是 fixture。真实 Go 助手与直连网络另用 `npm run test:forward:agents`，不能由这项 Node 回归代替。
+此规格使用真实面板 HTTP / WebSocket 和 TCP 回显，覆盖两种方向的编辑、停用、删除、旧授权拒绝及其他规则不受影响；桌面管理是 fixture。真实 Go 助手与直连网络另用 `npm run test:forward:agents`，不能由这项 Node 回归代替。后者还以注入满额预算模拟慢端，验证真实 Pion / werift 准入拒绝、新连接 WSS 回退、目标仅打开一次及原直连小消息继续；预算注入不等于物理慢网测试。
 
 吞吐与交互延迟可单独测量，避免同时运行其他重负载测试：
 

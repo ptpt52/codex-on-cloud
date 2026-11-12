@@ -18,15 +18,16 @@ export function createRTCWriter({ valid, failed = () => {} }) {
     pumping = true; let sent = 0, blocked = false;
     try {
       while (sent < RTC_WRITE_LIMITS.quantum) {
-        let selected;
+        let selected; const native = nativeBytes();
         for (const group of groups.values()) {
           if (!group.queue.length || group.raw.readyState !== 'open') continue;
+          const item = group.queue[0];
+          if (native + item.size > RTC_WRITE_LIMITS.native + (item.priority ? RTC_WRITE_LIMITS.reserve : 0)) { blocked = true; continue; }
           if (!selected || group.queue[0].priority) selected = group;
           if (group.queue[0].priority) break;
         }
         if (!selected) break;
-        const item = selected.queue[0], native = nativeBytes();
-        if (native + item.size > RTC_WRITE_LIMITS.native + (item.priority ? RTC_WRITE_LIMITS.reserve : 0)) { blocked = true; break; }
+        const item = selected.queue[0];
         selected.queue.shift(); selected.bytes -= item.size; queued -= item.size; if (item.priority) controls -= item.size;
         groups.delete(selected.raw); groups.set(selected.raw, selected);
         try { selected.raw.send(item.bytes); }

@@ -14,6 +14,7 @@ import { fixture } from './fixture.mjs';
 import { uiSnapshot } from './support/ui-snapshot.mjs';
 import { createPanel } from '../panel/server.mjs';
 import { createForwardPeer } from '../panel/forward-rtc.mjs';
+import { createFlowBudget } from '../panel/flow-budget.mjs';
 import { rtcAddress, rtcIPv6Address } from '../panel/rtc.mjs';
 
 const exec = promisify(execFile), directory = await mkdtemp(join(tmpdir(), 'codex-managed-native-'));
@@ -46,11 +47,12 @@ async function exchange(socket, text) {
 }
 let app, echo, echo6, replacement; let onlySix = false; let accepted = 0;
 let releaseNegotiation, holdFirstNegotiation = !tlsMode;
-const pooledPeers = [], transportUpgrades = [], currentPeers = new Map();
+const pooledPeers = [], transportUpgrades = [], currentPeers = new Map(), peerBudgets = new Map();
 const initialNegotiation = new Promise(resolve => { releaseNegotiation = resolve; });
 function nativePeer(options) {
   pooledPeers.push(options.shared === true);
-  const peer = createForwardPeer(options), answer = peer.answer, ipv6Only = onlySix;
+  const flowBudget=createFlowBudget();peerBudgets.set(options.helperId,flowBudget);
+  const peer = createForwardPeer({...options,flowBudget}), answer = peer.answer, ipv6Only = onlySix;
   if (options.shared) currentPeers.set(options.helperId, peer);
   const filter = sdp => sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || line.split(' ')[4]?.includes(':')).join('\r\n');
   peer.answer = async offer => {
@@ -124,6 +126,21 @@ try {
   for (const rule of extraRules) await post(app, 'rule/remove', { agentId: a.id, id: rule.id, revision: rule.revision });
   await exchange(one, '删除共享规则不关闭其他规则\n');
   if (!tlsMode) {
+    const budget=peerBudgets.get(a.id),peer=currentPeers.get(a.id),charge=384*1024;
+    await until(()=>budget.used===0,'previous direct credits did not drain');
+    assert.equal(budget.acquire(Symbol(),charge),true);
+    try {
+      for(const port of [firstPort,secondPort]) {
+        const original=(await listing(app)).agents[0].rules.find(r=>r.config.localPort===port).mapping,before=accepted;
+        const busy=await connect(port);await exchange(busy,'RTC 满额的新连接使用 WSS，目标只打开一次\n');
+        const current=(await listing(app)).agents[0].rules.find(r=>r.config.localPort===port).mapping;
+        assert.equal(current.connections,original.connections+1);assert.equal(current.directConnections,original.directConnections);
+        assert.equal(accepted,before+1,'capacity preflight must not open a target before WSS fallback');
+        assert.equal(currentPeers.get(a.id),peer);assert.equal(peer.state.available,true);
+        await exchange(one,'共享额度满时原直连小消息继续\n');await exchange(two,'原反向直连也保留\n');
+        busy.destroy();await until(async()=>(await listing(app)).agents[0].rules.find(r=>r.config.localPort===port).mapping.connections===original.connections,'WSS capacity fallback did not close');
+      }
+    } finally { budget.release(charge,charge); }
     assert.equal(pooledPeers.length, 2);
     const oldStandby = transportUpgrades.find(value => value.agent === a.id).socket;
     oldStandby.destroy();
@@ -159,7 +176,7 @@ try {
   }
   const before = await listing(app);
   const aMapping = before.agents.find(value => value.id === a.id).rules.find(r => r.id === first.id).mapping.id;
-  const originalAccepted = accepted; assert.equal(originalAccepted, 28);
+  const originalAccepted = accepted; assert.equal(originalAccepted, tlsMode ? 28 : 30);
   const unsupported = await post(app, 'rule', { agentId: a.id, name: '无效串口', enabled: true, config: { direction: 'reverse', protocol: 'serial', deviceName: '测试设备', localPort: await freePort(), serial: { path: 'COM9999', baud: 115200, dataBits: 8, parity: 'none', stopBits: 1, dtr: false, rts: false } } });
   await until(async () => (await listing(app)).agents.find(value => value.id === a.id).rules.find(r => r.id === unsupported.id)?.state === 'failed', 'invalid serial target stopped the whole helper');
   await exchange(one, '无效串口不影响其他规则\n'); await exchange(three, '另一个助手仍然健康\n'); assert.equal(accepted, originalAccepted);
