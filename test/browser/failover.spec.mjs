@@ -75,7 +75,7 @@ test('silent LAN loss after network change promptly starts relay and preserves t
     await expect.poll(() => app.vncConnections, { timeout: 15000 }).toBe(3);
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await page.getByRole('button', { name: '连接状态', exact: true }).click();
-    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/);
     await expect.poll(() => frame.evaluate(() => document.getElementById('viewport').scrollTop)).toBeGreaterThan(top - 3);
     expect(await frame.evaluate(() => document.getElementById('viewport').scrollTop)).toBeLessThan(top + 3);
     await expect(page.locator('#mobile-input')).toHaveValue('切到移动网络后保留草稿');

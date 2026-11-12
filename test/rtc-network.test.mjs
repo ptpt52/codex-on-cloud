@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL } from '../panel/rtc-network.mjs';
+import { globalIPv4, globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL, rtcIceConfiguration } from '../panel/rtc-network.mjs';
 import { selectedRoute, gatherCandidates, rtcRouteKind, rtcRouteLabel } from '../panel/public/rtc-stats.js';
 
 const offer = candidates => ({ type: 'offer', sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
@@ -39,10 +39,10 @@ test('IPv6 selection prefers the LAN interface, reselects after address changes 
   for (const ip of ['2408:8000::8', 'fd00::2', '::1']) assert.throws(() => rtcIPv6Address(ip, '192.168.1.2', interfaces));
 });
 
-test('dual-stack offers reserve both families, deduplicate and accept only global IPv6 reflexive UDP candidates', () => {
-  const mixed = [candidate('8.8.8.8'), ...Array.from({ length: 20 }, (_, i) => candidate(`192.168.1.${i + 1}`)),
+test('dual-stack offers reserve both families and deduplicate candidates', () => {
+  const mixed = [...Array.from({ length: 20 }, (_, i) => candidate(`192.168.1.${i + 1}`)),
     ...Array.from({ length: 20 }, (_, i) => candidate(`2408:8000::${i + 1}`, i ? 'host' : 'srflx')),
-    candidate('2408:8000::f', 'relay'), candidate('8.8.8.8', 'srflx'), candidate('fd00::1'), candidate('2001:db8::1'),
+    candidate('2408:8000::f', 'relay'), candidate('203.0.113.1', 'srflx'), candidate('fd00::1'), candidate('2001:db8::1'),
     candidate('2408:8000::ffff').replace(' udp ', ' tcp '), candidate('2408:8000::ffff', 'host', 80)];
   const lines = rtcOffer(offer(mixed), { ipv6: true }).sdp.split('\r\n').filter(x => x.startsWith('a=candidate:'));
   assert.equal(lines.length, 8); assert.equal(lines.filter(x => x.includes('192.168.')).length, 4);
@@ -77,7 +77,7 @@ test('route labels require candidate types and distinguish either TURN allocatio
   const route = (local, remote) => ({ local: { type: local, address: '203.0.113.8', port: 49161 }, remote: { type: remote, address: '203.0.113.8', port: 49162 } });
   for (const local of ['host', 'srflx', 'prflx']) for (const remote of ['host', 'srflx', 'prflx']) {
     assert.equal(rtcRouteKind(route(local, remote)), 'direct');
-    assert.equal(rtcRouteLabel(route(local, remote)), 'WebRTC 加密直连');
+    assert.match(rtcRouteLabel(route(local, remote)), /^WebRTC 加密直连/);
   }
   for (const other of ['host', 'srflx', 'prflx', 'relay', 'unknown', undefined]) {
     for (const pair of [route('relay', other), route(other, 'relay')]) {
@@ -101,4 +101,35 @@ test('STUN gathering has a fixed deadline and cancellation removes its listeners
   const controller = new AbortController(), canceled = assert.rejects(gatherCandidates(peer, controller.signal), /取消/);
   controller.abort(); await canceled;
   peer.iceGatheringState = 'complete'; await gatherCandidates(peer, new AbortController().signal);
+});
+
+test('IPv4 NAT candidates retain slots beside LAN, IPv6 and center relay candidates', () => {
+  for (const address of ['1.1.1.1', '8.8.8.8', '11.0.0.2']) assert.equal(globalIPv4(address), true);
+  for (const address of ['0.0.0.0', '10.0.0.1', '100.64.0.1', '127.0.0.1', '169.254.1.1', '192.0.0.1', '192.0.2.1', '192.168.1.1', '198.18.0.1', '198.51.100.1', '203.0.113.1', '224.0.0.1', '255.255.255.255', '::ffff:8.8.8.8', undefined]) assert.equal(globalIPv4(address), false, String(address));
+  const rows = [...Array.from({ length: 25 }, (_, i) => candidate(`10.0.0.${i+1}`)), candidate('11.0.0.2', 'srflx'), candidate('12.0.0.2', 'srflx'), candidate('2606:4700::1'), candidate('203.0.113.2', 'relay', 49161), candidate('100.64.0.1', 'srflx'), candidate('169.254.1.1', 'srflx')];
+  const sdp = rtcOffer(offer(rows), { ipv6: true, relay: { addresses: ['203.0.113.2'], minPort: 49160, maxPort: 49223 } }).sdp;
+  assert.equal((sdp.match(/a=candidate:/g) || []).length, 8);
+  for (const address of ['11.0.0.2', '12.0.0.2', '2606:4700::1', '203.0.113.2']) assert.ok(sdp.includes(address));
+  for (const address of ['100.64.0.1', '169.254.1.1']) assert.ok(!sdp.includes(address));
+  assert.ok(rtcOffer(offer([candidate('11.0.0.2','srflx')])).sdp.includes('typ srflx'));
+  assert.equal(rtcAddress(undefined, { wan: [{ address: '11.0.0.2' }] }, []), '11.0.0.2');
+  assert.equal(rtcAddress(undefined, { mobile: [{ address: '100.64.2.2' }] }, []), '100.64.2.2');
+  assert.equal(rtcAddress('100.64.2.2', { mobile: [{ address: '100.64.2.2' }] }, []), '100.64.2.2');
+});
+
+test('STUN discovery is explicit and does not depend on IPv6', () => {
+  assert.equal(rtcIceConfiguration().stun, false);
+  const ice = rtcIceConfiguration('stun:stun.example:3478');
+  assert.equal(ice.stun, true); assert.equal(ice.iceStunGatherTimeout, 1.5);
+  assert.deepEqual(ice.iceServers, [{ urls: 'stun:stun.example:3478' }]);
+});
+
+test('route labels distinguish LAN, IPv6, IPv4 NAT, public IPv4 and unknown addresses', () => {
+  const route = (family, local, remote, type='host') => ({ family, local: {type:'host',address:local}, remote:{type,address:remote} });
+  assert.equal(rtcRouteLabel(route('IPv4','10.0.0.1','192.168.1.2')), 'WebRTC 加密直连（局域网）');
+  assert.equal(rtcRouteLabel(route('IPv4','10.0.0.1','192.168.1.2','prflx')), 'WebRTC 加密直连（局域网）');
+  assert.equal(rtcRouteLabel(route('IPv6','2606:4700::1','2408:8000::2')), 'WebRTC 加密直连（IPv6）');
+  assert.equal(rtcRouteLabel(route('IPv4','10.0.0.1','11.0.0.2','srflx')), 'WebRTC 加密直连（NAT 打洞）');
+  assert.equal(rtcRouteLabel(route('IPv4','11.0.0.1','12.0.0.2')), 'WebRTC 加密直连（公网 IPv4）');
+  assert.equal(rtcRouteLabel(route('unknown',null,null)), 'WebRTC 加密直连');
 });

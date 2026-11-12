@@ -9,7 +9,7 @@
 | backend | 脚本语法、Node、Python、Go race／vet／mod verify、actionlint |
 | gateway | 固定 Wrangler／workerd、SQLite、HTTP／WSS 和路由持久化 |
 | terminal | 最小生产依赖、隔离 tmux／PTY、终端生命周期 |
-| selfhost | 真实 Caddy / coturn、TLS 与 Cookie 路由、强制 relay、真实 Go 助手的节点路径转发 |
+| selfhost | 真实 Caddy / coturn、TLS 与 Cookie 路由、强制 relay、真实 Go 助手的节点路径转发、隔离 Linux NAT 打洞 |
 | browsers | Chromium 电脑／手机／平板，Firefox，WebKit 电脑／手机／平板的兼容规格 |
 | chromium-regression | 独立运行完整手机／电脑 Chromium 回归 |
 | native | 隔离 Xvfb、XFCE、tmux、noVNC、文件／指针／映射及助手构建 |
@@ -35,6 +35,7 @@ npm run test:serial
 npm run test:forward:publication
 npm run test:selfhost:edge
 npm run test:turn
+npm run test:rtc:nat
 npm run test:forward:entry
 ```
 

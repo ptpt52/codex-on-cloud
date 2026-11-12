@@ -44,8 +44,8 @@ test('background negotiation keeps relay alive until encrypted direct activation
     await expect.poll(() => closed, { timeout: 15000 }).toBe(1);
     await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 15000 });
     await page.getByRole('button', { name: '连接状态', exact: true }).click();
-    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连');
-    await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/);
+    await expect(page.locator('#diag-input-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/);
     await expect(page.locator('#mobile-input')).toHaveValue('网络路径切换后保留草稿');
     await expect(page.locator('#actual-size-button')).toHaveAttribute('aria-pressed', 'true');
     expect(offers).toBe(2); expect(app.vncConnections).toBe(2);

@@ -46,7 +46,7 @@ test('masked Chrome candidates resolve past unrelated records and establish real
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 20000 });
     await page.locator('#connection-button').click();
-    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/);
     expect(queries).toBeGreaterThan(0); expect(websockets).toBe(0); expect(app.vncConnections).toBe(1); expect(app.inputCalls).toEqual([]);
   } finally {
     await app.close(); await new Promise(resolve => responder.destroy(resolve));

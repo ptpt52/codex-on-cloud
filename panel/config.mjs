@@ -77,6 +77,6 @@ export function readConfig(env = environment()) {
     webrtcIPv6,
     webrtcIPv6Address: webrtcAddress && webrtcIPv6 ? rtcIPv6Address(env.WEBRTC_IPV6_ADDRESS, webrtcAddress) : undefined,
     webrtcIPv6AddressAuto: !env.WEBRTC_IPV6_ADDRESS,
-    webrtcStunUrl: stunURL(env.WEBRTC_STUN_URL),
+    webrtcStunUrl: stunURL(env.WEBRTC_STUN_URL ?? (selfhostNode ? `stun:${new URL(selfhostNode.origin).hostname}:3478` : undefined)),
   };
 }

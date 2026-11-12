@@ -17,7 +17,7 @@ async function instrument(page, mode) {
         const stats = await super.getStats(...args), types = window.top.routeProfiles[window === window.top ? 'service' : 'frame'];
         if (!types) return new Map();
         return new Map([...stats].map(([id, row]) => [id, ['local-candidate', 'remote-candidate'].includes(row.type)
-          ? { ...row, candidateType: types[row.type === 'local-candidate' ? 0 : 1], address: '203.0.113.8', port: row.type === 'local-candidate' ? 49161 : 49162 }
+          ? { ...row, candidateType: types[row.type === 'local-candidate' ? 0 : 1], address: window.top.routeAddresses?.[row.type === 'local-candidate' ? 0 : 1] || '203.0.113.8', port: row.type === 'local-candidate' ? 49161 : 49162 }
           : row]));
       }
     };
@@ -47,12 +47,18 @@ for (const mode of ['desktop', 'terminal']) test(`${mode} labels follow their se
     await expect(page.locator('#forward-download-status')).toContainText('已就绪（直连）');
 
     await page.evaluate(() => { window.routeProfiles = { frame: ['host', 'srflx'], service: ['host', 'relay'] }; });
-    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连' + (mode === 'terminal' ? ' · 文字终端' : ''), { timeout: 7000 });
-    await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连（NAT 打洞）' + (mode === 'terminal' ? ' · 文字终端' : ''), { timeout: 7000 });
+    await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连（NAT 打洞）');
     await expect(page.locator('#diag-peer')).toContainText('NAT 映射地址');
     await expect(page.locator('#file-transport')).toContainText('WebRTC 加密中继（TURN）');
     await expect(page.locator('#diag-panel')).toContainText('WebRTC 加密中继（TURN）');
     await expect(page.locator('#forward-download-status')).toContainText('已就绪（TURN 中继）');
+
+    await page.evaluate(() => { window.routeProfiles.frame = ['host', 'host']; window.routeAddresses = ['192.168.1.2', '192.168.1.3']; });
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC 加密直连（局域网）', { timeout: 7000 });
+    await page.evaluate(() => { window.routeAddresses = ['2606:4700::1', '2408:8000::2']; });
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC 加密直连（IPv6）', { timeout: 7000 });
+    await page.evaluate(() => { window.routeAddresses = null; });
 
     await page.evaluate(() => { window.routeProfiles = { frame: ['host', undefined], service: null }; });
     await expect(page.locator('#diag-transport')).toContainText('WebRTC 加密通道（路径待确认）', { timeout: 7000 });

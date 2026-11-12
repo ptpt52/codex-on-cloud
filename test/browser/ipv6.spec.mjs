@@ -49,7 +49,7 @@ test('real IPv6 UDP/DTLS direct path reports selected addresses and survives rel
   try {
     await login(page, app);
     await page.locator('#connection-button').click();
-    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连（IPv6）');
     await expect(page.locator('#diag-network')).toHaveText('IPv6 / UDP');
     await expect(page.locator('#diag-peer')).toContainText(`[${address}]:`);
     const frame = page.frames().find(f => f.url().includes('/desktop/index.html'));

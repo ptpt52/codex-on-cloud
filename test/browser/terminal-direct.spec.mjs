@@ -49,14 +49,14 @@ async function diagnostics(page, transport) {
   await page.locator('#connection-button').click(); await expect(page.locator('#diag-transport')).toHaveText(transport);
 }
 async function network(frame) { await frame.evaluate(() => window.dispatchEvent(new Event('online'))); }
-const DIRECT = 'WebRTC 加密直连 · 文字终端', RELAY = 'HTTPS / WebSocket 文字终端';
+const DIRECT = /^WebRTC 加密直连(?:（局域网）)? · 文字终端$/, RELAY = 'HTTPS / WebSocket 文字终端';
 
 test('real terminal UDP/DTLS shares the original task, routes Chinese paste and separate Enter, and switches auxiliary terminals without VNC or WSS', async ({ page }) => {
   const app = await fixture({ webrtc: true }), counts = writes(page);
   try {
     await app.controls.manageTerminals({ action: 'create', name: '独立任务', view: 'terminal' }); await prepare(page);
     const frame = await login(page, app); await diagnostics(page, DIRECT);
-    await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-input-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/);
     await expect(page.locator('#diag-network')).toHaveText('IPv4 / UDP'); await expect(page.locator('#diag-latency')).toHaveText(/^\d+ ms$/);
     const transport = await frame.evaluate(async () => [...(await window.terminalPeers.at(-1).getStats()).values()].find(value => value.type === 'transport'));
     expect(transport.dtlsState).toBe('connected'); expect(transport.dtlsCipher).toBeTruthy(); expect(transport.selectedCandidatePairId).toBeTruthy();
@@ -200,7 +200,7 @@ test('the terminal uses an actual IPv6 UDP/DTLS path when the host has a global 
       const response = await route.fetch({ postData: JSON.stringify(body) }), answer = await response.json(); answer.sdp = onlyIPv6(answer.sdp);
       await route.fulfill({ response, json: answer });
     });
-    await login(page, app); await diagnostics(page, DIRECT); await expect(page.locator('#diag-network')).toHaveText('IPv6 / UDP');
+    await login(page, app); await diagnostics(page, 'WebRTC 加密直连（IPv6） · 文字终端'); await expect(page.locator('#diag-network')).toHaveText('IPv6 / UDP');
     expect(counts).toEqual({ login: 1, claim: 1, input: 0, ws: 0, rtc: 1 }); expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });

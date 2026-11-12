@@ -1,5 +1,6 @@
 import { RTCPeerConnection } from 'werift';
-import { peerAddress } from './rtc-network.mjs';
+import { peerAddress, rtcIceConfiguration } from './rtc-network.mjs';
+import { rtcDirectKind } from './public/rtc-stats.js';
 import { guardIceAgent } from './rtc-guard.mjs';
 import { forwardChannel } from './forward-channel.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
@@ -13,9 +14,10 @@ export function forwardNegotiationFailure(pc) {
 
 // A mapping owns one peer, separate from the desktop/viewer and its UDP ports.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, id, valid, authenticate, connect, status, closed, reverse = false }) {
+export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false }) {
   const allowed = host => peerAddress(host, !!ipv6Address);
-  const pc = new RTCPeerConnection({ iceServers: [], iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
+  const { stun, ...ice } = rtcIceConfiguration(stunUrl);
+  const pc = new RTCPeerConnection({ ...ice, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
     iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: [40016, 40047],
     iceFilterStunResponse: (_message, [host]) => allowed(host), iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host), maxMessageSize: 16384 });
   const sockets = new Set();
@@ -24,8 +26,13 @@ export function createForwardPeer({ address, ipv6Address, id, valid, authenticat
   const authorized = () => !ended && valid();
   const report = (available, reason, rttMs = null) => {
     if (ended) return;
-    const host = pc.iceTransports[0]?.connection.nominated?.remoteCandidate.host;
-    current = { id, available, healthy: successes >= 2, reason, rttMs, family: available && host ? host.includes(':') ? 'IPv6' : 'IPv4' : null };
+    const connection = pc.iceTransports[0]?.connection, pair = connection?.nominated, host = pair?.remoteCandidate.host;
+    const family = available && host ? host.includes(':') ? 'IPv6' : 'IPv4' : null;
+    const endpoint = candidate => ({ address: candidate?.host, type: candidate?.type });
+    const mapped = pair && connection.reflexiveBySocket.get(pair.protocol);
+    const local = mapped && (mapped.host !== pair.localCandidate.host || mapped.port !== pair.localCandidate.port) ? mapped : pair?.localCandidate;
+    current = { id, available, healthy: successes >= 2, reason, rttMs, family,
+      route: available ? rtcDirectKind({ family, local: endpoint(local), remote: endpoint(pair.remoteCandidate) }) : 'unknown' };
     status(current);
   };
   const handle = {
@@ -44,7 +51,7 @@ export function createForwardPeer({ address, ipv6Address, id, valid, authenticat
       try {
         await pc.setRemoteDescription(offer);
         guardSCTP(pc.sctpTransport?.sctp, authorized, () => { void handle.destroy('buffer_limit'); });
-        for (const transport of pc.iceTransports) guardIceAgent(transport.connection, { valid: authorized, allowed });
+        for (const transport of pc.iceTransports) guardIceAgent(transport.connection, { valid: authorized, allowed, stun });
         if (!authorized()) throw new Error('Revoked');
         await pc.setLocalDescription(await pc.createAnswer());
         if (!authorized() || Buffer.byteLength(pc.localDescription.sdp) > 32768) throw new Error('Revoked or oversized');

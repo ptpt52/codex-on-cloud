@@ -208,7 +208,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       let peer;
       item.peerId = value.id;
       const live = () => authorized(item) && item.peer === peer && (item.keepStreams || current());
-      peer = createPeer({ address, ipv6Address, id: value.id, valid: live,
+      peer = createPeer({ address, ipv6Address, stunUrl: config.webrtcStunUrl, id: value.id, valid: live,
         authenticate: token => active(item) && live() && typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token) && equal(digest(token), item.streamHash),
         status: state => { if (live()) report(item, state); }, closed: () => { if (item.peer === peer) item.peer = null; },
         reverse: item.direction === 'reverse',

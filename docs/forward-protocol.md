@@ -28,7 +28,7 @@ key 重新生成立即撤销该助手控制和数据通道，保留规则；网�
 
 ## 直连、恢复与资源上限
 
-新业务 TCP 独立选择可用的局域网 IPv4 / 公网 IPv6 UDP / DTLS 直连，否则使用 WSS；当前助手不使用 TURN 或 ICE-TCP。SDP 经已认证 WSS 协商并检查证书指纹，通道再次验证映射凭据；探测不连接目标。目标开启请求已发出而结果不明时，不换路重连或补发字节。
+新业务 TCP 独立选择可用的局域网 IPv4 / 公网 IPv6 / IPv4 NAT 打洞 UDP / DTLS 直连，否则使用 WSS；当前助手不使用 TURN 或 ICE-TCP。SDP 经已认证 WSS 协商并检查证书指纹，通道再次验证映射凭据；探测不连接目标。目标开启请求已发出而结果不明时，不换路重连或补发字节。
 
 网页分别显示每助手控制连接、新 TCP 的首选路径及现有 TCP 的直连 / 中转数量。旧 TCP 固定原通道，不因新连接可直连而改变统计。地址提示按规则保存，修改规则重建该规则；不会把枚举出的网卡 IP 自动当作目标或额外候选。
 
@@ -82,5 +82,7 @@ Node 的运行通道测试直接驱动独立映射引擎，不暴露旧 HTTP 授
 `test:forward` 运行两个带 race 检测的真实 Linux 助手、临时 CA 和 TLS/WSS，覆盖 8 MiB、证书拒绝、独立规则及重启恢复。`test:forward:agents` 运行真实 Pion / werift IPv4，并在本机实际分配的公网 IPv6 上验证 IPv6 UDP / DTLS 和 IPv6 TCP 目标，无地址时明确跳过。`test:forward:entry` 复用相同真实流程验证节点前缀。`test:serial` 使用真实子进程和不存在的设备，验证延迟打开与故障回收，不操作物理串口。桌面管理仍为 fixture。
 
 `test:gateway:worker` 使用真实 workerd / SQLite，验证固定节点路由与拒绝握手；不连接生产 CF。`test:forward:publication` 在临时部署运行固定编译器、租约监督器和打包器，验证四个平台、包结构与发布下载摘要，不覆盖正式产物。Windows / Mac 运行、USB / 蓝牙串口及跨运营商网络仍需真机验收。
+
+IPv4 NAT 发现复用节点下发的 STUN 地址，与 IPv6 开关独立。Go 助手与节点同时保留公网反射候选，仍拒绝特殊地址；每次协商最多八个自动候选和四个提示，收集期限 1.5 秒。
 
 [文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

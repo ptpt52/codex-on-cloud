@@ -2,7 +2,7 @@
 
 本页面向开发与深入排障，保留候选过滤、输入不重发、连接交接与资源上限。部署参数和日常排障见[直连与中转](lan.md)，端口映射的独立协议见[映射协议](forward-protocol.md)。
 
-普通模式只接受私有 IPv4 / 普通公网 IPv6 的 UDP 候选；自建中心模式额外允许中心签发的 TURN 公网 IPv4 与 relay 端口范围。TURN 凭据、配置与强制 relay 验证见[自建中心](selfhost-server.md#turn)。`WEBRTC_STUN_URL` 仍只配置 STUN，不能把 TURN 凭据直接填进该项。
+普通模式接受私有 IPv4、普通公网 IPv4 / IPv6 的 UDP host 和反射候选，允许通过 STUN / ICE 打洞；丢弃未指定、链路本地、运营商共享段、文档、基准测试、多播及保留公网 IPv4 候选。自建中心模式额外允许中心签发的 TURN 公网 IPv4 与 relay 端口范围。TURN 凭据、配置与强制 relay 验证见[自建中心](selfhost-server.md#turn)。`WEBRTC_STUN_URL` 仍只配置 STUN，不能把 TURN 凭据直接填进该项。
 
 ## 地址提示与接口选择
 
@@ -53,7 +53,7 @@ systemctl --user restart codex-cloud-panel.service
 
 协商接口要求有效登录、Host、Origin、CSRF 及当前页面控制权。延迟请求体、协商过程中发生接管或退出均不能获得旧控制权。WebRTC 与 WebSocket 共用单一画面连接、退出、登录到期、接管和桌面维护的关闭机制；数据转发前再次检查授权，不将 Cookie 或 CSRF 发给 VNC。
 
-只接受一个 data m-section、有 SHA-256 指纹的 SDP；请求体最多 48 KiB，输入 SDP 最多 32 KiB，最多保留 8 个去重自动 UDP 候选，两族均存在时各预留 4 个；可选地址提示另补最多 4 个候选，浏览器目标合计最多 12 个。允许私有 IPv4/mDNS host，以及启用 IPv6 时的普通公网 IPv6 host/srflx；去除 remote-candidates。候选配对及实际探测来源再次过滤，拒绝未授权的公网 IPv4、特殊 IPv6；自建中心模式只额外接受已签发 TURN 响应允许的 relay 地址与端口。桌面连接只允许各一个可靠、有序的 `codex-vnc`、`codex-control` 和 `codex-health` 数据通道；文字终端连接用独立的 `codex-terminal` 取代 VNC，不接受媒体或任意代理目标。兼容没有心跳通道的旧桌面客户端，主动心跳需刷新页面加载新版本。
+只接受一个 data m-section、有 SHA-256 指纹的 SDP；请求体最多 48 KiB，输入 SDP 最多 32 KiB，最多保留 8 个去重自动 UDP 候选，在局域网 IPv4、NAT IPv4、IPv6 和受信 TURN 之间轮流保留名额，避免多网卡挤掉反射或中继候选；可选地址提示另补最多 4 个候选，浏览器目标合计最多 12 个。允许私有 / 普通公网 IPv4、mDNS host、IPv4 srflx，以及启用 IPv6 时的普通公网 IPv6 host/srflx；去除 remote-candidates。候选配对及实际探测来源再次过滤，拒绝特殊 IPv4 / IPv6，公开地址也必须通过本轮 ICE 凭据和加密指纹验证；自建中心模式只额外接受已签发 TURN 响应允许的 relay 地址与端口。桌面连接只允许各一个可靠、有序的 `codex-vnc`、`codex-control` 和 `codex-health` 数据通道；文字终端连接用独立的 `codex-terminal` 取代 VNC，不接受媒体或任意代理目标。兼容没有心跳通道的旧桌面客户端，主动心跳需刷新页面加载新版本。
 
 公网 UDP 接收入口在固定版本 ICE agent 处理消息前验证会话、原始 STUN HMAC 与双方 ufrag，拒绝无凭据探测和未知端点的数据。每个 peer 的检查限制为每秒窗口 64 次、STUN 报文 2 KiB、最多 16 个已认证来源及 16 条 early checks；不写入日志或磁盘。
 
@@ -126,5 +126,7 @@ systemctl --user restart codex-cloud-panel.service
 手机终端仍可压缩正常连接标记；等待网络、服务中断、连接复核、恢复及结果未知时，在画面上方显示短文字提示，保持原画面和本地历史可读，不改变终端行数或工具栏高度。未知结果区分输入助手的具体操作、桌面或网页终端通道、后台待命视图及执行服务历史状态。通道记录可能包含心跳、尺寸调整等协议消息，不能仅凭通道异常判断提示词或 Enter 是否执行。右侧“×”可收起当前提示；同一事件在本页轮询、重连和切换视图后不会重弹，新事件仍会提醒。收起不代表执行成功，不会解除输入限制或补发输入；输入助手的新反馈也不会清除旧告警。连接状态中的“操作与通道提示”保留来源、原因、当时路径及收起状态，仅本页内存最近 32 条，退出后清空，不记录输入内容或异常原文。恢复正常后收回普通提示，未知结果不因恢复连接自动清除。仅关闭按钮接收指针，其余提示区域保持穿透；原有输入权限和暂停规则保持。
 
 实现入口：[候选与校验](../panel/rtc-network.mjs)、[面板与授权](../panel/server.mjs)、[浏览器 ICE 配置](../panel/public/rtc-ice.js)、[TURN 凭据校验](../panel/turn-client.mjs)。实际部署验收见[验证方法](verification.md)。
+
+节点只启用明确配置的 STUN，不使用库的隐式默认服务。STUN 收集最多额外等待 1.5 秒；响应须匹配未完成事务及解析后的来源地址，ICE 检查响应还校验完整性。空配置保留局域网 / IPv6 路径及原中转回退。
 
 [文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

@@ -10,17 +10,17 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-func TestDirectCandidatesRequireEncryptedDataAndKeepOnlyBoundedLANOrGlobalIPv6(t *testing.T) {
+func TestDirectCandidatesRequireEncryptedDataAndKeepBoundedUnicast(t *testing.T) {
 	base := "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 " + strings.Repeat("AB:", 31) + "AB\r\n"
 	candidates := ""
-	for _, host := range []string{"127.0.0.1", "192.168.1.2", "10.0.0.1", "172.16.1.1", "10.0.0.2", "8.8.8.8", "169.254.1.1", "2001:db8::1", "2606:4700::1", "fe80::1", "::ffff:127.0.0.1"} {
+	for _, host := range []string{"127.0.0.1", "192.168.1.2", "10.0.0.1", "172.16.1.1", "10.0.0.2", "203.0.113.8", "169.254.1.1", "2001:db8::1", "2606:4700::1", "fe80::1", "::ffff:127.0.0.1"} {
 		candidates += "a=candidate:1 1 udp 123 " + host + " 40048 typ host\r\n"
 	}
 	result, err := directSDP(base+candidates, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(result, "a=candidate:") != 5 || strings.Contains(result, "8.8.8.8") || strings.Contains(result, "2001:db8") || strings.Contains(result, "::ffff:") {
+	if strings.Count(result, "a=candidate:") != 5 || strings.Contains(result, "203.0.113.8") || strings.Contains(result, "2001:db8") || strings.Contains(result, "::ffff:") {
 		t.Fatal("Candidate filter admitted a forbidden address or exceeded bounds")
 	}
 	for _, sdp := range []string{strings.Repeat("a", 32769), strings.ReplaceAll(base, "sha-256", "sha-1"), base + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", base + "\x00"} {
@@ -28,7 +28,7 @@ func TestDirectCandidatesRequireEncryptedDataAndKeepOnlyBoundedLANOrGlobalIPv6(t
 			t.Fatal("Accepted unencrypted, oversized or non-data SDP")
 		}
 	}
-	for _, host := range []string{"8.8.8.8", "169.254.1.1", "fe80::1", "fc00::1", "2001:db8::1", "2002::1", "3fff::1"} {
+	for _, host := range []string{"100.64.0.1", "169.254.1.1", "fe80::1", "fc00::1", "2001:db8::1", "2002::1", "3fff::1"} {
 		if directIP(net.ParseIP(host), true) {
 			t.Fatalf("Allowed forbidden peer: %s", host)
 		}
@@ -166,5 +166,50 @@ func TestHintCandidatesHaveSeparateBoundAndConfigUpdatesPreservePeer(t *testing.
 	m.accept(cfg)
 	if m.peer != p || !p.draining || p.available || len(p.streams) != 1 || !m.hintsChanged {
 		t.Fatal("config update interrupted old streams")
+	}
+}
+
+func TestNATCandidatesHaveReservedSlotsAndRejectSpecialIPv4(t *testing.T) {
+	base := "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 " + strings.Repeat("AB:", 31) + "AB\r\n"
+	for i := 0; i < 20; i++ {
+		base += "a=candidate:1 1 udp 123 10.0.0.1 40048 typ host\r\n"
+	}
+	base += "a=candidate:2 1 udp 100 11.0.0.2 45000 typ srflx raddr 10.0.0.1 rport 40048\r\n"
+	result, err := directSDP(base, false)
+	if err != nil || !strings.Contains(result, "11.0.0.2 45000 typ srflx") || strings.Count(result, "a=candidate:") != 5 {
+		t.Fatal("NAT mapping was displaced by local candidates", err)
+	}
+	for _, host := range []string{"8.8.8.8", "11.0.0.2", "192.168.1.1", "127.0.0.1"} {
+		if !directIP(net.ParseIP(host), false) {
+			t.Fatalf("Rejected unicast %s", host)
+		}
+	}
+	for _, host := range []string{"0.0.0.0", "100.64.0.1", "169.254.1.1", "192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "255.255.255.255"} {
+		if directIP(net.ParseIP(host), false) {
+			t.Fatalf("Accepted special address %s", host)
+		}
+	}
+}
+
+func TestNetworkConfigurationChangesDrainOnlyNewStreams(t *testing.T) {
+	for _, change := range []func(*directSignal){
+		func(v *directSignal) { v.STUN = "stun:new.example:3478" },
+		func(v *directSignal) { v.IPv6 = true },
+		func(v *directSignal) { v.Enabled = false },
+	} {
+		peer := &directPeer{id: 1, ready: true, available: true, streams: map[*directChannel]struct{}{nil: {}}}
+		initial := directSignal{Type: "rtc_config", Enabled: true, STUN: "stun:old.example:3478"}
+		writes := 0
+		manager := &directManager{peer: peer, configured: true, config: initial, wake: make(chan struct{}, 1), write: func(any) error { writes++; return nil }}
+		next := initial
+		change(&next)
+		manager.accept(next)
+		if manager.config.STUN != next.STUN || manager.config.IPv6 != next.IPv6 || manager.config.Enabled != next.Enabled || manager.peer != peer || !peer.draining || peer.available || len(peer.streams) != 1 || writes != 1 {
+			t.Fatal("Network configuration was ignored or interrupted an existing stream")
+		}
+		manager.accept(next)
+		if writes != 1 {
+			t.Fatal("An identical configuration was applied twice")
+		}
 	}
 }

@@ -126,7 +126,7 @@ export async function createPanel(config) {
   };
   const rtcConfig = async () => {
     const turn = await turnConfig();
-    return { serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc && config.webrtcIPv6 ? config.webrtcStunUrl || '' : '', rtcIceServers: config.webrtc && turn ? turn.iceServers : [], rtcIceExpiresAt: turn?.expiresAt };
+    return { serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc ? config.webrtcStunUrl || '' : '', rtcIceServers: config.webrtc && turn ? turn.iceServers : [], rtcIceExpiresAt: turn?.expiresAt };
   };
   const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port, turn: turnConfig, helperDownloads: true,
     connectFiles: (channel, valid, headers, signal, fail) => attachServiceFiles(channel, { valid, headers, signal, fail, entryBasePath, port: () => server.address().port }) });
@@ -557,7 +557,7 @@ export async function createPanel(config) {
           (!resumable || streamStates.get(body.streamId)?.stream === stream && (!!streamEntry || JSON.stringify(streamStates.get(body.streamId).target) === JSON.stringify(target)));
         const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
         const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
-        bridge = createRTCBridge({ address, ipv6Address, iceServers, relay, turnCa: config.selfhostCaBundle, vncSocket: config.vncSocket, valid,
+        bridge = createRTCBridge({ address, ipv6Address, iceServers, stunUrl: config.webrtcStunUrl, relay, turnCa: config.selfhostCaBundle, vncSocket: config.vncSocket, valid,
           ...(resumable ? { connectStream: (channel, authorized, fail) => {
             streamEntry = streamRTC(channel, stream, authorized, fail); return streamEntry;
           } } : terminalMode ? { connectTerminal: (channel, authorized, fail) => {

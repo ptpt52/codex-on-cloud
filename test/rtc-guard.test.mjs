@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { Message, methods, classes } from 'werift';
 import { guardIceAgent } from '../panel/rtc-guard.mjs';
-import { globalIPv6 } from '../panel/rtc-network.mjs';
+import { globalIPv6, peerAddress } from '../panel/rtc-network.mjs';
 
-function agent() {
+function agent(allowed = globalIPv6) {
   const accepted = [], protocol = { transport: { onData: (bytes, address) => accepted.push({ bytes, address }) } };
   let valid = true;
   const connection = { protocols: [protocol], onIceCandidate: { subscribe(fn) { this.emit = fn; } },
     localUsername: 'local', remoteUsername: 'remote', localPassword: 'test-password', stunServer: ['unexpected-default', 19302],
     earlyChecksDone: true, earlyChecks: [], checkList: [] };
-  guardIceAgent(connection, { valid: () => valid, allowed: globalIPv6 });
+  guardIceAgent(connection, { valid: () => valid, allowed });
   return { connection, accepted, receive: (bytes, host = '2408:8000::1', port = 45000) => protocol.transport.onData(bytes, [host, port]), revoke() { valid = false; } };
 }
 const binding = (username = 'local:remote', password = 'test-password') => new Message(methods.BINDING, classes.REQUEST)
@@ -30,6 +30,15 @@ test('public ICE guard verifies username and original-wire HMAC before any respo
   a.receive(unknown); assert.equal(a.accepted.length, 1);
   a.receive(Buffer.from([22, 0, 0])); assert.equal(a.accepted.length, 2);
   a.revoke(); a.receive(binding()); assert.equal(a.accepted.length, 2);
+});
+
+test('public IPv4 hole punching still requires authenticated ICE before learning a peer', () => {
+  const a = agent(host => peerAddress(host, false));
+  a.receive(binding('local:remote', 'wrong'), '11.0.0.2');
+  a.receive(new Message(methods.BINDING, classes.REQUEST).setAttribute('USERNAME', 'local:remote').bytes, '11.0.0.2');
+  a.receive(Buffer.from([22, 0, 0]), '11.0.0.2'); assert.equal(a.accepted.length, 0);
+  a.receive(binding(), '11.0.0.2'); a.receive(Buffer.from([22, 0, 0]), '11.0.0.2'); assert.equal(a.accepted.length, 2);
+  a.revoke(); a.receive(binding(), '11.0.0.2'); assert.equal(a.accepted.length, 2);
 });
 
 test('public ICE peer learning, early checks, packet sizes and per-second requests remain bounded', () => {
@@ -54,4 +63,21 @@ test('TURN peer guard runs after decapsulation and preserves authenticated ICE c
   protocol.handleStunMessage(binding('wrong:remote'), ['203.0.113.10', 49160]);
   assert.equal(packets.length, 0);
   protocol.handleStunMessage(binding(), ['203.0.113.10', 49160]); assert.equal(packets.length, 1);
+});
+
+test('STUN discovery preserves only explicit servers and responses match source, transaction and integrity', () => {
+  const accepted=[];
+  const protocol={transactions:{},transport:{onData:(bytes,address)=>accepted.push({bytes,address})}};
+  const connection={protocols:[protocol],onIceCandidate:{subscribe(){}},stunServer:['11.0.0.1',3478]};
+  guardIceAgent(connection,{valid:()=>true,allowed:()=>true,stun:true});
+  assert.deepEqual(connection.stunServer,['11.0.0.1',3478]);
+  const response=new Message(methods.BINDING,classes.RESPONSE).setAttribute('XOR-MAPPED-ADDRESS',['12.0.0.2',40000]);
+  const receive=(bytes,host='11.0.0.1',port=3478)=>protocol.transport.onData(bytes,[host,port]);
+  receive(response.bytes);assert.equal(accepted.length,0);
+  protocol.transactions[response.transactionIdHex]={addr:['11.0.0.1',3478]};
+  receive(response.bytes,'11.0.0.2');receive(response.bytes,'11.0.0.1',3479);assert.equal(accepted.length,0);
+  receive(response.bytes);assert.equal(accepted.length,1);
+  protocol.transactions[response.transactionIdHex].integrityKey=Buffer.from('expected');
+  receive(response.bytes);assert.equal(accepted.length,1);
+  response.addMessageIntegrity(Buffer.from('expected')).addFingerprint();receive(response.bytes);assert.equal(accepted.length,2);
 });

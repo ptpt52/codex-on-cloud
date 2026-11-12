@@ -35,6 +35,7 @@
     "test:compat": "playwright test -c playwright.compat.config.mjs",
     "test:selfhost:edge": "node test/selfhost-edge-native.mjs",
     "test:turn": "node test/turn-native.mjs",
+    "test:rtc:nat": "node test/rtc-nat-native.mjs",
     "test:forward:entry": "node test/forward-entry-native.mjs",
     "test:native": "node test/native-smoke.mjs",
     "test:display": "node test/terminal-native.mjs",

@@ -7,6 +7,14 @@ global.addSubnet('2000::', 3, 'ipv6');
 const special = new net.BlockList();
 for (const [address, prefix] of [['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['3fff::', 20]]) special.addSubnet(address, prefix, 'ipv6');
 const canonical = address => new URL(`http://[${address}]/`).hostname.slice(1, -1);
+const special4 = new net.BlockList();
+for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
+  ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 3]]) special4.addSubnet(address, prefix);
+
+export function globalIPv4(address) { return net.isIP(address) === 4 && !special4.check(address); }
+// Shared carrier addresses are local bind fallbacks, never public peer targets.
+const sharedIPv4 = address => net.isIP(address) === 4 && address.split('.')[0] === '100' && Number(address.split('.')[1]) >= 64 && Number(address.split('.')[1]) <= 127;
 
 export function privateIPv4(address) {
   if (net.isIP(address) !== 4) return false;
@@ -16,7 +24,13 @@ export function privateIPv4(address) {
 export function globalIPv6(address) {
   return typeof address === 'string' && !address.includes('%') && net.isIP(address) === 6 && global.check(address, 'ipv6') && !special.check(address, 'ipv6');
 }
-export function peerAddress(address, ipv6) { return privateIPv4(address) || (ipv6 && globalIPv6(address)); }
+export function peerAddress(address, ipv6) { return privateIPv4(address) || globalIPv4(address) || (ipv6 && globalIPv6(address)); }
+
+// Explicit servers only: an empty list must never enable the library's default.
+export function rtcIceConfiguration(stun = '', servers = []) {
+  const iceServers = [...servers, ...(stun ? [{ urls: stunURL(stun) }] : [])];
+  return { iceServers, iceStunGatherTimeout: 1.5, stun: iceServers.some(server => (Array.isArray(server.urls) ? server.urls : [server.urls]).some(url => /^stun:/.test(url))) };
+}
 
 function defaultRoutes() {
   // Linux native deployment. Bound the read even if the routing table is large;
@@ -33,15 +47,15 @@ function defaultRoutes() {
 export function rtcAddress(explicit, interfaces = networkInterfaces(), routes = defaultRoutes()) {
   const entries = Object.entries(interfaces), addresses = entries.flatMap(([, rows]) => rows.map(row => row.address));
   if (explicit) {
-    if (!privateIPv4(explicit) || !addresses.includes(explicit)) throw new Error('WEBRTC_LAN_ADDRESS 必须是本机已分配的私有 IPv4 地址');
+    if (!(privateIPv4(explicit) || globalIPv4(explicit) || sharedIPv4(explicit)) || !addresses.includes(explicit)) throw new Error('WEBRTC_LAN_ADDRESS 必须是本机已分配的私有、公网或运营商共享 IPv4 地址');
     return explicit;
   }
-  const usable = rows => rows.find(row => !row.internal && privateIPv4(row.address) && !row.address.startsWith('127.'))?.address;
+  const usable = rows => rows.find(row => !row.internal && (privateIPv4(row.address) || globalIPv4(row.address)) && !row.address.startsWith('127.'))?.address;
   const defaults = routes.map(line => line.trim().split(/\s+/)).filter(row => row.length >= 8 && row[1] === '00000000' && row[7] === '00000000' &&
     /^[0-9a-f]+$/i.test(row[3]) && (parseInt(row[3], 16) & 1) && !(parseInt(row[3], 16) & 0x200) && /^\d+$/.test(row[6]));
   defaults.sort((a, b) => Number(a[6]) - Number(b[6]));
   for (const [name] of defaults) { const address = interfaces[name] && usable(interfaces[name]); if (address) return address; }
-  return entries.map(([, rows]) => usable(rows)).find(Boolean) || '127.0.0.1';
+  return entries.map(([, rows]) => usable(rows)).find(Boolean) || entries.flatMap(([, rows]) => rows).find(row => !row.internal && sharedIPv4(row.address))?.address || '127.0.0.1';
 }
 
 export function rtcIPv6Address(explicit, ipv4, interfaces = networkInterfaces()) {
@@ -80,19 +94,23 @@ export function rtcOffer(body, { ipv6 = false, relay } = {}) {
   const media = lines.filter(line => line.startsWith('m='));
   if (media.length !== 1 || !/^m=application \d+ UDP\/DTLS\/SCTP webrtc-datachannel$/.test(media[0]) ||
       !lines.some(line => /^a=fingerprint:sha-256 (?:[A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}$/.test(line))) throw new Error('仅支持加密桌面数据通道');
-  const v4 = [], v6 = [], seen = new Set();
+  const host4 = [], reflexive4 = [], v6 = [], relays = [], seen = new Set();
   for (const line of lines) {
     if (!line.startsWith('a=candidate:')) continue;
     const [, component, transport, , host, port, typ, kind] = line.slice(12).split(/ +/);
     const public6 = ipv6 && globalIPv6(host);
     const mdns = /^[a-zA-Z0-9-]{1,63}\.local$/.test(host || '');
     if (component !== '1' || transport?.toLowerCase() !== 'udp' || !/^\d+$/.test(port) || Number(port) < 1024 || Number(port) > 65535 || typ !== 'typ' ||
-        !(kind === 'host' && (privateIPv4(host) || mdns || public6) || kind === 'srflx' && public6 || kind === 'relay' && relayAddress(host, port, relay))) continue;
-    const list = public6 ? v6 : v4, key = `${public6 ? canonical(host) : host}:${Number(port)}`;
+        !(kind === 'host' && (privateIPv4(host) || globalIPv4(host) || mdns || public6) || kind === 'srflx' && (peerAddress(host, false) || public6) || kind === 'relay' && relayAddress(host, port, relay))) continue;
+    const list = kind === 'relay' ? relays : public6 ? v6 : kind === 'srflx' ? reflexive4 : host4, key = `${public6 ? canonical(host) : host}:${Number(port)}:${kind}`;
     if (list.length >= 8 || seen.has(key)) continue;
     seen.add(key); list.push(line);
   }
-  const selected = new Set([...v4.slice(0, v6.length ? 4 : 8), ...v6.slice(0, v4.length ? 4 : 8)]);
+  // Reserve discovery and relay slots even on hosts with many local interfaces.
+  const selected = new Set(), groups = [host4, reflexive4, v6, relays];
+  for (let round = 0; round < 8 && selected.size < 8; round++) for (const group of groups) {
+    if (selected.size < 8 && group[round]) selected.add(group[round]);
+  }
   const filtered = lines.filter(line => !line.startsWith('a=remote-candidates:') && (!line.startsWith('a=candidate:') || selected.delete(line)));
   if (!filtered.includes('a=end-of-candidates')) filtered.push('a=end-of-candidates');
   return { type: 'offer', sdp: filtered.join('\r\n') };

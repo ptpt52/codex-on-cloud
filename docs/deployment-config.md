@@ -39,10 +39,10 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | `RUNTIME_DIR` | `$XDG_RUNTIME_DIR/codex-on-cloud`，无此变量时用 `data/runtime/codex-on-cloud` | 私有 socket、锁、Xauthority 所在目录；需维护宿主和全部关联服务，不能在线搬移 |
 | `TZ` | 安装器写入 `Asia/Shanghai` | 重启需要使用新时区的服务；已有 shell 自身环境保持 |
 | `WEBRTC_ENABLED` | 1；0 / 1 | 重启 panel；关闭后使用 HTTPS / WebSocket 中转 |
-| `WEBRTC_LAN_ADDRESS` | 自动选择私有 IPv4 | 重启 panel；多网卡时固定已分配的私有 IPv4 |
+| `WEBRTC_LAN_ADDRESS` | 自动选择可用 IPv4 | 重启 panel；多网卡时固定本机已分配的私有、普通公网或运营商共享 IPv4 |
 | `WEBRTC_IPV6` | 1；0 / 1 | 重启 panel，控制公网 IPv6 直连 |
 | `WEBRTC_IPV6_ADDRESS` | 自动选择公网 IPv6 | 重启 panel；可固定本机已分配的公网 IPv6 |
-| `WEBRTC_STUN_URL` | `stun:stun.cloudflare.com:3478`；空值关闭 | 重启 panel；用于浏览器地址发现，仍受候选过滤约束 |
+| `WEBRTC_STUN_URL` | 普通节点默认 `stun:stun.cloudflare.com:3478`；自建节点未配置时使用中心的 3478；空值关闭此项发现 | 重启 panel；浏览器、节点和助手用于 IPv4 NAT 打洞，与 IPv6 开关独立 |
 | `TCP_FORWARD_PORTS` | `*`；或最多 16 个逗号分隔端口；空值禁用 | 重启 panel；管理端口始终排除 |
 | `TUNNEL_EDGE_IP_VERSION` | `auto` / `4` / `6` | 重启 tunnel，影响与 Cloudflare 边缘的连接 |
 | `TUNNEL_PROTOCOL` | `auto` / `quic` / `http2` | 重启 tunnel |

@@ -45,6 +45,7 @@ node --test test/forward-agent-policy.test.mjs
 | `test:turn` | 真实 coturn，UDP / TCP / TLS 控制与强制 relay 数据往返 | 不代表真实云安全组、运营商及节点网络已打通 |
 | `test:forward:entry` | 真实 Go 助手通过完整节点路径传输 TCP | 桌面管理为夹具，不代表真实 FRP 和生产中心验收 |
 | `test:forward:agents` | 两个真实 Linux 助手、TCP、回环 WS、Pion / werift 直连、规则隔离及面板重启恢复 | 桌面管理为夹具，不代表真实 USB 串口、Windows / Mac 或公网验收 |
+| `test:rtc:nat` | 隔离 Linux SNAT、防火墙、STUN、Chrome / werift 与真实 Go / Pion，校验加密字节往返及 UDP 封锁 | 不代表物理路由器、对称 NAT、运营商 CGNAT 或生产入口验收 |
 | 原生显示、指针与恢复检查 | 隔离 Xvfb／x11vnc／noVNC；部分测试需 systemd | 不应对生产桌面注入故障 |
 
 真实 Worker 检查：
@@ -54,6 +55,8 @@ npm install --prefix /tmp/codex-worker-tools --no-save --ignore-scripts \
   --no-audit --no-fund wrangler@4.158.0
 WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
 ```
+
+`npm run test:rtc:nat` 需要 Linux 的 `iproute2`、`nftables`、固定 Go 和 Chrome，以及可用的 user / network namespace；缺少网络隔离条件时明确跳过，其他缺失依赖报错。`NAT_TEST_REQUIRED=1` 将缺少隔离条件也视为失败；CI 使用 `NAT_TEST_ROOT=1` 在 sudo 下只创建隔离网络，不修改主机网络。
 
 原生检查命令及依赖见[CI 说明](ci.md)。`test:native` 会操作目标桌面、发送测试文字并重载面板，只能在专用验收实例使用。
 

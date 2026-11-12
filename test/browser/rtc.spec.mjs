@@ -21,7 +21,7 @@ test('real WebRTC and noVNC connect over UDP without a WebSocket; takeover and r
     });
     await login(page, app);
     await page.getByRole('button', { name: '连接状态', exact: true }).click();
-    await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连');
+    await expect(page.locator('#diag-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/);
     await expect(page.locator('#diag-resolution')).toHaveText('1600 × 1600');
     expect(websocketCount).toBe(0);
     const transport = await page.frames().find(frame => frame.url().includes('/desktop/index.html')).evaluate(async () => {

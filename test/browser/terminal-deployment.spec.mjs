@@ -31,7 +31,7 @@ test('terminal-only deployment retains encrypted direct terminal transport and p
   try{
     await page.goto(app.config.origin);await page.locator('#password').fill(app.config.password);await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('终端在线',{timeout:20000});
-    await page.locator('#connection-button').click();await expect(page.locator('#diag-transport')).toHaveText('WebRTC 加密直连 · 文字终端');
+    await page.locator('#connection-button').click();await expect(page.locator('#diag-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)? · 文字终端$/);
     await expect(page.locator('#diag-network')).toHaveText('IPv4 / UDP');await page.locator('#close-connection').click();
     await openInput(page);await page.locator('#mobile-input').fill('直连纯终端');await page.locator('#paste-button').click();
     await expect.poll(()=>app.terminalInputs.length).toBe(1);expect(app.terminalInputs[0].text).toBe('\x1b[200~直连纯终端\x1b[201~');expect(app.inputCalls).toEqual([]);

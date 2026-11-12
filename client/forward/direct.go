@@ -20,6 +20,13 @@ import (
 
 var globalSix = netip.MustParsePrefix("2000::/3")
 var specialSix = []netip.Prefix{netip.MustParsePrefix("2001::/23"), netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"), netip.MustParsePrefix("3fff::/20")}
+var specialFour = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/3"),
+}
+var carrierFour = netip.MustParsePrefix("100.64.0.0/10")
 var directFingerprint = regexp.MustCompile(`^a=fingerprint:sha-256 (?:[A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}$`)
 
 func directIP(ip net.IP, ipv6 bool) bool {
@@ -29,7 +36,12 @@ func directIP(ip net.IP, ipv6 bool) bool {
 	}
 	address = address.Unmap()
 	if address.Is4() {
-		return address.IsLoopback() || address.IsPrivate()
+		for _, prefix := range specialFour {
+			if prefix.Contains(address) {
+				return false
+			}
+		}
+		return true
 	}
 	if !ipv6 || !globalSix.Contains(address) {
 		return false
@@ -41,13 +53,23 @@ func directIP(ip net.IP, ipv6 bool) bool {
 	}
 	return true
 }
+
+// A carrier-assigned local interface can discover a public NAT mapping; its
+// shared address still cannot be offered as a routable remote candidate.
+func directLocalIP(ip net.IP, ipv6 bool) bool {
+	address, ok := netip.AddrFromSlice(ip)
+	return directIP(ip, ipv6) || ok && carrierFour.Contains(address.Unmap())
+}
 func directSDP(sdp string, ipv6 bool) (string, error) {
 	if len(sdp) > 32768 || strings.ContainsRune(sdp, 0) {
 		return "", failure("protocol_error")
 	}
 	lines := strings.Split(strings.ReplaceAll(sdp, "\r\n", "\n"), "\n")
 	result := make([]string, 0, len(lines))
-	v4, v6, hints := 0, 0, 0
+	// Four slots per group, eight automatic candidates in total, plus four hints.
+	// Many LAN interfaces must not displace every NAT mapping learned through STUN.
+	var groups [3][]string
+	hints := []string{}
 	media, fingerprint := 0, false
 	for _, line := range lines {
 		if strings.HasPrefix(line, "m=") {
@@ -63,37 +85,68 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 		if strings.HasPrefix(line, "a=remote-candidates:") {
 			continue
 		}
-		if strings.HasPrefix(line, "a=candidate:") {
-			fields := strings.Fields(strings.TrimPrefix(line, "a=candidate:"))
-			if len(fields) < 8 || fields[1] != "1" || strings.ToLower(fields[2]) != "udp" || !directIP(net.ParseIP(fields[4]), ipv6) || (fields[7] != "host" && fields[7] != "srflx") {
-				continue
-			}
-			port, err := strconv.Atoi(fields[5])
-			address, parseErr := netip.ParseAddr(fields[4])
-			if err != nil || port < 1024 || port > 65535 || parseErr != nil || address.Is4In6() || fields[6] != "typ" {
-				continue
-			}
-			if strings.HasPrefix(fields[0], "hint") && fields[7] == "host" {
-				if hints >= 4 {
-					continue
-				}
-				hints++
-			} else if strings.Contains(fields[4], ":") {
-				if v6 >= 4 {
-					continue
-				}
-				v6++
-			} else {
-				if fields[7] != "host" || v4 >= 4 {
-					continue
-				}
-				v4++
-			}
+		if !strings.HasPrefix(line, "a=candidate:") {
+			continue
 		}
-		result = append(result, line)
+		fields := strings.Fields(strings.TrimPrefix(line, "a=candidate:"))
+		if len(fields) < 8 || fields[1] != "1" || strings.ToLower(fields[2]) != "udp" || !directIP(net.ParseIP(fields[4]), ipv6) || (fields[7] != "host" && fields[7] != "srflx") {
+			continue
+		}
+		port, err := strconv.Atoi(fields[5])
+		address, parseErr := netip.ParseAddr(fields[4])
+		if err != nil || port < 1024 || port > 65535 || parseErr != nil || address.Is4In6() || fields[6] != "typ" {
+			continue
+		}
+		if strings.HasPrefix(fields[0], "hint") && fields[7] == "host" {
+			if len(hints) < 4 {
+				hints = append(hints, line)
+			}
+			continue
+		}
+		group := 0
+		if address.Is6() {
+			group = 2
+		} else if fields[7] == "srflx" {
+			group = 1
+		}
+		if len(groups[group]) < 4 {
+			groups[group] = append(groups[group], line)
+		}
 	}
 	if media != 1 || !fingerprint {
 		return "", failure("protocol_error")
+	}
+	selected := map[string]int{}
+	slots := 0
+	for round := 0; round < 4 && slots < 8; round++ {
+		for _, group := range groups {
+			if round < len(group) && slots < 8 {
+				selected[group[round]]++
+				slots++
+			}
+		}
+	}
+	// Preserve the original SDP order, including end-of-candidates.
+	hintCount := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "a=remote-candidates:") {
+			continue
+		}
+		if strings.HasPrefix(line, "a=candidate:") {
+			keep := selected[line] > 0
+			if !keep && hintCount < len(hints) && line == hints[hintCount] {
+				keep = true
+				hintCount++
+			}
+			if !keep {
+				continue
+			}
+			// Duplicate lines consume the same finite slots as in earlier helpers.
+			if selected[line] > 0 {
+				selected[line]--
+			}
+		}
+		result = append(result, line)
 	}
 	return strings.Join(result, "\r\n"), nil
 }
@@ -112,6 +165,7 @@ type directSignal struct {
 	Available bool   `json:"available"`
 	Healthy   bool   `json:"healthy"`
 	Family    string `json:"family"`
+	Route     string `json:"route"`
 	RTT       *int   `json:"rttMs"`
 	Reason    string `json:"reason"`
 }
@@ -157,12 +211,12 @@ func (m *directManager) accept(value directSignal) {
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
-		if m.configured && m.config.Hints == value.Hints {
+		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN {
 			m.mu.Unlock()
 			return
 		}
 		m.hintsChanged = m.configured
-		if m.configured && m.peer != nil && len(m.peer.streams) > 0 {
+		if m.configured && m.peer != nil {
 			m.peer.draining = true
 			m.peer.available = false
 			drainID = m.peer.id
@@ -181,6 +235,9 @@ func (m *directManager) accept(value directSignal) {
 			m.mu.Unlock()
 			return
 		}
+		if value.Route != "lan" && value.Route != "nat" && value.Route != "ipv6" && value.Route != "public-ipv4" {
+			value.Route = ""
+		}
 		if value.Family != "IPv4" && value.Family != "IPv6" {
 			value.Available = false
 			value.Family = ""
@@ -196,7 +253,11 @@ func (m *directManager) accept(value directSignal) {
 		m.peer.updated = time.Now()
 		label := "新连接使用 WSS 中转"
 		if m.peer.available {
+			kind := map[string]string{"lan": "局域网", "nat": "NAT 打洞", "ipv6": "IPv6", "public-ipv4": "公网 IPv4"}[value.Route]
 			label = "新连接优先使用 " + value.Family + " / UDP 加密直连"
+			if kind != "" {
+				label += "（" + kind + "）"
+			}
 			if value.RTT != nil {
 				label += "（往返延迟 " + strconv.Itoa(*value.RTT) + " ms）"
 			}
@@ -205,7 +266,7 @@ func (m *directManager) accept(value directSignal) {
 		}
 		key := value.Reason + value.Family
 		if m.peer.available {
-			key = "direct" + value.Family
+			key = "direct" + value.Family + value.Route
 		}
 		if key != m.lastStatus {
 			m.lastStatus = key
@@ -253,11 +314,18 @@ func (m *directManager) run() {
 		p := m.peer
 		healthy := p != nil && p.ready && p.available && time.Since(p.updated) < 10*time.Second
 		busy := p != nil && len(p.streams) > 0
+		var disabled *directPeer
+		if !enabled && p != nil && !busy {
+			disabled, m.peer = p, nil
+		}
 		probe := online && enabled && !busy && (m.hintsChanged || !healthy && !time.Now().Before(next))
 		if probe {
 			m.hintsChanged = false
 		}
 		m.mu.Unlock()
+		if disabled != nil {
+			disabled.pc.Close()
+		}
 		if probe {
 			m.negotiate()
 			next = time.Now().Add(delay)
@@ -325,7 +393,7 @@ func (m *directManager) negotiate() {
 	var settings webrtc.SettingEngine
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6})
 	settings.SetIncludeLoopbackCandidate(true)
-	settings.SetIPFilter(func(ip net.IP) bool { return directIP(ip, config.IPv6) })
+	settings.SetIPFilter(func(ip net.IP) bool { return directLocalIP(ip, config.IPv6) })
 	settings.SetRemoteIPFilter(func(ip net.IP) bool { return directIP(ip, config.IPv6) })
 	settings.SetSCTPMaxReceiveBufferSize(1024 * 1024)
 	settings.SetSCTPMaxMessageSize(chunkSize)

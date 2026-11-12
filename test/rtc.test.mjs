@@ -12,15 +12,15 @@ const offer = candidates => ({ type: 'offer', sdp: [
 ].join('\r\n') });
 const candidate = (host, extra = '') => `a=candidate:1 1 udp 123 ${host} 45678 typ host${extra}`;
 
-test('LAN negotiation bounds SDP and keeps only private IPv4/mDNS UDP host candidates', () => {
+test('negotiation bounds SDP and accepts routable IPv4/mDNS UDP candidates', () => {
   const result = lanOffer(offer([
     candidate('192.168.16.15'), candidate('browser-uuid.local'), candidate('127.0.0.1'),
     candidate('8.8.8.8'), candidate('attacker.example'), candidate('2001:db8::1'),
     'a=candidate:1 1 tcp 123 192.168.16.15 45678 typ host tcptype passive',
     'a=candidate:1 1 udp 123 192.168.16.15 443 typ host',
   ]));
-  assert.equal(result.sdp.match(/^a=candidate:/gm).length, 3);
-  assert.ok(!result.sdp.includes('8.8.8.8') && !result.sdp.includes('attacker.example'));
+  assert.equal(result.sdp.match(/^a=candidate:/gm).length, 4);
+  assert.ok(result.sdp.includes('8.8.8.8') && !result.sdp.includes('attacker.example'));
   const many = lanOffer(offer(Array.from({ length: 30 }, (_, i) => candidate(`10.0.0.${i + 1}`))));
   assert.equal(many.sdp.match(/^a=candidate:/gm).length, 8);
   for (const body of [{}, { type: 'answer', sdp: '' }, { type: 'offer', sdp: 'x'.repeat(32769) },
@@ -48,6 +48,14 @@ test('RTC signaling requires login, valid origin, CSRF and current viewer before
   const tooLarge = await post({ body: { type: 'offer', sdp: 'x'.repeat(50 * 1024) } });
   assert.equal(tooLarge.status, 413);
   assert.equal(app.received.some(item => item.method === 'VNC'), false);
+});
+
+test('IPv4-only login and session discovery retain the configured STUN server', async t => {
+  const app = await fixture({ webrtc: true, webrtcIPv6: false, webrtcStunUrl: 'stun:127.0.0.1:3478' }); t.after(() => app.close());
+  const login = await app.request('/api/login', { method: 'POST', body: { username: app.config.username, password: app.config.password } });
+  assert.equal((await login.json()).rtcStunUrl, 'stun:127.0.0.1:3478');
+  await app.login();
+  assert.equal((await (await app.request('/api/me')).json()).rtcStunUrl, 'stun:127.0.0.1:3478');
 });
 
 test('a delayed RTC offer cannot survive takeover and a later reclaim by the same viewer', async t => {

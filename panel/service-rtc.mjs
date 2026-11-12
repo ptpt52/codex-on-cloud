@@ -62,7 +62,7 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
     try {
       const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
       const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
-      entry.peer = createRTCBridge({ address, ipv6Address, iceServers: ice?.iceServers || [], relay: ice?.relay, turnCa: config.selfhostCaBundle, serviceOnly: true, valid, closed: () => { void entry.close(); },
+      entry.peer = createRTCBridge({ address, ipv6Address, iceServers: ice?.iceServers || [], stunUrl: config.webrtcStunUrl, relay: ice?.relay, turnCa: config.selfhostCaBundle, serviceOnly: true, valid, closed: () => { void entry.close(); },
         ...(connectFiles ? { connectFiles: (channel, live, fail) => connectFiles(channel, live, headers, controller.signal, fail) } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');

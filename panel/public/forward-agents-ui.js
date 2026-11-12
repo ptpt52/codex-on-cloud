@@ -1,3 +1,4 @@
+import { rtcDirectLabel } from './rtc-stats.js';
 import { rtcHints } from './rtc-hints.js';
 const states = { active: '已生效', pending: '等待规则通道', connecting: '正在建立映射', recovering: '规则通道恢复中', disabled: '已停用', failed: '未生效', offline: '等待助手上线', starting: '正在下发' };
 const mask = prefix => Array.from({ length: 4 }, (_, i) => Math.max(0, Math.min(255, 256 - 2 ** Math.max(0, 8 - Math.max(0, prefix - i * 8))))).join('.');
@@ -307,7 +308,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
       row.badge.textContent = rule.error || m?.error ? '需要检查' : states[rule.state] || '等待状态'; row.badge.dataset.state = rule.error || m?.error ? 'warning' : rule.state;
       row.state.textContent = rule.error || (m?.error ? '最近连接错误：' + m.error : m?.state === 'active' ? m.targetStatus?.state === 'reachable' ? '目标最近连接成功' : '监听已就绪，目标尚未连接验证。' : ''); row.state.hidden = !row.state.textContent; row.state.dataset.error = String(!!(rule.error || m?.error));
       const toggleLabel = rule.enabled ? '停用规则' : '启用规则'; if (row.toggle.textContent !== toggleLabel) row.toggle.textContent = toggleLabel;
-      row.transport.textContent = !m ? '数据通道尚未建立' : (m.state === 'active' ? p.available ? `新连接：${p.family || 'IP'} / UDP 加密直连${Number.isFinite(p.rttMs) ? ' · ' + p.rttMs + ' ms' : ''}` : '新连接：WSS 加密中转' : '新连接暂停') + `；已有：直连 ${m.directConnections} / 中转 ${m.connections - m.directConnections}`;
+      row.transport.textContent = !m ? '数据通道尚未建立' : (m.state === 'active' ? p.available ? `新连接：${p.family || 'IP'} / UDP 加密直连${rtcDirectLabel(p.route) ? '（' + rtcDirectLabel(p.route) + '）' : ''}${Number.isFinite(p.rttMs) ? ' · ' + p.rttMs + ' ms' : ''}` : '新连接：WSS 加密中转' : '新连接暂停') + `；已有：直连 ${m.directConnections} / 中转 ${m.connections - m.directConnections}`;
     }
     $('forward-agent-rules').querySelector('.forward-rule-empty')?.remove();
     if (!agent.rules.length) { const empty = node('div', '', 'forward-rule-empty'); empty.append(node('strong', '尚无规则，为' + agent.name + '添加第一条映射。'), node('p', '点击“新增规则”，选择访问方向并填写目标。助手离线时也可保存，上线后自动应用。', 'muted')); $('forward-agent-rules').append(empty); }

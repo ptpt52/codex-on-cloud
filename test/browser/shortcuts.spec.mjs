@@ -88,7 +88,7 @@ test('shortcut choices use encrypted direct control and never resend an accepted
   page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/api/key')) http++; });
   try {
     await login(page, app); await page.locator('#connection-button').click();
-    await expect(page.locator('#diag-input-transport')).toHaveText('WebRTC 加密直连'); await page.locator('#close-connection').click();
+    await expect(page.locator('#diag-input-transport')).toHaveText(/^WebRTC 加密直连(?:（局域网）)?$/); await page.locator('#close-connection').click();
     await open(page); await item(page, 'Ctrl+ArrowLeft').click(); await started;
     app.disconnectViewers(); await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown');
     release(); await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 15000 });
