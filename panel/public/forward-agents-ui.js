@@ -191,11 +191,11 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   }
   function openEditor(rule = null) {
     const agent = selected(); if (!agent || !live() || busy()) return;
-    const c = rule?.config || {};
+    const c = rule?.config || {}, reverse = rule ? c.direction === 'reverse' : true;
     edit = { agentId: agent.id, rule, serverHint: rule ? c.hints?.server || '' : hints().server || '' };
     $('forward-form').reset(); $('forward-rule-name').value = rule?.name || ''; $('forward-rule-enabled').checked = rule ? rule.enabled : true;
-    $('forward-direction').value = c.direction === 'reverse' ? 'reverse' : 'forward'; $('forward-protocol').value = c.protocol || 'ssh';
-    $('forward-local').value = c.localPort || 2222; $('forward-host').value = c.targetHost || '127.0.0.1'; $('forward-target').value = c.targetPort || 22;
+    $('forward-direction').value = reverse ? 'reverse' : 'forward'; $('forward-protocol').value = c.protocol || 'ssh';
+    $('forward-local').value = c.localPort || (reverse ? 22001 : 2222); $('forward-host').value = c.targetHost || '127.0.0.1'; $('forward-target').value = c.targetPort || 22;
     syncPortPreset();
     $('forward-server-ip').value = edit.serverHint;
     $('forward-helper-ip').value = rule ? c.hints?.browser || '' : hints().browser || '';

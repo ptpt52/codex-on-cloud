@@ -18,6 +18,7 @@ test('Web and HTTPS port presets work in both directions, preserve manual ports 
       await page.locator('#forward-create').click(); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
       const row = page.locator('#forward-agent-rules article').filter({ hasText: name });
       await row.getByRole('button', { name: '编辑规则', exact: true }).click();
+      await expect(page.locator('#forward-direction')).toHaveValue(direction);
       await expect(page.locator('#forward-port-preset')).toHaveValue(port); await expect(page.locator('#forward-target')).toHaveValue(port);
       await page.locator('#forward-port-preset').selectOption(''); await expect(page.locator('#forward-target')).toBeFocused();
       const custom = direction === 'forward' ? '8080' : '8443';
@@ -44,6 +45,16 @@ test('daily actions stay in the first viewport while installation and advanced i
     for (const id of ['forward-agent-bar', 'forward-agent-key-copy', 'forward-rule-add']) await expect(page.locator('#' + id)).toBeInViewport();
     expect(await page.locator('#forward-dialog').evaluate(n => n.scrollWidth <= n.clientWidth + 1)).toBe(true);
     await page.locator('#forward-rule-add').click();
+    await expect(page.locator('#forward-direction')).toHaveValue('reverse');
+    await expect(page.locator('#forward-direction option').first()).toHaveAttribute('value', 'reverse');
+    await expect(page.locator('#forward-local')).toHaveValue('22001');
+    await expect(page.locator('#forward-target-label')).toHaveText('目标 IP（助手侧）');
+    await page.locator('#forward-direction').selectOption('forward'); await expect(page.locator('#forward-local')).toHaveValue('2222');
+    await page.locator('#forward-direction').selectOption('reverse'); await expect(page.locator('#forward-local')).toHaveValue('22001');
+    await page.locator('#forward-local').fill('34567'); await page.locator('#forward-direction').selectOption('forward');
+    await expect(page.locator('#forward-local')).toHaveValue('34567');
+    await page.locator('#forward-direction').selectOption('reverse'); await expect(page.locator('#forward-local')).toHaveValue('34567');
+    await page.locator('#forward-local').fill('22001');
     await expect(page.locator('#forward-rule-advanced')).not.toHaveAttribute('open', '');
     await expect(page.locator('#forward-create')).toHaveText('保存规则');
     await expect(page.locator('#forward-rule-effect')).toContainText('助手当前离线');
@@ -71,7 +82,8 @@ test('Escape and close preserve dirty input until explicit discard without submi
     await page.keyboard.press('Enter'); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
     expect(writes).toBe(0); await expect(page.locator('#forward-agent-rules article')).toHaveCount(0);
     await page.locator('#forward-rule-add').click(); await expect(page.locator('#forward-rule-name')).toHaveValue('');
-    await page.locator('#forward-direction').selectOption('reverse'); await page.locator('#forward-protocol').selectOption('serial'); await page.locator('#forward-direction').selectOption('forward');
+    await page.locator('#forward-direction').selectOption('forward'); await page.locator('#forward-direction').selectOption('reverse');
+    await page.locator('#forward-protocol').selectOption('serial'); await page.locator('#forward-protocol').selectOption('ssh');
     await page.keyboard.press('Escape'); await expect(page.locator('#forward-rule-dialog')).not.toBeVisible();
   } finally { await app.close(); }
 });
