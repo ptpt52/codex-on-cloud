@@ -23,7 +23,7 @@ let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequenc
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
-let programCopy, programCopyTimer;
+let terminalSelection;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
 let historyRows = DEFAULT_HISTORY_ROWS;
@@ -134,18 +134,64 @@ function raw(data) {
   }
   if (chunk && !send({ type: 'input', data: chunk })) retire(socket, 0);
 }
-function clearProgramCopy() { clearTimeout(programCopyTimer); programCopyTimer = undefined; programCopy = undefined; }
-function canCopyProgram(current) { return term === current && ready && !stopped && !blocked && !busy && !pending && !switching && !streamPaused && !history?.reviewing && !document.hidden && navigator.onLine && socket?.readyState === WebSocket.OPEN; }
-function requestProgramCopy(current) {
-  clearProgramCopy();
-  if (!canCopyProgram(current)) return;
-  const request = programCopy = { term: current, socket, epoch, until: performance.now() + 3000 };
-  history?.notify('正在读取程序选区…');
-  programCopyTimer = setTimeout(() => {
-    if (programCopy !== request) return;
-    clearProgramCopy();
-    if (canCopyProgram(current)) history?.notify('程序未返回选中文字，可使用“查找复制”复制当前画面。');
-  }, 3000);
+function createTerminalSelection(current) {
+  let drag, pending, timer, disposed = false;
+  const locate = event => {
+    const rect = current.element.querySelector('.xterm-screen').getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const buffer = current.buffer.active, row = buffer.viewportY + Math.max(0, Math.min(current.rows - 1, Math.floor((event.clientY - rect.top) * current.rows / rect.height)));
+    let col = Math.max(0, Math.min(current.cols, Math.floor((event.clientX - rect.left) * current.cols / rect.width)));
+    if (col < current.cols && buffer.getLine(row)?.getCell(col)?.getWidth() === 0) col++;
+    return { col, row };
+  };
+  const cancel = () => { clearTimeout(timer); timer = undefined; drag = pending = undefined; document.removeEventListener('mouseup', release, true); };
+  const mirror = () => {
+    clearTimeout(timer); timer = undefined;
+    const value = pending; pending = undefined;
+    if (!value || disposed || term !== current || value.socket !== socket || value.epoch !== epoch || value.cols !== current.cols || value.rows !== current.rows || value.type !== current.buffer.active.type || value.viewport !== current.buffer.active.viewportY || current.hasSelection()) return;
+    const a = value.start.row * value.cols + value.start.col, b = value.end.row * value.cols + value.end.col;
+    const first = Math.min(a, b), length = Math.abs(b - a);
+    if (length) current.select(first % value.cols, Math.floor(first / value.cols), length);
+  };
+  const release = event => {
+    if (event.button !== 0 || !drag) return;
+    const value = drag; drag = undefined; document.removeEventListener('mouseup', release, true);
+    value.end = locate(event);
+    if (!value.end || !value.moved && Math.hypot(event.clientX - value.x, event.clientY - value.y) < 4) return;
+    pending = value;
+    // Run after xterm forwards the original mouse-up. No mouse input is
+    // synthesized or replayed; only the visible range becomes selectable.
+    timer = setTimeout(mirror, 0);
+  };
+  const pointer = event => {
+    if (event.type === 'mousedown' && event.button === 0) {
+      cancel();
+      const start = locate(event);
+      if (current.modes.mouseTrackingMode !== 'none' && start) {
+        drag = { start, x: event.clientX, y: event.clientY, moved: false, socket, epoch, cols: current.cols, rows: current.rows, type: current.buffer.active.type, viewport: current.buffer.active.viewportY };
+        document.addEventListener('mouseup', release, true);
+      }
+    }
+    if (event.type === 'mousemove' && drag && event.buttons & 1 && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) >= 4) drag.moved = true;
+    if (event.type === 'contextmenu' || event.type === 'mousedown' && event.button === 2 || event.type === 'mousemove' && !event.buttons) mirror();
+    if (current.modes.mouseTrackingMode === 'none' || !current.hasSelection()) return;
+    // Keep selected text available to the native menu instead of letting
+    // right-click or hover reports clear it as program input.
+    if (event.type === 'mousemove') { if (!event.buttons) event.stopPropagation(); return; }
+    if (event.button !== 2 || !current.textarea) return;
+    event.stopPropagation();
+    const rect = current.element.querySelector('.xterm-screen').getBoundingClientRect(), area = current.textarea;
+    Object.assign(area.style, { width: '20px', height: '20px', left: `${event.clientX - rect.left - 10}px`, top: `${event.clientY - rect.top - 10}px`, zIndex: '1000' });
+    area.value = current.getSelection(); area.focus(); area.select();
+  };
+  const key = () => { mirror(); cancel(); };
+  for (const name of ['mousedown', 'mousemove', 'contextmenu']) current.element.addEventListener(name, pointer, true);
+  current.element.addEventListener('keydown', key, true); window.addEventListener('blur', cancel);
+  return { cancel, dispose() {
+    disposed = true; cancel();
+    for (const name of ['mousedown', 'mousemove', 'contextmenu']) current.element.removeEventListener(name, pointer, true);
+    current.element.removeEventListener('keydown', key, true); window.removeEventListener('blur', cancel);
+  } };
 }
 function createTerminal() {
   if (term) { size(); return; }
@@ -155,7 +201,7 @@ function createTerminal() {
     cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: TERMINAL_THEME });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
   const current = term;
-  let dragStart, programSelected = false, copyMenuUntil = 0, sgrMouse = false;
+  let sgrMouse = false;
   for (const [final, enabled] of [['h', true], ['l', false]]) current.parser.registerCsiHandler({ prefix: '?', final }, params => {
     if (params.includes(1006) || params.includes(1016)) sgrMouse = enabled;
     return false;
@@ -163,51 +209,9 @@ function createTerminal() {
   const resetMouseEncoding = () => { sgrMouse = false; return false; };
   current.parser.registerEscHandler({ final: 'c' }, resetMouseEncoding);
   current.parser.registerCsiHandler({ intermediates: '!', final: 'p' }, resetMouseEncoding);
-  const preserveSelection = event => {
-    if (current.modes.mouseTrackingMode === 'none') return;
-    if (event.type === 'mousedown' && event.button === 0) {
-      clearProgramCopy(); copyMenuUntil = 0; programSelected = false; dragStart = { x: event.clientX, y: event.clientY };
-    }
-    if (event.type === 'mousemove' && dragStart) {
-      if (!event.buttons) dragStart = undefined;
-      else if (event.buttons & 1 && Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) >= 4) programSelected = true;
-    }
-    if (!current.hasSelection()) {
-      if (event.type === 'mousedown' && event.button === 2 && event.isTrusted && programSelected && canCopyProgram(current)) {
-        requestProgramCopy(current); copyMenuUntil = performance.now() + 3000;
-      }
-      if (event.type === 'contextmenu' && performance.now() < copyMenuUntil) { event.preventDefault(); event.stopPropagation(); }
-      return;
-    }
-    // Mouse reports count as program input and clear xterm's selection. Keep
-    // an existing range available to the browser's native copy menu instead.
-    if (event.type === 'mousemove') { if (!event.buttons) event.stopPropagation(); return; }
-    if (event.button !== 2 || !current.textarea) return;
-    event.stopPropagation();
-    const rect = current.element.querySelector('.xterm-screen').getBoundingClientRect(), area = current.textarea;
-    Object.assign(area.style, { width: '20px', height: '20px', left: `${event.clientX - rect.left - 10}px`, top: `${event.clientY - rect.top - 10}px`, zIndex: '1000' });
-    // Firefox prepares its native menu on mousedown; other browsers use
-    // contextmenu. Do not preventDefault: the browser still owns the menu.
-    area.value = current.getSelection(); area.focus(); area.select();
-  };
-  for (const name of ['mousedown', 'mousemove', 'contextmenu']) current.element.addEventListener(name, preserveSelection, true);
-  current.element.addEventListener('keydown', () => { programSelected = false; copyMenuUntil = 0; clearProgramCopy(); }, true);
-  // Accept one bounded reply to a trusted right click after a program drag.
-  // Automatic OSC 52 copies and clipboard read requests remain blocked.
-  current.parser.registerOscHandler(52, value => {
-    const request = programCopy;
-    if (!request || !value.startsWith('c;') || value === 'c;?') return true;
-    clearProgramCopy();
-    if (request.term !== current || request.socket !== socket || request.epoch !== epoch || performance.now() > request.until || !canCopyProgram(current)) return true;
-    if (value.length > 2 + Math.ceil(HISTORY_BYTES / 3) * 4) { history?.notify('选区超过 1 MiB，请缩小选区。'); return true; }
-    try {
-      const bytes = Uint8Array.from(atob(value.slice(2)), char => char.charCodeAt(0));
-      if (bytes.length > HISTORY_BYTES) { history?.notify('选区超过 1 MiB，请缩小选区。'); return true; }
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      if (text) void history?.copyProgram(text);
-    } catch { history?.notify('程序返回的选中文字无效，请重新选择。'); }
-    return true;
-  });
+  terminalSelection = createTerminalSelection(current);
+  // Applications never write or read the browser clipboard through OSC 52.
+  current.parser.registerOscHandler(52, () => true);
   history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !streamPaused && !pending && !document.hidden && navigator.onLine,
     nativeWheel: () => sgrMouse && !['none', 'x10'].includes(current.modes.mouseTrackingMode),
     read: readHistory,
@@ -229,7 +233,7 @@ function createTerminal() {
   size();
 }
 function inputState() {
-  if (!term || !canCopyProgram(term)) clearProgramCopy();
+  if (blocked || busy || switching || streamPaused || !ready || history?.reviewing || document.hidden || !navigator.onLine) terminalSelection?.cancel();
   if (term) { term.options.disableStdin = blocked || busy || switching || streamPaused || !ready || document.hidden || !navigator.onLine; if (term.textarea) term.textarea.readOnly = history?.reviewing === true; }
   history?.update();
 }
@@ -304,7 +308,7 @@ function attachSocket(current) {
     terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; firstPainted = false; firstFrameAt = performance.now();
     health?.close(); health = undefined;
     ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; pendingOutputAck = 0;
-    finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; term?.dispose(); term = undefined;
+    finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; term?.dispose(); term = undefined;
     createTerminal(); message('正在附加所选终端…'); report('connecting'); controlState();
     clearTimeout(connectingTimer); connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
   });
@@ -490,7 +494,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => resume());
 window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session) retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
-window.addEventListener('pagehide', event => { stopped = true; history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; term?.dispose(); term = fit = undefined; } });
+window.addEventListener('pagehide', event => { stopped = true; history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });
 for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(name, event => {
   lastInteraction = performance.now();

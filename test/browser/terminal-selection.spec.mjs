@@ -39,13 +39,7 @@ for (const mode of ['none', 'vt200', 'drag', 'any']) test(`right click preserves
     await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(0)?.translateToString(true))).toBe(text);
     await expect.poll(() => frame.evaluate(() => window.selectionTerminal.modes.mouseTrackingMode)).toBe(mode);
     const end = await point(frame, 17.1), click = await point(frame, 6.5);
-    const modifier = await frame.evaluate(() => {
-      if (navigator.platform.startsWith('Mac')) { window.selectionTerminal.options.macOptionClickForcesSelection = true; return 'Alt'; }
-      return 'Shift';
-    });
-    if (mouse) await page.keyboard.down(modifier);
     await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 8 }); await page.mouse.up();
-    if (mouse) await page.keyboard.up(modifier);
     await expect.poll(() => frame.evaluate(() => window.selectionTerminal.getSelection())).toBe(text);
     await page.mouse.click(click.x, click.y, { button: 'right' });
     await expect.poll(() => frame.evaluate(() => window.selectionTerminal.getSelection())).toBe(text);
@@ -67,7 +61,10 @@ for (const mode of ['none', 'vt200', 'drag', 'any']) test(`right click preserves
       expect(await input.evaluate(el => el.ownerDocument.execCommand('copy'))).toBe(true);
       expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(text);
     }
-    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+    if (mouse) expect(app.terminalInputs.some(value => /^\x1b\[<0;/.test(value.text))).toBe(true);
+    else expect(app.terminalInputs).toEqual([]);
+    expect(app.terminalInputs.some(value => /^\x1b\[<2;/.test(value.text))).toBe(false);
+    expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
 
@@ -87,85 +84,45 @@ test('unselected clicks still reach a mouse-aware application and the browser me
   } finally { await app.close(); }
 });
 
-async function dragProgram(page, frame, app) {
-  output(app, '\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[HREMOTE-SELECTION');
-  await expect.poll(() => frame.evaluate(() => window.selectionTerminal.modes.mouseTrackingMode)).toBe('drag');
-  const start = await point(frame, 0.2), end = await point(frame, 8.2);
-  await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 4 }); await page.mouse.up();
-  expect(await frame.evaluate(() => window.selectionTerminal.hasSelection())).toBe(false);
-  return end;
-}
-const oscCopy = text => '\x1b]52;c;' + Buffer.from(text).toString('base64') + '\x07';
-
-for (const denied of [false, true]) test(`a direct program drag accepts one right-click copy reply ${denied ? 'with a readonly fallback' : 'without opening a snapshot'}`, async ({ page }) => {
-  let app;
-  app = await fixture({ terminalHook: text => { if (/^\x1b\[<2;\d+;\d+M$/.test(text)) output(app, oscCopy('程序选中文字\n  <plain text>')); } });
-  try {
-    const frame = await login(page, app);
-    await frame.evaluate(denied => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { if (denied) throw Error('synthetic permission denial'); (window.programCopies ||= []).push(text); } } }), denied);
-    output(app, oscCopy('UNSOLICITED')); await expect.poll(() => frame.evaluate(() => window.programCopies || [])).toEqual([]);
-    const end = await dragProgram(page, frame, app);
-    await page.mouse.click(end.x, end.y, { button: 'right' });
-    if (denied) {
-      const field = page.locator('#history-copy-text');
-      await expect(page.locator('#history-copy-manual')).toHaveJSProperty('open', true);
-      await expect(field).toHaveValue('程序选中文字\n  <plain text>');
-      expect(await field.evaluate(el => el.readOnly && el.selectionStart === 0 && el.selectionEnd === el.value.length)).toBe(true);
-      await page.locator('#history-copy-dismiss').click(); await expect(field).toHaveValue('');
-    } else {
-      await expect.poll(() => frame.evaluate(() => window.programCopies)).toEqual(['程序选中文字\n  <plain text>']);
-      await expect(frame.locator('#history-state')).toContainText('已复制程序选区到本机');
-      await expect(page.locator('#history-tools')).toBeHidden();
-    }
-    output(app, oscCopy('SECOND UNSOLICITED') + '\x1b[2;1H\x1b[2KSECOND-REPLY-PARSED');
-    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(1)?.translateToString(true))).toBe('SECOND-REPLY-PARSED');
-    await expect(frame.locator('#history-archive')).toBeHidden();
-    await expect(page.locator('#history-copy-manual[open]')).toHaveCount(0);
-    await expect(frame.locator('#history-copy-manual[open]')).toHaveCount(0);
-    expect(await frame.evaluate(() => window.programCopies || [])).toEqual(denied ? [] : ['程序选中文字\n  <plain text>']);
-    expect(app.inputCalls).toEqual([]);
-    expect(app.terminalInputs.filter(value => /^\x1b\[<2;\d+;\d+M$/.test(value.text))).toHaveLength(1);
-  } finally { await app.close(); }
-});
-
-test('synthetic right clicks and expired requests cannot authorize program clipboard writes or reads', async ({ page }) => {
-  const app = await fixture();
-  try {
-    await page.clock.install(); const frame = await login(page, app);
-    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => (window.programCopies ||= []).push(text), readText: () => { throw Error('clipboard reads forbidden'); } } }));
-    const end = await dragProgram(page, frame, app);
-    await frame.locator('.xterm-screen').dispatchEvent('mousedown', { button: 2, bubbles: true });
-    output(app, oscCopy('FORGED') + '\x1b[2;1H\x1b[2KFORGED-REPLY-PARSED');
-    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(1)?.translateToString(true))).toBe('FORGED-REPLY-PARSED');
-    await expect(frame.locator('#history-state')).not.toContainText('已复制');
-    await page.mouse.click(end.x, end.y, { button: 'right' });
-    output(app, '\x1b]52;c;?\x07');
-    await page.clock.runFor(3100); await expect(frame.locator('#history-state')).toContainText('未返回');
-    output(app, oscCopy('LATE') + '\x1b[2;1H\x1b[2KLATE-REPLY-PARSED');
-    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(1)?.translateToString(true))).toBe('LATE-REPLY-PARSED');
-    expect(await frame.evaluate(() => window.programCopies || [])).toEqual([]);
-    expect(app.inputCalls).toEqual([]);
-  } finally { await app.close(); }
-});
-
-test('program clipboard replies reject invalid UTF-8 and selections larger than one MiB', async ({ page }) => {
+test('reverse multi-line program drags establish a browser selection without requesting the server clipboard', async ({ page }) => {
   const app = await fixture();
   try {
     const frame = await login(page, app);
-    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => (window.programCopies ||= []).push(text) } }));
-    for (const [payload, expected] of [['/w==', '无效'], [Buffer.alloc(1024 * 1024 + 1, 65).toString('base64'), '超过 1 MiB']]) {
-      const end = await dragProgram(page, frame, app);
-      await page.mouse.click(end.x, end.y, { button: 'right' });
-      output(app, '\x1b]52;c;' + payload + '\x07');
-      await expect(frame.locator('#history-state')).toContainText(expected);
-      expect(await frame.evaluate(() => window.programCopies || [])).toEqual([]);
-      await expect(frame.locator('#history-archive')).toBeHidden();
-    }
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => (window.unwantedCopies ||= []).push(text) } }));
+    output(app, '\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[HROW1 中文\r\nROW2 tail');
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(1)?.translateToString(true))).toBe('ROW2 tail');
+    const start = await point(frame, 9.1, 1), end = await point(frame, .1);
+    await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 6 }); await page.mouse.up();
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.getSelection())).toBe('ROW1 中文\nROW2 tail');
+    await page.mouse.click(end.x, end.y, { button: 'right' });
+    await expect(frame.locator('.xterm-helper-textarea')).toHaveValue('ROW1 中文\nROW2 tail');
+    output(app, '\x1b]52;c;VU5TT0xJQ0lURUQ=\x07\x1b[3;1HOSC-PARSED');
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(2)?.translateToString(true))).toBe('OSC-PARSED');
+    expect(await frame.evaluate(() => window.unwantedCopies || [])).toEqual([]);
+    expect(app.terminalInputs.some(value => /^\x1b\[<2;/.test(value.text))).toBe(false);
     expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });
 
-test('real isolated tmux and Python PTY carry program mouse scrolling and an explicit selection copy', async ({ page }) => {
+test('an immediate right click finishes a pending local selection before the native menu opens', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app);
+    output(app, '\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[HFAST-COPY');
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(0)?.translateToString(true))).toBe('FAST-COPY');
+    const value = await frame.locator('.xterm-screen').evaluate(el => {
+      const term = window.selectionTerminal, box = el.getBoundingClientRect(), x = box.width / term.cols, y = box.y + box.height / term.rows / 2;
+      const dispatch = (type, col, button, buttons) => el.dispatchEvent(new MouseEvent(type, { clientX: box.x + col * x, clientY: y, button, buttons, bubbles: true, cancelable: true }));
+      dispatch('mousedown', .1, 0, 1); dispatch('mousemove', 9.1, 0, 1); dispatch('mouseup', 9.1, 0, 0);
+      dispatch('mousedown', 5.1, 2, 2);
+      return { selected: term.getSelection(), native: dispatch('contextmenu', 5.1, 2, 2), value: term.textarea.value };
+    });
+    expect(value).toEqual({ selected: 'FAST-COPY', native: true, value: 'FAST-COPY' });
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('real isolated tmux and Python PTY allow a native copy menu without a program clipboard reply', async ({ page }) => {
   test.setTimeout(60000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-terminal-mouse-')), socket = join(directory, 'tmux.sock');
   const script = join(directory, 'receiver.py'), proof = join(directory, 'proof.json'), children = [];
@@ -174,7 +131,7 @@ test('real isolated tmux and Python PTY carry program mouse scrolling and an exp
   const exec = promisify(execFile), run = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 8192 });
   let app;
   try {
-    await writeFile(script, `import base64, json, os, re, select, subprocess, sys, time, tty
+    await writeFile(script, `import json, os, re, select, sys, time, tty
 from pathlib import Path
 tty.setraw(0)
 state = {'copies': 0, 'wheels': 0, 'pages': 0}
@@ -202,11 +159,6 @@ while time.monotonic() < deadline:
             state['wheels'] = min(128, state['wheels'] + 1)
         if code == 2 and action == b'M':
             state['copies'] = min(128, state['copies'] + 1)
-            text = 'REAL-PTY 选区'.encode()
-            client = subprocess.run(['tmux', '-S', sys.argv[1], 'list-clients', '-F', '#{client_name}'], stdout=subprocess.PIPE, check=True, timeout=2).stdout.decode().splitlines()[0]
-            copied = subprocess.run(['tmux', '-S', sys.argv[1], 'load-buffer', '-w', '-t', client, '-'], input=text, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            if copied.returncode:
-                os.write(1, b'\\x1bPtmux;\\x1b\\x1b]52;c;' + base64.b64encode(text) + b'\\x07\\x1b\\\\')
         save()
 `);
     const quoted = value => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -223,13 +175,20 @@ while time.monotonic() < deadline:
     const start = await point(frame, .2), end = await point(frame, 8.2);
     await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 4 }); await page.mouse.up();
     await page.mouse.click(end.x, end.y, { button: 'right' });
-    await expect.poll(() => frame.evaluate(() => window.programCopies)).toEqual(['REAL-PTY 选区']);
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.getSelection())).toBe('REAL-MOU');
+    await expect(frame.locator('.xterm-helper-textarea')).toHaveValue('REAL-MOU');
+    const copied = await frame.locator('.xterm-helper-textarea').evaluate(el => {
+      const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() });
+      el.dispatchEvent(event); return event.clipboardData.getData('text/plain');
+    });
+    expect(copied).toBe('REAL-MOU');
+    expect(await frame.evaluate(() => window.programCopies || [])).toEqual([]);
     await frame.locator('#history-program').click(); await expect(frame.locator('#history-state')).toContainText('原生方式');
     await frame.locator('.xterm-screen').evaluate(el => {
       const box = el.getBoundingClientRect();
       for (const deltaY of [-120, -120, 120]) el.dispatchEvent(new WheelEvent('wheel', { deltaY, clientX: box.x + 10, clientY: box.y + 10, bubbles: true, cancelable: true }));
     });
-    await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 1, wheels: 3, pages: 0 });
+    await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 0, wheels: 3, pages: 0 });
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token);
     expect(app.inputCalls).toEqual([]);
   } finally {

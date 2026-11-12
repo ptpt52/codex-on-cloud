@@ -206,20 +206,16 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     }
     update();
   }
-  async function copy(text, label, source, fromProgram = false) {
-    if (disposed || !toolsOpen && !fromProgram || copying || !text) return;
+  async function copy(text, label, source) {
+    if (disposed || !toolsOpen || copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
     clearCopy(); const generation = copyGeneration; copying = true; updateTools();
     try {
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
       await navigator.clipboard.writeText(text);
-      if (!disposed && (toolsOpen || fromProgram) && generation === copyGeneration && !document.hidden) {
-        copyState.textContent = `已复制${label}`;
-        if (fromProgram) { notice = '已复制程序选区到本机剪贴板'; update(); }
-      }
+      if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) copyState.textContent = `已复制${label}`;
     } catch {
-      if (!disposed && (toolsOpen || fromProgram) && generation === copyGeneration && !document.hidden) {
-        if (fromProgram && !toolsOpen) { toolsOpen = true; tools.hidden = false; placeTools(); }
+      if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) {
         copying = false; updateTools();
         focusControl(source);
         manual.hidden = false; copyText.value = text; copyState.textContent = '请手动复制窗口内已选中的文字';
@@ -383,6 +379,6 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, copyProgram(text) { if (allowed()) return copy(text, '程序选区', toggle, true); }, notify(text) { notice = text; update(); }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+  return { update, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }
