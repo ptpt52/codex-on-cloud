@@ -88,6 +88,8 @@
 .tools-panel .terminal-view-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .tools-panel .terminal-view-controls label { width: 100%; }
 .tools-panel .terminal-view-controls select { flex: 1; max-width: 100%; }
+.tools-panel label:has(#terminal-mouse-reporting) { min-height: 44px; cursor: pointer; }
+#terminal-mouse-note { font-size: 12px; line-height: 1.5; }
 .terminal-target-controls, .terminal-font-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .terminal-target-controls label { flex: 1; }
 .terminal-target-controls > button { flex: none; }

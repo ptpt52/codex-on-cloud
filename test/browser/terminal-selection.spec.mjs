@@ -5,19 +5,77 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { openTools, closePanels } from './ui.mjs';
 
-async function login(page, app) {
-  await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+async function login(page, app, { mouseReporting = true, platform } = {}) {
+  await page.addInitScript(({ mouseReporting, platform }) => {
+    if (platform) Object.defineProperty(navigator, 'platform', { configurable: true, value: platform });
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true, terminalMouseReporting: mouseReporting }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,
       set: Native => { Terminal = class extends Native { constructor(...args) { super(...args); window.selectionTerminal = this; } }; } });
-  });
+  }, { mouseReporting, platform });
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
+
+for (const [tracking, platform] of [[9], [1000], [1002], [1003], [1003, 'MacIntel']]) test(`mouse reporting off keeps native selection and copy local (protocol ${tracking}, ${platform || 'host'})`, async ({ page, context, browserName }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app, { mouseReporting: false, platform }), text = 'LOCAL-中文  <safe>';
+    output(app, `\x1b[?1049h\x1b[?${tracking}h\x1b[?1006h\x1b[2J\x1b[H${text}`);
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(0)?.translateToString(true))).toBe(text);
+    const start = await point(frame, .1), end = await point(frame, 18.1), click = await point(frame, 5.5);
+    await page.mouse.move(start.x, start.y); await page.mouse.down(); await page.mouse.move(end.x, end.y, { steps: 8 }); await page.mouse.up();
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.getSelection())).toBe(text);
+    await page.mouse.move(click.x, click.y); await page.mouse.click(click.x, click.y, { button: 'right' });
+    await expect(frame.locator('.xterm-helper-textarea')).toHaveValue(text);
+    if (browserName === 'chromium') {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: app.config.origin });
+      expect(await frame.locator('.xterm-helper-textarea').evaluate(el => el.ownerDocument.execCommand('copy'))).toBe(true);
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(text);
+    }
+    expect(app.terminalInputs).toEqual([]);
+    await page.mouse.click(click.x, click.y); await page.mouse.click(click.x, click.y, { button: 'right' });
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+    expect(app.terminalInputs).toEqual([]);
+    await frame.locator('#history-program').click();
+    await expect(frame.locator('#history-state')).toContainText('PageUp');
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+    await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~', 'x']);
+    expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('the program mouse switch restores native clicks and wheels without replacing the terminal or replaying input', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app, { mouseReporting: false });
+    output(app, '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[2J\x1b[HPERSISTENT');
+    await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(0)?.translateToString(true))).toBe('PERSISTENT');
+    await frame.evaluate(() => window.originalTerminal = window.selectionTerminal);
+    const children = app.terminalChildren.length;
+    await openTools(page); await expect(page.locator('#terminal-mouse-reporting')).not.toBeChecked();
+    await page.locator('#terminal-mouse-reporting').check(); await closePanels(page);
+    expect(app.terminalInputs).toEqual([]);
+    await frame.locator('#history-program').click(); await expect(frame.locator('#history-state')).toContainText('原生方式');
+    const click = await point(frame, 5.5); await page.mouse.click(click.x, click.y);
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
+    await expect.poll(() => app.terminalInputs.some(value => /^\x1b\[<0;/.test(value.text))).toBe(true);
+    await expect.poll(() => app.terminalInputs.some(value => /^\x1b\[<64;/.test(value.text))).toBe(true);
+    await openTools(page); await page.locator('#terminal-mouse-reporting').uncheck(); await closePanels(page);
+    await expect(frame.locator('#history-state')).toContainText('PageUp');
+    const before = app.terminalInputs.map(value => value.text);
+    await page.mouse.move(click.x, click.y); await page.mouse.click(click.x, click.y); await page.waitForTimeout(100);
+    expect(app.terminalInputs.map(value => value.text)).toEqual(before);
+    expect(await frame.evaluate(() => window.originalTerminal === window.selectionTerminal)).toBe(true);
+    expect(app.terminalChildren.length).toBe(children); expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
 function output(app, text) {
   const bytes = Buffer.from(text), child = app.terminalChildren.at(-1);
   for (let index = 0; index < bytes.length; index += 8192) child.stdout.write(JSON.stringify({ type: 'output', data: bytes.subarray(index, index + 8192).toString('base64') }) + '\n');
@@ -122,7 +180,7 @@ test('an immediate right click finishes a pending local selection before the nat
   } finally { await app.close(); }
 });
 
-test('real isolated tmux and Python PTY allow a native copy menu without a program clipboard reply', async ({ page }) => {
+for (const mouseReporting of [false, true]) test(`real isolated tmux and Python PTY keep copy local with program mouse ${mouseReporting ? 'on' : 'off'}`, async ({ page }) => {
   test.setTimeout(60000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-terminal-mouse-')), socket = join(directory, 'tmux.sock');
   const script = join(directory, 'receiver.py'), proof = join(directory, 'proof.json'), children = [];
@@ -159,7 +217,7 @@ while time.monotonic() < deadline:
             state['wheels'] = min(128, state['wheels'] + 1)
         if code == 2 and action == b'M':
             state['copies'] = min(128, state['copies'] + 1)
-        save()
+    save()
 `);
     const quoted = value => "'" + value.replaceAll("'", "'\\''") + "'";
     await exec('tmux', ['-f', resolve('desktop/tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex', '-x', '80', '-y', '24', ['python3', script, socket, proof].map(quoted).join(' ')], { env, timeout: 3000 });
@@ -169,7 +227,7 @@ while time.monotonic() < deadline:
       const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token, '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
       children.push(child); return child;
     };
-    const frame = await login(page, app);
+    const frame = await login(page, app, { mouseReporting });
     await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => (window.programCopies ||= []).push(text) } }));
     await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(0)?.translateToString(true))).toBe('REAL-MOUSE-COPY');
     const start = await point(frame, .2), end = await point(frame, 8.2);
@@ -183,12 +241,12 @@ while time.monotonic() < deadline:
     });
     expect(copied).toBe('REAL-MOU');
     expect(await frame.evaluate(() => window.programCopies || [])).toEqual([]);
-    await frame.locator('#history-program').click(); await expect(frame.locator('#history-state')).toContainText('原生方式');
+    await frame.locator('#history-program').click(); await expect(frame.locator('#history-state')).toContainText(mouseReporting ? '原生方式' : 'PageUp');
     await frame.locator('.xterm-screen').evaluate(el => {
       const box = el.getBoundingClientRect();
       for (const deltaY of [-120, -120, 120]) el.dispatchEvent(new WheelEvent('wheel', { deltaY, clientX: box.x + 10, clientY: box.y + 10, bubbles: true, cancelable: true }));
     });
-    await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 0, wheels: 3, pages: 0 });
+    await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 0, wheels: mouseReporting ? 3 : 0, pages: mouseReporting ? 0 : 1 });
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token);
     expect(app.inputCalls).toEqual([]);
   } finally {

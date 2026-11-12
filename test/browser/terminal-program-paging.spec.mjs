@@ -2,15 +2,15 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { readFile } from 'node:fs/promises';
 
-async function login(page, app) {
-  await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+async function login(page, app, mouseReporting = false) {
+  await page.addInitScript(mouseReporting => {
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true, terminalMouseReporting: mouseReporting }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,
       set: Native => { Terminal = class extends Native { constructor(...args) { super(...args); window.pagingTerminal = this; } }; } });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.pagingCopy = text; } } });
-  });
+  }, mouseReporting);
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
@@ -23,7 +23,7 @@ const firstLine = frame => frame.evaluate(() => window.pagingTerminal.buffer.act
 test('program wheels use fine native mouse reports without the page-key throttle, and fall back when mouse encoding is disabled', async ({ page }) => {
   const app = await fixture();
   try {
-    const frame = await login(page, app);
+    const frame = await login(page, app, true);
     output(app, '\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[HNATIVE-WHEEL');
     await expect.poll(() => firstLine(frame)).toBe('NATIVE-WHEEL');
     await frame.locator('#history-program').click();

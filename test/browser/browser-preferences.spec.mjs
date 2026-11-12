@@ -64,11 +64,13 @@ test('separate browser profiles isolate fonts, history and screen-wake preferenc
     await expect(page.locator('#terminal-font-label')).toHaveText(String(defaultFont(page)));
     for (let n = 0; n < 3; n++) await page.locator('#terminal-font-up').click();
     await page.locator('#terminal-width-mode').selectOption('manual'); await page.locator('#terminal-history-rows').selectOption('5000');
+    await expect(page.locator('#terminal-mouse-reporting')).not.toBeChecked(); await page.locator('#terminal-mouse-reporting').check();
     await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
     expect((await stored(page)).terminalFontSize).toBe(defaultFont(page) + 3);
     const second = await secondContext.newPage(); await setup(second); await login(second, app); await openTools(second);
     await expect(second.locator('#terminal-font-label')).toHaveText('15'); await expect(second.locator('#terminal-history-rows')).toHaveValue('10000');
     await expect(second.locator('#terminal-width-mode')).toHaveValue('viewport'); await expect(second.locator('#awake-button')).toHaveAttribute('aria-pressed', 'false');
+    await expect(second.locator('#terminal-mouse-reporting')).not.toBeChecked();
     expect(await second.evaluate(() => window.preferenceWake.requests)).toBe(0);
     await expect.poll(() => page.evaluate(() => window.preferenceWake.active)).toBe(0);
     await second.locator('#terminal-font-down').click(); await second.locator('#terminal-width-mode').selectOption('manual');
@@ -81,6 +83,7 @@ test('separate browser profiles isolate fonts, history and screen-wake preferenc
     expect((await stored(page)).terminalFontSize).toBe(defaultFont(page) + 3); expect((await stored(page)).terminalHistoryRows).toBe(5000); expect((await stored(page)).keepAwake).toBe(true);
     await page.reload(); await online(page); await openTools(page);
     await expect(page.locator('#terminal-font-label')).toHaveText(String(defaultFont(page) + 3));
+    await expect(page.locator('#terminal-mouse-reporting')).toBeChecked();
     expect((await app.controls.get()).saved.fontSize).toBe(28); expect(app.managementStats.fontChanges).toBe(0); expect(app.managementStats.saves).toBe(0);
     expect(remoteWrites).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
   } finally { await secondContext.close(); await app.close(); }
@@ -92,9 +95,11 @@ test('unavailable browser storage keeps controls usable and reports that prefere
     await setup(page, { denied: true }); await login(page, app); await openTools(page);
     await expect(page.locator('#browser-preferences-note')).toContainText('未能保存');
     await page.locator('#terminal-font-up').click(); await expect(page.locator('#terminal-font-label')).toHaveText(String(defaultFont(page) + 1));
+    await page.locator('#terminal-mouse-reporting').check(); await expect(page.locator('#terminal-mouse-reporting')).toBeChecked();
     await page.locator('#awake-button').click(); await expect(page.locator('#awake-button')).toHaveText('亮屏已开启');
     await page.reload(); await online(page); await openTools(page);
     await expect(page.locator('#terminal-font-label')).toHaveText(String(defaultFont(page))); await expect(page.locator('#awake-button')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('#terminal-mouse-reporting')).not.toBeChecked();
     expect(app.managementStats.saves).toBe(0); expect(app.managementStats.fontChanges).toBe(0); expect(app.managementStats.restarts).toBe(0); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });

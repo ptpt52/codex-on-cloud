@@ -67,6 +67,8 @@
           <label for="terminal-width-mode">宽度适配<select id="terminal-width-mode" aria-label="终端宽度适配"><option value="viewport">界面适应宽度</option><option value="scale">内容放大适宽</option><option value="manual">手动字号</option></select></label>
           <div class="terminal-font-controls" role="group" aria-label="终端字号"><span>字号</span><button id="terminal-font-down" class="view-button" type="button" aria-label="缩小终端字号">A−</button><output id="terminal-font-label">15</output><button id="terminal-font-up" class="view-button" type="button" aria-label="放大终端字号">A＋</button></div>
           <label for="terminal-history-rows">网页历史<select id="terminal-history-rows" title="仅调整当前浏览器的滚动历史；调小会丢弃最早的行"><option value="2000">2000 行</option><option value="5000">5000 行</option><option value="10000" selected>10000 行</option><option value="20000">20000 行</option></select></label>
+          <label title="默认关闭，便于拖选和右键复制；开启后将鼠标点击、拖动和程序翻页滚轮交给终端程序"><input id="terminal-mouse-reporting" type="checkbox" aria-describedby="terminal-mouse-note">程序鼠标</label>
+          <span id="terminal-mouse-note" class="muted">关闭便于选字复制；开启可操作程序内的鼠标和滚轮。</span>
         </div>
         <div class="zoom-controls" data-tools-mode="desktop">
           <button id="width-button" class="view-button" aria-pressed="true">适应宽度</button>

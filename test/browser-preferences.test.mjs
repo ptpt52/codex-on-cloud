@@ -67,3 +67,13 @@ test('mode standby is off by default, validates a boolean and stays within brows
   assert.equal(createBrowserPreferences(source).value.modeStandby, true);
   assert.equal(createBrowserPreferences(storage()).value.modeStandby, false);
 });
+
+test('program mouse is opt-in, strictly boolean and fits the bounded shared browser entry', () => {
+  for (const input of [null, JSON.stringify({ layout: 2 }), JSON.stringify({ layout: 2, terminalMouseReporting: 'true' })]) assert.equal(decodeBrowserPreferences(input).terminalMouseReporting, false);
+  const source = storage(), preferences = createBrowserPreferences(source), stale = createBrowserPreferences(source);
+  preferences.update({ terminalMouseReporting: true }); stale.update({ terminalFontSize: 28 });
+  assert.equal(createBrowserPreferences(source).value.terminalMouseReporting, true);
+  assert.equal(createBrowserPreferences(storage()).value.terminalMouseReporting, false);
+  assert.ok(source.text.length <= BROWSER_PREFERENCES_LIMIT);
+  preferences.update({ terminalMouseReporting: false }); assert.equal(createBrowserPreferences(source).value.terminalMouseReporting, false);
+});

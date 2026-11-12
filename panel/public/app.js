@@ -269,7 +269,7 @@ function sendDisplayPreferences() {
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), standby: false, rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows } : {}),
+    csrf, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
     busy: inputBusy || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || !!clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
@@ -303,6 +303,7 @@ function renderDisplayControls() {
     ? `基础字号 ${displayPreferences.terminalFontSize}，适应宽度后为 ${fittedFont}` : `字号 ${displayPreferences.terminalFontSize}`;
   $('terminal-width-mode').value = displayPreferences.terminalWidthMode;
   $('terminal-history-rows').value = String(displayPreferences.terminalHistoryRows);
+  $('terminal-mouse-reporting').checked = displayPreferences.terminalMouseReporting;
   $('terminal-font-down').disabled = displayPreferences.terminalFontSize <= 10; $('terminal-font-up').disabled = displayPreferences.terminalFontSize >= 28;
   renderWakeStatus();
   $('auto-resolution').checked = followsViewport();
@@ -905,7 +906,7 @@ function sendStandbyPreferences() {
   entry.element.contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(entry.epoch), standby: true,
     rtc: { ...rtcConfig, hints: directHints.value }, csrf, zoom: displayPreferences.zoom, pan: displayPreferences.pan,
     blocked: true, busy: true, revision: displayRevision, pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
-    terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows }, location.origin);
+    terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting }, location.origin);
 }
 function syncModeStandby() {
   if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || !frameLoaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
@@ -1397,6 +1398,7 @@ $('terminal-view-select').addEventListener('change', () => selectTerminal($('ter
 $('terminal-font-down').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.max(10, displayPreferences.terminalFontSize - 1) }));
 $('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));
 $('terminal-width-mode').addEventListener('change', () => updateDisplayPreferences({ terminalWidthMode: $('terminal-width-mode').value }));
+$('terminal-mouse-reporting').addEventListener('change', () => updateDisplayPreferences({ terminalMouseReporting: $('terminal-mouse-reporting').checked }));
 $('terminal-history-rows').addEventListener('change', () => {
   const rows = Number($('terminal-history-rows').value);
   if (HISTORY_ROWS.includes(rows)) updateDisplayPreferences({ terminalHistoryRows: rows });

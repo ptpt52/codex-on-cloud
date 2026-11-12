@@ -23,7 +23,7 @@ let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequenc
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
-let terminalSelection;
+let terminalSelection, mouseReporting = false;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
 let historyRows = DEFAULT_HISTORY_ROWS;
@@ -122,6 +122,9 @@ function size() {
 }
 function raw(data) {
   if (!ready || switching || !data) return;
+  // Defence in depth for SGR, legacy and urxvt mouse encodings. Ordinary
+  // keyboard input and terminal query replies keep their existing path.
+  if (!mouseReporting && /^\x1b\[(?:<\d+;\d+;\d+[Mm]|M[\s\S]{3}|\d+;\d+;\d+M)$/.test(data)) return;
   // Keep query replies alive during standby, handoffs and review, without edits.
   if ((standby || streamPaused || history?.reviewing) && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
   lastInteraction = performance.now();
@@ -136,6 +139,17 @@ function raw(data) {
 }
 function createTerminalSelection(current) {
   let drag, pending, timer, disposed = false;
+  const screen = current.element.querySelector('.xterm-screen');
+  const mac = ['Macintosh', 'MacIntel', 'MacPPC', 'Mac68K'].includes(navigator.platform);
+  const originalOptionSelection = current.options.macOptionClickForcesSelection, originalAltClick = current.options.altClickMovesCursor;
+  const updateMousePolicy = () => {
+    cancel();
+    current.options.macOptionClickForcesSelection = mouseReporting ? originalOptionSelection : true;
+    current.options.altClickMovesCursor = mouseReporting ? originalAltClick : false;
+  };
+  // Let screen-local link detection run before stopping ANY-mode hover
+  // reports at the terminal root. Selection drags still reach the document.
+  const hover = event => { if (!mouseReporting && !event.buttons) event.stopPropagation(); };
   const locate = event => {
     const rect = current.element.querySelector('.xterm-screen').getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
@@ -166,7 +180,18 @@ function createTerminalSelection(current) {
     timer = setTimeout(mirror, 0);
   };
   const pointer = event => {
-    if (event.type === 'mousedown' && event.button === 0) {
+    if (!mouseReporting) {
+      if (event.type === 'mousedown') {
+        cancel();
+        // Use xterm's supported forced-selection gesture locally. No keys or
+        // mouse reports are synthesized, and program mode sequences stay intact.
+        if (current.modes.mouseTrackingMode !== 'none') Object.defineProperty(event, mac ? 'altKey' : 'shiftKey', { value: true });
+      }
+      if (event.type === 'mousemove') {
+        if (!event.buttons && !screen.contains(event.target)) event.stopPropagation();
+        return;
+      }
+    } else if (event.type === 'mousedown' && event.button === 0) {
       cancel();
       const start = locate(event);
       if (current.modes.mouseTrackingMode !== 'none' && start) {
@@ -188,10 +213,13 @@ function createTerminalSelection(current) {
   };
   const key = () => { mirror(); cancel(); };
   for (const name of ['mousedown', 'mousemove', 'contextmenu']) current.element.addEventListener(name, pointer, true);
+  screen.addEventListener('mousemove', hover);
   current.element.addEventListener('keydown', key, true); window.addEventListener('blur', cancel);
-  return { cancel, dispose() {
+  updateMousePolicy();
+  return { cancel, updateMousePolicy, dispose() {
     disposed = true; cancel();
     for (const name of ['mousedown', 'mousemove', 'contextmenu']) current.element.removeEventListener(name, pointer, true);
+    screen.removeEventListener('mousemove', hover);
     current.element.removeEventListener('keydown', key, true); window.removeEventListener('blur', cancel);
   } };
 }
@@ -215,7 +243,7 @@ function createTerminal() {
   // Applications never write or read the browser clipboard through OSC 52.
   current.parser.registerOscHandler(52, () => true);
   history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !streamPaused && !pending && !document.hidden && navigator.onLine,
-    nativeWheel: () => sgrMouse && !['none', 'x10'].includes(current.modes.mouseTrackingMode),
+    nativeWheel: () => mouseReporting && sgrMouse && !['none', 'x10'].includes(current.modes.mouseTrackingMode),
     read: readHistory,
     navigate: key => {
       const data = { PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Ctrl+End': '\x1b[1;5F' }[key];
@@ -452,6 +480,9 @@ window.addEventListener('message', event => {
     blocked = standby || value.blocked !== false; busy = standby || value.busy === true;
     if (wasStandby !== standby) { lastReport = ''; controlState(); reportNetwork(); }
     if (Number.isInteger(value.terminalFontSize) && value.terminalFontSize >= 10 && value.terminalFontSize <= 28) fontSize = value.terminalFontSize;
+    if (typeof value.terminalMouseReporting === 'boolean' && mouseReporting !== value.terminalMouseReporting) {
+      mouseReporting = value.terminalMouseReporting; terminalSelection?.updateMousePolicy();
+    }
     if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;
     if (HISTORY_ROWS.includes(value.terminalHistoryRows)) {
       historyRows = value.terminalHistoryRows;
