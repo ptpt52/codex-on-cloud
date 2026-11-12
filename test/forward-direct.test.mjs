@@ -49,3 +49,17 @@ test('SCTP fragment bytes, stream metadata and sparse packet tracking are bounde
     mutate(sctp);sctp.receiveDataChunk({streamId:0,userData:Buffer.alloc(2)});assert.equal(receives,1);assert.equal(failures,1);
   }
 });
+
+test('a full sparse SCTP tracker withholds later DATA but admits the missing TSN and duplicate SACK feedback',()=>{
+  for(const last of [100,0xffffffff]){
+    let received=0,failed=0;
+    const next=(last+1)>>>0,duplicate=(last+2)>>>0;
+    const sctp={inboundStreams:{},advertisedRwnd:1024*1024,sackMisOrdered:new Set(Array.from({length:2048},(_,i)=>(last+i+2)>>>0)),sackDuplicates:[],lastReceivedTsn:last,receiveDataChunk(chunk){received++;if(chunk.tsn===next){this.lastReceivedTsn=(last+2049)>>>0;this.sackMisOrdered.clear();}}};
+    guardForwardSCTP(sctp,()=>true,()=>failed++);
+    sctp.receiveDataChunk({tsn:(last+2050)>>>0,streamId:0,userData:Buffer.from('later')});
+    assert.equal(received,0);assert.equal(sctp.sackMisOrdered.size,2048);assert.equal(sctp.sackNeeded,true);assert.equal(sctp.sackImmediate,true);
+    sctp.receiveDataChunk({tsn:duplicate,streamId:0,userData:Buffer.from('duplicate')});assert.equal(received,1);
+    sctp.receiveDataChunk({tsn:next,streamId:0,userData:Buffer.from('repair')});assert.equal(received,2);assert.equal(sctp.sackMisOrdered.size,0);assert.equal(failed,0);
+    sctp.receiveDataChunk({tsn:(last+2050)>>>0,streamId:0,userData:Buffer.from('retransmission')});assert.equal(received,3);
+  }
+});

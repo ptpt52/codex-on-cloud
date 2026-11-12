@@ -159,6 +159,7 @@ type directSignal struct {
 	IPv6         bool   `json:"ipv6"`
 	STUN         string `json:"stun"`
 	HintRevision string `json:"hintRevision"`
+	Window       int    `json:"window"`
 	Hints        struct {
 		Server  string `json:"server"`
 		Browser string `json:"browser"`
@@ -170,6 +171,26 @@ type directSignal struct {
 	RTT       *int   `json:"rttMs"`
 	Reason    string `json:"reason"`
 }
+
+func directReady(data []byte, offered int) (int, bool) {
+	var record struct {
+		Type      string `json:"type"`
+		Window    int    `json:"window"`
+		PeerBytes int    `json:"peerWindowBytes"`
+	}
+	var fields map[string]json.RawMessage
+	if len(data) > 2048 || json.Unmarshal(data, &record) != nil || json.Unmarshal(data, &fields) != nil || record.Type != "ready" || fields["type"] == nil {
+		return 0, false
+	}
+	if len(fields) == 1 {
+		return directWindowLegacy, true
+	}
+	if len(fields) != 3 || fields["window"] == nil || fields["peerWindowBytes"] == nil || !validWindow(record.Window) || !validWindow(offered) || record.Window > offered || record.PeerBytes != directPeerBytes {
+		return 0, false
+	}
+	return record.Window, true
+}
+
 type directPeer struct {
 	pc               *webrtc.PeerConnection
 	health           *webrtc.DataChannel
@@ -182,7 +203,17 @@ type directPeer struct {
 	channels         int
 	opening          int
 	draining         bool
+	window           int
+	writer           *directWriter
 }
+
+func (p *directPeer) close() {
+	if p.writer != nil {
+		p.writer.close()
+	}
+	p.pc.Close()
+}
+
 type directManager struct {
 	mu           sync.Mutex
 	ctx          context.Context
@@ -217,7 +248,7 @@ func (m *directManager) accept(value directSignal) {
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
-		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision {
+		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision && m.config.Window == value.Window {
 			m.mu.Unlock()
 			return
 		}
@@ -341,7 +372,7 @@ func (m *directManager) run() {
 		}
 		m.mu.Unlock()
 		if disabled != nil {
-			disabled.pc.Close()
+			disabled.close()
 		}
 		if probe {
 			if m.negotiate() == "rtc_busy" {
@@ -378,7 +409,7 @@ func (m *directManager) destroy() {
 	m.peer = nil
 	m.mu.Unlock()
 	if p != nil {
-		p.pc.Close()
+		p.close()
 	}
 }
 func (m *directManager) Close() { m.cancel(); <-m.done }
@@ -399,7 +430,7 @@ func (m *directManager) negotiate() (reason string) {
 	m.peer = nil
 	m.mu.Unlock()
 	if previous != nil {
-		previous.pc.Close()
+		previous.close()
 	}
 	select {
 	case <-m.answers:
@@ -436,11 +467,11 @@ func (m *directManager) negotiate() (reason string) {
 	if err != nil {
 		return
 	}
-	p := &directPeer{pc: pc, id: id, streams: make(map[*directChannel]struct{})}
+	p := &directPeer{pc: pc, id: id, streams: make(map[*directChannel]struct{}), window: 4, writer: newDirectWriter(m.ctx)}
 	m.mu.Lock()
 	m.peer = p
 	m.mu.Unlock()
-	pc.OnDataChannel(func(*webrtc.DataChannel) { go pc.Close() })
+	pc.OnDataChannel(func(*webrtc.DataChannel) { go p.close() })
 	failed := true
 	defer func() {
 		if failed {
@@ -449,7 +480,7 @@ func (m *directManager) negotiate() (reason string) {
 				p.available = false
 			}
 			m.mu.Unlock()
-			pc.Close()
+			p.close()
 		}
 	}()
 	protocol := "forward-health-v1"
@@ -459,25 +490,31 @@ func (m *directManager) negotiate() (reason string) {
 		return
 	}
 	p.health = health
+	healthWriter := p.writer.channel(health, true)
+	if healthWriter == nil {
+		return
+	}
 	health.OnOpen(func() {
-		bytes, _ := json.Marshal(map[string]any{"type": "auth", "id": id, "token": m.token})
-		if health.SendText(string(bytes)) != nil {
-			pc.Close()
+		record := map[string]any{"type": "auth", "id": id, "token": m.token}
+		if validWindow(config.Window) {
+			record["window"] = config.Window
+		}
+		bytes, _ := json.Marshal(record)
+		if healthWriter.SendText(string(bytes)) != nil {
+			p.close()
 		}
 	})
 	health.OnMessage(func(message webrtc.DataChannelMessage) {
-		if m.shared && message.IsString && len(message.Data) <= 2048 && string(message.Data) != "{\"type\":\"ready\"}" {
+		if m.shared && message.IsString && len(message.Data) <= 2048 {
 			var value directSignal
 			if json.Unmarshal(message.Data, &value) == nil && value.Type == "rtc_status" && value.ID == id {
 				m.accept(value)
 				return
 			}
-			pc.Close()
-			return
 		}
 		if !message.IsString && len(message.Data) == 4 {
-			if health.BufferedAmount() > 4096 || health.Send(message.Data) != nil {
-				pc.Close()
+			if healthWriter.BufferedAmount() > 4096 || healthWriter.Send(message.Data) != nil {
+				p.close()
 			} else {
 				m.mu.Lock()
 				if m.peer == p {
@@ -487,17 +524,22 @@ func (m *directManager) negotiate() (reason string) {
 			}
 			return
 		}
-		if !message.IsString || string(message.Data) != "{\"type\":\"ready\"}" {
-			pc.Close()
+		window, valid := directReady(message.Data, config.Window)
+		if !message.IsString || !valid {
+			p.close()
 			return
 		}
 		m.mu.Lock()
-		if m.peer == p {
+		if m.peer == p && !p.ready {
+			p.window = window
 			p.ready = true
 		}
 		m.mu.Unlock()
 	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed {
+			p.writer.close()
+		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateDisconnected {
 			m.mu.Lock()
 			if m.peer == p {
@@ -506,7 +548,7 @@ func (m *directManager) negotiate() (reason string) {
 			}
 			m.mu.Unlock()
 			if state == webrtc.PeerConnectionStateFailed {
-				go pc.Close()
+				go p.close()
 			}
 		}
 	})
@@ -601,9 +643,14 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 		m.mu.Unlock()
 		return nil
 	}
-	stream := newDirectChannel(dc, func() bool { return m.peerAlive(p) })
+	stream := newScheduledDirectChannel(dc, func() bool { return m.peerAlive(p) }, p.window, p.writer)
 	m.mu.Lock()
 	p.opening--
+	if stream == nil {
+		m.mu.Unlock()
+		dc.Close()
+		return nil
+	}
 	if m.peer != p || !p.available || p.draining {
 		m.mu.Unlock()
 		stream.Close()

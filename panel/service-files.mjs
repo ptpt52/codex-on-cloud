@@ -3,6 +3,7 @@ import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js'
 import { uploadOptions, uploadHeaders, uploadResult } from './public/file-upload.js';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 import { FORWARD_FILES, ARTIFACT_LIMITS } from '../native/forward-artifacts.mjs';
+import { validTransferWindow } from './public/transfer-window.js';
 const fault=(status,message)=>Object.assign(Error(message),{status});
 function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!=='..'&&!name.startsWith('.upload-')&&!/[/\\\x00-\x1f\x7f]/.test(name)&&Buffer.byteLength(name)<=240;}
 // Fixed authenticated APIs on loopback only: shared files keep their four-stream
@@ -24,8 +25,11 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   if(recoverable)return;
   if(value.type==='start'){
    const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload'),hasHelper=Object.hasOwn(value,'helper');
-   const expected=hasHelper?'direction,helper,id,name,size,type':hasUpload?'direction,id,name,size,type,upload':'direction,id,name,size,type';
+   const hasWindow=Object.hasOwn(value,'window');
+   const expected=(hasHelper?['direction','helper','id','name','size','type']:hasUpload?['direction','id','name','size','type','upload']:['direction','id','name','size','type']).concat(hasWindow?['window']:[]).sort().join(',');
    if(active||fields!==expected||hasUpload&&value.direction!=='upload'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!fileName(value.name)||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
+   if(hasWindow&&!validTransferWindow(value.window))throw fault(400,'文件窗口协商无效');
+   const window=value.window??4;wire.setWindow(window);
    let path=prefix+'/api/files/'+encodeURIComponent(value.name);
    if(hasHelper){
     const helper=value.helper;
@@ -34,7 +38,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
    }
    const upload=value.direction==='upload'?uploadOptions(value.upload):undefined;
    if(!valid())throw fault(401,'文件授权已失效');lastId=value.id;
-   const entry=active={id:value.id,direction:value.direction,size:value.size,helper:hasHelper,received:0,ended:false,controller:new AbortController()};
+   const entry=active={id:value.id,direction:value.direction,size:value.size,helper:hasHelper,window:hasWindow?window:undefined,received:0,ended:false,controller:new AbortController()};
    entry.timer=setTimeout(()=>reject(entry,fault(408,'文件传输超过五分钟')),300000);entry.timer.unref();
    const requestSignal=AbortSignal.any([signal,entry.controller.signal]);
    const req=entry.req=http.request({host:'127.0.0.1',port:port(),method:value.direction==='upload'?'PUT':'GET',path,signal:requestSignal,
@@ -48,7 +52,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
     });
    });
    req.once('error',err=>reject(entry,err));
-   if(value.direction==='upload'){req.flushHeaders();wire.send({type:'ready',id:entry.id,size:value.size});}
+   if(value.direction==='upload'){req.flushHeaders();wire.send({type:'ready',id:entry.id,size:value.size,...(entry.window===undefined?{}:{window:entry.window})});}
    else req.end();return;
   }
   const entry=active;check(entry);
@@ -65,7 +69,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   check(entry);if(res.statusCode!==200){res.resume();throw fault(res.statusCode,entry.helper?(res.statusCode===410?'助手版本已更新，请刷新下载列表':res.statusCode===409?'助手入口已变化，请重新构建并下载':'助手下载失败，请刷新列表后手动重试'):'下载失败，文件可能已不存在');}
   const length=Number(res.headers['content-length']);if(!Number.isSafeInteger(length)||length<0||length>FILE_MAX)throw fault(413,'此文件请使用 HTTPS 下载');
   if(entry.helper&&(length!==entry.size||length>ARTIFACT_LIMITS.file))throw fault(409,'助手大小已变化，请刷新下载列表');
-  wire.send({type:'ready',id:entry.id,size:length});let total=0;
+  wire.send({type:'ready',id:entry.id,size:length,...(entry.window===undefined?{}:{window:entry.window})});let total=0;
   async function* source(){for await(const bytes of res){check(entry);total+=bytes.length;if(total>length)throw fault(502,'下载长度无效');yield bytes;}}
   await sendFileChunks(source(),wire,()=>active===entry&&valid());check(entry);if(total!==length)throw fault(502,'下载长度不完整');finish(entry,{size:total});
  }

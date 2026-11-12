@@ -292,7 +292,7 @@ func copyStream(tcp *net.TCPConn, ws messageSocket) error {
 		for {
 			kind, data, err := ws.ReadMessage()
 			if err != nil {
-				if remoteFin && websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
+				if remoteFin && (err == io.EOF || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived)) {
 					results <- io.EOF
 				} else {
 					results <- streamFailure(err, "relay_stream_timeout")

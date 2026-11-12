@@ -33,6 +33,16 @@ node --test test/forward-agent-policy.test.mjs
 
 此规格使用真实面板 HTTP / WebSocket 和 TCP 回显，覆盖两种方向的编辑、停用、删除、旧授权拒绝及其他规则不受影响；桌面管理是 fixture。真实 Go 助手与直连网络另用 `npm run test:forward:agents`，不能由这项 Node 回归代替。
 
+吞吐与交互延迟可单独测量，避免同时运行其他重负载测试：
+
+```sh
+npm run test:forward:bench
+FORWARD_BENCH_WINDOW=4 npm run test:forward:bench
+FORWARD_BENCH_WINDOW=16 npm run test:forward:bench
+```
+
+基准使用隔离面板、真实 Go/Pion 和 werift，分别跑 1 / 4 / 8 条 8 MiB TCP 回显流，同时测另一条流的小包 P95、CPU 和总吞吐；校验摘要并确认全部走 RTC。默认八块窗口，可比较 4 / 8 / 16；一次运行不代表稳定性能结论。它测量本机回环，未模拟公网 RTT 或物理局域网。网络、CPU 与 SCTP 拥塞控制均会影响结果，窗口扩大不保证吞吐按比例提升；需要用目标设备和实际网络另行验收。测试不连接生产桌面或 CF。
+
 ## 验证环境的区别
 
 | 检查 | 实际运行 | 不代表什么 |

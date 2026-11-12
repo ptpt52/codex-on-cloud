@@ -174,7 +174,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     poolFor(item)?.configure();
     return { ok: true };
   }
-  function sendConfig(item) { send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', hints: item.hints }); }
+  function sendConfig(item) { send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', hints: item.hints, window: 16 }); }
   function control(item, ws, resume = false, capable = false) {
     // Reverse helpers wait for local consent before heartbeats are installed.
     // Handle receiver errors from the first frame, including resume handshakes;

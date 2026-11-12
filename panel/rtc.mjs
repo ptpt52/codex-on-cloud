@@ -6,6 +6,7 @@ import { peerAddress, relayAddress, rtcIceConfiguration } from './rtc-network.mj
 import { createMDNSLookup } from './rtc-mdns.mjs';
 import { guardIceAgent } from './rtc-guard.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
+import { createRTCWriter } from './rtc-writer.mjs';
 import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT } from './public/transport-policy.js';
 export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network.mjs';
 
@@ -27,6 +28,7 @@ export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl
   pc.createSctpTransport();
   for (const transport of pc.iceTransports) transport.connection.lookup = createMDNSLookup({ address, ipv6: !!ipv6Address });
   let channel, control, health, files, upstream, terminal, ended = false, closePromise, activated = false, videoReady = false, openVideo;
+  const writer = serviceOnly ? createRTCWriter({ valid: () => authorized(), failed: () => { void handle.destroy(); } }) : undefined;
   let timer = setTimeout(() => handle.destroy(), RTC_SIGNAL_TIMEOUT + RTC_TIMEOUT + 2000).unref();
   const handle = {
     activate() {
@@ -46,6 +48,7 @@ export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl
       files?.close();
       terminal?.close();
       upstream?.destroy();
+      writer?.close();
       closed();
       closePromise = pc.close().catch(() => {});
       return closePromise;
@@ -68,18 +71,21 @@ export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl
   pc.onDataChannel.subscribe(value => {
     if (value.label === 'codex-health' && value.protocol === 'codex-health-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null) {
       if (health || !authorized()) { void handle.destroy(); return; }
-      health = attachRTCHealth(value, { valid: authorized, fail: () => { void handle.destroy(); } });
+      health = attachRTCHealth(writer ? writer.channel(value, { control: true }) : value, { valid: authorized, fail: () => { void handle.destroy(); } });
       return;
     }
     if (value.label === (serviceOnly ? 'codex-service' : 'codex-control') && value.protocol === (serviceOnly ? 'service-v1' : 'codex-control-v1') && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null) {
       if (control || !authorized()) { void handle.destroy(); return; }
-      control = attachRTCControl(value, { valid: authorized, perform: performControl, ...(serviceOnly ? { failureMessage: '服务操作结果未知，请刷新状态确认' } : {}) });
+      control = attachRTCControl(writer ? writer.channel(value, { control: true }) : value, { valid: authorized, perform: performControl, ...(serviceOnly ? { failureMessage: '服务操作结果未知，请刷新状态确认' } : {}) });
       if (serviceOnly && value.readyState === 'open') clearTimeout(timer);
       if (serviceOnly) value.stateChange.subscribe(state => { if (state === 'open') clearTimeout(timer); if (state === 'closed') void handle.destroy(); });
       return;
     }
     if (serviceOnly) {
-      if (!files && connectFiles && value.label === 'codex-files' && value.protocol === 'files-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null && authorized()) files = connectFiles(value, authorized, recoverable => { if (recoverable) files = undefined; else void handle.destroy(); });
+      if (!files && connectFiles && value.label === 'codex-files' && value.protocol === 'files-v1' && value.ordered && value.maxRetransmits == null && value.maxPacketLifeTime == null && authorized()) {
+        let queued; try { queued = writer.channel(value); } catch { void handle.destroy(); return; }
+        files = connectFiles(queued, authorized, recoverable => { if (recoverable) files = undefined; else void handle.destroy(); });
+      }
       else void handle.destroy();
       return;
     }

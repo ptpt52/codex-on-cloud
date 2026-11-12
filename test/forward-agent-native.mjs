@@ -118,6 +118,7 @@ try {
     }
   }
   const sharedMappings = (await listing(app)).agents[0].rules.map(rule => rule.mapping);
+  if (!tlsMode) assert(sharedMappings.every(mapping => mapping.direct.window === 8), 'all rules use the authenticated negotiated window');
   assert.equal(sharedMappings.reduce((sum, mapping) => sum + mapping.connections, 0), 26);
   assert.equal(sharedMappings.reduce((sum, mapping) => sum + mapping.directConnections, 0), tlsMode ? 0 : 24, 'excess streams reuse WSS without draining the shared RTC');
   for (const rule of extraRules) await post(app, 'rule/remove', { agentId: a.id, id: rule.id, revision: rule.revision });

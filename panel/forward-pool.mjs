@@ -24,7 +24,7 @@ export function createForwardPool({ config, scope, valid, configuration, connect
   }
   function options() {
     const hints = configuration();
-    return { type: 'rtc_config', enabled: !!config.webrtc && hints.active, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '',
+    return { type: 'rtc_config', enabled: !!config.webrtc && hints.active, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', window: 16,
       hints: { server: hints.server[0] || '', browser: hints.browser[0] || '' }, hintRevision: createHash('sha256').update(JSON.stringify([hints.server, hints.browser])).digest('hex') };
   }
   function configure() {

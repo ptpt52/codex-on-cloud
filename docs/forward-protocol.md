@@ -50,7 +50,9 @@ Go 助手同样使用单一 WSS 写入者，控制与数据待发队列各最多
 
 - 固定八个助手，每助手十六条期望规则，全节点最多三十二条活动映射。转发 peer 全局最多八个（含关闭中），协商同时最多一项；共享池中的多规则不重复占用 peer 名额，超额新 TCP 可经 WSS。
 - TCP 每规则最多八个客户端、每十秒 32 次连接尝试；串口一个客户端。二进制块 16 KiB，服务端应用发送与目标写缓冲各 256 KiB，慢端施加背压；FIN 按原顺序传递，保留半关闭。
-- 直连采用可靠有序 SCTP 和四项确认窗口。每 peer 接收窗口 1 MiB；分片前限制 32 项流元数据、1024 个未重组片、2048 项乱序标识及 1024 项重复标识。每助手 peer 最多创建 128 个数据通道，超限后新连接先中转，旧通道结束后再轮换。
+- 直连采用可靠有序 SCTP，在已认证健康通道协商 4 / 8 / 16 项确认窗口；新节点默认选择八项，即每流最多约 128 KiB 未确认业务数据。未声明能力时仍使用四项；窗口固定到该 peer，不在传输中变更。每侧共享发送额度 512 KiB，阻塞流依次获得释放的额度，关闭流立即归还未确认额度。
+- RTC 发送按流轮转，每次一个记录；ACK 与健康检查优先，业务数据和 FIN 保持原顺序。两端交给 SCTP 的待发数据总量最多 128 KiB，控制消息另留 64 KiB；应用队列每 peer 最多 1 MiB / 32 个含关闭中流组。节点每组最多 64 项 / 512 KiB，控制队列最多 512 KiB，以容纳原有 256 KiB 服务响应；助手每组最多 32 项 / 512 KiB、控制队列最多 64 KiB。原生缓冲未腾出时不恢复 TCP 读取，正常收尾先交付最后 ACK，最多等一秒；撤权直接清空队列。
+- 每 peer SCTP 接收窗口仍为 1 MiB；分片前限制 32 项流元数据、1024 个未重组片、2048 项乱序标识及 1024 项重复标识。乱序记录满额时丢弃新的后续 DATA 并继续 SACK，保留补齐缺口的机会，由 SCTP 自身恢复；不扩大记录表，也不重放业务。每助手 peer 最多创建 128 个数据通道，超限后新连接先中转，旧通道结束后再轮换。
 - 服务端 UDP 40016–40047，助手 UDP 40048–40111。程序不改防火墙。每侧最多四个额外去重提示候选，保留自动候选，不添加监听端口。
 - 助手整体 `/forward/agent` 断开只影响配置和清单，不等同于每条映射断开。单条 `/forward/helper` 控制连接恢复窗口为原 30 秒、最多八次握手，每次最多五秒且受剩余期限约束；保留健康数据与 peer，期间暂停新客户端。窗口耗尽关闭原映射，长期管理恢复后可新建，不能恢复旧 TCP。
 - WebSocket 每十五秒检查心跳，最多三十秒等待匹配 Pong；主动背压暂停读取时不误判断网，但连续暂停最多六十秒。助手读取四十五秒、写入十五秒；数据就绪十秒、目标连接五秒，反向接入总期限四十秒。
@@ -87,6 +89,7 @@ npm run test:desktop
 npm run test:forward
 npm run test:forward:agents
 npm run test:forward:entry
+npm run test:forward:bench
 npm run test:serial
 npm run test:forward:publication
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/forward-agents.spec.mjs test/browser/forward.spec.mjs test/browser/serial-forward.spec.mjs

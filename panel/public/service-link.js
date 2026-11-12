@@ -27,7 +27,7 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
       if (channel.readyState === 'closed') queueMicrotask(reopen);
       else channel.addEventListener('close', reopen, { once: true });
       publish();
-    });
+    }, { window: candidate.features?.filesWindow || 4 });
     files = client; channel.addEventListener('open', publish, { once: true });
   }
   async function monitor(version, peer) {

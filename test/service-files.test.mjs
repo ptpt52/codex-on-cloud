@@ -31,7 +31,7 @@ test('an early HTTP rejection drains already-sent file frames until the rejectio
  files.close();assert.deepEqual(failed,[true]);
 });
 async function setup(t,options={}){const app=await fixture({webrtc:true,...options});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
-async function fileClient(c){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter);for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
+async function fileClient(c,window=4){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter,()=>{},{window});for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
 test('a temporary service peer downloads the published helper rather than a same-named shared file, and stale versions preserve service authorization',async t=>{
  const directory=await mkdtemp(join(tmpdir(),'codex-helper-direct-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const arch='windows-amd64',name=FORWARD_FILES[arch],bytes=Buffer.alloc(1024*1024,137);
@@ -59,8 +59,8 @@ test('helper source records cannot select arbitrary paths, URLs, methods or over
  }
  assert.equal(requests,0);
 });
-test('dedicated file channel transfers 8 MiB and empty files over real DTLS, hashes match and desktop remains untouched',async t=>{
- const {app,c}=await setup(t),files=await fileClient(c);assert.equal((await c.rpc('ping')).value.filesProtocol,1);
+for(const window of [4,16])test(`dedicated file channel with window ${window} transfers 8 MiB and empty files over real DTLS, hashes match and desktop remains untouched`,async t=>{
+ const {app,c}=await setup(t),files=await fileClient(c,window),features=(await c.rpc('ping')).value;assert.equal(features.filesProtocol,1);assert.equal(features.filesWindow,16);
  const bytes=Buffer.alloc(8*1024*1024);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
  await files.upload(new File([bytes],'中文.bin'));const blob=await files.download('中文.bin',bytes.length);assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));
  await files.upload(new File([],'empty'));assert.equal((await files.download('empty',0)).size,0);
@@ -70,7 +70,7 @@ test('dedicated file channel transfers 8 MiB and empty files over real DTLS, has
  assert.equal((await files.upload(new File(['replaced'],'中文.bin'),{mode:'replace',version:original.version})).name,'中文.bin');
  await assert.rejects(files.upload(new File(['stale'],'中文.bin'),{mode:'replace',version:original.version}),/原文件已变化/);assert.equal(app.files.get('中文.bin').toString(),'replaced');
  assert.equal((await c.rpc('ping')).ok,true,'a business rejection preserves the encrypted service control peer');
- const replacement=await fileClient(c);await replacement.upload(new File(['same peer'],'after-conflict'));assert.equal(app.files.get('after-conflict').toString(),'same peer');
+ const replacement=await fileClient(c,window);await replacement.upload(new File(['same peer'],'after-conflict'));assert.equal(app.files.get('after-conflict').toString(),'same peer');
  assert.equal(app.received.filter(r=>r.method==='PUT'&&r.url==='/files/%E4%B8%AD%E6%96%87.bin').length,3);
 });
 test('file direct shares guest quotas and rejects oversized input without replay',async t=>{

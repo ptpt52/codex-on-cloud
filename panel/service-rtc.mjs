@@ -66,7 +66,7 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
         ...(connectFiles ? { connectFiles: (channel, live, fail) => connectFiles(channel, live, headers, controller.signal, fail) } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
-          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
+          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, filesWindow: connectFiles ? 16 : 4, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
           const result = await localServiceRequest(port(), headers, action, value, controller.signal, config.entryBasePath);
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
           return result;

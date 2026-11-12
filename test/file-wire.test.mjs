@@ -17,3 +17,17 @@ test('file wire rejects repeated binary sequence numbers and oversized metadata'
   await new Promise(r=>setTimeout(r,10));assert.equal(failed,1);assert.ok(chunks<=1);
  }
 });
+
+for(const window of [8,16])test(`file wire admits exactly ${window} negotiated chunks and refuses window changes in flight`,async()=>{
+ const a=new Wire(),b=new Wire();a.peer=b;b.peer=a;let release,failed=0,received=0;
+ const gate=new Promise(resolve=>release=resolve);
+ const left=createFileWire(a,{control(){},chunk(){},failed(){failed++;}}),right=createFileWire(b,{control(){},async chunk(){await gate;received++;},failed(){failed++;}});
+ left.setWindow(window);right.setWindow(window);
+ const pending=Array.from({length:window},()=>left.data(new Uint8Array(64)));
+ for(const p of pending)void p.catch(()=>{});
+ assert.throws(()=>left.setWindow(4),/协商/);
+ await assert.rejects(left.data(new Uint8Array(1)),/窗口/);
+ release();await Promise.all(pending);assert.equal(received,window);assert.equal(failed,0);
+ const next=left.data(new Uint8Array(1));await next;assert.equal(received,window+1);
+ left.close();right.close();
+});

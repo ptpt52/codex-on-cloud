@@ -4,6 +4,9 @@ import { rtcDirectKind } from './public/rtc-stats.js';
 import { guardIceAgent } from './rtc-guard.mjs';
 import { forwardChannel } from './forward-channel.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
+import { createFlowBudget } from './flow-budget.mjs';
+import { createRTCWriter } from './rtc-writer.mjs';
+import { validTransferWindow } from './public/transfer-window.js';
 export { guardSCTP as guardForwardSCTP } from './rtc-sctp.mjs';
 
 export function forwardNegotiationFailure(pc) {
@@ -14,13 +17,17 @@ export function forwardNegotiationFailure(pc) {
 
 // Managed rules share one helper peer; one-time mappings retain their own peer.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false }) {
+export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, maxWindow = 8 }) {
+  if (!validTransferWindow(maxWindow)) throw Error('Invalid maximum forward window');
   const allowed = host => peerAddress(host, !!ipv6Address);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl);
   const pc = new RTCPeerConnection({ ...ice, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
     iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: [40016, 40047],
     iceFilterStunResponse: (_message, [host]) => allowed(host), iceFilterCandidatePair: pair => allowed(pair.remoteCandidate.host), maxMessageSize: 16384 });
   const sockets = new Set();
+  const budget = createFlowBudget();
+  const writer = createRTCWriter({ valid: () => authorized(), failed: () => { void handle.destroy('buffer_limit'); } });
+  let window = 4;
   let ended = false, closing, control, authenticated = false, draining = false, timer, pingTimer, deadline, nonce = 0, pending = 0, sentAt = 0, successes = 0;
   let current = { id, available: false, family: null, rttMs: null, reason: 'rtc_connecting' };
   const authorized = () => !ended && valid();
@@ -31,7 +38,7 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     const endpoint = candidate => ({ address: candidate?.host, type: candidate?.type });
     const mapped = pair && connection.reflexiveBySocket.get(pair.protocol);
     const local = mapped && (mapped.host !== pair.localCandidate.host || mapped.port !== pair.localCandidate.port) ? mapped : pair?.localCandidate;
-    current = { id, available, healthy: successes >= 2, reason, rttMs, family,
+    current = { id, available, healthy: successes >= 2, reason, rttMs, family, window,
       route: available ? rtcDirectKind({ family, local: endpoint(local), remote: endpoint(pair.remoteCandidate) }) : 'unknown' };
     status(current);
     // Keep actual direct-path health independent of the pooled WSS. The
@@ -50,7 +57,7 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
       successes = 0; report(false, reason); ended = true;
       clearTimeout(timer); clearTimeout(pingTimer); clearTimeout(deadline);
       for (const socket of sockets) socket.terminate();
-      control?.close(); closed(); closing = pc.close().catch(() => {}); return closing;
+      control?.close(); writer.close(); budget.close(); closed(); closing = pc.close().catch(() => {}); return closing;
     },
     async answer(offer) {
       try {
@@ -83,7 +90,7 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
   pc.onDataChannel.subscribe(channel => {
     if (!authorized() || !channel.ordered || channel.maxRetransmits != null || channel.maxPacketLifeTime != null) return void handle.destroy('protocol_error');
     if (channel.label === 'codex-forward-health' && channel.protocol === 'forward-health-v1' && !control) {
-      control = channel;
+      control = writer.channel(channel, { control: true });
       let windowStart = performance.now(), received = 0;
       channel.onMessage.subscribe(bytes => {
         if (!authorized()) return void handle.destroy();
@@ -91,9 +98,11 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
         if (++received > 8) return void handle.destroy('protocol_error');
         if (!authenticated) {
           let record; try { if (Buffer.isBuffer(bytes) || Buffer.byteLength(bytes) > 256) throw new Error(); record = JSON.parse(bytes); } catch { return void handle.destroy('protocol_error'); }
-          if (!record || Object.keys(record).sort().join(',') !== 'id,token,type' || record.type !== 'auth' || record.id !== id || !authenticate(record.token)) return void handle.destroy('protocol_error');
+          const fields = record && Object.keys(record).sort().join(',');
+          if (!record || !['id,token,type', 'id,token,type,window'].includes(fields) || record.type !== 'auth' || record.id !== id || !authenticate(record.token) || record.window !== undefined && !validTransferWindow(record.window)) return void handle.destroy('protocol_error');
+          window = Math.min(record.window ?? 4, maxWindow);
           authenticated = true; clearTimeout(timer);
-          try { channel.send('{"type":"ready"}'); } catch { return void handle.destroy(); }
+          try { control.send(JSON.stringify({ type: 'ready', ...(record.window === undefined ? {} : { window, peerWindowBytes: 512 * 1024 }) })); } catch { return void handle.destroy(); }
           probe(); return;
         }
         if (!Buffer.isBuffer(bytes) || bytes.length !== 4) return void handle.destroy('protocol_error');
@@ -109,7 +118,8 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     }
     if (channel.label !== 'codex-forward-data' || channel.protocol !== 'forward-data-v1' || !authenticated) return void handle.destroy('protocol_error');
     if (sockets.size >= (shared ? 24 : 8)) { channel.close(); return; }
-    const socket = forwardChannel(channel); sockets.add(socket);
+    let queued; try { queued = writer.channel(channel); } catch { channel.close(); return; }
+    const socket = forwardChannel(queued, { window, budget }); sockets.add(socket);
     const timeout = setTimeout(() => socket.terminate(), 5000).unref();
     socket.once('close', () => { clearTimeout(timeout); sockets.delete(socket); });
     socket.once('message', (bytes, binary) => {

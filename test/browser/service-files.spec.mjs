@@ -6,12 +6,16 @@ async function login(app,page){await app.login();await app.claim();await app.req
 test('temporary uploads and downloads use the dedicated encrypted data channel without browser HTTP file bodies',async({page})=>{
  const app=await fixture({webrtc:true});const requests=[];
  try{
+  await page.addInitScript(()=>{
+   window.fileWindows=[];const send=RTCDataChannel.prototype.send;
+   RTCDataChannel.prototype.send=function(value){if(this.label==='codex-files'&&typeof value==='string'){const record=JSON.parse(value);if(record.type==='start')window.fileWindows.push(record.window??4);}return send.call(this,value);};
+  });
   await page.route('**/api/files/**',r=>{requests.push(r.request().method());return r.abort();});await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
   const bytes=Buffer.alloc(1024*1024);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
   await page.locator('#upload-input').setInputFiles({name:'中文.bin',mimeType:'application/octet-stream',buffer:bytes});await expect(page.locator('#upload-status')).toContainText('上传完成',{timeout:20000});
   expect(hash(app.files.get('中文.bin'))).toBe(hash(bytes));
   const downloading=page.waitForEvent('download');await page.locator('.file-row a').click();const download=await downloading;expect(download.suggestedFilename()).toBe('中文.bin');
-  const stream=await download.createReadStream(),chunks=[];for await(const chunk of stream)chunks.push(chunk);expect(hash(Buffer.concat(chunks))).toBe(hash(bytes));expect(requests).toEqual([]);expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
+  const stream=await download.createReadStream(),chunks=[];for await(const chunk of stream)chunks.push(chunk);expect(hash(Buffer.concat(chunks))).toBe(hash(bytes));expect(requests).toEqual([]);expect(await page.evaluate(()=>window.fileWindows)).toEqual([16,16]);expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
  }finally{await app.close();}
 });
 test('a lost upload completion is reported as uncertain and never retried through HTTP',async({page})=>{

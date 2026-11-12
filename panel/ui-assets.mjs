@@ -20,6 +20,7 @@ export const ASSETS = new Map([
   ['/rtc-ice.js', ['rtc-ice.js', 'text/javascript; charset=utf-8']],
   ['/service-link.js', ['service-link.js', 'text/javascript; charset=utf-8']],
   ['/file-wire.js', ['file-wire.js', 'text/javascript; charset=utf-8']],
+  ['/transfer-window.js', ['transfer-window.js', 'text/javascript; charset=utf-8']],
   ['/file-client.js', ['file-client.js', 'text/javascript; charset=utf-8']],
   ['/file-upload.js', ['file-upload.js', 'text/javascript; charset=utf-8']],
   ['/file-list.js', ['file-list.js', 'text/javascript; charset=utf-8']],

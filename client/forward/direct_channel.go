@@ -42,6 +42,9 @@ type directChannel struct {
 	longRead                                   bool
 	alive                                      func() bool
 	relay                                      bool
+	window                                     int
+	budget                                     *flowBudget
+	held                                       map[uint32]int
 }
 
 func newDirectChannel(dc *webrtc.DataChannel, alive func() bool) *directChannel {
@@ -51,8 +54,23 @@ func newDirectChannel(dc *webrtc.DataChannel, alive func() bool) *directChannel 
 	dc.OnMessage(c.receive)
 	return c
 }
+func newScheduledDirectChannel(dc *webrtc.DataChannel, alive func() bool, window int, writer *directWriter) *directChannel {
+	sender := writer.channel(dc, false)
+	if sender == nil {
+		return nil
+	}
+	c := newFlowChannel(sender, alive)
+	c.window = window
+	c.queue = make(chan directRecord, window)
+	c.budget = writer.budget
+	c.held = make(map[uint32]int)
+	dc.OnClose(func() { c.finish(io.EOF) })
+	dc.OnError(func(error) { c.finish(c.unavailable()) })
+	dc.OnMessage(c.receive)
+	return c
+}
 func newFlowChannel(dc flowSender, alive func() bool) *directChannel {
-	return &directChannel{dc: dc, done: make(chan struct{}), wake: make(chan struct{}, 1), queue: make(chan directRecord, 4), alive: alive}
+	return &directChannel{dc: dc, done: make(chan struct{}), wake: make(chan struct{}, 1), queue: make(chan directRecord, 4), window: 4, alive: alive}
 }
 func (c *directChannel) unavailable() error {
 	if c.relay {
@@ -74,10 +92,25 @@ func (c *directChannel) finish(err error) {
 	}
 	c.ended = true
 	c.cause = err
+	graceful := err == io.EOF && c.sent == c.acked && c.received == c.credited
+	released := 0
+	for id, size := range c.held {
+		released += size
+		delete(c.held, id)
+	}
 	close(c.done)
 	c.mu.Unlock()
+	if c.budget != nil {
+		c.budget.release(released)
+	}
 	// Pion can invoke callbacks from its SCTP read loop; close outside that loop.
-	go c.dc.Close()
+	go func() {
+		if sender, ok := c.dc.(interface{ CloseGracefully() error }); ok && graceful {
+			sender.CloseGracefully()
+		} else {
+			c.dc.Close()
+		}
+	}()
 }
 func (c *directChannel) Close() error { c.finish(io.EOF); return nil }
 func (c *directChannel) SetReadDeadline(t time.Time) error {
@@ -112,10 +145,20 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 			json.Unmarshal(message.Data, &fields)
 			c.mu.Lock()
 			valid := len(fields) == 2 && record.ID > c.acked && record.ID <= c.sent
+			released := 0
 			if valid {
 				c.acked = record.ID
+				for id, size := range c.held {
+					if id <= record.ID {
+						released += size
+						delete(c.held, id)
+					}
+				}
 			}
 			c.mu.Unlock()
+			if c.budget != nil {
+				c.budget.release(released)
+			}
 			if !valid {
 				c.finish(failure("protocol_error"))
 				return
@@ -130,7 +173,11 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 	c.mu.Lock()
 	c.received++
 	id := c.received
-	valid := !c.ended && id <= 2147483647 && id-c.credited <= 4
+	window := c.window
+	if window == 0 {
+		window = 4
+	}
+	valid := !c.ended && id <= 2147483647 && id-c.credited <= uint32(window)
 	c.mu.Unlock()
 	if !valid {
 		c.finish(failure("buffer_limit"))
@@ -156,9 +203,16 @@ func (c *directChannel) ReadMessage() (int, []byte, error) {
 	c.mu.Unlock()
 	if credit {
 		bytes, _ := json.Marshal(map[string]any{"type": "ack", "id": id})
-		c.sendMu.Lock()
-		err := c.dc.SendText(string(bytes))
-		c.sendMu.Unlock()
+		var err error
+		if sender, ok := c.dc.(interface{ SendACK(string) error }); ok {
+			// The peer writer serializes native sends. ACKs bypass a bulk write
+			// waiting for admission; they never reorder business data or FIN.
+			err = sender.SendACK(string(bytes))
+		} else {
+			c.sendMu.Lock()
+			err = c.dc.SendText(string(bytes))
+			c.sendMu.Unlock()
+		}
 		if err != nil {
 			c.finish(c.unavailable())
 		}
@@ -203,16 +257,42 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 	for {
 		c.mu.Lock()
 		deadline := c.writeDeadline
-		room := c.sent-c.acked < 4 && !c.ended && c.sent < 2147483647
-		if room {
-			c.sent++
+		window := c.window
+		if window == 0 {
+			window = 4
 		}
+		room := c.sent-c.acked < uint32(window) && !c.ended && c.sent < 2147483647
 		c.mu.Unlock()
 		if room {
+			if !deadline.IsZero() && !time.Now().Before(deadline) {
+				return c.timeout()
+			}
+			if c.budget != nil {
+				if err := c.budget.acquire(len(bytes), c.done, deadline); err != nil {
+					return err
+				}
+			}
+			c.mu.Lock()
+			if c.ended {
+				c.mu.Unlock()
+				if c.budget != nil {
+					c.budget.release(len(bytes))
+				}
+				return c.unavailable()
+			}
+			c.sent++
+			if c.budget != nil {
+				c.held[c.sent] = len(bytes)
+			}
+			c.mu.Unlock()
 			c.sendMu.Lock()
 			var err error
-			if c.dc.BufferedAmount() > 256*1024 {
+			if c.dc.BufferedAmount() > 512*1024 {
 				err = failure("buffer_limit")
+			} else if sender, ok := c.dc.(interface {
+				sendDeadline([]byte, bool, time.Time) error
+			}); ok {
+				err = sender.sendDeadline(bytes, kind == websocket.TextMessage, deadline)
 			} else if kind == websocket.TextMessage {
 				err = c.dc.SendText(string(bytes))
 			} else {
