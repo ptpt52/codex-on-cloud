@@ -5,7 +5,7 @@ async function setup(page, viewport) {
   if (viewport) await page.setViewportSize(viewport);
   await page.addInitScript(() => {
     if (window === parent) {
-      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
+      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
       const viewport = new EventTarget(); let visibleHeight; viewport.offsetTop = 0;
       Object.defineProperty(viewport, 'height', { get: () => visibleHeight ?? innerHeight, set: value => { visibleHeight = value; } });
       Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });

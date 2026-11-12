@@ -24,7 +24,7 @@ test('a direct target switch waits for rendering on the retained peer without tr
   const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
   await app.controls.manageTerminals({ action: 'create', name: '第二终端', view: 'terminal' });
   await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
     if (location.pathname !== '/terminal/index.html') return;
     window.switchPeers = []; const Peer = RTCPeerConnection;
     window.RTCPeerConnection = class extends Peer { constructor(...args) { super(...args); window.switchPeers.push(this); } };
@@ -68,7 +68,7 @@ test('a direct terminal keeps its controls and switches targets on the same peer
   const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
   await app.controls.manageTerminals({ action: 'create', name: '第二终端', view: 'terminal' });
   await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
     window.directPeers = []; const Native = RTCPeerConnection;
     window.RTCPeerConnection = class extends Native { constructor(...args) { super(...args); window.directPeers.push(this); } };
   });
@@ -106,7 +106,7 @@ for (const direct of [false, true]) test(`a ${direct ? 'direct' : 'relay'} targe
     await app.controls.manageTerminals({ action: 'create', name: '第二终端', view: 'terminal' });
     await page.addInitScript(() => {
       if (window !== parent) return;
-      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
+      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
       window.heldPanelStates = [];
       window.addEventListener('message', event => {
         if (!window.holdPanelReady || event.data?.type !== 'codex-panel-state' || event.data.terminalSwitch !== true) return;

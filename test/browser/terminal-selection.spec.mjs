@@ -10,7 +10,7 @@ import { openTools, closePanels } from './ui.mjs';
 async function login(page, app, { mouseReporting = true, platform } = {}) {
   await page.addInitScript(({ mouseReporting, platform }) => {
     if (platform) Object.defineProperty(navigator, 'platform', { configurable: true, value: platform });
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true, terminalMouseReporting: mouseReporting }));
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true, terminalMouseReporting: mouseReporting }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,

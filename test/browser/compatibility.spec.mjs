@@ -4,7 +4,7 @@ import { fixture } from '../fixture.mjs';
 const historyText = Array.from({ length: 180 }, (_, n) => `ROW-${n} 中文与空格    code();\n`).join('');
 async function prepare(page, terminal = false) {
   await page.addInitScript(terminal => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, mode: terminal ? 'terminal' : 'desktop', collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, mode: terminal ? 'terminal' : 'desktop', collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));
     if (location.pathname !== '/terminal/index.html') return;
     let TerminalClass;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => TerminalClass, set: Native => {

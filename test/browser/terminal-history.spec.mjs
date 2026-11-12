@@ -9,7 +9,7 @@ import { join, resolve } from 'node:path';
 
 async function prepare(page) {
   await page.addInitScript(() => {
-    if (window === parent && !localStorage.getItem('codex-cloud.display.v1')) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+    if (window === parent && !localStorage.getItem('codex-cloud.display.v1')) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal; window.terminalInstances = 0;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,

@@ -40,7 +40,7 @@ for (const mode of ['terminal', 'desktop']) test(`${mode} keeps the wide-screen 
   try {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.addInitScript(mode => {
-      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode, controlsCollapsed: true, terminalInputCollapsed: true }));
+      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode, controlsCollapsed: true, terminalInputCollapsed: true }));
     }, mode);
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');

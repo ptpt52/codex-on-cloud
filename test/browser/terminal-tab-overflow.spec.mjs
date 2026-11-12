@@ -4,7 +4,10 @@ import { fixture } from '../fixture.mjs';
 // The recovery case injects an HTTP catalog, including after a page reload.
 test.use({ serviceWorkers: 'block' });
 
+// These cases exercise the optional horizontal layout; sidebar navigation has
+// its own full-height, scrolling and keyboard coverage in sidebar-layout.
 async function setup(page, count) {
+  await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top' })));
   const app = await fixture({ mode: 'terminal', maxTerminals: 8, rfb: true });
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: `辅助终端 ${n} 的任务`, view: 'terminal' });
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();

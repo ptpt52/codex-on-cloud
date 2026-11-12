@@ -2,15 +2,20 @@
 // Local scrolling never sends input. Program paging is an explicit opt-in.
 import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
+// Keep the fixed controls across reconnects even while their toolbar belongs
+// to the outer sidebar. Never adopt the terminal host or its text buffer.
+const historyControls = new Map([...document.getElementById('terminal-tools').querySelectorAll('[id]')].map(element => [element.id, element]));
+const historyControl = id => historyControls.get(id);
+
 export function createTerminalHistory(term, host, { allowed, navigate, read, changed, nativeWheel = () => false }) {
-  const mode = document.getElementById('history-program'), up = document.getElementById('history-up');
-  const down = document.getElementById('history-down'), latest = document.getElementById('history-latest'), state = document.getElementById('history-state');
-  const toggle = document.getElementById('history-tools-toggle'), tools = document.getElementById('history-tools'), query = document.getElementById('history-query');
-  const previousMatch = document.getElementById('history-find-prev'), nextMatch = document.getElementById('history-find-next'), findState = document.getElementById('history-find-state');
-  const copySelection = document.getElementById('history-copy-selection'), copyAll = document.getElementById('history-copy-all'), copyState = document.getElementById('history-copy-state');
-  const download = document.getElementById('history-download');
-  const manual = document.getElementById('history-copy-manual'), copyText = document.getElementById('history-copy-text');
-  const retryCopy = document.getElementById('history-copy-retry'), copyResult = document.getElementById('history-copy-result');
+  const mode = historyControl('history-program'), up = historyControl('history-up');
+  const down = historyControl('history-down'), latest = historyControl('history-latest'), state = historyControl('history-state');
+  const toggle = historyControl('history-tools-toggle'), tools = historyControl('history-tools'), query = historyControl('history-query');
+  const previousMatch = historyControl('history-find-prev'), nextMatch = historyControl('history-find-next'), findState = historyControl('history-find-state');
+  const copySelection = historyControl('history-copy-selection'), copyAll = historyControl('history-copy-all'), copyState = historyControl('history-copy-state');
+  const download = historyControl('history-download');
+  const manual = historyControl('history-copy-manual'), copyText = historyControl('history-copy-text');
+  const retryCopy = historyControl('history-copy-retry'), copyResult = historyControl('history-copy-result');
   const archive = document.createElement('pre'); archive.id = 'history-archive'; archive.hidden = true; archive.tabIndex = 0; archive.setAttribute('aria-label', '远端历史快照'); host.appendChild(archive);
   const newer = document.createElement('button'); newer.id = 'history-new-output'; newer.type = 'button'; newer.hidden = true;
   newer.textContent = '有新输出 · 回到实时'; host.appendChild(newer);
@@ -107,7 +112,10 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   function updateTools() {
     if (disposed) return;
     toggle.setAttribute('aria-expanded', String(toolsOpen)); tools.hidden = !toolsOpen;
-    if (floating()) { toggle.removeAttribute('aria-controls'); toggle.setAttribute('aria-label', '收起顶部查找与复制'); }
+    if (floating()) {
+      if (toggle.ownerDocument === tools.ownerDocument) toggle.setAttribute('aria-controls', 'history-tools'); else toggle.removeAttribute('aria-controls');
+      toggle.setAttribute('aria-label', toolsOpen ? '收起查找与复制' : '查找与复制');
+    }
     else { toggle.setAttribute('aria-controls', 'history-tools'); toggle.removeAttribute('aria-label'); }
     if (!toolsOpen) { archive.style.top = ''; return; }
     if (!floating()) {
@@ -286,7 +294,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(up, 'click', () => turn(-1, false, true)); listen(down, 'click', () => turn(1, false, true)); listen(latest, 'click', live);
   listen(newer, 'click', live);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
-  listen(document.getElementById('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });
+  listen(historyControl('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });
   const scheduleSearch = () => { if (!toolsOpen) return; clearCopy(); clearTimeout(searchTimer); searchTimer = setTimeout(() => findCurrent(true), 150); updateTools(); };
   listen(query, 'input', event => { if (!queryComposing && !event.isComposing) scheduleSearch(); });
   listen(query, 'compositionstart', () => { queryComposing = true; clearTimeout(searchTimer); searchTimer = undefined; updateTools(); placeTools(); });
@@ -330,8 +338,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     } catch { clearDownload(); copyState.textContent = '下载失败，可复制当前快照'; }
     finally { link.remove(); updateTools(); }
   });
-  listen(document.getElementById('history-copy-dismiss'), 'click', dismissCopy);
-  listen(document.getElementById('history-copy-select'), 'click', selectCopy);
+  listen(historyControl('history-copy-dismiss'), 'click', dismissCopy);
+  listen(historyControl('history-copy-select'), 'click', selectCopy);
   listen(retryCopy, 'click', () => { void copyFromWindow(); });
   listen(manual, 'cancel', event => { event.preventDefault(); dismissCopy(); });
   listen(document, 'selectionchange', updateTools);

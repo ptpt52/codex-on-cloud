@@ -41,6 +41,22 @@
       <div class="topbar-right"><span id="user-label" class="user-label"></span><button id="connection-button" class="quiet">连接状态</button><button id="forward-button" class="quiet" type="button" disabled>端口映射</button><button id="files-button" class="secondary">文件中转</button><button id="logout-button" class="quiet logout-entry" title="退出登录，桌面任务继续运行">退出</button></div>
     </header>
     <section id="desktop-card" class="desktop-card" aria-label="远程桌面">
+      <aside id="workspace-sidebar" class="workspace-sidebar" aria-label="工作区侧栏" hidden>
+        <div id="sidebar-brand" class="sidebar-brand"></div>
+        <div id="sidebar-mode" class="sidebar-mode"></div>
+        <section class="sidebar-sessions" aria-label="工作区导航">
+          <div id="sidebar-title" class="sidebar-heading"></div>
+          <div id="sidebar-terminals" class="sidebar-terminals"></div>
+        </section>
+        <div id="sidebar-history" class="sidebar-history"></div>
+        <nav id="sidebar-actions" class="sidebar-actions" aria-label="工作区操作"></nav>
+        <div class="sidebar-account">
+          <div id="sidebar-status"></div>
+          <div id="sidebar-user"></div>
+          <div class="sidebar-account-actions"><button id="sidebar-top-layout" class="quiet" type="button" title="切换到顶部工具栏，偏好仅保存到当前浏览器">顶部布局</button><div id="sidebar-logout"></div></div>
+        </div>
+        <div id="sidebar-footer" class="sidebar-footer"></div>
+      </aside>
       <div class="desktop-toolbar">
         <div class="desktop-title">
           <div id="terminal-session-bar" class="terminal-session-bar" hidden>
@@ -54,12 +70,13 @@
         <div class="desktop-header-actions">
           <button id="toggle-controls-button" class="view-button controls-toggle" type="button" aria-expanded="false" aria-controls="workspace-tools">工具</button>
           <button id="toggle-input-button" class="view-button controls-toggle" type="button" aria-expanded="false" aria-controls="input-dock">输入</button>
-          <button id="fullscreen-button" class="quiet fullscreen-entry" aria-label="全屏桌面" title="全屏桌面">⛶</button>
+          <button id="fullscreen-button" class="quiet fullscreen-entry" aria-label="全屏桌面" title="全屏桌面"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H3v5m13-5h5v5m0 8v5h-5m-8 0H3v-5"/></svg><span class="sidebar-only">全屏</span></button>
         </div>
       </div>
       <aside id="workspace-tools" class="workspace-panel tools-panel" role="dialog" aria-labelledby="tools-title" tabindex="-1" hidden>
         <div class="panel-heading"><h2 id="tools-title">桌面工具</h2><button id="close-controls-button" class="quiet" type="button" aria-label="关闭工具面板">✕</button></div>
         <p id="browser-preferences-note" class="muted settings-help" role="status">显示偏好仅保存到当前浏览器，所有终端共用。</p>
+        <label class="workspace-layout-option" for="workspace-layout">界面布局<select id="workspace-layout"><option value="sidebar">侧边工具栏（宽屏）</option><option value="top">顶部工具栏</option></select><span class="muted">宽屏默认侧栏，窄屏自动使用顶部布局。</span></label>
         <div id="desktop-actions" class="desktop-actions"><button id="terminal-button" class="view-button" data-tools-mode="desktop" title="打开或返回已有的 Codex 终端">打开终端</button><button id="terminals-button" class="view-button" type="button" disabled>终端管理</button><button id="reconnect-button" class="view-button">重新连接</button><button id="tools-fullscreen-button" class="view-button" type="button">全屏</button></div>
       <div id="display-controls" class="display-controls" role="group" aria-label="桌面显示控制">
         <label data-tools-mode="desktop" class="desktop-ime-option"><input id="desktop-ime" type="checkbox" checked>本机输入法直输中文</label>

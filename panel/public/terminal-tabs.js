@@ -2,6 +2,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
   let signature = '', currentTerminal;
   let layoutFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl;
   const compact = matchMedia('(max-width: 1000px)');
+  const vertical = () => tabs.getAttribute('aria-orientation') === 'vertical';
   const shown = element => !!element?.getClientRects().length;
   document.addEventListener('focusin', event => { focusedControl = bar.contains(event.target) ? event.target : null; });
   function filterList() {
@@ -26,7 +27,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
       rows.forEach(row => { row.hidden = false; });
       bar.dataset.overflow = 'false';
       overflowCount = 0;
-      if (!compact.matches && shown(tabs) && tabs.scrollWidth > tabs.clientWidth + 1) {
+      if (!vertical() && !compact.matches && shown(tabs) && tabs.scrollWidth > tabs.clientWidth + 1) {
         bar.dataset.overflow = 'true';
         const available = tabs.clientWidth, gap = parseFloat(getComputedStyle(tabs).columnGap) || 0;
         let used = 0, fits = true;
@@ -141,11 +142,12 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
   }
   tabs.addEventListener('keydown', event => {
     if (!event.target.matches('[data-terminal-choice]')) return;
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const previous = vertical() ? 'ArrowUp' : 'ArrowLeft', nextKey = vertical() ? 'ArrowDown' : 'ArrowRight';
+    if (![previous, nextKey, 'Home', 'End'].includes(event.key)) return;
     const buttons = [...tabs.querySelectorAll('[data-terminal-choice]:not(:disabled)')].filter(shown); if (!buttons.length) return;
     event.preventDefault();
     const index = buttons.indexOf(document.activeElement);
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === nextKey ? 1 : -1) + buttons.length) % buttons.length;
     buttons[next].focus({ preventScroll: true });
   });
   mobileButton.addEventListener('click', () => { pickerDialog = true; dialogMode = compact.matches ? 'all' : 'overflow'; filterList(); dialog.showModal(); changed(); });
@@ -156,7 +158,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
   mobileActions.addEventListener('click', () => { if (currentTerminal && !mobileActions.disabled) openActions(currentTerminal, mobileActions); });
   document.getElementById('close-terminal-switch').addEventListener('click', () => dialog.close());
   document.getElementById('terminal-switch-manage').addEventListener('click', () => { dialog.close(); manage(); });
-  return { render };
+  return { render, layout: scheduleLayout };
 }
 
 export function createTerminalActions({ renameTerminal, closeTerminal, changed }) {

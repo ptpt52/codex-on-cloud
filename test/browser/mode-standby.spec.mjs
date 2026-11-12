@@ -3,7 +3,7 @@ import { fixture } from '../fixture.mjs';
 import { openTools, openInput, closePanels } from './ui.mjs';
 
 async function login(page, app, saved) {
-  if (saved) await page.addInitScript(saved => { if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, ...saved })); }, saved);
+  if (saved) await page.addInitScript(saved => { if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', ...saved })); }, saved);
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('在线');
 }

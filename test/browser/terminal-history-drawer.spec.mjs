@@ -5,7 +5,7 @@ test('find and copy grows upward from the terminal edge without moving controls 
   const app = await fixture({ terminalHistory: 'DRAWER-HISTORY\n'.repeat(100) });
   try {
     await page.addInitScript(() => {
-      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
       if (location.pathname !== '/terminal/index.html') return;
       let Terminal;
       Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,

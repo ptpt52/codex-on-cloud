@@ -229,3 +229,62 @@
 #history-copy-manual button:disabled { opacity: .5; cursor: default; }
 
 /* The server selector replaces the brand label; it does not add a toolbar row. */
+
+/* A single navigation column gives the live viewer the full window height.
+   The same controls move here; the iframe and its task are never remounted. */
+.sidebar-only { display: none; }
+.fullscreen-entry svg { vertical-align: middle; }
+.workspace-layout-option { display: grid; gap: 8px; font-size: 12px; margin-bottom: 16px; }
+.workspace-layout-option select { width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.workspace-layout-option .muted { font-size: 11px; }
+.workspace.sidebar-layout { --workspace-sidebar-width: 224px; max-width: none; padding: 8px; }
+.sidebar-layout > .topbar { display: none; }
+.sidebar-layout .desktop-card { display: grid; grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1 1 0; min-height: 0; border-radius: 12px; }
+.sidebar-layout .desktop-toolbar { display: none; }
+.sidebar-layout .desktop-stage { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; height: 100%; }
+.workspace-sidebar { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; padding: 16px 12px 10px; overflow: auto; overscroll-behavior: contain; background: var(--surface); border-right: 1px solid var(--line); }
+.sidebar-brand .brand { gap: 9px; font-size: 15px; }
+.sidebar-brand img { flex: none; border-radius: 7px; }
+.sidebar-brand .brand-light { font-size: 12px; }
+.sidebar-mode:empty { display: none; }
+.sidebar-mode .mode-switch { width: 100%; gap: 4px; margin: 0; }
+.sidebar-mode .mode-switch button { flex: 1; min-height: 44px; font-size: 12px; }
+.sidebar-sessions { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 136px; }
+.sidebar-heading { font-size: 11px; letter-spacing: .04em; color: var(--muted); padding: 0 4px; }
+.sidebar-heading strong { font-weight: 500; }
+.sidebar-terminals { display: flex; min-height: 0; flex: 1; }
+.workspace-sidebar .terminal-session-bar { flex-direction: column; align-items: stretch; gap: 0; }
+.workspace-sidebar .terminal-tabs { display: flex; flex-direction: column; align-items: stretch; gap: 6px; overflow: auto; min-height: 0; padding: 2px; scroll-padding-block: 4px; }
+.workspace-sidebar .terminal-tab-item { flex: none; min-width: 0; width: 100%; }
+.workspace-sidebar .terminal-tab-item[data-available=true] { flex: none; min-width: 0; }
+.workspace-sidebar .terminal-tab { min-height: 44px; text-align: left; font-size: 12px; padding-inline: 10px; }
+.workspace-sidebar .terminal-tab[aria-selected=true] { box-shadow: inset 3px 0 var(--accent); font-weight: 600; }
+.workspace-sidebar .terminal-tab-actions { min-width: 36px; width: 36px; }
+.workspace-sidebar .terminal-session-button, .workspace-sidebar .terminal-session-actions { display: none !important; }
+.sidebar-history:empty { display: none; }
+.sidebar-history { border-top: 1px solid var(--line); padding-top: 12px; }
+.sidebar-history #terminal-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; font-size: 11px; }
+.sidebar-history #terminal-tools > button { min-width: 0; min-height: 36px; padding: 7px 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.sidebar-history #history-program { grid-column: 1 / -1; }
+.sidebar-history #terminal-tools > button[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
+.sidebar-history #terminal-tools > button:disabled { cursor: default; }
+.sidebar-history #history-status-row { grid-column: 1 / -1; min-width: 0; }
+.sidebar-history #history-state { display: block; max-height: 2.8em; overflow: hidden; line-height: 1.4; color: var(--muted); }
+.sidebar-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; border-top: 1px solid var(--line); padding-top: 12px; }
+.sidebar-actions > button { min-width: 0; min-height: 44px; padding: 8px 4px; margin: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 12px; white-space: nowrap; }
+.sidebar-actions > button:hover, .sidebar-history #terminal-tools > button:hover { background: var(--surface-hover); }
+.sidebar-actions > button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-line); }
+.sidebar-actions .sidebar-only { display: inline; margin-left: 5px; }
+.sidebar-account { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.sidebar-account .connection-status { font-size: 11px; max-width: 100%; white-space: normal; }
+.sidebar-account .user-label { display: block; margin: 0; padding: 0 3px; font-size: 11px; overflow-wrap: anywhere; }
+.sidebar-account-actions { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.sidebar-account-actions .quiet { min-height: 36px; padding: 6px 10px; font-size: 11px; }
+.sidebar-account-actions .logout-entry { color: var(--danger); }
+.sidebar-footer .workspace-footer { display: flex; flex-direction: column; gap: 4px; padding: 0 3px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.sidebar-footer .workspace-footer .status-dot { display: none; }
+.sidebar-layout .workspace-panel { left: calc(var(--workspace-sidebar-width) + 16px); right: auto; top: 16px; bottom: 16px; width: min(380px, calc(100vw - var(--workspace-sidebar-width) - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 32px); }
+.sidebar-layout .input-dock.workspace-panel { top: auto; bottom: calc(16px + var(--workspace-keyboard-inset, 0px)); width: min(660px, calc(100vw - var(--workspace-sidebar-width) - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 32px); }
+.sidebar-layout .desktop-card:fullscreen { border-radius: 0; }
+.sidebar-layout .desktop-card:fullscreen .workspace-panel { left: calc(var(--workspace-sidebar-width) + 8px); }
+.history-tools-floating.history-tools-sidebar { border: 1px solid #4a4a4a; border-radius: 10px; box-shadow: 0 12px 32px #0004; animation: none; }

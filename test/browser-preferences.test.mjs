@@ -87,3 +87,13 @@ test('desktop IME defaults on, accepts only booleans and stays within the browse
   assert.equal(createBrowserPreferences(source).value.terminalMouseReporting, true);
   assert.ok(source.text.length <= BROWSER_PREFERENCES_LIMIT);
 });
+
+test('workspace layout defaults to sidebar and merges a bounded browser-only top preference', () => {
+  for (const input of [null, JSON.stringify({ layout: 2 }), JSON.stringify({ layout: 2, workspaceLayout: 'invalid' })]) assert.equal(decodeBrowserPreferences(input).workspaceLayout, 'sidebar');
+  const source = storage(), preferences = createBrowserPreferences(source), stale = createBrowserPreferences(source);
+  preferences.update({ workspaceLayout: 'top' }); stale.update({ terminalFontSize: 28 });
+  assert.equal(createBrowserPreferences(source).value.workspaceLayout, 'top');
+  assert.equal(createBrowserPreferences(storage()).value.workspaceLayout, 'sidebar');
+  assert.equal(stale.value.workspaceLayout, 'sidebar');
+  assert.ok(source.text.length <= BROWSER_PREFERENCES_LIMIT);
+});

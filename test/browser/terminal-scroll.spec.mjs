@@ -3,7 +3,7 @@ import { fixture } from '../fixture.mjs';
 
 async function login(page, app) {
   await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,

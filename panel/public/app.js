@@ -1,7 +1,7 @@
 import { createShortcutMenu } from './shortcut-menu.js';
 import { SHORTCUT_BY_KEY } from './shortcuts.js';
 import { createForwardUI } from './forward-ui.js';
-import { createWorkspacePanels, createHistoryToolsPortal } from './workspace-panels.js';
+import { createWorkspaceLayout, createWorkspacePanels, createHistoryToolsPortal } from './workspace-panels.js';
 import { createTerminalState, validTerminalIdentity } from './terminal-state.js';
 import { TERMINAL_IDS, TERMINAL_CAPACITY, DEFAULT_TERMINAL_LIMIT } from './terminal-slots.js';
 import { createTerminalTabs, createTerminalActions } from './terminal-tabs.js';
@@ -161,6 +161,8 @@ const terminalActions = createTerminalActions({ closeTerminal: requestCloseTermi
 const terminalTabs = createTerminalTabs({ bar: $('terminal-session-bar'), tabs: $('terminal-tabs'), mobileButton: $('terminal-session-button'),
   mobileActions: $('terminal-session-actions'), dialog: $('terminal-switch-dialog'), list: $('terminal-switch-list'),
   choose: selectTerminal, openActions: terminalActions.open, manage: openTerminalManager, changed: sendDisplayPreferences });
+const workspaceLayout = createWorkspaceLayout({ workspace: $('workspace-view'), sidebar: $('workspace-sidebar'),
+  preference: () => displayPreferences.workspaceLayout, changed: () => { terminalTabs.layout(); historyToolsPortal.layout(); } });
 function rememberDraft() {
   const saved = terminalState.save(draftIdentity, $('mobile-input').value);
   draftNotice = saved ? '' : '草稿空间已满，请先复制当前文字或在终端管理中清理旧终端草稿。';
@@ -282,6 +284,8 @@ function sendDisplayPreferences() {
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
 function renderDisplayControls() {
+  workspaceLayout.render();
+  $('workspace-layout').value = displayPreferences.workspaceLayout;
   const toolsMode = terminalMode() ? 'terminal' : 'desktop';
   // Use hidden attributes so later panel layout rules cannot expose controls
   // for the other mode. Switching visibility never resets stored preferences.
@@ -337,6 +341,7 @@ function renderDisplayControls() {
   $('zoom-label').textContent = base ? `${Math.round(base * 100)}%` : '—';
   $('zoom-out-button').disabled = !ready || !base || base <= 0.1;
   $('zoom-in-button').disabled = !ready || !base || base >= 2;
+  historyToolsPortal.layout();
 }
 function updateDisplayPreferences(change) {
   if (change.zoom !== undefined && change.zoom !== displayPreferences.zoom) displayRevision++;
@@ -407,6 +412,8 @@ $('pointer-mode').addEventListener('change', () => updateDisplayPreferences({ po
 $('scroll-target').addEventListener('change', () => updateDisplayPreferences({ scrollTarget: $('scroll-target').value }));
 $('toggle-input-button').addEventListener('click', () => toggleWorkspacePanel('input'));
 $('toggle-controls-button').addEventListener('click', () => toggleWorkspacePanel('tools'));
+$('workspace-layout').addEventListener('change', () => updateDisplayPreferences({ workspaceLayout: $('workspace-layout').value }));
+$('sidebar-top-layout').addEventListener('click', () => updateDisplayPreferences({ workspaceLayout: 'top' }));
 $('close-input-button').addEventListener('click', () => closeWorkspacePanel('input'));
 $('close-controls-button').addEventListener('click', () => closeWorkspacePanel('tools'));
 $('tools-fullscreen-button').addEventListener('click', () => { closeWorkspacePanel('tools'); $('fullscreen-button').click(); });
