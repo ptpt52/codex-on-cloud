@@ -72,12 +72,62 @@ test('scoped temporary logins preserve their canonical identity and restricted p
   assert.equal((await login('visitor')).status, 200);
 });
 
-test('standalone custom usernames remain unscoped while shared root nodes get stable identities', async t => {
+test('standalone custom usernames remain unscoped while unnamed shared root nodes get readable labels and stable scopes', async t => {
   const standalone = await fixture({ username: 'operator' }); t.after(() => standalone.close());
   assert.match(await (await standalone.request('/')).text(), /value="operator"/);
   await standalone.login();
   const nodeId = 'c'.repeat(32), shared = await fixture({ nodeId, sharedEntry: true }); t.after(() => shared.close());
-  const username = 'admin@nodeid-' + nodeId;
+  const username = 'admin@node-' + nodeId.slice(0, 8);
   assert.match(await (await shared.request('/')).text(), new RegExp('value="' + username + '"'));
   assert.equal((await shared.request('/api/login', { method: 'POST', body: { username, password: shared.config.password } })).status, 200);
+});
+
+test('shared node labels include the name and short ID while full scopes, legacy names and renamed labels remain usable', () => {
+  const id = 'a1b2c3d4' + 'a'.repeat(24), scope = nodeLoginScope({ sharedEntry: true, nodeId: id });
+  const identity = createLoginIdentity('admin', scope, { nodeName: 'home' });
+  assert.equal(identity.value, 'admin@home-a1b2c3d4'); assert.equal(identity.scope, 'nodeid-' + id);
+  for (const name of ['admin', identity.value, 'admin@nodeid-' + id, 'admin@old-name-a1b2c3d4']) assert.equal(canonicalLoginUsername(name, identity), 'admin');
+  assert.equal(canonicalLoginUsername('visitor@home-a1b2c3d4', identity), 'visitor');
+  for (const name of ['admin@home-a1b2c3d5', 'admin@nodeid-' + 'b'.repeat(32), 'admin@node-a', 'admin@center']) assert.notEqual(canonicalLoginUsername(name, identity), 'admin');
+  const renamed = createLoginIdentity('admin', scope, { nodeName: 'office' });
+  assert.equal(renamed.value, 'admin@office-a1b2c3d4'); assert.equal(canonicalLoginUsername(identity.value, renamed), 'admin');
+  assert.equal(renamed.scope, identity.scope);
+  const other = createLoginIdentity('admin', nodeLoginScope({ sharedEntry: true, nodeId: 'a1b2c3d4' + 'b'.repeat(24) }), { nodeName: 'home' });
+  assert.notEqual(other.scope, identity.scope, 'a shared short prefix never becomes the internal node identity');
+});
+
+test('readable labels format Unicode and punctuation safely and fit the existing username bound', () => {
+  const scope = 'nodeid-' + 'c'.repeat(32);
+  assert.equal(createLoginIdentity('admin', scope, { nodeName: ' 家庭 电脑 <>&@ ' }).value, 'admin@家庭-电脑-cccccccc');
+  assert.equal(createLoginIdentity('admin', scope, { nodeName: '<>@' }).value, 'admin@node-cccccccc');
+  for (const nodeName of ['a'.repeat(48), '㍿'.repeat(48), '𠀀'.repeat(24)]) {
+    const identity = createLoginIdentity('u'.repeat(100), scope, { nodeName });
+    assert.ok(identity.value.length <= 160); assert.equal(canonicalLoginUsername(identity.value, identity), identity.username);
+  }
+  const literal = createLoginIdentity('operator@home-cccccccc', scope, { nodeName: 'home' });
+  assert.equal(canonicalLoginUsername(literal.username, literal), literal.username); assert.equal(canonicalLoginUsername(literal.value, literal), literal.username);
+  for (const nodeName of [null, {}, 'x'.repeat(49)]) assert.throws(() => createLoginIdentity('admin', scope, { nodeName }), /节点名称/);
+});
+
+test('gateway nodes authenticate readable and legacy aliases with canonical account roles and unchanged node checks', async t => {
+  const nodeId = 'd1e2f3a4' + 'd'.repeat(24);
+  const app = await fixture({ nodeId, sharedEntry: true, gatewayNode: { name: 'home' } }); t.after(() => app.close());
+  const send = (username, password = app.config.password, headers) => app.request('/api/login', { method: 'POST', body: { username, password }, headers });
+  const html = await (await app.request('/')).text();
+  assert.match(html, /value="admin@home-d1e2f3a4"/);
+  assert.ok(html.includes('autocomplete="section-coc-nodeid-' + nodeId + ' username"'));
+  assert.ok(html.includes('name="login-nodeid-' + nodeId + '"'));
+  for (const username of ['admin@home-d1e2f3a4', 'admin@old-name-d1e2f3a4', 'admin@nodeid-' + nodeId, 'admin']) {
+    const response = await send(username); assert.equal(response.status, 200); assert.equal((await response.json()).username, 'admin');
+  }
+  assert.equal((await send('admin@home-e1e2f3a4')).status, 401);
+  assert.equal((await send('admin@nodeid-' + 'e'.repeat(32))).status, 401);
+  assert.equal((await send('admin@home-d1e2f3a4', 'incorrect_password_123')).status, 401);
+  assert.equal((await send('admin@home-d1e2f3a4', app.config.password, { origin: 'https://evil.example.test' })).status, 403);
+  assert.equal((await send('admin@home-d1e2f3a4', app.config.password, { 'x-codex-node': 'f'.repeat(32) })).status, 409);
+  await app.login(); await app.claim();
+  assert.equal((await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'synthetic_guest_password', durationMs: 300000 } })).status, 200);
+  const guest = await send('visitor@home-d1e2f3a4', 'synthetic_guest_password'); assert.equal(guest.status, 200);
+  const value = await guest.json(); assert.equal(value.username, 'visitor'); assert.equal(value.access.role, 'temporary');
+  assert.equal(app.managementStats.restarts, 0); assert.deepEqual(app.inputCalls, []);
 });

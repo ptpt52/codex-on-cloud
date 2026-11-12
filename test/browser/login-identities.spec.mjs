@@ -11,6 +11,29 @@ import { createSelfhostCenter } from '../../selfhost/center.mjs';
 
 test.use({ serviceWorkers: 'block' });
 
+test('shared-root login shows the node name and short ID, keeps full autofill scope and accepts old saved names', async ({ page }, testInfo) => {
+  const nodeId = 'a1b2c3d4' + 'a'.repeat(24), app = await fixture({ mode: 'terminal', nodeId, sharedEntry: true, gatewayNode: { name: 'home' } });
+  try {
+    await page.goto(app.config.origin); await expect(page.locator('#login-view')).toBeVisible();
+    await expect(page.locator('#username')).toHaveValue('admin@home-a1b2c3d4');
+    await expect(page.locator('#username')).toHaveAttribute('autocomplete', 'section-coc-nodeid-' + nodeId + ' username');
+    await expect(page.locator('#password')).toHaveAttribute('autocomplete', 'section-coc-nodeid-' + nodeId + ' current-password');
+    await expect(page.locator('#login-form')).toHaveAttribute('name', 'login-nodeid-' + nodeId);
+    await expect(page.locator('#login-identity-note')).toContainText('旧登录名也可登录');
+    await page.screenshot({ path: testInfo.outputPath('friendly-node-login.png'), fullPage: true });
+    for (const name of ['admin@nodeid-' + nodeId, 'admin@previous-home-a1b2c3d4', 'admin@home-a1b2c3d4']) {
+      await page.locator('#username').fill(name); await page.locator('#password').fill(app.config.password);
+      const response = page.waitForResponse(res => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/login');
+      await page.locator('#login-button').click(); const result = await response;
+      expect(result.status()).toBe(200); expect((await result.json()).username).toBe('admin');
+      await expect(page.locator('#workspace-view')).toBeVisible();
+      await page.context().clearCookies(); await page.reload(); await expect(page.locator('#login-view')).toBeVisible();
+      await expect(page.locator('#username')).toHaveValue('admin@home-a1b2c3d4');
+    }
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 test('one domain presents separate center and node login identities while retaining independent sessions', async ({ page, context }, testInfo) => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-login-identities-'));
   const a = await fixture({ mode: 'terminal', nodeId: 'a'.repeat(32), entryBasePath: '/node/a/' });

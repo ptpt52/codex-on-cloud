@@ -14,7 +14,7 @@ async function choose(page, node) {
   await expect(page.locator('#cancel')).toBeFocused(); await page.locator('#accept').click();
 }
 async function nodeLogin(page, app) {
-  await expect(page.locator('#login-view')).toBeVisible(); await expect(page.locator('#username')).toHaveValue('admin@nodeid-' + app.config.nodeId); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+  await expect(page.locator('#login-view')).toBeVisible(); await expect(page.locator('#username')).toHaveValue('admin@' + app.gatewayEntry.name.replace(' ', '-') + '-' + app.config.nodeId.slice(0, 8)); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
 }
 async function leaveNode(page) { if (await page.locator('#files-dialog').isVisible()) await page.locator('#close-files').click(); await closePanels(page); await openTools(page); await page.locator('#gateway-switch-button').click(); await expect(page).toHaveURL(/\/__nodes\//); }

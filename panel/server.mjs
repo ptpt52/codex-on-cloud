@@ -74,7 +74,7 @@ function reply(res, status, data, headers = {}) {
 
 export async function createPanel(config) {
   const entryBasePath = config.entryBasePath || '/';
-  const login = createLoginIdentity(config.username, nodeLoginScope({ entryBasePath, nodeId: config.nodeId, sharedEntry: config.sharedEntry || !!config.gatewayNode }));
+  const login = createLoginIdentity(config.username, nodeLoginScope({ entryBasePath, nodeId: config.nodeId, sharedEntry: config.sharedEntry || !!config.gatewayNode }), { nodeName: config.gatewayNode?.name || '' });
   const assets = await createUIAssets({ root: config.uiRoot, validate: config.uiValidate !== false, nodeId: config.nodeId || '', gateway: !!config.gatewayNode, gatewayOrigin: config.gatewayNode?.origin || '', entryBasePath, login });
   const cookieToken = header => readCookieToken(header, config);
   const scopedNode = (req, url) => !config.sharedEntry || (req.headers['x-codex-node'] || url.searchParams.get('node')) === config.nodeId;
