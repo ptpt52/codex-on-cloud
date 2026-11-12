@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { forwardRuleDefaults, forwardRuleName, forwardRuleType } from '../panel/public/forward-rule-form.js';
 import { validateForwardRule } from '../panel/forward-validation.mjs';
+import { fixture } from './fixture.mjs';
 
 const rule = (direction, localPort, enabled = true, name = '') => ({ enabled, name, config: { ...(direction === 'reverse' ? { direction } : {}), localPort } });
 test('automatic listener ports reserve all node rules but only the selected helper namespace', () => {
@@ -34,4 +35,22 @@ test('HTTP and HTTPS rule labels persist in both directions without permitting f
     assert.throws(() => validateForwardRule({ ...config, command: 'must not execute' }));
   }
   assert.throws(() => validateForwardRule({ localPort: 22001, protocol: 'serial', targetPort: 22 }));
+});
+
+test('the browser policy API carries reserved listener ports through to automatic defaults without exposing them to temporary accounts', async t => {
+  const app = await fixture({ forwardPorts: '*' }); t.after(() => app.close());
+  app.config.tunnelMetricsPort = 22001; app.config.fileAgentPort = 22002;
+  await app.login();
+  const response = await app.request('/api/forward'); assert.equal(response.status, 200);
+  const policy = await response.json(); assert.ok(policy.reservedPorts.includes(22001)); assert.ok(policy.reservedPorts.includes(22002));
+  const { agents } = await (await app.request('/api/forward/agents')).json();
+  assert.equal(forwardRuleDefaults(agents, agents[0].id, 'reverse', 'ssh', policy).localPort, 22003);
+  assert.equal(Object.hasOwn(policy, 'mappings'), false);
+  await app.claim();
+  assert.equal((await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'synthetic_guest_password', durationMs: 300000 } })).status, 200);
+  const login = await app.request('/api/login', { method: 'POST', body: { username: 'visitor', password: 'synthetic_guest_password' } });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const restricted = await app.request('/api/forward', { headers: { cookie } }); assert.equal(restricted.status, 200);
+  assert.equal(Object.hasOwn(await restricted.json(), 'reservedPorts'), false);
 });

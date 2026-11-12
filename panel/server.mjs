@@ -428,8 +428,9 @@ export async function createPanel(config) {
     }
     if (path === '/api/forward' && req.method === 'GET') {
       requireSession(req);
-      const downloads = await forwardDownloads.list(); requireSession(req);
-      return reply(res, 200, { ports: forwarding.list().ports, allPorts: forwarding.list().allPorts, maxConnections: 8, downloads, managedHelpersProtocol: 2 });
+      const downloads = await forwardDownloads.list(), session = requireSession(req);
+      const { ports, allPorts, reservedPorts, maxConnections } = forwarding.list();
+      return reply(res, 200, { ports, allPorts, ...(session.role !== 'temporary' ? { reservedPorts } : {}), maxConnections, downloads, managedHelpersProtocol: 2 });
     }
     if (path === '/api/forward/agents' && req.method === 'GET') {
       const session = requireSession(req);

@@ -85,6 +85,18 @@ test('a lost save reply preserves the submitted automatic port and name instead 
   } finally { await app.close(); }
 });
 
+test('automatic listeners skip node management ports delivered by the actual policy API', async ({ page }) => {
+  const app = await fixture({ rfb: true, forwardPorts: '*' });
+  app.config.tunnelMetricsPort = 22001;
+  try {
+    await login(page, app); await open(page); await page.locator('#forward-rule-add').click();
+    await expect(page.locator('#forward-create')).toBeEnabled();
+    await expect(page.locator('#forward-local')).toHaveValue('22002');
+    await expect(page.locator('#forward-rule-name')).toHaveValue('助手1 SSH 22002');
+    await discard(page); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('daily actions stay in the first viewport while installation and advanced information are collapsed', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {

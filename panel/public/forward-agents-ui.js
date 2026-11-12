@@ -325,11 +325,12 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
         const copyText = node('textarea', '', 'forward-copy-text'); copyText.hidden = true; copyText.readOnly = true; copyText.rows = 10; copyText.maxLength = FORWARD_PROMPT_LIMIT;
         const copy = button('复制连接信息', async () => {
           const value = currentRule(rule.id); if (!value || !live() || !canManage()) return;
+          const attempt = {}; row.copyAttempt = attempt;
           const epoch = generation, agentId = selectedId, reverse = value.config.direction === 'reverse';
           const c = value.config, address = '127.0.0.1:' + c.localPort;
           const command = c.serial ? 'nc 127.0.0.1 ' + c.localPort : c.protocol === 'ssh' ? 'ssh -o HostKeyAlias=codex-cloud-' + value.id + ' -p ' + c.localPort + ' USER@127.0.0.1' : c.protocol === 'telnet' ? 'telnet 127.0.0.1 ' + c.localPort : address;
           const text = reverse ? reverseForwardPrompt(value, selected(), { statusKnown, nodeURL: entryURL('/').href, nodeId: nodeIdentity() }) : `${value.name}\n连接位置：助手电脑（${selected()?.name || '助手'}）\n连接地址：${address}\n目标：节点侧网络 ${endpoint(c)}\n${command}`;
-          const current = () => epoch === generation && agentId === selectedId && live() && canManage() && currentRule(value.id)?.revision === value.revision;
+          const current = () => epoch === generation && agentId === selectedId && rows.get(value.id) === row && row.copyAttempt === attempt && live() && canManage() && currentRule(value.id)?.revision === value.revision;
           copyText.value = ''; copyText.hidden = true;
           try { await navigator.clipboard.writeText(text); if (current()) message(reverse ? 'AI 提示词已复制，可直接粘贴给 AI；不含 key 或密码。' : '连接信息已复制，不含 key 或密码。'); }
           catch { if (current()) { row.copyRevision = value.revision; copyText.value = text; copyText.hidden = false; copyText.focus(); copyText.select(); message('剪贴板不可用，请手动复制已选中的' + (reverse ? ' AI 提示词。' : '连接信息。')); } }
@@ -386,5 +387,5 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-agent-connection').textContent = ''; $('forward-agent-network').textContent = ''; message(''); $('forward-diagnostics').hidden = true; $('forward-diagnostics-text').value = '';
     if (layoutFrame) cancelAnimationFrame(layoutFrame); layoutFrame = 0;
   }
-  return { refresh, update, reset, suspend, policy(value) { policy = value; }, get busy() { return busy(); } };
+  return { refresh, update, reset, suspend, policy(value) { policy = value; update(); }, get busy() { return busy(); } };
 }

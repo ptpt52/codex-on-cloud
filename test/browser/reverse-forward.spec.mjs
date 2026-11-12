@@ -2,6 +2,30 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { login, open, choose, helper, add } from './forward-support.mjs';
 
+test('late clipboard failures cannot target replaced rows or overwrite the result of a newer copy', async ({ page }) => {
+  const app = await fixture({ rfb: true, forwardPorts: '*' });
+  try {
+    await login(page, app); await open(page); await add(page, '复制测试', { direction: 'reverse' });
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText() { return new Promise((_resolve, reject) => { window.rejectOldCopy = reject; }); } } }));
+    await page.getByRole('button', { name: '复制 AI 提示词', exact: true }).click();
+    await choose(page, 2); await choose(page, 1);
+    await page.evaluate(() => window.rejectOldCopy(Error('synthetic clipboard failure')));
+    await expect(page.locator('.forward-copy-text')).toBeHidden();
+    await expect(page.locator('#forward-agent-status')).not.toContainText('剪贴板不可用');
+    await page.evaluate(() => {
+      window.copyResults = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText() { return new Promise((resolve, reject) => window.copyResults.push({ resolve, reject })); } } });
+    });
+    await page.getByRole('button', { name: '复制 AI 提示词', exact: true }).click();
+    await page.getByRole('button', { name: '复制 AI 提示词', exact: true }).click();
+    await page.evaluate(() => window.copyResults[1].resolve());
+    await expect(page.locator('#forward-agent-status')).toContainText('AI 提示词已复制');
+    await page.evaluate(() => window.copyResults[0].reject(Error('synthetic older copy failure')));
+    await expect(page.locator('.forward-copy-text')).toBeHidden();
+    await expect(page.locator('#forward-agent-status')).toContainText('AI 提示词已复制');
+  } finally { await app.close(); }
+});
+
 test('reverse Web prompts explain the scoped topology, fall back to selectable text and clear on edits or hiding; forward rules keep connection information', async ({ page }) => {
   const app = await fixture({ rfb: true, forwardPorts: '*', nodeId: 'b'.repeat(32), entryBasePath: '/node/prompt-test/' });
   try {
