@@ -140,7 +140,9 @@ function createTerminalSelection(current) {
     const rect = current.element.querySelector('.xterm-screen').getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const buffer = current.buffer.active, row = buffer.viewportY + Math.max(0, Math.min(current.rows - 1, Math.floor((event.clientY - rect.top) * current.rows / rect.height)));
-    let col = Math.max(0, Math.min(current.cols, Math.floor((event.clientX - rect.left) * current.cols / rect.width)));
+    // Snap to the nearest cell boundary like xterm's native selection. Integer
+    // mouse coordinates can land just before an edge with small mobile fonts.
+    let col = Math.max(0, Math.min(current.cols, Math.ceil((event.clientX - rect.left) * current.cols / rect.width - 0.5)));
     if (col < current.cols && buffer.getLine(row)?.getCell(col)?.getWidth() === 0) col++;
     return { col, row };
   };
