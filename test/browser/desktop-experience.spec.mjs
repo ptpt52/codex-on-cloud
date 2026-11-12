@@ -48,6 +48,31 @@ test('focus layout preserves a tall desktop and one-step panel access across vie
   } finally { await app.close(); }
 });
 
+test('IME Escape keeps the input assistant and draft; ordinary Escape returns focus to its entry', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-input-button').click();
+    const input = page.locator('#mobile-input');
+    await input.fill('尚未发送的中文');
+    for (const options of [{ isComposing: true }, { keyCode: 229 }]) {
+      await input.dispatchEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...options });
+      await expect(page.locator('#input-dock')).toBeVisible();
+      await expect(input).toBeFocused();
+      await expect(input).toHaveValue('尚未发送的中文');
+    }
+    await input.dispatchEvent('compositionstart');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#input-dock')).toBeVisible();
+    await expect(input).toBeFocused();
+    await input.dispatchEvent('compositionend');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#input-dock')).toBeHidden();
+    await expect(page.locator('#toggle-input-button')).toBeFocused();
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('tool dialogs retain confirmation and return focus without losing the input draft', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {

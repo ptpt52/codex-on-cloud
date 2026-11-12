@@ -19,6 +19,13 @@ test('find and copy grows upward from the terminal edge without moving controls 
     for (const viewport of [page.viewportSize(), { width: 320, height: 500 }]) {
       await page.setViewportSize(viewport);
       await expect.poll(async () => (await frame.locator('#history-tools-toggle').boundingBox())?.width).toBeGreaterThan(0);
+      // ResizeObserver schedules xterm's fit on the next animation frame.
+      // A visible button does not mean its old row count has caught up yet.
+      await expect.poll(() => frame.evaluate(() => {
+        const host = document.getElementById('terminal'), terminal = window.drawerTerminal;
+        const height = host.querySelector('.xterm-screen')?.getBoundingClientRect().height;
+        return height > 0 && Math.floor(host.clientHeight / (height / terminal.rows)) === terminal.rows;
+      })).toBe(true);
       const before = await geometry(), button = await frame.locator('#history-up').boundingBox();
       await frame.locator('#history-tools-toggle').click(); const drawer = page.locator('#history-tools'); await expect(drawer).toBeVisible();
       await expect.poll(async () => {

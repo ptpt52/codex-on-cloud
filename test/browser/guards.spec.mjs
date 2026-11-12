@@ -94,7 +94,8 @@ test('touch targets remain separate and the narrow mobile layout stays within th
       const rect = await page.locator(selector).boundingBox(); expect(rect.width).toBeGreaterThanOrEqual(44); expect(rect.height).toBeGreaterThanOrEqual(44);
     }
     const files = await page.locator('#files-button').boundingBox(), logout = await page.locator('#logout-button').boundingBox();
-    expect(logout.x - files.x - files.width).toBeGreaterThanOrEqual(8);
+    expect(Math.max(logout.x - files.x - files.width, files.x - logout.x - logout.width,
+      logout.y - files.y - files.height, files.y - logout.y - logout.height)).toBeGreaterThanOrEqual(8);
     const card = await page.locator('#desktop-card').boundingBox();
     await openTools(page);
     for (const id of ['width-button', 'fit-button', 'actual-size-button', 'zoom-out-button', 'zoom-in-button', 'awake-button']) {

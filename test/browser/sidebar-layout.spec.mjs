@@ -85,7 +85,10 @@ test('all sessions stay reachable vertically and the phone layout returns withou
   try {
     const tabs = page.locator('#terminal-tabs [data-terminal-choice]'); await expect(tabs).toHaveCount(9);
     await tabs.first().focus(); await page.keyboard.press('ArrowDown'); await expect(tabs.nth(1)).toBeFocused();
-    await page.keyboard.press('End'); await expect(tabs.nth(7)).toBeFocused();
+    await page.keyboard.press('End'); await expect(tabs.nth(7)).toBeFocused(); await expect(tabs.nth(7)).toBeInViewport();
+    await page.setViewportSize({ width: 1440, height: 480 });
+    await tabs.first().focus(); await page.keyboard.press('End');
+    await expect(tabs.nth(7)).toBeFocused(); await expect(tabs.nth(7)).toBeInViewport();
     await page.locator('#terminal-tabs [data-terminal-choice=aux7]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux7');
     await expect(page.locator('#connection-status')).toContainText('在线');
     const connections = app.terminalConnections;

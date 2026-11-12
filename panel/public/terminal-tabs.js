@@ -148,7 +148,9 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
     event.preventDefault();
     const index = buttons.indexOf(document.activeElement);
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === nextKey ? 1 : -1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
+    // Vertical tabs can be clipped inside the sidebar. Keyboard navigation
+    // must reveal its focused item, including when the window is short.
+    buttons[next].focus({ preventScroll: !vertical() });
   });
   mobileButton.addEventListener('click', () => { pickerDialog = true; dialogMode = compact.matches ? 'all' : 'overflow'; filterList(); dialog.showModal(); changed(); });
   dialog.addEventListener('close', () => {

@@ -259,12 +259,12 @@
 .workspace-sidebar .terminal-tab-item[data-available=true] { flex: none; min-width: 0; }
 .workspace-sidebar .terminal-tab { min-height: 44px; text-align: left; font-size: 12px; padding-inline: 10px; }
 .workspace-sidebar .terminal-tab[aria-selected=true] { box-shadow: inset 3px 0 var(--accent); font-weight: 600; }
-.workspace-sidebar .terminal-tab-actions { min-width: 36px; width: 36px; }
+.workspace-sidebar .terminal-tab-actions { min-width: 44px; width: 44px; }
 .workspace-sidebar .terminal-session-button, .workspace-sidebar .terminal-session-actions { display: none !important; }
 .sidebar-history:empty { display: none; }
 .sidebar-history { border-top: 1px solid var(--line); padding-top: 12px; }
 .sidebar-history #terminal-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; font-size: 11px; }
-.sidebar-history #terminal-tools > button { min-width: 0; min-height: 36px; padding: 7px 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.sidebar-history #terminal-tools > button { min-width: 44px; min-height: 44px; padding: 7px 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
 .sidebar-history #history-program { grid-column: 1 / -1; }
 .sidebar-history #terminal-tools > button[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
 .sidebar-history #terminal-tools > button:disabled { cursor: default; }
@@ -279,7 +279,7 @@
 .sidebar-account .connection-status { font-size: 11px; max-width: 100%; white-space: normal; }
 .sidebar-account .user-label { display: block; margin: 0; padding: 0 3px; font-size: 11px; overflow-wrap: anywhere; }
 .sidebar-account-actions { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.sidebar-account-actions .quiet { min-height: 36px; padding: 6px 10px; font-size: 11px; }
+.sidebar-account-actions .quiet { min-width: 44px; min-height: 44px; padding: 6px 10px; font-size: 11px; }
 .sidebar-account-actions .logout-entry { color: var(--danger); }
 .sidebar-footer .workspace-footer { display: flex; flex-direction: column; gap: 4px; padding: 0 3px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .sidebar-footer .workspace-footer .status-dot { display: none; }

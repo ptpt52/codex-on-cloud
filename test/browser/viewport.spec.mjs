@@ -38,7 +38,8 @@ test('window-follow mode adapts framebuffer geometry to browser and folding with
     await expect.poll(() => fillsViewport(page)).toBe(true);
     await page.setViewportSize({ width: 2560, height: 1440 });
     await expect.poll(() => fillsViewport(page), { timeout: 12000 }).toBe(true);
-    expect((await page.locator('#desktop-stage').boundingBox()).width).toBeGreaterThan(2400);
+    const sidebarWidth = (await page.locator('#workspace-sidebar').boundingBox())?.width || 0;
+    expect((await page.locator('#desktop-stage').boundingBox()).width).toBeGreaterThan(2400 - sidebarWidth);
     const size = await page.frameLocator('#desktop-frame').locator('#screen canvas').evaluate(canvas => [canvas.width, canvas.height]);
     expect(Math.max(...size)).toBeLessThanOrEqual(1600);
     await expect(page.locator('#mobile-input')).toHaveValue('尺寸变化后保留草稿');

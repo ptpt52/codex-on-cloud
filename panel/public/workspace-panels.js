@@ -32,7 +32,7 @@ export function createWorkspaceLayout({ workspace, sidebar, preference, changed 
 }
 
 // The two panels share one visible slot. They never change a desktop process.
-export function createWorkspacePanels({ tools, input, toolsButton, inputButton, close }) {
+export function createWorkspacePanels({ tools, input, toolsButton, inputButton, close, composing = () => false }) {
   let active = '';
   let viewportFrame = 0;
   const entries = { tools: toolsButton, input: inputButton };
@@ -53,7 +53,7 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
     if (active) panels[active].focus({ preventScroll: true });
   }
   document.addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || event.defaultPrevented || !active || document.querySelector('dialog[open], #shortcuts-button[aria-expanded="true"]')) return;
+    if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229 || composing() || event.defaultPrevented || !active || document.querySelector('dialog[open], #shortcuts-button[aria-expanded="true"]')) return;
     event.preventDefault(); event.stopPropagation(); close(active);
   });
   function viewportChanged() {

@@ -57,6 +57,10 @@ test('keys and a second composition wait for the preceding paste and retain orde
     const busyPoll = page.waitForResponse(async response => new URL(response.url()).pathname === '/api/state' && (await response.json()).controls?.inputBusy === true, { timeout: 7000 });
     await compose(frame, '第一段');
     await expect.poll(() => app.inputCalls.length).toBe(1);
+    // A same-origin reply from the viewer itself cannot acknowledge its paste.
+    // Keep source validation when fixing WebKit's async reply attribution.
+    await frame.evaluate(() => window.postMessage({ type: 'codex-desktop-text-result',
+      frame: new URLSearchParams(location.search).get('frame'), id: 1, outcome: 'success' }, location.origin));
     await page.keyboard.type('x'); await compose(frame, '第二段'); await page.keyboard.press('Enter');
     expect(app.inputCalls.length).toBe(1); expect(sent.filter(value => value.down)).toEqual([]);
     await busyPoll; release();

@@ -150,7 +150,8 @@ const followsViewport = () => displayPreferences.autoResolution;
 const fixedSize = () => controlsState.viewport?.fixed || { width: 1600, height: 3200 };
 let displayScale = 0, displayRevision = 0, scaleRevision = -1;
 const workspacePanels = createWorkspacePanels({ tools: $('workspace-tools'), input: $('input-dock'),
-  toolsButton: $('toggle-controls-button'), inputButton: $('toggle-input-button'), close: closeWorkspacePanel });
+  toolsButton: $('toggle-controls-button'), inputButton: $('toggle-input-button'), composing: () => inputComposing,
+  close: name => closeWorkspacePanel(name, false) });
 const historyToolsPortal = createHistoryToolsPortal({ frame: $('desktop-frame'), container: $('desktop-card'),
   valid: frame => loggedIn && owned && !accessExpired && frameLoaded && terminalMode() && frame === String(frameEpoch),
   opened: () => { shortcutMenu.close(); hideWorkspacePanels(); },
@@ -250,10 +251,10 @@ function renderTerminalSelection() {
   $('clear-stale-drafts').disabled = !stale || terminalBusy || !!confirmation;
   $('clear-stale-drafts').textContent = stale ? `清理旧终端草稿（${stale}）` : '清理旧终端草稿';
 }
-function closeWorkspacePanel(name = workspacePanels.active) {
+function closeWorkspacePanel(name = workspacePanels.active, desktopFocus = true) {
   shortcutMenu.close();
   updateDisplayPreferences(name === 'tools' ? { controlsCollapsed: true } : terminalMode() ? { terminalInputCollapsed: true } : { collapsed: true });
-  restoreDesktopFocus();
+  if (desktopFocus) restoreDesktopFocus();
 }
 function restoreDesktopFocus() {
   if (!terminalMode() && !workspacePanels.active && canInput(true) && !inputBusy && !confirmation && !document.querySelector('dialog[open]')) {
@@ -1804,12 +1805,14 @@ window.addEventListener('message', event => {
     frameComposing = event.data.composing; renderInputControls(); return;
   }
   if (event.data?.type === 'codex-desktop-text' && !terminalMode()) {
-    const value = event.data, destination = event.source, sourceFrame = String(frameEpoch);
+    // Use the parent's postMessage function for replies. In WebKit the child
+    // method can attribute async calls to the child, which fails source checks.
+    const value = event.data, destination = $('desktop-frame').contentWindow, sourceFrame = String(frameEpoch);
     if (!Number.isSafeInteger(value.id) || value.id < 1 || value.id > 2147483647) return;
     if (desktopTextFrame !== sourceFrame) { desktopTextFrame = sourceFrame; desktopTextSequence = 0; }
     if (value.id <= desktopTextSequence) return;
     desktopTextSequence = value.id;
-    const respond = outcome => destination.postMessage({ type: 'codex-desktop-text-result', frame: sourceFrame, id: value.id, outcome }, location.origin);
+    const respond = outcome => window.postMessage.call(destination, { type: 'codex-desktop-text-result', frame: sourceFrame, id: value.id, outcome }, location.origin);
     if (!displayPreferences.desktopIme || desktopTextInput || inputBusy || !canInput(true) || typeof value.text !== 'string' || !value.text || /[\x00-\x08\x0b-\x1f\x7f]/.test(value.text) || new TextEncoder().encode(value.text).length > 32768) return respond('rejected');
     desktopTextInput = true;
     void inputAction('/api/paste', { text: value.text, target: 'focused' }, '输入文字', '文字已输入，Enter 单独提交', {}).then(result => respond(result?.outcome || 'unknown')).finally(() => { desktopTextInput = false; sendDisplayPreferences(); });
