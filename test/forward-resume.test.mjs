@@ -39,7 +39,8 @@ async function connected(app, path, token, direct = false) {
 }
 async function suspend(app, control) {
   const closed = once(control.ws, 'close'); control.ws.terminate(); await closed;
-  await until(async () => (await status(app)).mappings[0]?.state === 'recovering');
+  const id = control.records[0].id;
+  await until(async () => (await status(app)).mappings.find(item => item.id === id)?.state === 'recovering');
 }
 
 

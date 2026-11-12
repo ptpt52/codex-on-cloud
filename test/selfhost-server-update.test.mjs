@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rename, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, writeFile, readFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serverUpdate } from '../selfhost/server-update.mjs';
 import { caddyAcmeBootstrap, caddyConfig } from '../selfhost/server-config.mjs';
@@ -9,6 +9,7 @@ async function setup(t) {
   const root = await mkdtemp('/tmp/codex-server-update-'); t.after(() => rm(root, { recursive: true, force: true }));
   const files = [join(root, 'Caddyfile'), join(root, 'new-unit')], directory = join(root, 'backup');
   await writeFile(files[0], 'old https configuration', { mode: 0o640 });
+  await chmod(files[0], 0o640);
   const application = { current: join(root, 'app'), previous: join(root, 'app.previous'), failed: join(root, 'app.failed') };
   await mkdir(application.current); await writeFile(join(application.current, 'version'), 'old');
   const calls = [], run = async (_file, args) => { calls.push(args); return { ok: true, stdout: args[0] === 'is-active' ? 'active' : args[0] === 'is-enabled' ? 'enabled' : '' }; };
