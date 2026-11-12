@@ -45,10 +45,21 @@ async function exchange(socket, text) {
   assert.deepEqual(Buffer.concat(chunks), expected);
 }
 let app, echo, echo6, replacement; let onlySix = false; let accepted = 0;
+let releaseNegotiation, holdFirstNegotiation = !tlsMode;
+const initialNegotiation = new Promise(resolve => { releaseNegotiation = resolve; });
+function nativePeer(options) {
+  const peer = createForwardPeer(options), answer = peer.answer, ipv6Only = onlySix;
+  const filter = sdp => sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || line.split(' ')[4]?.includes(':')).join('\r\n');
+  peer.answer = async offer => {
+    if (holdFirstNegotiation) { holdFirstNegotiation = false; await initialNegotiation; }
+    return ipv6Only ? filter(await answer({ ...offer, sdp: filter(offer.sdp) })) : answer(offer);
+  };
+  return peer;
+}
 try {
   await exec('go', ['build', '-p', '2', '-race', '-mod=readonly', '-o', binary, '.'], { cwd: new URL('../client/forward/', import.meta.url), env: { ...process.env, GOTOOLCHAIN: 'local' }, timeout: 150000, maxBuffer: 16384 });
   echo = net.createServer(socket => { accepted++; sockets.push(socket); socket.on('error', () => {}); socket.pipe(socket); }); echo.listen(0, '127.0.0.1'); await once(echo, 'listening');
-  app = await fixture({ uiRoot: snapshot.root, webrtc: !tlsMode, forwardPorts: '*', entryBasePath: entryPath, forwardPeerFactory: options => { const peer = createForwardPeer(options); if (onlySix) { const filter = sdp => sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || line.split(' ')[4]?.includes(':')).join('\r\n'); const answer = peer.answer; peer.answer = async offer => filter(await answer({ ...offer, sdp: filter(offer.sdp) })); } return peer; }, ...(entryPath !== '/' ? { nodeId: 'a'.repeat(32) } : {}) }); await app.login(); await app.claim();
+  app = await fixture({ uiRoot: snapshot.root, webrtc: !tlsMode, forwardPorts: '*', entryBasePath: entryPath, forwardPeerFactory: nativePeer, ...(entryPath !== '/' ? { nodeId: 'a'.repeat(32) } : {}) }); await app.login(); await app.claim();
   if (tlsMode) {
     await exec('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-keyout',privateKey,'-out',certificate,'-days','1','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1'], { timeout: 10000, maxBuffer: 8192 });
     const backendPort = app.panel.server.address().port;
@@ -78,6 +89,12 @@ try {
   const first = await post(app, 'rule', { agentId: a.id, name: 'A-SSH', enabled: true, config: { ...target, localPort: firstPort } });
   let second = await post(app, 'rule', { agentId: a.id, name: 'A-设备', enabled: true, config: { direction: 'reverse', protocol: 'tcp', deviceName: '设备', ...target, localPort: secondPort } });
   await post(app, 'rule', { agentId: b.id, name: 'B-SSH', enabled: true, config: { ...target, localPort: thirdPort } });
+  if (!tlsMode) {
+    // Hold the first accepted negotiation until both other rules are rejected.
+    // Recovery must handle real contention, not depend on runner scheduling.
+    await until(async () => (await listing(app)).agents.slice(0, 2).flatMap(a => a.rules).filter(r => r.mapping?.direct.reason === 'rtc_busy').length === 2, 'simultaneous rules did not exercise busy rejection', 10000);
+    releaseNegotiation();
+  }
   await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.rules.every(r => r.state === 'active')), 'rules did not activate');
   await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.inventory?.interfaces.some(i => i.addresses.some(ip => ip.address === '127.0.0.1'))), 'IPv4 interface inventory missing');
   if (!tlsMode) await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.rules.every(r => r.mapping.direct.available)), 'actual Pion/werift direct paths missing', 45000);
@@ -150,6 +167,7 @@ try {
 } catch (error) {
   for (const child of children) console.error(child.output.slice(-6000), child.errors.slice(-2000)); throw error;
 } finally {
+  releaseNegotiation();
   for (const child of children) child.child.kill('SIGINT');
   await until(() => children.every(c => c.exit), 'helper shutdown deadline', 10000).catch(() => { for (const c of children) c.child.kill('SIGKILL'); });
   for (const socket of sockets) socket.destroy(); for (const socket of proxySockets) socket.destroy(); if(tlsServer)await new Promise(resolve=>tlsServer.close(resolve)); await replacement?.close(); await app?.close(); if (echo) await new Promise(r => echo.close(r)); if (echo6) await new Promise(r=>echo6.close(r)); await rm(directory, { recursive: true, force: true }); await rm(snapshot.directory, { recursive: true, force: true });

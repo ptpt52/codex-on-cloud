@@ -248,6 +248,17 @@ func (m *directManager) accept(value directSignal) {
 		if value.Reason != "" && failureMessages[value.Reason] == "" {
 			value.Reason = "rtc_unavailable"
 		}
+		if !value.Available && (value.Reason == "rtc_busy" || value.Reason == "rtc_disabled" || value.Reason == "rtc_negotiation_failed") {
+			// A correlated rejection is the final signaling result, not an SDP
+			// answer that might still arrive. Keep this mailbox bounded to one.
+			select {
+			case m.answers <- value:
+			default:
+			}
+			if value.Reason == "rtc_disabled" {
+				m.config.Enabled = false
+			}
+		}
 		m.peer.available = value.Available && m.peer.ready && !m.peer.draining
 		m.peer.healthy = value.Healthy && m.peer.ready
 		m.peer.updated = time.Now()
@@ -327,9 +338,14 @@ func (m *directManager) run() {
 			disabled.pc.Close()
 		}
 		if probe {
-			m.negotiate()
-			next = time.Now().Add(delay)
-			delay = min(delay*2, 60*time.Second)
+			if m.negotiate() == "rtc_busy" {
+				// Capacity contention is checked on the existing five-second
+				// ticker; it must not consume network-failure backoff steps.
+				next = time.Now().Add(2 * time.Second)
+			} else {
+				next = time.Now().Add(delay)
+				delay = min(delay*2, 60*time.Second)
+			}
 		}
 		if healthy {
 			delay = 15 * time.Second
@@ -360,7 +376,8 @@ func (m *directManager) destroy() {
 	}
 }
 func (m *directManager) Close() { m.cancel(); <-m.done }
-func (m *directManager) negotiate() {
+func (m *directManager) negotiate() (reason string) {
+	reason = "rtc_negotiation_failed"
 	if m.online != nil && !m.online() {
 		return
 	}
@@ -510,6 +527,9 @@ func (m *directManager) negotiate() {
 			if answer.ID != id {
 				continue
 			}
+			if answer.Type == "rtc_status" {
+				return answer.Reason
+			}
 			sdp, err = directSDP(answer.SDP, config.IPv6)
 			if err != nil {
 				return
@@ -518,7 +538,7 @@ func (m *directManager) negotiate() {
 				return
 			}
 			failed = false
-			return
+			return ""
 		case <-timer.C:
 			return
 		case <-m.ctx.Done():

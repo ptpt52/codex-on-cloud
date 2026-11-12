@@ -213,3 +213,68 @@ func TestNetworkConfigurationChangesDrainOnlyNewStreams(t *testing.T) {
 		}
 	}
 }
+
+func TestBusyDirectRejectionDoesNotWaitForAnSDPAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rejected, finished := make(chan struct{}), make(chan struct{})
+	manager := &directManager{ctx: ctx, configured: true, config: directSignal{Enabled: true}, answers: make(chan directSignal, 1), wake: make(chan struct{}, 1), report: func(string) {}}
+	manager.write = func(value any) error {
+		record := value.(map[string]any)
+		if record["type"] == "rtc_offer" {
+			manager.accept(directSignal{Type: "rtc_status", ID: record["id"].(uint32), Reason: "rtc_busy"})
+			close(rejected)
+		}
+		return nil
+	}
+	defer manager.destroy()
+	go func() { manager.negotiate(); close(finished) }()
+	select {
+	case <-rejected:
+	case <-time.After(10 * time.Second):
+		cancel()
+		<-finished
+		t.Fatal("direct offer did not reach the synthetic busy responder")
+	}
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-finished
+		t.Fatal("a definitive busy rejection kept waiting for an SDP answer")
+	}
+	if manager.peer.pc.ConnectionState() != webrtc.PeerConnectionStateClosed {
+		t.Fatal("rejected negotiation retained its ICE sockets")
+	}
+}
+
+func TestOnlyCurrentTerminalStatusesRejectDirectSignaling(t *testing.T) {
+	peer := &directPeer{id: 7, ready: true, healthAt: time.Now(), streams: map[*directChannel]struct{}{nil: {}}}
+	manager := &directManager{peer: peer, config: directSignal{Enabled: true}, answers: make(chan directSignal, 1), wake: make(chan struct{}, 1), report: func(string) {}}
+	for _, value := range []directSignal{
+		{Type: "rtc_status", ID: 6, Reason: "rtc_busy"},
+		{Type: "rtc_status", ID: 7, Reason: "rtc_connecting"},
+		{Type: "rtc_status", ID: 7, Reason: "rtc_health_timeout"},
+	} {
+		manager.accept(value)
+		if len(manager.answers) != 0 {
+			t.Fatal("stale or nonterminal status interrupted SDP signaling")
+		}
+	}
+	for _, reason := range []string{"rtc_busy", "rtc_negotiation_failed", "rtc_disabled"} {
+		manager.accept(directSignal{Type: "rtc_status", ID: 7, Reason: reason})
+		manager.accept(directSignal{Type: "rtc_status", ID: 7, Reason: reason})
+		if len(manager.answers) != 1 {
+			t.Fatal("rejection mailbox is not bounded to one result")
+		}
+		if result := <-manager.answers; result.ID != 7 || result.Reason != reason {
+			t.Fatal("rejection lost its negotiation identity or reason")
+		}
+		if manager.peer != peer || len(peer.streams) != 1 || !manager.peerAlive(peer) {
+			t.Fatal("signaling rejection closed independently healthy TCP data")
+		}
+	}
+	if manager.config.Enabled {
+		t.Fatal("disabled signaling did not stop automatic probing until new configuration")
+	}
+}
