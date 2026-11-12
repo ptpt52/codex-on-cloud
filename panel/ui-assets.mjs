@@ -13,6 +13,7 @@ export const ASSETS = new Map([
   ['/access-ui.js', ['access-ui.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/forward-agents-ui.js', ['forward-agents-ui.js', 'text/javascript; charset=utf-8']],
+  ['/forward-prompt.js', ['forward-prompt.js', 'text/javascript; charset=utf-8']],
   ['/entry-path.js', ['entry-path.js', 'text/javascript; charset=utf-8']],
   ['/node-scope.js', ['node-scope.js', 'text/javascript; charset=utf-8']],
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],

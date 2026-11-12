@@ -1,5 +1,8 @@
 import { rtcDirectLabel } from './rtc-stats.js';
 import { rtcHints } from './rtc-hints.js';
+import { reverseForwardPrompt, FORWARD_PROMPT_LIMIT } from './forward-prompt.js';
+import { entryURL } from './entry-path.js';
+import { nodeIdentity } from './node-scope.js';
 const states = { active: '已生效', pending: '等待规则通道', connecting: '正在建立映射', recovering: '规则通道恢复中', disabled: '已停用', failed: '未生效', offline: '等待助手上线', starting: '正在下发' };
 const mask = prefix => Array.from({ length: 4 }, (_, i) => Math.max(0, Math.min(255, 256 - 2 ** Math.max(0, 8 - Math.max(0, prefix - i * 8))))).join('.');
 const endpoint = c => c.serial ? `${c.serial.path} @ ${c.serial.baud}` : `${c.targetHost.includes(':') ? '[' + c.targetHost + ']' : c.targetHost}:${c.targetPort}`;
@@ -305,15 +308,24 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
           const value = currentRule(rule.id); if (value) confirm('删除“' + value.name + '”', '删除这一条规则并关闭其现有连接，其他规则不受影响。', async () => { await mutate('rule/remove', { agentId: selectedId, id: value.id, revision: value.revision }); }, '删除规则');
         });
         toggle.className = 'quiet'; remove.className = 'quiet forward-danger forward-rule-remove';
-        actions.append(button('复制连接信息', async () => {
-          const value = currentRule(rule.id); if (!value || !live()) return;
+        const copyText = node('textarea', '', 'forward-copy-text'); copyText.hidden = true; copyText.readOnly = true; copyText.rows = 10; copyText.maxLength = FORWARD_PROMPT_LIMIT;
+        const copy = button('复制连接信息', async () => {
+          const value = currentRule(rule.id); if (!value || !live() || !canManage()) return;
+          const epoch = generation, agentId = selectedId, reverse = value.config.direction === 'reverse';
           const c = value.config, address = '127.0.0.1:' + c.localPort;
           const command = c.serial ? 'nc 127.0.0.1 ' + c.localPort : c.protocol === 'ssh' ? 'ssh -o HostKeyAlias=codex-cloud-' + value.id + ' -p ' + c.localPort + ' USER@127.0.0.1' : c.protocol === 'telnet' ? 'telnet 127.0.0.1 ' + c.localPort : address;
-          const text = `${value.name}\n连接位置：${c.direction === 'reverse' ? '节点主机（运行网页终端 / AI 的主机）' : '助手电脑（' + (selected()?.name || '助手') + '）'}\n连接地址：${address}\n目标：${c.direction === 'reverse' ? c.serial ? '助手侧串口' : '助手侧网络' : '节点侧网络'} ${endpoint(c)}\n${command}`;
-          try { await navigator.clipboard.writeText(text); if (live()) message('连接信息已复制，不含 key 或密码。'); } catch { if (live()) message('无法使用剪贴板，请按规则中显示的回环端口连接。'); }
-        }), button('编辑规则', () => { const value = currentRule(rule.id); if (value) openEditor(value); }), toggle, remove);
-        root.append(heading, detail, state, transport, actions); $('forward-agent-rules').append(root); row = { root, title, badge, detail, state, transport, toggle }; rows.set(rule.id, row);
+          const text = reverse ? reverseForwardPrompt(value, selected(), { statusKnown, nodeURL: entryURL('/').href, nodeId: nodeIdentity() }) : `${value.name}\n连接位置：助手电脑（${selected()?.name || '助手'}）\n连接地址：${address}\n目标：节点侧网络 ${endpoint(c)}\n${command}`;
+          const current = () => epoch === generation && agentId === selectedId && live() && canManage() && currentRule(value.id)?.revision === value.revision;
+          copyText.value = ''; copyText.hidden = true;
+          try { await navigator.clipboard.writeText(text); if (current()) message(reverse ? 'AI 提示词已复制，可直接粘贴给 AI；不含 key 或密码。' : '连接信息已复制，不含 key 或密码。'); }
+          catch { if (current()) { row.copyRevision = value.revision; copyText.value = text; copyText.hidden = false; copyText.focus(); copyText.select(); message('剪贴板不可用，请手动复制已选中的' + (reverse ? ' AI 提示词。' : '连接信息。')); } }
+        });
+        actions.append(copy, button('编辑规则', () => { const value = currentRule(rule.id); if (value) openEditor(value); }), toggle, remove);
+        root.append(heading, detail, state, transport, actions, copyText); $('forward-agent-rules').append(root); row = { root, title, badge, detail, state, transport, toggle, copy, copyText }; rows.set(rule.id, row);
       }
+      row.copy.textContent = rule.config.direction === 'reverse' ? '复制 AI 提示词' : '复制连接信息';
+      row.copyText.setAttribute('aria-label', rule.name + (rule.config.direction === 'reverse' ? '的 AI 提示词' : '的连接信息'));
+      if (row.copyRevision !== rule.revision) { row.copyText.value = ''; row.copyText.hidden = true; }
       row.title.textContent = rule.name; row.root.setAttribute('aria-label', rule.name);
       row.detail.textContent = (rule.config.direction === 'reverse' ? '节点主机' : '助手电脑（' + agent.name + '）') + ` 127.0.0.1:${rule.config.localPort} → ` + (rule.config.direction === 'reverse' ? '助手侧' + (rule.config.serial ? '串口' : '网络') + '（' + agent.name + '） ' : '节点侧网络 ') + endpoint(rule.config);
       const m = rule.mapping, p = m?.direct;
@@ -344,6 +356,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   });
   function suspend() {
     generation++; reading?.abort(); reading = null;
+    for (const row of rows.values()) { row.copyText.value = ''; row.copyText.hidden = true; }
     statusKnown = false; render();
     const writing = pending; pending?.abort(); pending = null; clearKey(); closeConfirm();
     if (writing) {
