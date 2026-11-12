@@ -114,8 +114,10 @@ test('alternate-screen redraws never become scrollback, and history preserves th
     expect(await frame.locator('#history-archive').textContent()).not.toContain('REDRAW');
     const reads = app.terminalHistoryReads.length;
     await openTools(page);
+    const fontSize = Number(await page.locator('#terminal-font-label').textContent()) + 3;
     for (let i = 0; i < 3; i++) await page.locator('#terminal-font-up').click();
-    await expect.poll(() => frame.evaluate(() => getComputedStyle(document.getElementById('history-archive')).fontSize)).toBe('18px');
+    await expect(page.locator('#terminal-font-label')).toHaveText(String(fontSize));
+    await expect.poll(() => frame.evaluate(() => getComputedStyle(document.getElementById('history-archive')).fontSize)).toBe(fontSize + 'px');
     const style = await frame.evaluate(() => {
       const pre = document.getElementById('history-archive'), css = getComputedStyle(pre), term = window.historyTerminal;
       return { font: css.fontFamily, expected: term.options.fontFamily, height: parseFloat(css.lineHeight), rowHeight: document.querySelector('.xterm-screen').getBoundingClientRect().height / term.rows,
