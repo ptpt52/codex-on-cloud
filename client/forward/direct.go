@@ -152,13 +152,14 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 }
 
 type directSignal struct {
-	Type    string `json:"type"`
-	ID      uint32 `json:"id"`
-	SDP     string `json:"sdp"`
-	Enabled bool   `json:"enabled"`
-	IPv6    bool   `json:"ipv6"`
-	STUN    string `json:"stun"`
-	Hints   struct {
+	Type         string `json:"type"`
+	ID           uint32 `json:"id"`
+	SDP          string `json:"sdp"`
+	Enabled      bool   `json:"enabled"`
+	IPv6         bool   `json:"ipv6"`
+	STUN         string `json:"stun"`
+	HintRevision string `json:"hintRevision"`
+	Hints        struct {
 		Server  string `json:"server"`
 		Browser string `json:"browser"`
 	} `json:"hints"`
@@ -179,6 +180,7 @@ type directPeer struct {
 	healthAt         time.Time
 	streams          map[*directChannel]struct{}
 	channels         int
+	opening          int
 	draining         bool
 }
 type directManager struct {
@@ -198,11 +200,15 @@ type directManager struct {
 	wake         chan struct{}
 	done         chan struct{}
 	lastStatus   string
+	shared       bool
 }
 
 func newDirectManager(ctx context.Context, token string, write func(any) error, online func() bool, report func(string)) *directManager {
+	return makeDirectManager(ctx, token, write, online, report, false)
+}
+func makeDirectManager(ctx context.Context, token string, write func(any) error, online func() bool, report func(string), shared bool) *directManager {
 	ctx, cancel := context.WithCancel(ctx)
-	m := &directManager{ctx: ctx, cancel: cancel, token: token, write: write, online: online, report: report, answers: make(chan directSignal, 1), wake: make(chan struct{}, 1), done: make(chan struct{})}
+	m := &directManager{ctx: ctx, cancel: cancel, token: token, write: write, online: online, report: report, shared: shared, answers: make(chan directSignal, 1), wake: make(chan struct{}, 1), done: make(chan struct{})}
 	go m.run()
 	return m
 }
@@ -211,7 +217,7 @@ func (m *directManager) accept(value directSignal) {
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
-		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN {
+		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision {
 			m.mu.Unlock()
 			return
 		}
@@ -324,7 +330,7 @@ func (m *directManager) run() {
 		enabled := m.configured && m.config.Enabled
 		p := m.peer
 		healthy := p != nil && p.ready && p.available && time.Since(p.updated) < 10*time.Second
-		busy := p != nil && len(p.streams) > 0
+		busy := p != nil && (len(p.streams) > 0 || p.opening > 0)
 		var disabled *directPeer
 		if !enabled && p != nil && !busy {
 			disabled, m.peer = p, nil
@@ -384,7 +390,7 @@ func (m *directManager) negotiate() (reason string) {
 	// Recheck while detaching: Open may have admitted a stream after the run
 	// loop inspected it. Never replace a peer carrying that stream.
 	m.mu.Lock()
-	if m.peer != nil && len(m.peer.streams) > 0 {
+	if m.peer != nil && (len(m.peer.streams) > 0 || m.peer.opening > 0) {
 		m.hintsChanged = true
 		m.mu.Unlock()
 		return
@@ -460,6 +466,15 @@ func (m *directManager) negotiate() (reason string) {
 		}
 	})
 	health.OnMessage(func(message webrtc.DataChannelMessage) {
+		if m.shared && message.IsString && len(message.Data) <= 2048 && string(message.Data) != "{\"type\":\"ready\"}" {
+			var value directSignal
+			if json.Unmarshal(message.Data, &value) == nil && value.Type == "rtc_status" && value.ID == id {
+				m.accept(value)
+				return
+			}
+			pc.Close()
+			return
+		}
 		if !message.IsString && len(message.Data) == 4 {
 			if health.BufferedAmount() > 4096 || health.Send(message.Data) != nil {
 				pc.Close()
@@ -552,6 +567,12 @@ func (m *directManager) negotiate() (reason string) {
 func (m *directManager) Open(ctx context.Context) *directChannel {
 	m.mu.Lock()
 	p := m.peer
+	// Reserve before creating a DataChannel. Concurrent rules must neither
+	// exceed the shared peer's 24-stream budget nor race idle peer replacement.
+	if m.shared && p != nil && len(p.streams)+p.opening >= 24 {
+		m.mu.Unlock()
+		return nil
+	}
 	if p != nil && p.channels >= 128 {
 		drain := !p.draining
 		p.draining = true
@@ -565,6 +586,7 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 	usable := p != nil && p.ready && p.available && time.Since(p.updated) < 10*time.Second && p.pc.ConnectionState() == webrtc.PeerConnectionStateConnected
 	if usable {
 		p.channels++
+		p.opening++
 	}
 	m.mu.Unlock()
 	if !usable {
@@ -574,10 +596,19 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 	ordered := true
 	dc, err := p.pc.CreateDataChannel("codex-forward-data", &webrtc.DataChannelInit{Protocol: &protocol, Ordered: &ordered})
 	if err != nil {
+		m.mu.Lock()
+		p.opening--
+		m.mu.Unlock()
 		return nil
 	}
 	stream := newDirectChannel(dc, func() bool { return m.peerAlive(p) })
 	m.mu.Lock()
+	p.opening--
+	if m.peer != p || !p.available || p.draining {
+		m.mu.Unlock()
+		stream.Close()
+		return nil
+	}
 	p.streams[stream] = struct{}{}
 	m.mu.Unlock()
 	opened := make(chan struct{})

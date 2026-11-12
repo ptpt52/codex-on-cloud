@@ -47,7 +47,7 @@ export function createGateway({ config: source, assets = {}, request: upstream =
       const asset = assets[url.pathname]; return asset ? reply(200, request.method === 'HEAD' ? null : asset.body, asset.type) : error(404, '页面不存在');
     }
     let node;
-    const pinned = /^\/forward\/(?:agent|helper|resume|data)$/.test(url.pathname) && request.headers.get('x-codex-forward-node');
+    const pinned = /^\/forward\/(?:agent|helper|resume|data|transport)$/.test(url.pathname) && request.headers.get('x-codex-forward-node');
     try {
       if (pinned && (!/^[a-f0-9]{32}$/.test(pinned) || !/^Bearer (?:[a-f0-9]{32}\.)?[A-Za-z0-9_-]{43}$/.test(request.headers.get('authorization') || ''))) return error(400, '助手节点身份无效');
       const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : '')));

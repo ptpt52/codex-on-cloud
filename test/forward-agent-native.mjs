@@ -46,9 +46,12 @@ async function exchange(socket, text) {
 }
 let app, echo, echo6, replacement; let onlySix = false; let accepted = 0;
 let releaseNegotiation, holdFirstNegotiation = !tlsMode;
+const pooledPeers = [], transportUpgrades = [], currentPeers = new Map();
 const initialNegotiation = new Promise(resolve => { releaseNegotiation = resolve; });
 function nativePeer(options) {
+  pooledPeers.push(options.shared === true);
   const peer = createForwardPeer(options), answer = peer.answer, ipv6Only = onlySix;
+  if (options.shared) currentPeers.set(options.helperId, peer);
   const filter = sdp => sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || line.split(' ')[4]?.includes(':')).join('\r\n');
   peer.answer = async offer => {
     if (holdFirstNegotiation) { holdFirstNegotiation = false; await initialNegotiation; }
@@ -81,7 +84,11 @@ try {
   const slots = (await listing(app)).agents;
   const a = { ...slots[0], ...await (await app.request('/api/forward/agents/key?id=' + slots[0].id)).json() }, b = { ...slots[1], ...await (await app.request('/api/forward/agents/key?id=' + slots[1].id)).json() };
   let aControl;
-  app.panel.server.on('upgrade', (req, socket) => { if (req.url === app.entryPath('/forward/agent') && req.headers.authorization?.startsWith('Bearer ' + a.id + '.')) aControl = socket; });
+  app.panel.server.on('upgrade', (req, socket) => {
+    if (req.url === app.entryPath('/forward/agent') && req.headers.authorization?.startsWith('Bearer ' + a.id + '.')) aControl = socket;
+    if (req.url === app.entryPath('/forward/transport')) transportUpgrades.push({ agent: req.headers.authorization?.split('.')[0].slice(7), socket });
+    assert.notEqual(req.url, app.entryPath('/forward/data'), 'managed TCP must reuse pooled WSS rather than upgrade per stream');
+  });
   const helperA = start(a.key), helperB = start(b.key);
   await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.online), 'helpers did not connect');
   const firstPort = await freePort(), secondPort = await freePort(), thirdPort = await freePort();
@@ -90,9 +97,9 @@ try {
   let second = await post(app, 'rule', { agentId: a.id, name: 'A-设备', enabled: true, config: { direction: 'reverse', protocol: 'tcp', deviceName: '设备', ...target, localPort: secondPort } });
   await post(app, 'rule', { agentId: b.id, name: 'B-SSH', enabled: true, config: { ...target, localPort: thirdPort } });
   if (!tlsMode) {
-    // Hold the first accepted negotiation until both other rules are rejected.
+    // Two rules in A share a peer. Only B competes for the negotiation slot.
     // Recovery must handle real contention, not depend on runner scheduling.
-    await until(async () => (await listing(app)).agents.slice(0, 2).flatMap(a => a.rules).filter(r => r.mapping?.direct.reason === 'rtc_busy').length === 2, 'simultaneous rules did not exercise busy rejection', 10000);
+    await until(async () => (await listing(app)).agents.slice(0, 2).some(a => a.rules.some(r => r.mapping?.direct.reason === 'rtc_busy')), 'simultaneous helpers did not exercise busy rejection', 10000);
     releaseNegotiation();
   }
   await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.rules.every(r => r.state === 'active')), 'rules did not activate');
@@ -100,6 +107,30 @@ try {
   if (!tlsMode) await until(async () => (await listing(app)).agents.slice(0, 2).every(a => a.rules.every(r => r.mapping.direct.available)), 'actual Pion/werift direct paths missing', 45000);
   const one = await connect(firstPort), two = await connect(secondPort), three = await connect(thirdPort);
   await exchange(one, 'A 正向直连\n'); await exchange(two, 'A 反向直连\n'); await exchange(three, 'B 独立直连\n');
+  assert.equal(transportUpgrades.length, 2, 'one WSS standby per helper');
+  if (!tlsMode) assert.deepEqual(pooledPeers, [true, true], 'A forward and reverse rules share one real peer');
+  const extraRules = [];
+  for (let i = 0; i < 4; i++) extraRules.push(await post(app, 'rule', { agentId: a.id, name: '共享规则' + i, enabled: true, config: { ...target, localPort: await freePort() } }));
+  await until(async () => (await listing(app)).agents[0].rules.every(r => r.state === 'active' && (tlsMode || r.mapping.direct.available)), 'six rules did not share the helper transport');
+  for (const [index, rule] of extraRules.entries()) {
+    for (let client = 0; client < 6; client++) {
+      const extra = await connect(rule.config.localPort); await exchange(extra, `共享规则 ${index} / TCP ${client}\n`);
+    }
+  }
+  const sharedMappings = (await listing(app)).agents[0].rules.map(rule => rule.mapping);
+  assert.equal(sharedMappings.reduce((sum, mapping) => sum + mapping.connections, 0), 26);
+  assert.equal(sharedMappings.reduce((sum, mapping) => sum + mapping.directConnections, 0), tlsMode ? 0 : 24, 'excess streams reuse WSS without draining the shared RTC');
+  for (const rule of extraRules) await post(app, 'rule/remove', { agentId: a.id, id: rule.id, revision: rule.revision });
+  await exchange(one, '删除共享规则不关闭其他规则\n');
+  if (!tlsMode) {
+    assert.equal(pooledPeers.length, 2);
+    const oldStandby = transportUpgrades.find(value => value.agent === a.id).socket;
+    oldStandby.destroy();
+    await exchange(one, 'WSS 备用断开时直连不受影响\n');
+    const fresh = await connect(firstPort); await exchange(fresh, '备用恢复期间新 TCP 仍直连\n'); fresh.destroy();
+    await until(() => transportUpgrades.filter(value => value.agent === a.id).length === 2, 'pooled WSS standby did not reconnect');
+    assert.equal(pooledPeers.length, 2, 'WSS recovery must not rebuild the healthy RTC');
+  }
   const css = new URL('styles.css', snapshot.root), beforeRevision = app.panel.uiRevision, beforePublication = accepted;
   await writeFile(css, (await readFile(css, 'utf8')) + '\n/* isolated live publication */');
   await app.panel.reloadUI(); assert.notEqual(app.panel.uiRevision, beforeRevision);
@@ -127,7 +158,7 @@ try {
   }
   const before = await listing(app);
   const aMapping = before.agents.find(value => value.id === a.id).rules.find(r => r.id === first.id).mapping.id;
-  const originalAccepted = accepted; assert.equal(originalAccepted, tlsMode ? 4 : 3);
+  const originalAccepted = accepted; assert.equal(originalAccepted, 28);
   const unsupported = await post(app, 'rule', { agentId: a.id, name: '无效串口', enabled: true, config: { direction: 'reverse', protocol: 'serial', deviceName: '测试设备', localPort: await freePort(), serial: { path: 'COM9999', baud: 115200, dataBits: 8, parity: 'none', stopBits: 1, dtr: false, rts: false } } });
   await until(async () => (await listing(app)).agents.find(value => value.id === a.id).rules.find(r => r.id === unsupported.id)?.state === 'failed', 'invalid serial target stopped the whole helper');
   await exchange(one, '无效串口不影响其他规则\n'); await exchange(three, '另一个助手仍然健康\n'); assert.equal(accepted, originalAccepted);
@@ -146,12 +177,21 @@ try {
   await post(app, 'rule/remove', { agentId: a.id, id: second.id, revision: second.revision }); await until(() => next.destroyed, 'removed rule remained active');
   await post(app, 'rekey', { id: a.id, revision: a.keyRevision }); await until(() => helperA.exit, 'revoked helper did not exit');
   await until(() => one.destroyed, 'revoked helper retained a TCP connection'); await exchange(three, '撤销 A 后 B 保持运行\n');
+  let fallback = three;
+  if (!tlsMode) {
+    await currentPeers.get(b.id).destroy('rtc_unavailable');
+    await until(() => three.destroyed, 'failed RTC retained its old business TCP');
+    fallback = await connect(thirdPort); await exchange(fallback, '直连失效后复用已认证 WSS 备用\n');
+    const mapping = (await listing(app)).agents[1].rules[0].mapping;
+    assert.equal(mapping.directConnections, 0); assert.equal(mapping.connections, 1);
+    assert.equal(transportUpgrades.filter(value => value.agent === b.id).length, 1, 'fallback must reuse the warm WSS');
+  }
   const panelPort = app.panel.server.address().port;
   await app.panel.close(); app.config.webrtc = false;
   replacement = await createPanel(app.config); replacement.server.listen(panelPort, '127.0.0.1'); await once(replacement.server, 'listening');
   await app.request('/api/desktop/claim', { method: 'POST', body: { viewer: app.viewer } });
   await until(async () => { const agent = (await listing(app)).agents[1]; return agent?.online && agent.rules[0]?.state === 'active'; }, 'saved rules did not recover after a panel restart');
-  await until(() => three.destroyed, 'panel restart retained an old TCP stream');
+  await until(() => fallback.destroyed, 'panel restart retained an old TCP stream');
   const relayed = await connect(thirdPort); await exchange(relayed, '节点重启后按保存规则新建中转 TCP\n');
   const restored = (await listing(app)).agents[1].rules[0].mapping; assert.equal(restored.directConnections, 0); assert.equal(restored.connections, 1);
   assert.equal(helperB.exit, null); assert(!helperA.output.includes(a.key)); assert(!helperB.output.includes(b.key));

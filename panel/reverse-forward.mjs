@@ -56,7 +56,7 @@ export function createReverseForwarding({ limits, active, authorized, streamLive
       if (live()) item.errorCode = code;
       tcp.destroy(); retire(ws, code);
     };
-    if (ws.transport !== 'direct') forwardHeartbeat(ws, code => abort(code));
+    if (ws.transport !== 'direct' && !ws.shared) forwardHeartbeat(ws, code => abort(code));
     ws.on('error', () => {});
     ws.once('close', () => { clearTimeout(stream.timer); tcp.destroy(); item.streams.delete(stream); });
     ws.on('message', (data, binary) => {

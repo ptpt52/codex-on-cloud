@@ -49,6 +49,21 @@ func TestPeerRotationDoesNotCloseExistingStreamsOrOpenANewTarget(t *testing.T) {
 	}
 }
 
+func TestSharedPeerCapacityIncludesPendingOpensAndFallsBackWithoutDrainingOtherRules(t *testing.T) {
+	peer := &directPeer{opening: 24, available: true, streams: make(map[*directChannel]struct{})}
+	manager := &directManager{shared: true, peer: peer, write: func(any) error { t.Fatal("capacity is not a failed peer"); return nil }}
+	if manager.Open(context.Background()) != nil || peer.draining || !peer.available || peer.channels != 0 {
+		t.Fatal("a full shared peer must choose WSS without replacing or draining it")
+	}
+	peer.opening = 0
+	for i := 0; i < 24; i++ {
+		peer.streams[&directChannel{}] = struct{}{}
+	}
+	if manager.Open(context.Background()) != nil || peer.draining {
+		t.Fatal("active streams were not counted")
+	}
+}
+
 func TestDirectReceiveWindowRejectsExcessDataAndForgedAcknowledgments(t *testing.T) {
 	for _, badACK := range []bool{false, true} {
 		pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})

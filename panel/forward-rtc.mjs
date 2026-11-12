@@ -12,9 +12,9 @@ export function forwardNegotiationFailure(pc) {
   return 'rtc_auth_timeout';
 }
 
-// A mapping owns one peer, separate from the desktop/viewer and its UDP ports.
+// Managed rules share one helper peer; one-time mappings retain their own peer.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false }) {
+export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false }) {
   const allowed = host => peerAddress(host, !!ipv6Address);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl);
   const pc = new RTCPeerConnection({ ...ice, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
@@ -34,6 +34,11 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     current = { id, available, healthy: successes >= 2, reason, rttMs, family,
       route: available ? rtcDirectKind({ family, local: endpoint(local), remote: endpoint(pair.remoteCandidate) }) : 'unknown' };
     status(current);
+    // Keep actual direct-path health independent of the pooled WSS. The
+    // helper can admit new direct streams while signaling is reconnecting.
+    if (shared && authenticated && control?.readyState === 'open') {
+      try { if (control.bufferedAmount > 4096) throw Error(); control.send(JSON.stringify({ type: 'rtc_status', ...current })); } catch { queueMicrotask(() => { void handle.destroy(); }); }
+    }
   };
   const handle = {
     get state() { return current; },
@@ -103,12 +108,17 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
       channel.error.subscribe(() => { void handle.destroy(); }); return;
     }
     if (channel.label !== 'codex-forward-data' || channel.protocol !== 'forward-data-v1' || !authenticated) return void handle.destroy('protocol_error');
-    if (sockets.size >= 8) { channel.close(); return; }
+    if (sockets.size >= (shared ? 24 : 8)) { channel.close(); return; }
     const socket = forwardChannel(channel); sockets.add(socket);
     const timeout = setTimeout(() => socket.terminate(), 5000).unref();
     socket.once('close', () => { clearTimeout(timeout); sockets.delete(socket); });
     socket.once('message', (bytes, binary) => {
       clearTimeout(timeout);
+      if (shared) {
+        let record; try { if (!binary) record = JSON.parse(bytes.toString()); } catch {}
+        if (!authorized() || !current.available || !record || record.type !== 'open') return socket.terminate();
+        connect(socket, record); return;
+      }
       let streamId;
       if (reverse) {
         let record; try { record = JSON.parse(bytes.toString()); } catch {}

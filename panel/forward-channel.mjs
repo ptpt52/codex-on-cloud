@@ -3,13 +3,14 @@ import { EventEmitter } from 'node:events';
 // Ordered/reliable SCTP preserves message boundaries. Four acknowledged records
 // bound the receiver even while its target TCP socket applies backpressure.
 export const DIRECT_WINDOW = 4, DIRECT_CHUNK = 16384, DIRECT_BUFFER = 256 * 1024;
-export function forwardChannel(channel) {
+export function forwardChannel(channel, { transport = 'direct', shared = false } = {}) {
   const socket = new EventEmitter(), subscriptions = [], outgoing = [], incoming = [];
   let ended = false, paused = false, closing = false, queued = 0, sent = 0, acked = 0, received = 0, delivered = 0, credited = 0;
   Object.defineProperties(socket, {
     readyState: { get: () => ended ? 3 : closing ? 2 : channel.readyState === 'open' ? 1 : 0 },
     bufferedAmount: { get: () => queued + channel.bufferedAmount },
-    transport: { value: 'direct' },
+    transport: { value: transport },
+    shared: { value: shared },
   });
   function finish() {
     if (ended) return;

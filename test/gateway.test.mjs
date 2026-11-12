@@ -13,7 +13,7 @@ test('native helper control and data stay on their authorized node while browser
     return new Response('accepted', { headers: { 'x-codex-node-id': selected } });
   } });
   await h.register(entry(1), key(1), h.codeValue.key); await h.register(entry(2), key(2), h.codeValue.key); await h.select(entry(1).id);
-  for (const path of ['/forward/agent', '/forward/helper', '/forward/resume', '/forward/data']) {
+  for (const path of ['/forward/agent', '/forward/helper', '/forward/resume', '/forward/data', '/forward/transport']) {
     const response = await h.fetch(h.origin + path, { headers: { 'x-codex-forward-node': entry(2).id, authorization: 'Bearer ' + (path.endsWith('/agent') ? entry(2).id + '.' : '') + 'a'.repeat(43) } });
     assert.equal(response.status, 200); assert.equal(calls.at(-1).selected, entry(2).id);
   }
@@ -46,7 +46,7 @@ test('pinned helper routes fail closed when an older registry ignores the reques
     const url = new URL(request.url); url.search = ''; // Pre-pinning DO behavior.
     return h.registry.fetch(new Request(url, request));
   } });
-  for (const path of ['/forward/agent', '/forward/helper', '/forward/resume', '/forward/data']) {
+  for (const path of ['/forward/agent', '/forward/helper', '/forward/resume', '/forward/data', '/forward/transport']) {
     const response = await h.fetch(h.origin + path, { headers: { 'x-codex-forward-node': entry(2).id, authorization: 'Bearer ' + 'a'.repeat(43) } });
     assert.equal(response.status, 503);
   }

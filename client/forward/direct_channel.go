@@ -23,8 +23,14 @@ type directRecord struct {
 	bytes []byte
 	id    uint32
 }
+type flowSender interface {
+	Send([]byte) error
+	SendText(string) error
+	BufferedAmount() uint64
+	Close() error
+}
 type directChannel struct {
-	dc                                         *webrtc.DataChannel
+	dc                                         flowSender
 	mu, writeMu, sendMu                        sync.Mutex
 	done                                       chan struct{}
 	wake                                       chan struct{}
@@ -35,14 +41,30 @@ type directChannel struct {
 	readDeadline, writeDeadline                time.Time
 	longRead                                   bool
 	alive                                      func() bool
+	relay                                      bool
 }
 
 func newDirectChannel(dc *webrtc.DataChannel, alive func() bool) *directChannel {
-	c := &directChannel{dc: dc, done: make(chan struct{}), wake: make(chan struct{}, 1), queue: make(chan directRecord, 4), alive: alive}
+	c := newFlowChannel(dc, alive)
 	dc.OnClose(func() { c.finish(io.EOF) })
 	dc.OnError(func(error) { c.finish(failure("rtc_unavailable")) })
 	dc.OnMessage(c.receive)
 	return c
+}
+func newFlowChannel(dc flowSender, alive func() bool) *directChannel {
+	return &directChannel{dc: dc, done: make(chan struct{}), wake: make(chan struct{}, 1), queue: make(chan directRecord, 4), alive: alive}
+}
+func (c *directChannel) unavailable() error {
+	if c.relay {
+		return failure("helper_reconnecting")
+	}
+	return failure("rtc_unavailable")
+}
+func (c *directChannel) timeout() error {
+	if c.relay {
+		return failure("network_timeout")
+	}
+	return failure("rtc_health_timeout")
 }
 func (c *directChannel) finish(err error) {
 	c.mu.Lock()
@@ -138,7 +160,7 @@ func (c *directChannel) ReadMessage() (int, []byte, error) {
 		err := c.dc.SendText(string(bytes))
 		c.sendMu.Unlock()
 		if err != nil {
-			c.finish(failure("rtc_unavailable"))
+			c.finish(c.unavailable())
 		}
 	}
 	for {
@@ -168,7 +190,7 @@ func (c *directChannel) ReadMessage() (int, []byte, error) {
 				c.SetReadDeadline(time.Now().Add(45 * time.Second))
 				continue
 			}
-			return 0, nil, failure("rtc_health_timeout")
+			return 0, nil, c.timeout()
 		}
 	}
 }
@@ -198,8 +220,8 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 			}
 			c.sendMu.Unlock()
 			if err != nil {
-				c.finish(failure("rtc_unavailable"))
-				return failure("rtc_unavailable")
+				c.finish(c.unavailable())
+				return c.unavailable()
 			}
 			return nil
 		}
@@ -212,9 +234,9 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 			timer.Stop()
 		case <-c.done:
 			timer.Stop()
-			return failure("rtc_unavailable")
+			return c.unavailable()
 		case <-timer.C:
-			return failure("rtc_health_timeout")
+			return c.timeout()
 		}
 	}
 }

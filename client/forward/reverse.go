@@ -31,12 +31,19 @@ func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id s
 	dialCtx, cancel := context.WithTimeout(ctx, dataConnectTimeout)
 	defer cancel()
 	var ws messageSocket
-	if direct != nil {
+	pooled, shared := ctx.Value(forwardPoolRuleContext{}).(pooledRule)
+	if shared {
+		var err error
+		ws, err = pooled.pool.Open(dialCtx, pooled.mapping, ready.StreamToken, id)
+		if err != nil {
+			return streamFailure(err, "relay_connect_timeout")
+		}
+	} else if direct != nil {
 		if channel := direct.Open(dialCtx); channel != nil {
 			ws = channel
 		}
 	}
-	usingDirect := ws != nil
+	usingDirect := ws != nil && !shared
 	if ws == nil {
 		remote, err := dialHeaders(dialCtx, server, "/forward/data", ready.StreamToken, http.Header{"X-Codex-Reverse-Stream": {id}})
 		if err != nil {

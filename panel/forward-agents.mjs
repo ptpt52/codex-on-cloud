@@ -33,7 +33,7 @@ export function agentInventory(value) {
 export function createForwardAgents(config, forwarding) {
   const identity = { get entry() { return config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : ''); }, id: config.nodeId || '' };
   const state = createForwardAgentState(config.dataDir, forwarding.validate, identity);
-  const sessions = new Map(), runtime = new Map(), inventories = new Map(), updates = new Map();
+  const sessions = new Map(), instances = new Map(), runtime = new Map(), inventories = new Map(), updates = new Map();
   const server = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: AGENT_LIMITS.message });
   let closed = false;
   function send(session, message) {
@@ -44,7 +44,7 @@ export function createForwardAgents(config, forwarding) {
   }
   function stopRuntime(entry) { if (entry.mapping) forwarding.stop({ id: entry.mapping }); runtime.delete(entry.ruleId); }
   function stopAgent(id) { for (const entry of runtime.values()) if (entry.agentId === id) stopRuntime(entry); }
-  function disconnect(id) { clearTimeout(updates.get(id)); updates.delete(id); const session = sessions.get(id); if (session) { sessions.delete(id); session.ws?.terminate(); } inventories.delete(id); stopAgent(id); }
+  function disconnect(id) { clearTimeout(updates.get(id)); updates.delete(id); instances.delete(id); void forwarding.dropPool(id); const session = sessions.get(id); if (session) { sessions.delete(id); session.ws?.terminate(); } inventories.delete(id); stopAgent(id); }
   function currentSession(id) {
     const session = sessions.get(id);
     if (session && Date.now() - session.lastMessageAt >= AGENT_CONTROL_TIMEOUT_MS) {
@@ -83,7 +83,7 @@ export function createForwardAgents(config, forwarding) {
           if (closed) return 'server_stopping';
           const current = state.find(agent.id), saved = current?.rules.find(r => r.id === rule.id);
           return current?.keyHash === grantedHash && saved?.enabled && saved.revision === rule.revision ? '' : 'authorization_revoked';
-        }, { role: 'admin', helperId: agent.id, ruleId: rule.id });
+        }, { role: 'admin', helperId: agent.id, ruleId: rule.id, instance: session.instance });
         entry.mapping = result.id; entry.code = result.code; entry.error = ''; entry.retryAt = 0;
       } catch (error) { entry.error = String(error.message).slice(0, 256); entry.retryAt = Date.now() + 15000; }
       changed = true;
@@ -132,15 +132,26 @@ export function createForwardAgents(config, forwarding) {
     } else throw Object.assign(Error('助手操作不存在'), { status: 404 });
     return result;
   }
-  function upgrade(req, socket, head) {
+  function upgrade(req, socket, head, pooled = false) {
     const deny = (status, error = '') => socket.end(`HTTP/1.1 ${status} Rejected\r\n${identity.id ? 'X-Codex-Node-Id: ' + identity.id + '\r\n' : ''}Connection: close\r\n${error ? 'X-Codex-Forward-Error: ' + error + '\r\n' : ''}Content-Length: 0\r\n\r\n`);
     if (closed) return deny(503);
     const match = /^Bearer ([a-f0-9]{32}\.[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '');
     const agent = match && state.authenticate(match[1]);
-    if (!agent || req.headers['sec-websocket-protocol'] !== 'codex-agent-v2') return deny(401, 'agent_key_invalid');
+    if (!agent || req.headers['sec-websocket-protocol'] !== (pooled ? 'codex-forward-pool-v1' : 'codex-agent-v2')) return deny(401, 'agent_key_invalid');
     if (identity.id && req.headers['x-codex-forward-node'] !== identity.id) return deny(409, 'node_changed');
     const instance = req.headers['x-codex-agent-instance'];
     if (typeof instance !== 'string' || !ID.test(instance)) return deny(400, 'protocol_error');
+    if (pooled) {
+      const accepted = instances.get(agent.id);
+      // After a node restart the independent data reconnect can win the race
+      // against management enrollment. Wait for that enrollment, never adopt
+      // an instance merely because it presents the long-lived key.
+      if (!accepted) return deny(409, 'helper_reconnecting');
+      if (accepted.instance !== instance || accepted.revision !== agent.keyHash) return deny(409, 'agent_already_connected');
+      const scope = { id: agent.id, instance, revision: agent.keyHash,
+        valid: () => !closed && state.find(agent.id)?.keyHash === agent.keyHash && instances.get(agent.id) === accepted };
+      return forwarding.upgradePool(req, socket, head, scope);
+    }
     const current = currentSession(agent.id);
     if (current) return deny(409, current.instance === instance ? 'resume_busy' : 'agent_already_connected');
     const session = { ws: null, instance, connectedAt: Date.now(), lastMessageAt: Date.now(), inventory: null, inventoryRequestedAt: 0, messages: 0, messageAt: Date.now() };
@@ -152,13 +163,16 @@ export function createForwardAgents(config, forwarding) {
     try {
       server.handleUpgrade(req, socket, head, ws => {
         socket.removeListener('close', abandoned); session.ws = ws;
+        const accepted = instances.get(agent.id);
+        if (accepted && accepted.instance !== instance) void forwarding.dropPool(agent.id);
+        if (!accepted || accepted.instance !== instance || accepted.revision !== agent.keyHash) instances.set(agent.id, { instance, revision: agent.keyHash });
         ws.on('error', () => ws.terminate());
         forwardHeartbeat(ws, () => ws.terminate());
         ws.once('close', (code, reason) => {
           if (sessions.get(agent.id) !== session) return;
           sessions.delete(agent.id);
           // Individual mapping sockets retain their existing bounded recovery.
-          if (code === 1000 && reason.toString() === 'client_stopping') stopAgent(agent.id);
+          if (code === 1000 && reason.toString() === 'client_stopping') { instances.delete(agent.id); void forwarding.dropPool(agent.id); stopAgent(agent.id); }
         });
         ws.on('message', (bytes, binary) => {
           if (sessions.get(agent.id) !== session || state.find(agent.id)?.keyHash !== agent.keyHash) return ws.terminate();
@@ -178,11 +192,11 @@ export function createForwardAgents(config, forwarding) {
             session.lastMessageAt = Date.now();
           } catch { ws.close(1008, 'protocol_error'); ws.terminate(); }
         });
-        send(session, { type: 'agent-ready', version: 2, id: agent.id, name: agent.name, node: identity, ruleLimit: AGENT_LIMITS.rules, inventoryIntervalMs: 30000 });
+        send(session, { type: 'agent-ready', version: 2, id: agent.id, name: agent.name, node: identity, ruleLimit: AGENT_LIMITS.rules, inventoryIntervalMs: 30000, transportProtocol: 1 });
         reconcile(agent.id, true); send(session, { type: 'inventory-request' });
       });
     } catch { sessions.delete(agent.id); socket.destroy(); }
   }
-  function close() { closed = true; clearInterval(timer); for (const timeout of updates.values()) clearTimeout(timeout); updates.clear(); for (const id of sessions.keys()) disconnect(id); server.close(); }
+  function close() { closed = true; clearInterval(timer); for (const timeout of updates.values()) clearTimeout(timeout); updates.clear(); for (const id of instances.keys()) disconnect(id); server.close(); }
   return { list, sharedKeys, sharedKey, hasSharedKeys: () => state.all().some(agent => agent.temporaryKeyVisible), action, upgrade, close };
 }

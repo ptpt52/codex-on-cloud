@@ -167,6 +167,7 @@ type agentRuntime struct {
 	results chan ruleResult
 	mu      sync.Mutex
 	wg      sync.WaitGroup
+	pool    *transportPool
 }
 
 func (a *agentRuntime) apply(rules []managedRule) error {
@@ -213,6 +214,9 @@ func (a *agentRuntime) apply(rules []managedRule) error {
 			continue
 		}
 		ctx, stop := context.WithCancel(a.ctx)
+		if a.pool != nil {
+			ctx = context.WithValue(ctx, forwardPoolContext{}, a.pool)
+		}
 		worker := &agentWorker{rule: rule, cancel: stop, done: make(chan struct{})}
 		a.workers[rule.ID] = worker
 		changed = true
@@ -263,6 +267,9 @@ func (a *agentRuntime) close() {
 		worker.cancel()
 	}
 	a.wg.Wait()
+	if a.pool != nil {
+		a.pool.close()
+	}
 }
 
 type agentReady struct {
@@ -276,6 +283,7 @@ type agentReady struct {
 	} `json:"node"`
 	RuleLimit         int `json:"ruleLimit"`
 	InventoryInterval int `json:"inventoryIntervalMs"`
+	TransportProtocol int `json:"transportProtocol"`
 }
 
 func runAgent(ctx context.Context, key string, writer io.Writer) error {
@@ -315,6 +323,7 @@ func runAgent(ctx context.Context, key string, writer io.Writer) error {
 		return errors.New("无法生成助手实例身份")
 	}
 	instance := hex.EncodeToString(nonce[:])
+	manager.pool = newTransportPool(ctx, server, grant, instance, output)
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil {
 			return nil
@@ -356,7 +365,7 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 		return connectionFailure(err)
 	}
 	var ready agentReady
-	if kind != websocket.TextMessage || json.Unmarshal(data, &ready) != nil || ready.Type != "agent-ready" || ready.Version != 2 || ready.ID != grant.Agent || !validDeviceName(ready.Name) || ready.Node.ID != grant.Node || ready.RuleLimit < 1 || ready.RuleLimit > 16 || ready.InventoryInterval != 30000 {
+	if kind != websocket.TextMessage || json.Unmarshal(data, &ready) != nil || ready.Type != "agent-ready" || ready.Version != 2 || ready.ID != grant.Agent || !validDeviceName(ready.Name) || ready.Node.ID != grant.Node || ready.RuleLimit < 1 || ready.RuleLimit > 16 || ready.InventoryInterval != 30000 || ready.TransportProtocol != 0 && ready.TransportProtocol != 1 {
 		return failure("protocol_error")
 	}
 	entry, err := serverURL(ready.Node.Entry)
@@ -365,6 +374,9 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 	}
 	if err = link.install(conn); err != nil {
 		return err
+	}
+	if ready.TransportProtocol == 1 {
+		manager.pool.start()
 	}
 	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	nodeLabel := ready.Node.ID

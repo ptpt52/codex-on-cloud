@@ -82,6 +82,9 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 	if path == "/forward/agent" {
 		protocol = "codex-agent-v2"
 	}
+	if path == "/forward/transport" {
+		protocol = "codex-forward-pool-v1"
+	}
 	d := websocket.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: handshakeTimeout, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Subprotocols: []string{protocol}}
 	origin := *server
 	origin.Path = ""
@@ -94,6 +97,10 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 		headers.Set("X-Codex-Forward-Reverse", "1")
 		headers.Set("X-Codex-Forward-Serial", "1")
 		headers.Set("X-Codex-Forward-Keep-Streams", "1")
+		if pool, ok := ctx.Value(forwardPoolContext{}).(*transportPool); ok {
+			headers.Set("X-Codex-Forward-Pool", "1")
+			headers.Set("X-Codex-Agent-Instance", pool.instance)
+		}
 	}
 	for key, values := range extra {
 		for _, value := range values {
@@ -112,7 +119,7 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 		return nil, errors.New("服务器转发协议不兼容")
 	}
 	c.SetReadLimit(chunkSize)
-	if path == "/forward/helper" || path == "/forward/resume" || path == "/forward/agent" {
+	if path == "/forward/helper" || path == "/forward/resume" || path == "/forward/agent" || path == "/forward/transport" {
 		c.SetReadLimit(48 * 1024)
 	}
 	readTimeout := 5 * time.Second
@@ -140,6 +147,7 @@ type readyMessage struct {
 	TargetPort          int           `json:"targetPort"`
 	MaxConnections      int           `json:"maxConnections"`
 	DirectProtocol      int           `json:"directProtocol"`
+	PoolProtocol        int           `json:"poolProtocol"`
 	ResumeProtocol      int           `json:"resumeProtocol"`
 	ResumeToken         string        `json:"resumeToken"`
 	ResumeMs            int           `json:"resumeMs"`
@@ -211,13 +219,16 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 	dialCtx, cancel := context.WithTimeout(ctx, dataConnectTimeout)
 	var ws messageSocket
 	var err error
-	if direct != nil {
+	pooled, shared := ctx.Value(forwardPoolRuleContext{}).(pooledRule)
+	if shared {
+		ws, err = pooled.pool.Open(dialCtx, pooled.mapping, token, "")
+	} else if direct != nil {
 		if channel := direct.Open(dialCtx); channel != nil {
 			ws = channel
 		}
 	}
-	usingDirect := ws != nil
-	if ws == nil {
+	usingDirect := ws != nil && !shared
+	if ws == nil && !shared {
 		ws, err = dial(dialCtx, server, "/forward/data", token)
 	}
 	cancel()
@@ -387,6 +398,13 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	}
 	if err := state.accept(ready); err != nil {
 		return err
+	}
+	if ready.PoolProtocol == 1 {
+		pool, ok := ctx.Value(forwardPoolContext{}).(*transportPool)
+		if !ok || state.expected == nil {
+			return failure("protocol_error")
+		}
+		ctx = context.WithValue(ctx, forwardPoolRuleContext{}, pooledRule{pool: pool, mapping: ready.ID})
 	}
 	reversed := ready.Direction == "reverse"
 	if reversed && !state.reverseApproved {

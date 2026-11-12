@@ -17,7 +17,7 @@ const tools = process.env.WORKER_TOOLS;
 if (!tools) throw Error('请设置 WORKER_TOOLS，指向固定 wrangler@4.158.0 的工具目录');
 const require = createRequire(join(resolve(tools), 'package.json')); assert.equal(require('wrangler/package.json').version, '4.158.0');
 const { Miniflare, Log, LogLevel, convertV4MiniflareOptions } = require('miniflare');
-const root = await mkdtemp(join(tmpdir(), 'codex-gateway-worker-')); let runtime, socket, agentSocket, h;
+const root = await mkdtemp(join(tmpdir(), 'codex-gateway-worker-')); let runtime, socket, agentSocket, poolSocket, h;
 try {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening'); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   const origin = 'http://127.0.0.1:' + port; h = await gatewayHTTPFixture({ origin }); const a = await h.add(1), b = await h.add(2);
@@ -62,9 +62,10 @@ try {
   socket = new WebSocket('ws://127.0.0.1:' + port + '/session/connect?' + query, { origin, headers: { host: new URL(origin).host, cookie: first.cookie }, handshakeTimeout: 5000 });
   const welcome = once(socket, 'message'); await once(socket, 'open'); socket.send(JSON.stringify({ type: 'auth', csrf: first.csrf })); assert.equal(JSON.parse((await welcome)[0]).type, 'welcome');
   await select(b.gatewayEntry); assert.equal(socket.readyState, WebSocket.OPEN);
-  for (const [path, error] of [['agent', 'agent_key_invalid'], ['helper', 'pair_invalid'], ['resume', 'resume_authorization_invalid'], ['data', 'stream_authorization_invalid']]) {
+  for (const [path, error] of [['agent', 'agent_key_invalid'], ['transport', 'agent_key_invalid'], ['helper', 'pair_invalid'], ['resume', 'resume_authorization_invalid'], ['data', 'stream_authorization_invalid']]) {
     const rejection = await new Promise((resolve, reject) => {
-      const invalid = new WebSocket('ws://127.0.0.1:' + port + '/forward/' + path, path === 'agent' ? 'codex-agent-v2' : 'codex-forward-v1', { origin, headers: { authorization: 'Bearer ' + (path === 'agent' ? grant.agent + '.' : '') + 'z'.repeat(43), 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'e'.repeat(32), 'x-codex-forward-resume': '1' }, handshakeTimeout: 5000 });
+      const keyed = path === 'agent' || path === 'transport';
+      const invalid = new WebSocket('ws://127.0.0.1:' + port + '/forward/' + path, path === 'agent' ? 'codex-agent-v2' : path === 'transport' ? 'codex-forward-pool-v1' : 'codex-forward-v1', { origin, headers: { authorization: 'Bearer ' + (keyed ? grant.agent + '.' : '') + 'z'.repeat(43), 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'e'.repeat(32), 'x-codex-forward-resume': '1' }, handshakeTimeout: 5000 });
       invalid.on('error', reject); invalid.once('open', () => { invalid.terminate(); reject(Error('Invalid helper credentials accepted')); });
       invalid.once('unexpected-response', (_request, response) => { response.resume(); resolve({ status: response.statusCode, headers: response.headers }); invalid.terminate(); });
     });
@@ -76,8 +77,14 @@ try {
   agentSocket = new WebSocket('ws://127.0.0.1:' + port + '/forward/agent', 'codex-agent-v2', { origin, headers: { authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'a'.repeat(32) }, handshakeTimeout: 5000 });
   const agentWelcome = once(agentSocket, 'message'); await once(agentSocket, 'open');
   const agentReady = JSON.parse((await agentWelcome)[0]); assert.equal(agentReady.type, 'agent-ready'); assert.equal(agentReady.node.id, a.gatewayEntry.id);
+  poolSocket = new WebSocket('ws://127.0.0.1:' + port + '/forward/transport', 'codex-forward-pool-v1', { origin, headers: { authorization: 'Bearer ' + grant.agent + '.' + grant.secret, 'x-codex-forward-node': grant.node, 'x-codex-agent-instance': 'a'.repeat(32) }, handshakeTimeout: 5000 });
+  const poolWelcome = once(poolSocket, 'message');
+  poolSocket.on('message', bytes => { const value = JSON.parse(bytes); if (value.type === 'pool-ping') poolSocket.send(JSON.stringify({ type: 'pool-pong', id: value.id })); });
+  await once(poolSocket, 'open'); assert.equal(JSON.parse((await poolWelcome)[0]).id, grant.agent);
   assert.equal((await (await control('nodes')).json()).activeId, b.gatewayEntry.id);
+  const poolClosed = once(poolSocket, 'close');
   agentSocket.close(1000, 'client_stopping'); await once(agentSocket, 'close'); agentSocket = undefined;
+  await poolClosed; poolSocket = undefined;
   const second = await panelLogin(b);
   const stale = await runtime.dispatchFetch(origin + '/api/files/native.txt?node=' + a.gatewayEntry.id, { headers: { host: new URL(origin).host, cookie: first.cookie + '; ' + second.cookie } }); assert.equal(stale.status, 409);
   socket.terminate(); socket = undefined;
@@ -85,4 +92,4 @@ try {
   const restored = await (await control('nodes')).json(); assert.equal(restored.nodes.length, 2); assert.equal(restored.activeId, b.gatewayEntry.id);
   assert.deepEqual(a.terminalInputs, []); assert.deepEqual(b.terminalInputs, []); assert.equal(a.managementStats.restarts + b.managementStats.restarts, 0);
   console.log('PASS actual workerd/SQLite: independent gateway authentication, dynamic enrollment, atomic selection, streaming HTTP upload/download, WSS pass-through retained across selection, native helper pinned to its granting node, helper handshake rejection codes preserved, stale-node rejection, and persistent routing after Worker restart. No CF API or production input.');
-} finally { socket?.terminate(); agentSocket?.terminate(); await runtime?.dispose(); await h?.close(); await rm(root, { recursive: true, force: true }); }
+} finally { socket?.terminate(); agentSocket?.terminate(); poolSocket?.terminate(); await runtime?.dispose(); await h?.close(); await rm(root, { recursive: true, force: true }); }

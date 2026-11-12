@@ -11,6 +11,7 @@ import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
 import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
+import { createForwardPool } from './forward-pool.mjs';
 
 export const FORWARD_LIMITS = Object.freeze({ mappings: 32, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -20,7 +21,7 @@ const secret = () => randomBytes(32).toString('base64url');
 // reconnect/mode changes preserve its grants and both existing/new TCP streams.
 // Negotiated recovery preserves healthy data within the original grant/budget.
 export function createForwarding(config, { now = Date.now, createPeer = config.forwardPeerFactory || createForwardPeer } = {}) {
-  const mappings = new Map(), recent = [], retiring = new Map(), peers = new Set();
+  const mappings = new Map(), recent = [], retiring = new Map(), peers = new Set(), pools = new Map();
   let negotiating = false;
   const controls = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 48 * 1024 });
   const streams = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: FORWARD_LIMITS.chunk });
@@ -33,6 +34,55 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   const active = item => authorized(item) && item.state === 'active' && item.control?.readyState === 1;
   const streamLive = (item, stream) => authorized(item) && item.streams.has(stream) && (item.keepStreams && stream.established || active(item) && stream.generation === item.generation);
   const reverse = createReverseForwarding({ limits: FORWARD_LIMITS, active, authorized, streamLive, invalidReason, remove, retire, send, reserve, now });
+  // All peer generations, including asynchronous closes, share one node budget.
+  const trackedPeer = options => {
+    const peer = createPeer(options); peers.add(peer);
+    const destroy = peer.destroy;
+    peer.destroy = reason => {
+      const result = destroy(reason);
+      if (result) void Promise.resolve(result).finally(() => peers.delete(peer)); else peers.delete(peer);
+      return result;
+    };
+    return peer;
+  };
+  const poolFor = item => {
+    const pool = pools.get(item.authorization.helperId);
+    return item.pooled && pool?.scope.instance === item.authorization.instance ? pool : undefined;
+  };
+  function directStatus(item) {
+    const value = poolFor(item)?.state || item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' };
+    return { ...value, note: FORWARD_ERRORS[value.reason] || '' };
+  }
+  function dropPool(id) { const pool = pools.get(id); pools.delete(id); return pool?.close(); }
+  function upgradePool(req, socket, head, scope) {
+    let pool = pools.get(scope.id);
+    if (pool && (pool.scope.instance !== scope.instance || pool.scope.revision !== scope.revision)) { dropPool(scope.id); pool = undefined; }
+    if (!pool) {
+      if (pools.size >= 8) return socket.destroy();
+      pool = createForwardPool({ config, scope, valid: scope.valid, createPeer: options => trackedPeer({ ...options, helperId: scope.id }),
+        acquire: replacing => { if (negotiating || peers.size >= 8 && !replacing) return false; negotiating = true; return true; }, release: () => { negotiating = false; },
+        configuration: () => {
+          const items = [...mappings.values()].filter(item => poolFor(item) === pool && active(item));
+          const hints = side => [...new Set(items.map(item => item.hints[side]).filter(Boolean))].sort().slice(0, 4);
+          return { active: items.length > 0, server: hints('server'), browser: hints('browser') };
+        },
+        connect: (ws, record) => {
+          if (!record || typeof record !== 'object' || Array.isArray(record) || !['mapping,token,type', 'id,mapping,token,type'].includes(Object.keys(record).sort().join(',')) || record.type !== 'open' || typeof record.mapping !== 'string' || typeof record.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(record.token)) return ws.terminate();
+          const item = mappings.get(record.mapping);
+          if (!item || poolFor(item) !== pool || !active(item) || !item.streamHash || !equal(digest(record.token), item.streamHash)) return ws.terminate();
+          if (item.direction === 'reverse') {
+            if (!reverse.waiting(item, record.id)) return ws.terminate();
+            reverse.transfer(item, ws, record.id);
+          } else {
+            if (record.id !== undefined) return ws.terminate();
+            const reason = reserve(item); if (reason) { item.errorCode = reason; return ws.close(4000, reason); }
+            transfer(item, ws);
+          }
+        } });
+      pools.set(scope.id, pool);
+    }
+    pool.upgrade(req, socket, head);
+  }
   function retire(ws, code) {
     if (ws.readyState !== 1) return ws.terminate();
     if (retiring.size >= FORWARD_LIMITS.closing) {
@@ -58,6 +108,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (mappings.get(item.id) !== item) return;
     mappings.delete(item.id); clearTimeout(item.timer);
     disconnectStreams(item);
+    poolFor(item)?.configure();
     recent.unshift({ id: item.id, session: item.session, helperId: item.authorization.helperId, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, ...details(item), code, endedAt: now(), pairHash: item.pairHash, resumeHash: item.resumeHash });
     recent.splice(FORWARD_LIMITS.recent);
     if (item.control) retire(item.control, code);
@@ -90,7 +141,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         createdAt: item.createdAt, authorization: { expiresAt: item.authorization.expiresAt ?? null, role: item.authorization.role || 'admin', createdHere: item.session === viewer, ...(item.authorization.helperId ? { helperId: item.authorization.helperId, ruleId: item.authorization.ruleId } : {}) },
         hints: { ...item.hints }, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections,
         state: item.state, expires: item.state === 'pending' ? item.expires : null, recoverUntil: item.recoverUntil || null, connections: item.streams.size, sent: item.sent, received: item.received, errorCode: item.errorCode || '', error: FORWARD_ERRORS[item.errorCode] || '',
-        direct: { ...(item.direct || { available: false, reason: config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled' }), note: FORWARD_ERRORS[item.direct ? item.direct.reason : config.webrtc ? 'rtc_waiting_helper' : 'rtc_disabled'] || '' }, directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
+        direct: directStatus(item), directConnections: [...item.streams].filter(stream => stream.ws?.transport === 'direct').length })),
       recent: recent.filter(visible).map(({ pairHash: _pair, resumeHash: _resume, session: _session, ...item }) => ({ ...item, error: FORWARD_ERRORS[item.code] })) };
   }
   function normalize(body, policy = true) { return normalizeForwardRule(config, body, policy); }
@@ -120,6 +171,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (!authorized(item) || !allowed(item)) throw fail(403, '当前登录无权操作此映射');
     try { item.hints = rtcHints(body.hints); } catch (error) { throw fail(400, error.message); }
     if (active(item) && item.directClient) sendConfig(item);
+    poolFor(item)?.configure();
     return { ok: true };
   }
   function sendConfig(item) { send(item, { type: 'rtc_config', enabled: !!config.webrtc, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', hints: item.hints }); }
@@ -169,11 +221,12 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         if (item.direction === 'reverse') heartbeat(ws, () => suspend(item, ws, 'heartbeat_timeout'));
         if (item.directClient) sendConfig(item);
         if (item.directClient && item.peer) send(item, { type: 'rtc_status', ...item.peer.state });
+        poolFor(item)?.configure();
       };
       if (item.direction === 'reverse') void reverse.start(item, current).then(activate).catch(() => {});
       else activate();
     });
-    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections, ...(item.serial ? { serial: item.serial, serialProtocol: 1, protocol: 'serial' } : {}), directProtocol: 1,
+    ws.send(JSON.stringify({ type: 'ready', version: 1, id: item.id, streamToken: token, localPort: item.localPort, targetHost: item.targetHost, targetPort: item.targetPort, maxConnections: item.serial ? 1 : FORWARD_LIMITS.connections, ...(item.serial ? { serial: item.serial, serialProtocol: 1, protocol: 'serial' } : {}), directProtocol: item.pooled ? 0 : 1, ...(item.pooled ? { poolProtocol: 1 } : {}),
       ...(item.direction === 'reverse' ? { direction: 'reverse', reverseProtocol: 1, deviceName: item.deviceName } : {}),
       ...(item.resumeHash ? { resumeProtocol: 1, ...(item.keepStreams ? { keepStreamsProtocol: 1 } : {}), resumeMs: item.recoverUntil ? Math.max(1, item.recoverUntil - now()) : FORWARD_LIMITS.resumeMs, ...(resumeToken ? { resumeToken } : {}) } : {}) }));
   }
@@ -208,13 +261,11 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       let peer;
       item.peerId = value.id;
       const live = () => authorized(item) && item.peer === peer && (item.keepStreams || current());
-      peer = createPeer({ address, ipv6Address, stunUrl: config.webrtcStunUrl, id: value.id, valid: live,
+      peer = trackedPeer({ address, ipv6Address, stunUrl: config.webrtcStunUrl, id: value.id, valid: live,
         authenticate: token => active(item) && live() && typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token) && equal(digest(token), item.streamHash),
         status: state => { if (live()) report(item, state); }, closed: () => { if (item.peer === peer) item.peer = null; },
         reverse: item.direction === 'reverse',
         connect: (socket, id) => { if (!active(item) || !live()) return socket.terminate(); if (item.direction === 'reverse') return reverse.transfer(item, socket, id); const reason = reserve(item); if (reason) { item.errorCode = reason; socket.close(4000, reason); } else transfer(item, socket); } });
-      peers.add(peer); const destroy = peer.destroy;
-      peer.destroy = reason => { const result = destroy(reason); if (result) void Promise.resolve(result).finally(() => peers.delete(peer)); return result; };
       item.peer = peer; report(item, peer.state);
       const sdp = withHintCandidates({ type: 'answer', sdp: await peer.answer(offer) }, hints.server, { ipv6: !!ipv6Address }).sdp;
       if (current() && item.peer === peer) send(item, { type: 'rtc_answer', id: value.id, typeDescription: 'answer', sdp });
@@ -229,7 +280,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
   }
   function transfer(item, ws) {
     const tcp = net.createConnection({ host: item.targetHost, port: item.targetPort, allowHalfOpen: true, highWaterMark: 32768 });
-    const stream = { ws, tcp, generation: item.generation, established: false }; item.streams.add(stream); if (ws.transport !== 'direct') heartbeat(ws, code => abort(code));
+    const stream = { ws, tcp, generation: item.generation, established: false }; item.streams.add(stream); if (ws.transport !== 'direct' && !ws.shared) heartbeat(ws, code => abort(code));
     const live = () => streamLive(item, stream);
     let connected = false, clientFin = false, pending = 0;
     const deadline = setTimeout(() => tcp.destroy(Object.assign(new Error('connect timeout'), { code: 'ETIMEDOUT' })), 5000).unref();
@@ -292,6 +343,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       }
       if (item.serial && req.headers['x-codex-forward-serial'] !== '1') { item.errorCode = 'serial_upgrade_required'; return deny(426, 'serial_upgrade_required'); }
       if (item.keepStreams && req.headers['x-codex-forward-keep-streams'] !== '1') return deny(400, 'protocol_error');
+      if (item.pooled && (req.headers['x-codex-forward-pool'] !== '1' || req.headers['x-codex-agent-instance'] !== item.authorization.instance)) return deny(400, 'protocol_error');
       if (item.direction === 'reverse' && req.headers['x-codex-forward-reverse'] !== '1') return deny(426, 'reverse_upgrade_required');
       if (item.state === 'connecting' && item.control?.readyState === 1) return deny(409, 'resume_busy');
       if (item.state !== 'recovering') suspend(item, item.control);
@@ -321,6 +373,10 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
       if (item.direction === 'reverse' && req.headers['x-codex-forward-reverse'] !== '1') return deny(426, 'reverse_upgrade_required');
       // Reserve synchronously before upgrading: the pairing code is single-use.
       item.keepStreams = capable && req.headers['x-codex-forward-keep-streams'] === '1';
+      if (req.headers['x-codex-forward-pool'] !== undefined) {
+        if (req.headers['x-codex-forward-pool'] !== '1' || !item.keepStreams || !item.authorization.helperId || req.headers['x-codex-agent-instance'] !== item.authorization.instance) return deny(400, 'protocol_error');
+        item.pooled = true;
+      }
       item.state = 'connecting';
       item.timer = setTimeout(() => remove(item, 'pairing_timeout'), item.direction === 'reverse' ? 60000 : 5000).unref();
       const abandoned = () => { if (!item.control) remove(item); };
@@ -343,7 +399,8 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     const listeners = [];
     clearInterval(timer); for (const item of mappings.values()) { remove(item, 'server_stopping'); if (item.listenerClosing) listeners.push(item.listenerClosing); }
     controls.close(); streams.close();
-    return Promise.allSettled([...listeners, ...[...peers].map(peer => peer.destroy())]);
+    const pooled = [...pools.keys()].map(dropPool);
+    return Promise.allSettled([...listeners, ...pooled, ...[...peers].map(peer => peer.destroy())]);
   }
-  return { list, create, validate, stop, updateHints, revoke, refresh, upgrade, close };
+  return { list, create, validate, stop, updateHints, revoke, refresh, upgrade, upgradePool, dropPool, close };
 }

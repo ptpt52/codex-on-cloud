@@ -88,6 +88,7 @@ func readForwardReady(conn *websocket.Conn) (readyMessage, error) {
 	}
 	if ready.Direction != "" && ready.Direction != "reverse" || ready.Direction == "reverse" && (ready.ReverseProtocol != 1 || !validDeviceName(ready.DeviceName)) ||
 		ready.DirectProtocol != 0 && ready.DirectProtocol != 1 ||
+		ready.PoolProtocol != 0 && ready.PoolProtocol != 1 || ready.PoolProtocol == 1 && (ready.DirectProtocol != 0 || ready.KeepStreamsProtocol != 1) ||
 		ready.KeepStreamsProtocol != 0 && ready.KeepStreamsProtocol != 1 || ready.KeepStreamsProtocol == 1 && (ready.ResumeProtocol != 1 || ready.MaxConnections < 1 || ready.MaxConnections > connectionLimit) {
 		return ready, failure("protocol_error")
 	}
@@ -156,7 +157,7 @@ func resumeManagement(ctx context.Context, serverURLValue *url.URL, state *resum
 		if err == nil {
 			err = state.accept(next)
 		}
-		if err == nil && (next.KeepStreamsProtocol != 1 || next.StreamToken != ready.StreamToken || next.DirectProtocol != ready.DirectProtocol || next.MaxConnections != ready.MaxConnections) {
+		if err == nil && (next.KeepStreamsProtocol != 1 || next.StreamToken != ready.StreamToken || next.DirectProtocol != ready.DirectProtocol || next.PoolProtocol != ready.PoolProtocol || next.MaxConnections != ready.MaxConnections) {
 			err = failure("protocol_error")
 		}
 		if err == nil {

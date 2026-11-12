@@ -732,6 +732,7 @@ export async function createPanel(config) {
     if (forwardURL.pathname.startsWith('/forward/')) {
       if (closing || forwardURL.search) return deny(400);
       if (forwardURL.pathname === '/forward/agent') return forwardAgents.upgrade(req, socket, head);
+      if (forwardURL.pathname === '/forward/transport') return forwardAgents.upgrade(req, socket, head, true);
       if (req.headers['x-codex-forward-node'] && req.headers['x-codex-forward-node'] !== config.nodeId) return deny(409);
       return forwarding.upgrade(req, socket, head, forwardURL.pathname);
     }
