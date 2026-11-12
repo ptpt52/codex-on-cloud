@@ -20,6 +20,35 @@ function output(app, text) {
 }
 const firstLine = frame => frame.evaluate(() => window.pagingTerminal.buffer.active.getLine(0)?.translateToString(true));
 
+test('program wheels use fine native mouse reports without the page-key throttle, and fall back when mouse encoding is disabled', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app);
+    output(app, '\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[HNATIVE-WHEEL');
+    await expect.poll(() => firstLine(frame)).toBe('NATIVE-WHEEL');
+    await frame.locator('#history-program').click();
+    await expect(frame.locator('#history-state')).toContainText('原生方式');
+    await frame.locator('#history-tools-toggle').click();
+    await page.locator('#history-query').fill('NATIVE');
+    await frame.locator('.xterm-screen').evaluate(el => {
+      const box = el.getBoundingClientRect();
+      for (const deltaY of [-120, -120, 120]) el.dispatchEvent(new WheelEvent('wheel', { deltaY, clientX: box.x + 10, clientY: box.y + 10, bubbles: true, cancelable: true }));
+    });
+    await expect.poll(() => app.terminalInputs.map(value => /^\x1b\[<(64|65);\d+;\d+M$/.exec(value.text)?.[1])).toEqual(['64', '64', '65']);
+    await page.waitForTimeout(200);
+    await expect(page.locator('#history-tools')).toBeVisible(); await expect(frame.locator('#history-archive')).toBeHidden();
+    await expect(page.locator('#history-query')).toHaveValue('NATIVE');
+    await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
+    output(app, '\x1b[?1006l'); await expect(frame.locator('#history-state')).toContainText('PageUp');
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+    await expect.poll(() => app.terminalInputs.at(-1)?.text).toBe('\x1b[5~');
+    const before = app.terminalInputs.length;
+    await frame.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+    expect(app.terminalInputs.length).toBe(before); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 for (const alternate of [false, true]) for (const toolsFirst of [false, true]) test(`find stays open across paging in the ${alternate ? 'alternate' : 'normal'} screen (${toolsFirst ? 'tools first' : 'program first'})`, async ({ page }) => {
   const app = await fixture({ terminalHistory: 'ONLY-SNAPSHOT\n', terminalHistoryAlternate: alternate });
   try {

@@ -2,7 +2,7 @@
 // Local scrolling never sends input. Program paging is an explicit opt-in.
 import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
-export function createTerminalHistory(term, host, { allowed, navigate, read, changed }) {
+export function createTerminalHistory(term, host, { allowed, navigate, read, changed, nativeWheel = () => false }) {
   const mode = document.getElementById('history-program'), up = document.getElementById('history-up');
   const down = document.getElementById('history-down'), latest = document.getElementById('history-latest'), state = document.getElementById('history-state');
   const toggle = document.getElementById('history-tools-toggle'), tools = document.getElementById('history-tools'), query = document.getElementById('history-query');
@@ -55,7 +55,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     up.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
     down.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
     latest.disabled = !reviewing && !program && !programScrolled;
-    let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
+    let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? nativeWheel() ? '程序翻页：滚轮按程序原生方式滚动；按钮整页翻动' : '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
@@ -206,16 +206,20 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     }
     update();
   }
-  async function copy(text, label, source) {
-    if (disposed || !toolsOpen || copying || !text) return;
+  async function copy(text, label, source, fromProgram = false) {
+    if (disposed || !toolsOpen && !fromProgram || copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
     clearCopy(); const generation = copyGeneration; copying = true; updateTools();
     try {
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
       await navigator.clipboard.writeText(text);
-      if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) copyState.textContent = `已复制${label}`;
+      if (!disposed && (toolsOpen || fromProgram) && generation === copyGeneration && !document.hidden) {
+        copyState.textContent = `已复制${label}`;
+        if (fromProgram) { notice = '已复制程序选区到本机剪贴板'; update(); }
+      }
     } catch {
-      if (!disposed && toolsOpen && generation === copyGeneration && !document.hidden) {
+      if (!disposed && (toolsOpen || fromProgram) && generation === copyGeneration && !document.hidden) {
+        if (fromProgram && !toolsOpen) { toolsOpen = true; tools.hidden = false; placeTools(); }
         copying = false; updateTools();
         focusControl(source);
         manual.hidden = false; copyText.value = text; copyState.textContent = '请手动复制窗口内已选中的文字';
@@ -341,6 +345,13 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       if (archiveLocal && archive.scrollTop === 0 && event.deltaY < 0) { event.preventDefault(); event.stopImmediatePropagation(); void fetchHistory(); }
       return;
     }
+    if (program && !reviewing && allowed() && nativeWheel() && term.element.contains(event.target)) {
+      // Let xterm normalize fine wheel deltas and send the program its native
+      // mouse scroll. PageUp per 40px made small gestures jump entire screens.
+      if (view || loading || searchTimer !== undefined || notice || downloadURL) resetLocalView();
+      if (!programScrolled) { programScrolled = true; update(); }
+      return;
+    }
     event.preventDefault(); event.stopImmediatePropagation(); scroll(event.deltaY, event.deltaMode);
   }, { capture: true, passive: false });
   listen(host, 'touchstart', event => {
@@ -372,6 +383,6 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+  return { update, copyProgram(text) { if (allowed()) return copy(text, '程序选区', toggle, true); }, notify(text) { notice = text; update(); }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

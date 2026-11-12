@@ -23,6 +23,7 @@ let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequenc
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
+let programCopy, programCopyTimer;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
 let historyRows = DEFAULT_HISTORY_ROWS;
@@ -133,6 +134,19 @@ function raw(data) {
   }
   if (chunk && !send({ type: 'input', data: chunk })) retire(socket, 0);
 }
+function clearProgramCopy() { clearTimeout(programCopyTimer); programCopyTimer = undefined; programCopy = undefined; }
+function canCopyProgram(current) { return term === current && ready && !stopped && !blocked && !busy && !pending && !switching && !streamPaused && !history?.reviewing && !document.hidden && navigator.onLine && socket?.readyState === WebSocket.OPEN; }
+function requestProgramCopy(current) {
+  clearProgramCopy();
+  if (!canCopyProgram(current)) return;
+  const request = programCopy = { term: current, socket, epoch, until: performance.now() + 3000 };
+  history?.notify('正在读取程序选区…');
+  programCopyTimer = setTimeout(() => {
+    if (programCopy !== request) return;
+    clearProgramCopy();
+    if (canCopyProgram(current)) history?.notify('程序未返回选中文字，可使用“查找复制”复制当前画面。');
+  }, 3000);
+}
 function createTerminal() {
   if (term) { size(); return; }
   host.replaceChildren();
@@ -140,9 +154,62 @@ function createTerminal() {
     scrollOnUserInput: false, scrollOnEraseInDisplay: false,
     cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: TERMINAL_THEME });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
-  // Applications may not silently write the browser's clipboard via OSC 52.
-  term.parser.registerOscHandler(52, () => true);
+  const current = term;
+  let dragStart, programSelected = false, copyMenuUntil = 0, sgrMouse = false;
+  for (const [final, enabled] of [['h', true], ['l', false]]) current.parser.registerCsiHandler({ prefix: '?', final }, params => {
+    if (params.includes(1006) || params.includes(1016)) sgrMouse = enabled;
+    return false;
+  });
+  const resetMouseEncoding = () => { sgrMouse = false; return false; };
+  current.parser.registerEscHandler({ final: 'c' }, resetMouseEncoding);
+  current.parser.registerCsiHandler({ intermediates: '!', final: 'p' }, resetMouseEncoding);
+  const preserveSelection = event => {
+    if (current.modes.mouseTrackingMode === 'none') return;
+    if (event.type === 'mousedown' && event.button === 0) {
+      clearProgramCopy(); copyMenuUntil = 0; programSelected = false; dragStart = { x: event.clientX, y: event.clientY };
+    }
+    if (event.type === 'mousemove' && dragStart) {
+      if (!event.buttons) dragStart = undefined;
+      else if (event.buttons & 1 && Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) >= 4) programSelected = true;
+    }
+    if (!current.hasSelection()) {
+      if (event.type === 'mousedown' && event.button === 2 && event.isTrusted && programSelected && canCopyProgram(current)) {
+        requestProgramCopy(current); copyMenuUntil = performance.now() + 3000;
+      }
+      if (event.type === 'contextmenu' && performance.now() < copyMenuUntil) { event.preventDefault(); event.stopPropagation(); }
+      return;
+    }
+    // Mouse reports count as program input and clear xterm's selection. Keep
+    // an existing range available to the browser's native copy menu instead.
+    if (event.type === 'mousemove') { if (!event.buttons) event.stopPropagation(); return; }
+    if (event.button !== 2 || !current.textarea) return;
+    event.stopPropagation();
+    const rect = current.element.querySelector('.xterm-screen').getBoundingClientRect(), area = current.textarea;
+    Object.assign(area.style, { width: '20px', height: '20px', left: `${event.clientX - rect.left - 10}px`, top: `${event.clientY - rect.top - 10}px`, zIndex: '1000' });
+    // Firefox prepares its native menu on mousedown; other browsers use
+    // contextmenu. Do not preventDefault: the browser still owns the menu.
+    area.value = current.getSelection(); area.focus(); area.select();
+  };
+  for (const name of ['mousedown', 'mousemove', 'contextmenu']) current.element.addEventListener(name, preserveSelection, true);
+  current.element.addEventListener('keydown', () => { programSelected = false; copyMenuUntil = 0; clearProgramCopy(); }, true);
+  // Accept one bounded reply to a trusted right click after a program drag.
+  // Automatic OSC 52 copies and clipboard read requests remain blocked.
+  current.parser.registerOscHandler(52, value => {
+    const request = programCopy;
+    if (!request || !value.startsWith('c;') || value === 'c;?') return true;
+    clearProgramCopy();
+    if (request.term !== current || request.socket !== socket || request.epoch !== epoch || performance.now() > request.until || !canCopyProgram(current)) return true;
+    if (value.length > 2 + Math.ceil(HISTORY_BYTES / 3) * 4) { history?.notify('选区超过 1 MiB，请缩小选区。'); return true; }
+    try {
+      const bytes = Uint8Array.from(atob(value.slice(2)), char => char.charCodeAt(0));
+      if (bytes.length > HISTORY_BYTES) { history?.notify('选区超过 1 MiB，请缩小选区。'); return true; }
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (text) void history?.copyProgram(text);
+    } catch { history?.notify('程序返回的选中文字无效，请重新选择。'); }
+    return true;
+  });
   history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !streamPaused && !pending && !document.hidden && navigator.onLine,
+    nativeWheel: () => sgrMouse && !['none', 'x10'].includes(current.modes.mouseTrackingMode),
     read: readHistory,
     navigate: key => {
       const data = { PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Ctrl+End': '\x1b[1;5F' }[key];
@@ -162,6 +229,7 @@ function createTerminal() {
   size();
 }
 function inputState() {
+  if (!term || !canCopyProgram(term)) clearProgramCopy();
   if (term) { term.options.disableStdin = blocked || busy || switching || streamPaused || !ready || document.hidden || !navigator.onLine; if (term.textarea) term.textarea.readOnly = history?.reviewing === true; }
   history?.update();
 }
