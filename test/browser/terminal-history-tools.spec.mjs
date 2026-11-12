@@ -45,10 +45,12 @@ for (const program of [false, true]) test(`find and copy preserve program paging
     await expect.poll(() => frame.evaluate(() => window.toolsTerminal.buffer.active.baseY)).toBeGreaterThan(100);
     if (program) await frame.locator('#history-program').click();
     await frame.locator('#history-tools-toggle').click(); const archive = frame.locator('#history-archive');
-    await expect(archive).toBeVisible(); await expect(page.locator('#history-tools')).toBeVisible();
+    await expect(archive).toBeHidden(); await expect(page.locator('#history-tools')).toBeVisible();
+    await expect(frame.locator('.xterm-helper-textarea')).toBeEditable();
     await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', String(program));
-    if (program) await expect(frame.locator('#history-state')).toContainText('程序翻页已暂停');
     await page.locator('#history-query').fill('PAGING-COPY-12'); await expect(page.locator('#history-find-state')).toContainText('/11');
+    await expect(archive).toBeVisible();
+    if (program) await expect(frame.locator('#history-state')).toContainText('程序翻页已暂停');
     expect(await select(frame, 'PAGING-COPY-120')).toBe('PAGING-COPY-120');
     await page.locator('#history-copy-selection').click(); expect(await frame.evaluate(() => window.copiedHistory)).toEqual(['PAGING-COPY-120']);
     const middle = await archive.evaluate(element => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) / 2); return element.scrollTop; });
@@ -76,6 +78,7 @@ test('program paging can change during find without closing or sending input fro
     const frame = await login(page, app); output(app, 'COPY-MODE\r\n'.repeat(240));
     await expect.poll(() => frame.evaluate(() => window.toolsTerminal.buffer.active.baseY)).toBeGreaterThan(100);
     await frame.locator('#history-tools-toggle').click(); const archive = frame.locator('#history-archive');
+    await page.locator('#history-query').fill('COPY-MODE'); await expect(archive).toBeVisible();
     const original = await archive.textContent();
     for (const program of [true, false, true]) {
       await frame.locator('#history-program').click();

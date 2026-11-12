@@ -250,6 +250,40 @@ test('opening find and copy on the live terminal keeps the original text input e
   } finally { await app.close(); }
 });
 
+test('an explicit live search reveals its matches and returning live restores input without closing tools', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app);
+    await frame.locator('#history-tools-toggle').click();
+    await expect(frame.locator('#history-archive')).toBeHidden();
+    await expect(frame.locator('.xterm-helper-textarea')).toBeEditable();
+    await page.locator('#history-query').fill('LOCAL-HISTORY-0050');
+    await expect(page.locator('#history-find-state')).toContainText('1/1');
+    await expect(frame.locator('#history-archive')).toBeVisible();
+    await expect(frame.locator('#history-archive mark[data-current=true]')).toHaveText('LOCAL-HISTORY-0050');
+    await frame.locator('#history-latest').click();
+    await expect(frame.locator('#history-archive')).toBeHidden();
+    await expect(frame.locator('.xterm-helper-textarea')).toBeEditable();
+    await expect(page.locator('#history-tools')).toBeVisible();
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalHistoryReads).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('export from live tools includes output received after the drawer was opened', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app);
+    await frame.locator('#history-tools-toggle').click();
+    output(app, 'LATE-EXPORT-NEEDLE\r\n');
+    await expect.poll(async () => (await buffer(frame)).all.includes('LATE-EXPORT-NEEDLE')).toBe(true);
+    const pending = page.waitForEvent('download');
+    await page.locator('#history-download').click();
+    const download = await pending;
+    expect(await readFile(await download.path(), 'utf8')).toContain('LATE-EXPORT-NEEDLE');
+    expect(app.terminalInputs).toEqual([]); expect(app.terminalHistoryReads).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('reconnect and cached page restoration keep the same renderer, history and reading position without replay', async ({ page }) => {
   const app = await fixture();
   try {

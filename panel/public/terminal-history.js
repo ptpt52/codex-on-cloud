@@ -158,17 +158,19 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); clearDownload(); search(); update();
     placeTools();
   }
-  function freezeLocal(show = true) {
+  function freezeLocal() {
     const parsed = captureHistoryBuffer(term);
     view = { parsed, text: parsed.runs.map(run => run.text).join('') }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
-    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = show; archive.hidden = !show; pixels = 0; gesture = undefined; clearCopy(); search();
+    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy(); search();
     const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; update();
   }
   function openTools(focus = false) {
     // A live terminal keeps accepting input while this auxiliary panel is
     // open. Preserve the read-only archive when the user is already reviewing
     // history or has left a program at an older remote position.
-    if (!archiveOpen && !loading) freezeLocal(reviewing || programScrolled);
+    // Capture live content only when a search/copy/export is requested. A
+    // hidden snapshot would make matches invisible and copied output stale.
+    if (!archiveOpen && !loading && (reviewing || programScrolled)) freezeLocal();
     toolsOpen = true; tools.hidden = false; placeTools(focus); update();
     if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus && !query.disabled) focusControl(query);

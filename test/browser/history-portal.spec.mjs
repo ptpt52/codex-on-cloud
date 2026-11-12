@@ -49,7 +49,7 @@ test('find uses the page header on every screen and keeps history controls, text
     await exposed(page, frame); await page.screenshot({ path: `test-results/${info.project.name}-history-header.png` });
     await frame.locator('#history-latest').click(); await expect(archive).toBeHidden();
     await expect(page.locator('#history-tools')).toBeVisible(); await expect(page.locator('#history-query')).toHaveValue('ROW-12');
-    await expect(page.locator('[data-key="Enter"]')).toBeDisabled(); await exposed(page, frame); expect(await dimensions(frame)).toEqual(size);
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled(); await exposed(page, frame); expect(await dimensions(frame)).toEqual(size);
     await page.locator('#history-tools-close').click(); await expect(page.locator('#history-tools')).toHaveCount(0);
     await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
     expect(app.terminalInputs).toEqual([]); expect(app.terminalConnections).toBe(1); expect(app.managementStats.restarts).toBe(0);
