@@ -40,7 +40,10 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (disposed) return;
     const buffer = term.buffer.active, next = archiveOpen || !!loading || buffer.viewportY < buffer.baseY;
     reviewing = next;
-    const paused = reviewing || toolsOpen, different = paused !== inputPaused; inputPaused = paused;
+    // Opening the find/copy controls on the live terminal is an auxiliary
+    // action. It must not turn the original text terminal into a read-only
+    // history view. Only an actual history review pauses input.
+    const paused = reviewing, different = paused !== inputPaused; inputPaused = paused;
     if (!reviewing) unseen = false;
     newer.hidden = !reviewing || !unseen;
     // Explicit paging controls can resume the program from a read-only view;
@@ -57,7 +60,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
     if (program && reviewing) label += ' · 程序翻页已暂停，点上翻/下翻继续，保留查找工具';
-    if (toolsOpen && !reviewing) label += ' · 查找复制已展开，收起后可编辑输入';
+    if (toolsOpen && !reviewing) label += ' · 查找复制已展开，终端仍可输入';
     if (reviewing && unseen) label += ' · 有新输出';
     if (state.textContent !== label) { state.textContent = label; state.title = label; }
     host.dataset.reviewing = String(inputPaused);
@@ -155,14 +158,17 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     toolsOpen = false; queryComposing = false; query.value = ''; clearCopy(); clearDownload(); search(); update();
     placeTools();
   }
-  function freezeLocal() {
+  function freezeLocal(show = true) {
     const parsed = captureHistoryBuffer(term);
     view = { parsed, text: parsed.runs.map(run => run.text).join('') }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
-    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy(); search();
+    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = show; archive.hidden = !show; pixels = 0; gesture = undefined; clearCopy(); search();
     const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; update();
   }
   function openTools(focus = false) {
-    if (!archiveOpen && !loading) freezeLocal();
+    // A live terminal keeps accepting input while this auxiliary panel is
+    // open. Preserve the read-only archive when the user is already reviewing
+    // history or has left a program at an older remote position.
+    if (!archiveOpen && !loading) freezeLocal(reviewing || programScrolled);
     toolsOpen = true; tools.hidden = false; placeTools(focus); update();
     if (!floating()) tools.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (focus && !query.disabled) focusControl(query);

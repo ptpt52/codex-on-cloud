@@ -233,6 +233,23 @@ test('local history tools include more than 2200 loaded rows without fetching re
   } finally { await app.close(); }
 });
 
+test('opening find and copy on the live terminal keeps the original text input enabled', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await seeded(page, app);
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
+    await frame.locator('#history-tools-toggle').click();
+    await expect(page.locator('#history-tools')).toBeVisible();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
+    await expect(frame.locator('#terminal')).toHaveAttribute('data-reviewing', 'false');
+    await openInput(page);
+    await page.locator('[data-key="Enter"]').click();
+    await expect.poll(() => app.terminalInputs.length).toBe(1);
+    expect(app.terminalInputs[0].text).toBe('\r');
+    await expect(frame.locator('#history-state')).toContainText('终端仍可输入');
+  } finally { await app.close(); }
+});
+
 test('reconnect and cached page restoration keep the same renderer, history and reading position without replay', async ({ page }) => {
   const app = await fixture();
   try {
