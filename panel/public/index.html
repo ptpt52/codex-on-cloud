@@ -337,7 +337,8 @@
         <label for="direct-browser-ip">浏览器端 IP<input id="direct-browser-ip" type="text" maxlength="45" placeholder="例如：192.168.1.20" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
         <button id="save-direct-hints" type="submit" class="secondary">保存并尝试直连</button>
       </form>
-      <p class="muted">地址仅保存到当前浏览器，并随直连协商发送给服务器。修改用于后续探测，已建立的连接继续运行；清空后保存可移除提示。</p>
+      <p class="muted">地址按当前节点保存到此浏览器，并随直连协商发送给节点。修改用于后续探测，已建立的连接继续运行；清空后保存可移除提示。</p>
+      <div class="confirmation-actions"><button id="import-direct-hints" type="button" class="secondary" hidden>导入旧提示到当前节点</button><button id="clear-direct-hints" type="button" class="quiet">恢复自动发现</button></div>
       <p id="direct-hints-status" class="muted" role="status"></p>
     </details>
   </dialog>

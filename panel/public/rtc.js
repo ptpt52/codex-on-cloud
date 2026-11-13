@@ -3,8 +3,8 @@ import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute } from './rtc-stats.js';
 import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureStatus } from './transport-policy.js';
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
-import { nodeHeaders } from '/node-scope.js';
-import { entryPath } from '/entry-path.js';
+import { nodeHeaders, nodeIdentity } from '/node-scope.js';
+import { entryPath, entryBasePath } from '/entry-path.js';
 import { rtcIceServers, rtcCredentialsNeedRefresh } from '/rtc-ice.js';
 
 let enabled = true;
@@ -36,7 +36,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     let storedHints;
     // Legacy viewers can start before the parent sends its bootstrap message.
     // Read the same bounded browser entry without waiting for that message.
-    if (settings?.hints === undefined) { let storage; try { storage = localStorage; } catch {} storedHints = createRTCHints(storage).value; }
+    if (settings?.hints === undefined) { let storage; try { storage = localStorage; } catch {} storedHints = createRTCHints(storage, { nodeId: nodeIdentity(), basePath: entryBasePath }).value; }
     const hints = rtcHints(settings?.hints ?? storedHints);
     if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256 || rtcCredentialsNeedRefresh(settings)) {
       const response = await fetch(entryPath('/api/me'), { headers: nodeHeaders(), redirect: 'manual', signal: controller.signal });

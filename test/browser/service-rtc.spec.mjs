@@ -8,7 +8,7 @@ async function setup(app,page){
 test('temporary browser establishes independent direct services with saved hints and never claims desktop',async({page})=>{
  const app=await fixture({webrtc:true,forwardPorts:'*'}),offers=[],claims=[];
  try{
-  await page.addInitScript(()=>localStorage.setItem('codex-cloud.rtc-hints.v1',JSON.stringify({server:'10.123.254.253',browser:'10.123.254.252'})));
+  await page.addInitScript(()=>localStorage.setItem('codex-cloud.rtc-hints.v2',JSON.stringify({version:2,entries:[{scope:'path:/',at:Date.now(),hints:{server:'10.123.254.253',browser:'10.123.254.252'}}]})));
   page.on('request',r=>{if(r.url().endsWith('/api/service/rtc'))offers.push(r.postDataJSON());if(/\/api\/(desktop\/claim|desktop\/rtc|terminal\/rtc)$/.test(r.url()))claims.push(r.url());});
   await setup(app,page);await expect(page.locator('#diag-transport')).toContainText('WebRTC', {timeout:15000});expect(offers[0].hints).toEqual({server:'10.123.254.253',browser:'10.123.254.252'});expect(claims).toEqual([]);
   await page.route('**/api/files',route=>route.abort());await page.locator('#files-button').click();await expect(page.locator('#file-list')).toContainText('还没有');await page.locator('#close-files').click();

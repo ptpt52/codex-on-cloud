@@ -18,7 +18,7 @@ import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 import { createInputNotices } from './input-notices.js';
 import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
-import { entryPath } from './entry-path.js';
+import { entryPath, entryBasePath } from './entry-path.js';
 import { rtcIceServers } from './rtc-ice.js';
 import { rtcRouteKind, rtcRouteLabel } from './rtc-stats.js';
 
@@ -142,7 +142,7 @@ $('mobile-input').addEventListener('blur', () => { inputComposing = false; rende
 let browserStorage;
 try { browserStorage = localStorage; } catch {}
 const browserPreferences = createBrowserPreferences(browserStorage, { compact: matchMedia('(max-width: 700px)').matches }), displayPreferences = browserPreferences.value;
-const directHints = createRTCHints(browserStorage);
+const directHints = createRTCHints(browserStorage, { nodeId: nodeIdentity(), basePath: entryBasePath });
 let workspaceInitialized = false, serviceProtocol = 0;
 const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection(),
   trace: (type, detail) => recordConnection(type, detail, 'service') });
@@ -1820,6 +1820,7 @@ window.addEventListener('offline', () => {
 $('connection-button').addEventListener('click', () => {
   $('direct-server-ip').value = directHints.value.server;
   $('direct-browser-ip').value = directHints.value.browser;
+  $('import-direct-hints').hidden = !directHints.legacy;
   $('direct-hints-status').textContent = directHints.persisted ? '' : '浏览器未能保存地址提示；当前页面仍可使用。';
   $('connection-dialog').showModal();
   renderConnection();
@@ -1835,10 +1836,19 @@ $('direct-hints-form').addEventListener('submit', event => {
     $('direct-server-ip').value = directHints.value.server;
     $('direct-browser-ip').value = directHints.value.browser;
     $('direct-hints-status').textContent = `${directHints.persisted ? '已保存到当前浏览器。' : '浏览器未能保存；仅当前页面生效。'}后续直连协商将使用这些提示，现有连接继续运行。`;
+    $('import-direct-hints').hidden = true;
     sendDisplayPreferences();
     serviceLink.wake();
     if (frameLoaded && owned) $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-probe', frame: String(frameEpoch) }, location.origin);
   } catch (error) { $('direct-hints-status').textContent = error.message; }
+});
+$('import-direct-hints').addEventListener('click', () => {
+  const legacy = directHints.legacy; if (!legacy) return;
+  $('direct-server-ip').value = legacy.server; $('direct-browser-ip').value = legacy.browser;
+  $('direct-hints-form').requestSubmit();
+});
+$('clear-direct-hints').addEventListener('click', () => {
+  $('direct-server-ip').value = ''; $('direct-browser-ip').value = ''; $('direct-hints-form').requestSubmit();
 });
 for (const id of ['access-refresh-button', 'login-refresh-button']) $(id).addEventListener('click', () => leaveWorkspace('refresh'));
 function clipboardAccess() {

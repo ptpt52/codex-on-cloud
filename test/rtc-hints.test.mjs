@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { RTCPeerConnection, parseMessage, classes } from 'werift';
 import { once } from 'node:events';
 import dgram from 'node:dgram';
-import { rtcHints, hintIP, createRTCHints, RTC_HINTS_KEY, RTC_HINTS_LIMIT } from '../panel/public/rtc-hints.js';
+import { rtcHints, hintIP, createRTCHints, RTC_HINTS_KEY, RTC_HINTS_LEGACY_KEY, RTC_HINTS_LIMIT, RTC_HINTS_MAX_AGE } from '../panel/public/rtc-hints.js';
 import { withHintCandidates, RTC_HINT_CANDIDATES } from '../panel/rtc-hints.mjs';
 import { rtcOffer, peerAddress } from '../panel/rtc-network.mjs';
 import { fixture } from './fixture.mjs';
@@ -30,7 +30,7 @@ test('optional address hints use the direct-connect IP policy and reject ports, 
 });
 
 test('browser storage keeps one bounded pair, rejects corrupt data and works without storage', () => {
-  const store = { text: null, getItem(key) { assert.equal(key, RTC_HINTS_KEY); return this.text; }, setItem(key, value) {
+  const store = { text: null, getItem(key) { return key === RTC_HINTS_KEY ? this.text : null; }, setItem(key, value) {
     assert.equal(key, RTC_HINTS_KEY); assert.ok(value.length <= RTC_HINTS_LIMIT); this.text = value;
   } };
   const hints = createRTCHints(store); hints.save({ browser: '192.168.1.2' });
@@ -44,6 +44,24 @@ test('browser storage keeps one bounded pair, rejects corrupt data and works wit
   for (const store of [undefined, { getItem() { throw Error('denied'); }, setItem() { throw Error('denied'); } }]) {
     const hints = createRTCHints(store); hints.save({ server: '10.0.0.1' }); assert.equal(hints.persisted, false); assert.equal(hints.value.server, '10.0.0.1');
   }
+});
+
+test('hints isolate nodes and paths, merge stale tabs, offer explicit legacy import and evict only within the byte budget', () => {
+  const map = new Map([[RTC_HINTS_LEGACY_KEY, JSON.stringify({ server: '10.0.0.9' })]]);
+  const storage = { getItem: key => map.get(key), setItem: (key, value) => map.set(key, value) };
+  let time = 1000000000000; const now = () => time;
+  const a = createRTCHints(storage, { nodeId: 'a'.repeat(32), now }), b = createRTCHints(storage, { nodeId: 'b'.repeat(32), now });
+  assert.equal(a.value.server, ''); assert.equal(a.legacy.server, '10.0.0.9');
+  a.save(a.legacy); b.save({ server: '10.0.0.2' }); a.save({ server: '10.0.0.1' });
+  assert.equal(createRTCHints(storage, { nodeId: 'a'.repeat(32), now }).value.server, '10.0.0.1');
+  assert.equal(createRTCHints(storage, { nodeId: 'b'.repeat(32), now }).value.server, '10.0.0.2');
+  assert.equal(createRTCHints(storage, { basePath: '/node/other/', now }).value.server, '');
+  for (let i = 0; i < 500; i++) { time++; createRTCHints(storage, { nodeId: i.toString(16).padStart(32, '0'), now }).save({ browser: '192.168.1.2' }); }
+  const cached = map.get(RTC_HINTS_KEY); assert.ok(cached.length <= RTC_HINTS_LIMIT); assert.ok(JSON.parse(cached).entries.length > 128);
+  time += RTC_HINTS_MAX_AGE + 1;
+  createRTCHints(storage, { nodeId: 'f'.repeat(32), now }).save({});
+  assert.equal(JSON.parse(map.get(RTC_HINTS_KEY)).entries.length, 1);
+  assert.equal(createRTCHints(storage, { nodeId: 'f'.repeat(32), now }).legacy, undefined);
 });
 
 test('hint candidates preserve all automatic candidates, credentials, families and gathered ports with a fixed extra bound', () => {

@@ -1,5 +1,7 @@
-export const RTC_HINTS_KEY = 'codex-cloud.rtc-hints.v1';
-export const RTC_HINTS_LIMIT = 256;
+export const RTC_HINTS_KEY = 'codex-cloud.rtc-hints.v2';
+export const RTC_HINTS_LEGACY_KEY = 'codex-cloud.rtc-hints.v1';
+export const RTC_HINTS_LIMIT = 64 * 1024;
+export const RTC_HINTS_MAX_AGE = 90 * 86400000;
 
 // Match the existing direct-connect address policy without accepting URLs,
 // hostnames, ports, scope IDs or IPv4-mapped IPv6 addresses.
@@ -32,20 +34,40 @@ export function rtcHints(value) {
   return hints;
 }
 
-// One bounded, origin-scoped entry; hints are sent only with RTC signaling.
-export function createRTCHints(storage) {
-  let value = rtcHints(), persisted = !!storage;
-  try {
+// One byte-bounded cache per origin, isolated by immutable node identity (or
+// entry path for standalone fixtures). Stale tabs merge only their own entry.
+export function createRTCHints(storage, { nodeId = '', basePath = '/', now = Date.now } = {}) {
+  if (nodeId && !/^[a-f0-9]{32}$/.test(nodeId) || !/^\/(?:node\/[a-z0-9-]{1,48}\/)?$/.test(basePath)) throw Error('直连提示节点标识无效');
+  const scope = nodeId ? 'node:' + nodeId : 'path:' + basePath;
+  let value = rtcHints(), persisted = !!storage, legacy;
+  const read = () => {
     const text = storage?.getItem(RTC_HINTS_KEY);
-    if (text && text.length <= RTC_HINTS_LIMIT) value = rtcHints(JSON.parse(text));
+    if (!text || text.length > RTC_HINTS_LIMIT) return new Map();
+    const cache = JSON.parse(text), entries = new Map();
+    if (cache?.version !== 2 || !Array.isArray(cache.entries)) return entries;
+    for (const item of cache.entries) {
+      if (!item || typeof item.scope !== 'string' || !/^(?:node:[a-f0-9]{32}|path:\/(?:node\/[a-z0-9-]{1,48}\/)?)$/.test(item.scope) ||
+          !Number.isSafeInteger(item.at) || item.at < now() - RTC_HINTS_MAX_AGE || item.at > now() + 86400000) continue;
+      try { entries.set(item.scope, { scope: item.scope, at: item.at, hints: rtcHints(item.hints) }); } catch {}
+    }
+    return entries;
+  };
+  try {
+    const current = read().get(scope); if (current) value = current.hints;
+    const old = storage?.getItem(RTC_HINTS_LEGACY_KEY);
+    if (!current && old && old.length <= 256) { const hints = rtcHints(JSON.parse(old)); if (hints.server || hints.browser) legacy = hints; }
   } catch { persisted = false; }
-  return { get value() { return { ...value }; }, get persisted() { return persisted; }, save(next) {
-    value = rtcHints(next);
+  function save(next) {
+    value = rtcHints(next); legacy = undefined;
     try {
       if (!storage) throw Error('browser storage unavailable');
-      const text = JSON.stringify(value);
+      const entries = read(); entries.delete(scope); entries.set(scope, { scope, at: now(), hints: value });
+      const ordered = [...entries.values()].sort((a, b) => a.at - b.at);
+      let text = JSON.stringify({ version: 2, entries: ordered });
+      while (text.length > RTC_HINTS_LIMIT && ordered.length > 1) { ordered.shift(); text = JSON.stringify({ version: 2, entries: ordered }); }
       if (text.length > RTC_HINTS_LIMIT) throw Error('RTC hints exceed bound');
       storage.setItem(RTC_HINTS_KEY, text); persisted = true;
     } catch { persisted = false; }
-  } };
+  }
+  return { get value() { return { ...value }; }, get legacy() { return legacy && { ...legacy }; }, get persisted() { return persisted; }, save };
 }
