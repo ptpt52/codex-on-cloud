@@ -79,13 +79,14 @@ test('display controls scale locally, preserve input coordinates and remember pr
   await expect.poll(() => widthOf(page)).toBe(1600);
   await openTools(page); await page.locator('#fit-button').click();
   await expect.poll(async () => {
-    const container = await page.locator('#desktop-stage').boundingBox();
+    // Scaling fits the viewer, excluding the stage's decorative border.
+    const container = await page.locator('#desktop-frame').boundingBox();
     return Math.abs((await widthOf(page)) - Math.min(container.width, container.height));
   }).toBeLessThanOrEqual(1);
   await page.setViewportSize(info.project.name === 'mobile' ? { width: 844, height: 390 } : { width: 1100, height: 760 });
   await expect.poll(async () => {
     const rect = await canvasOf(page).boundingBox();
-    const container = await page.locator('#desktop-stage').boundingBox();
+    const container = await page.locator('#desktop-frame').boundingBox();
     return rect.width <= container.width + 1 && rect.height <= container.height + 1;
   }).toBe(true);
   expect(stats.resizes).toBe(0);
