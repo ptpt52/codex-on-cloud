@@ -194,14 +194,20 @@
     </form>
   </dialog>
   <dialog id="terminals-dialog" class="files-dialog terminals-dialog" aria-labelledby="terminals-title">
-    <div class="dialog-heading"><h2 id="terminals-title">终端管理</h2><button id="close-terminals" class="quiet" aria-label="关闭终端管理">✕</button></div>
-    <p class="muted">主终端与辅助终端的任务分别运行。结束终端需确认，会结束会话及其前台任务；原位置可新开 shell。关闭浏览器不会结束任务。</p>
-    <div id="terminal-list" class="terminal-list"></div>
-    <form id="create-terminal-form" class="terminal-create"><label for="new-terminal-name">新终端名称<input id="new-terminal-name" maxlength="24" placeholder="例如：运行测试" required></label><button id="create-terminal" class="primary" type="submit" disabled>新建辅助终端</button></form>
-    <p id="terminals-status" class="muted" role="status"></p>
-    <p class="muted">打开或切换后，输入助手会选中该终端。存在辅助终端时，网页不会提供桌面重启恢复，避免结束其他任务。</p>
-    <button id="refresh-terminals" class="secondary" type="button">刷新列表</button>
-    <button id="clear-stale-drafts" class="secondary" type="button" disabled>清理旧终端草稿</button>
+    <div class="terminals-heading">
+      <div class="dialog-heading"><h2 id="terminals-title">终端管理</h2><button id="close-terminals" class="quiet" type="button" aria-label="关闭终端管理">✕</button></div>
+      <div class="terminals-overview"><p id="terminals-summary" class="muted">正在读取终端…</p><button id="refresh-terminals" class="secondary" type="button">刷新列表</button></div>
+      <p id="terminals-status" class="muted" role="status"></p>
+    </div>
+    <div class="terminals-body">
+      <p class="muted terminals-intro">各终端独立运行，关闭浏览器后任务继续。</p>
+      <form id="create-terminal-form" class="terminal-create"><label for="new-terminal-name">新终端名称<input id="new-terminal-name" maxlength="24" autocomplete="off" placeholder="例如：运行测试" required aria-describedby="terminal-create-help"></label><button id="create-terminal" class="primary" type="submit" disabled>新建辅助终端</button><p id="terminal-create-help" class="muted">新建后自动切换到该终端。</p></form>
+      <h3 class="terminal-list-title">已有终端</h3>
+      <div id="terminal-list" class="terminal-list"></div>
+      <p id="terminal-empty" class="muted" hidden>暂无终端。填写上方名称，即可新开一个 shell。</p>
+      <p class="muted terminal-end-help">结束终端会停止该会话及其前台任务，操作前会再次确认。</p>
+      <details class="terminal-maintenance"><summary>草稿与使用说明</summary><p class="muted">打开或切换后，输入助手会选中该终端。存在辅助终端时，不提供桌面重启恢复，以保护其他任务。</p><p class="muted">清理仅移除本浏览器中已结束终端的旧草稿，不结束任务。</p><button id="clear-stale-drafts" class="secondary" type="button" disabled>清理旧终端草稿</button></details>
+    </div>
   </dialog>
 
   <dialog id="action-confirmation" class="files-dialog action-confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-description">

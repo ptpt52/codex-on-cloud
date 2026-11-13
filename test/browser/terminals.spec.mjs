@@ -20,6 +20,7 @@ test('create, rename and switch independent terminals, route paste and Enter sep
     await login(page, app); await openInput(page); await page.locator('#mobile-input').fill('中文草稿保留');
     await open(page); await create(page, '运行测试');
     await expect(row(page, 'aux1')).toContainText('运行测试'); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await row(page, 'aux1').getByRole('button', { name: '重命名' }).click();
     await row(page, 'aux1').getByRole('textbox').fill('测试和日志'); await row(page, 'aux1').getByRole('button', { name: '保存名称' }).click();
     await expect(row(page, 'aux1').locator('strong')).toHaveText('测试和日志');
     await page.screenshot({ path: `test-results/${info.project.name}-terminals.png` });

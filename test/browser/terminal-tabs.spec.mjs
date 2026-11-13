@@ -117,6 +117,7 @@ test('expired drafts are removed only after explicit confirmation while live dra
       const response = await route.fetch(), value = await response.json(); value.terminals = value.terminals.filter(item => item.id !== 'aux1'); await route.fulfill({ response, json: value });
     });
     await openTools(page); await page.locator('#terminals-button').click();
+    await page.locator('.terminal-maintenance summary').click();
     await expect(page.locator('#clear-stale-drafts')).toBeEnabled(); await page.locator('#clear-stale-drafts').click();
     await expect(page.locator('#cancel-confirmation')).toBeFocused(); await page.keyboard.press('Enter');
     const texts = () => page.evaluate(() => JSON.parse(sessionStorage.getItem('codex-cloud.terminals.v1')).drafts.map(item => item.text));

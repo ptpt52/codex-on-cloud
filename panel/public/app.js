@@ -493,6 +493,7 @@ function renderInputControls() {
   for (const control of [$('terminals-button'), $('create-terminal'), ...$('terminal-list').querySelectorAll('button, input')]) control.disabled = !canManageTerminals() || control.closest('.terminal-row')?.dataset.supported === 'false';
   $('input-terminal').disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
   $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
+  $('new-terminal-name').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
   $('refresh-terminals').disabled = !loggedIn || terminalBusy;
   $('paste-target').disabled = !!selectedTerminal;
   $('desktop-mode').disabled = $('terminal-mode').disabled = modeChangeBusy() || !!confirmation;
@@ -1272,20 +1273,47 @@ function renderTerminalList() {
   select.value = viewSelect.value = selection;
   $('terminal-target-note').textContent = terminalSelectionState === 'closed' ? '终端已关闭，草稿保留；点击末尾“新开终端”可创建 shell。' : terminalMode() ? '输入直接发送到当前网页终端；粘贴与 Enter 提交分开。' : selectedTerminal ? '按键和粘贴发送前会切换到所选终端；关闭的窗口需先重新打开。' : '发送到桌面当前获得焦点的位置。';
   if (selectedTerminal) $('paste-target').value = 'terminal';
+  const terminalCapacityFull = terminalCatalog.length >= maxTerminals;
+  $('terminals-summary').textContent = terminalCapacityFull ? '终端名额已满' : `还可新建 ${maxTerminals - terminalCatalog.length} 个终端`;
+  $('create-terminal-form').dataset.full = String(terminalCapacityFull);
+  $('terminal-create-help').textContent = terminalCatalog.length >= maxTerminals ? '终端名额已满，结束不用的终端后可再新建。' : '新建后自动切换到该终端。';
+  $('terminal-empty').hidden = terminalCatalog.length > 0 || !terminalCatalogVerified;
   const list = $('terminal-list'); list.replaceChildren();
   for (const terminal of terminalCatalog) {
     const row = document.createElement('div'); row.className = 'terminal-row'; row.dataset.terminal = terminal.id; row.dataset.supported = String(terminal.supported);
-    const title = document.createElement('strong'), detail = document.createElement('p'), input = document.createElement('input'), rename = document.createElement('button'), open = document.createElement('button'), close = document.createElement('button');
+    const heading = document.createElement('div'), title = document.createElement('strong'), detail = document.createElement('p'), actions = document.createElement('div');
+    heading.className = 'terminal-row-heading'; actions.className = 'terminal-row-actions'; actions.setAttribute('role', 'group'); actions.setAttribute('aria-label', `${terminal.name} 的操作`);
     title.textContent = terminal.name; detail.className = 'muted'; detail.textContent = terminal.supported ? `${terminal.primary ? '主终端' : '辅助终端'} · ${terminal.command || '运行中'}` : '包含多个窗格或布局无法识别';
-    input.value = terminal.name; input.maxLength = 24; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
-    rename.type = open.type = 'button'; rename.textContent = '保存名称'; open.textContent = '打开 / 切换';
-    rename.className = 'secondary'; open.className = 'primary';
+    heading.append(title);
+    const current = terminal.supported && terminalSelectionState === 'ready' && terminal.id === selectedTerminal && terminal.token === selectedTerminalToken;
+    row.dataset.current = String(current);
+    if (current) { const badge = document.createElement('span'); badge.className = 'terminal-current'; badge.textContent = terminalMode() ? '当前终端' : '输入目标'; heading.append(badge); }
+    const editor = document.createElement('form'), input = document.createElement('input'), edit = document.createElement('button'), rename = document.createElement('button'), cancel = document.createElement('button'), open = document.createElement('button'), close = document.createElement('button');
+    editor.className = 'terminal-rename-inline'; editor.id = `terminal-edit-${terminal.id}`; editor.hidden = true;
+    input.value = terminal.name; input.maxLength = 24; input.required = true; input.autocomplete = 'off'; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
+    edit.type = cancel.type = open.type = close.type = 'button'; rename.type = 'submit';
+    edit.textContent = '重命名'; rename.textContent = '保存名称'; cancel.textContent = '取消'; open.textContent = '打开 / 切换';
+    edit.className = cancel.className = 'secondary'; rename.className = open.className = 'primary';
+    edit.setAttribute('aria-expanded', 'false'); edit.setAttribute('aria-controls', editor.id);
     const target = { terminalId: terminal.id, terminalToken: terminal.token };
-    rename.addEventListener('click', () => { if (terminal.supported) void manageTerminals({ action: 'rename', ...target, name: input.value }); });
+    edit.addEventListener('click', () => { if (!canManageTerminals() || !terminal.supported) return; editor.hidden = false; edit.setAttribute('aria-expanded', 'true'); input.focus(); input.select(); });
+    cancel.addEventListener('click', () => { editor.hidden = true; input.value = terminal.name; edit.setAttribute('aria-expanded', 'false'); edit.focus(); });
+    let composing = false;
+    editor.addEventListener('submit', async event => {
+      event.preventDefault(); if (!terminal.supported || composing) return;
+      const result = await manageTerminals({ action: 'rename', ...target, name: input.value });
+      if (result?.ok && $('terminals-dialog').open) list.querySelector(`[aria-controls="${editor.id}"]`)?.focus();
+    });
+    input.addEventListener('compositionstart', () => { composing = true; }); input.addEventListener('compositionend', () => { composing = false; });
+    editor.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (composing || event.isComposing || event.keyCode === 229)) event.preventDefault();
+      if (event.key === 'Escape' && !composing) { event.preventDefault(); event.stopPropagation(); cancel.click(); }
+    });
     open.addEventListener('click', () => { if (terminal.supported) requestConfirmation('terminal-open', null, { action: 'open', ...target }); });
-    close.type = 'button'; close.className = 'secondary terminal-close'; close.textContent = '结束终端';
+    close.className = 'quiet terminal-close'; close.textContent = '结束终端';
     close.addEventListener('click', () => { if (terminal.supported) requestConfirmation('terminal-close', null, { action: 'close', ...target }); });
-    row.append(title, detail, input, rename, open, close); list.append(row);
+    editor.append(input, rename, cancel); actions.append(open, edit, close);
+    row.append(heading, detail, actions, editor); list.append(row);
   }
   renderInputControls();
 }
