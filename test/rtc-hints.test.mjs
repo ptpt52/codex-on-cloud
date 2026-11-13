@@ -41,6 +41,8 @@ test('browser storage keeps one bounded pair, rejects corrupt data and works wit
   for (const text of ['{', 'null', 'x'.repeat(RTC_HINTS_LIMIT + 1), JSON.stringify({ server: 'attacker.example' })]) {
     store.text = text; assert.deepEqual(createRTCHints(store).value, { server: '', browser: '' });
   }
+  store.text = '{'; const repaired = createRTCHints(store); repaired.save({ server: '10.0.0.3' });
+  assert.equal(repaired.persisted, true); assert.equal(createRTCHints(store).value.server, '10.0.0.3');
   for (const store of [undefined, { getItem() { throw Error('denied'); }, setItem() { throw Error('denied'); } }]) {
     const hints = createRTCHints(store); hints.save({ server: '10.0.0.1' }); assert.equal(hints.persisted, false); assert.equal(hints.value.server, '10.0.0.1');
   }

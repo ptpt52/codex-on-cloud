@@ -25,7 +25,8 @@ export function createRTCHints(storage, { nodeId = '', basePath = '/', now = Dat
   const read = () => {
     const text = storage?.getItem(RTC_HINTS_KEY);
     if (!text || text.length > RTC_HINTS_LIMIT) return new Map();
-    const cache = JSON.parse(text), entries = new Map();
+    let cache; try { cache = JSON.parse(text); } catch { return new Map(); }
+    const entries = new Map();
     if (cache?.version !== 2 || !Array.isArray(cache.entries)) return entries;
     for (const item of cache.entries) {
       if (!item || typeof item.scope !== 'string' || !/^(?:node:[a-f0-9]{32}|path:\/(?:node\/[a-z0-9-]{1,48}\/)?)$/.test(item.scope) ||

@@ -18,6 +18,20 @@ async function save(page, server, browser, probe = true) {
   await page.locator(probe ? '#save-direct-hints' : '#save-direct-hints-only').click();
 }
 
+test('saving repairs a corrupt hint cache and restores its node settings after reload without a probe', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); const offers = [];
+  try {
+    await page.goto(app.config.origin);
+    await page.evaluate(() => localStorage.setItem('codex-cloud.rtc-hints.v2', '{'));
+    await login(page, app); await settings(page); await save(page, '192.168.1.10', '', false);
+    await expect(page.locator('#direct-hints-status')).toContainText('已保存到当前浏览器');
+    page.on('request', request => { if (/\/api\/(?:terminal|desktop|service)\/rtc$/.test(new URL(request.url()).pathname)) offers.push(request.url()); });
+    await page.reload(); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await settings(page); await expect(page.locator('#direct-server-ip')).toHaveValue('192.168.1.10');
+    expect(offers).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('legacy global hints require explicit import and clearing affects only the current node', async ({ page }) => {
   const app = await fixture({ mode: 'terminal', webrtc: true, fastConnect: true, seamless: true, nodeId: 'a'.repeat(32) });
   const offers = [];
