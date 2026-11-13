@@ -41,6 +41,27 @@ test('authenticated terminal creation uses the retained stream, validates fixed 
   assert.equal(peer.records.find(v => v.type === 'panel-result' && v.id === 3).error.outcome, 'rejected');
   assert.equal((await app.controls.listTerminals()).terminals.length, 2); assert.deepEqual(app.terminalInputs, []); assert.equal(app.managementStats.restarts, 0);
 });
+test('desktop terminal focus reuses the authenticated stream and accepts only an exact fixed target', async t => {
+  const activated = [];
+  const app = await fixture({ rfb: true, seamless: true, desktopHook: (command, args) => { if (command === 'xdotool' && args[0] === 'windowactivate') activated.push(args.at(-1)); } });
+  t.after(() => app.close()); await app.login(); await app.claim();
+  const created = await app.controls.manageTerminals({ action: 'create', name: 'focus target', view: 'terminal' });
+  const target = created.terminals.find(item => item.id === 'aux1');
+  const peer = await connected(app); t.after(() => peer.ws.terminate()); assert.equal(peer.records[0].terminalOpen, 1);
+  peer.ws.send(JSON.stringify({ type: 'activate', epoch: 0, out: 0, input: 0 })); await until(() => peer.records.some(value => value.type === 'active'));
+  const request = async (sequence, body) => {
+    peer.ws.send(JSON.stringify({ type: 'panel', id: sequence, epoch: 1, action: 'open-terminal', body }));
+    await until(() => peer.records.some(value => value.type === 'panel-result' && value.id === sequence));
+    return peer.records.find(value => value.type === 'panel-result' && value.id === sequence);
+  };
+  assert.equal((await request(1, { terminalId: target.id, terminalToken: target.token, action: 'close' })).error.status, 400);
+  assert.equal((await request(2, { terminalId: target.id, terminalToken: '%1:9999' })).error.status, 409);
+  assert.deepEqual(activated, []);
+  const result = await request(3, { terminalId: target.id, terminalToken: target.token });
+  assert.equal(result.ok, true); assert.equal(result.value.opened, 'aux1'); assert.deepEqual(activated, ['1001']);
+  assert.equal(app.vncConnections, 1); assert.deepEqual(app.inputCalls, []); assert.equal(app.managementStats.restarts, 0);
+});
+
 test('stream paths enforce authentication, Origin, viewer ownership and CSRF before starting an upstream', async t => {
   const app = await fixture({ seamless: true }); t.after(() => app.close());
   assert.equal(await denied(path(app), { origin: app.config.origin }), 401);

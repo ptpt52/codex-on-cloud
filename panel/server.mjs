@@ -221,6 +221,13 @@ export async function createPanel(config) {
         if (!valid() || !live()) throw new HttpError(409, '控制权已变化');
         return result;
       },
+      ...(mode !== 'desktop' ? {} : { openTerminal: async (body, live) => {
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['terminalId', 'terminalToken'].includes(key))) throw new HttpError(400, '打开终端参数无效');
+        let target;
+        try { target = terminalTarget(body); if (!target.terminalId) throw Error(); } catch { throw new HttpError(400, '终端目标无效'); }
+        if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化，打开未执行');
+        return managerRequest(config, '/terminals', { ...target, action: 'open' });
+      } }),
       ...(mode !== 'terminal' ? {} : { createTerminal: async (body, live) => {
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['name', 'terminalId'].includes(key))) throw new HttpError(400, '创建终端参数无效');
         if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化，创建未执行');

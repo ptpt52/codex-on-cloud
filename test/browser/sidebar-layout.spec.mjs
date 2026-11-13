@@ -8,9 +8,9 @@ test.beforeEach(async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 900 });
 });
 
-async function setup(page, { mode = 'terminal', count = 2, webrtc = false, fastConnect = webrtc, username = 'admin' } = {}) {
+async function setup(page, { mode = 'terminal', count = 2, webrtc = false, fastConnect = webrtc, username = 'admin', desktopHook } = {}) {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  const app = await fixture({ mode, username, rfb: true, seamless: true, maxTerminals: 8, webrtc, fastConnect });
+  const app = await fixture({ mode, username, rfb: true, seamless: true, maxTerminals: 8, webrtc, fastConnect, desktopHook });
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: `研发任务 ${n}：客户现场调试`, view: 'terminal' });
   await page.addInitScript(() => {
     if (!location.pathname.endsWith('/terminal/index.html')) return;
@@ -29,7 +29,8 @@ function output(app, text) {
 }
 
 test('desktop sidebar activates existing tasks and preserves the viewer and per-target drafts', async ({ page }) => {
-  const { app, errors } = await setup(page, { mode: 'desktop', count: 3 });
+  const activated = [];
+  const { app, errors } = await setup(page, { mode: 'desktop', count: 3, desktopHook: (command, args) => { if (command === 'xdotool' && args[0] === 'windowactivate') activated.push(args.at(-1)); } });
   const opens = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/terminals') opens.push(request.postDataJSON()); });
   try {
     const original = await app.controls.listTerminals(), source = await page.locator('#desktop-frame').getAttribute('src'), connections = app.vncConnections;
@@ -49,8 +50,7 @@ test('desktop sidebar activates existing tasks and preserves the viewer and per-
     await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('辅助任务草稿');
     await page.locator('#input-terminal').selectOption(''); await expect(page.locator('#mobile-input')).toHaveValue('当前窗口草稿');
-    expect(opens.map(body => body.action)).toEqual(['open', 'open', 'open']);
-    expect(opens.map(body => body.terminalToken)).toEqual([original.terminals[1].token, original.terminals[0].token, original.terminals[1].token]);
+    expect(opens).toEqual([]); expect(activated).toEqual(['1001', '999', '1001']);
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source); expect(app.vncConnections).toBe(connections);
     expect(await app.controls.listTerminals()).toEqual(original); expect(app.terminalInputs).toEqual([]); idle(app, errors);
   } finally { await app.close(); }
@@ -64,12 +64,11 @@ test('desktop task activation reports an unswitched input target when drafts fil
   });
   let release, entered;
   const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
-  const { app, errors } = await setup(page, { mode: 'desktop', count: 2 }); let opens = 0;
+  let opens = 0;
+  const { app, errors } = await setup(page, { mode: 'desktop', count: 2, desktopHook: async (command, args) => {
+    if (command === 'xdotool' && args[0] === 'windowactivate') { opens++; entered(); await hold; }
+  } });
   try {
-    await page.route('**/api/terminals', async route => {
-      if (route.request().method() !== 'POST') return route.continue();
-      opens++; const response = await route.fetch(); entered(); await hold; await route.fulfill({ response });
-    });
     await openInput(page);
     await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await started;
     await page.locator('#mobile-input').fill('请求期间新增的草稿');

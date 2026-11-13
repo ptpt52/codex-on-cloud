@@ -22,8 +22,8 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   let textDecoder = new TextDecoder('utf-8', { fatal: true }), panelSequence = 0, targetSequence = 0, targetPending;
   const panelRequests = new Map();
   const failure = (message, status = 409) => Object.assign(new Error(message), { status, outcome: 'rejected' });
-  const creating = () => [...panelRequests.values()].some(p => p.action === 'create-terminal');
-  const panelFailure = (action, message, status = 409, outcome) => Object.assign(failure(message, status), { outcome: outcome || (action === 'create-terminal' ? 'unknown' : 'rejected') });
+  const creating = () => [...panelRequests.values()].some(p => ['create-terminal', 'open-terminal'].includes(p.action));
+  const panelFailure = (action, message, status = 409, outcome) => Object.assign(failure(message, status), { outcome: outcome || (['create-terminal', 'open-terminal'].includes(action) ? 'unknown' : 'rejected') });
   const switchBusy = message => Object.assign(failure(message), { code: 'terminal_switch_busy' });
   function finishPanel(id, error, value) {
     const pending = panelRequests.get(id); if (!pending) return;
@@ -151,6 +151,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         if (!active || peer === active && !targetPending) epoch = Math.max(epoch, value.epoch);
         peer.epoch = value.epoch; peer.handoff = value.handoff === 1; peer.panel = value.panel === 1;
         peer.terminalCreate = value.terminalCreate === 1;
+        peer.terminalOpen = value.terminalOpen === 1;
         peer.terminalSwitch = value.terminalSwitch === 1 && (peer.kind === 'direct' || value.terminalSwitchRelay === 1);
         if (!peer.ready) trace(peer.kind === 'relay' ? 'relay-ready' : 'direct-ready', { path: peer.kind, durationMs: Math.round(performance.now() - peer.startedAt) });
         peer.ready = true; peer.healthyAt = performance.now(); clearTimeout(peer.startTimer); heartbeat(peer);
@@ -403,9 +404,10 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
           void prepareTarget(pending);
         });
       }
-      const mutation = action === 'create-terminal';
-      if ((mutation ? !terminal || !peer.terminalCreate || targetPending || transitioning || claiming : peer.kind !== 'direct' || !peer.panel || !['state', 'terminals'].includes(action)) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('连接操作正在处理或不受支持，本次未发送', 429));
-      if (mutation && new TextEncoder().encode(JSON.stringify(body)).length > 1024) return Promise.reject(failure('创建参数超过 1 KiB，本次未发送', 413));
+      const mutation = ['create-terminal', 'open-terminal'].includes(action);
+      const capable = action === 'create-terminal' ? terminal && peer.terminalCreate : !terminal && peer.terminalOpen;
+      if ((mutation ? !capable || creating() || targetPending || transitioning || claiming : peer.kind !== 'direct' || !peer.panel || !['state', 'terminals'].includes(action)) || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(failure('连接操作正在处理或不受支持，本次未发送', 429));
+      if (mutation && new TextEncoder().encode(JSON.stringify(body)).length > 1024) return Promise.reject(failure('终端操作参数超过 1 KiB，本次未发送', 413));
       return new Promise((resolve, reject) => {
         const id = ++panelSequence, abort = () => finishPanel(id, panelFailure(action, '连接请求已取消，操作结果请核对终端列表'));
         panelRequests.set(id, { action, peer, epoch, resolve, reject, signal, abort, timer: setTimeout(() => finishPanel(id, panelFailure(action, '连接请求超时，操作结果请核对终端列表', 504)), mutation ? 6500 : 5000) }); signal?.addEventListener('abort', abort, { once: true });
@@ -426,7 +428,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       catch { lost(peer); }
     },
   });
-  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalCreate: { get: () => !!terminal && !ended && active?.ready === true && active.terminalCreate === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
+  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalOpen: { get: () => !terminal && !ended && active?.ready === true && active.terminalOpen === true }, terminalCreate: { get: () => !!terminal && !ended && active?.ready === true && active.terminalCreate === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
   for (const name of ['online', 'offline']) window.addEventListener(name, wake);
   navigator.connection?.addEventListener('change', wake); document.addEventListener('visibilitychange', wake);
   return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake,

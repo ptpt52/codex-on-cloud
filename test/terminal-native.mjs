@@ -167,6 +167,14 @@ try {
   assert.equal(auxSession, 'codex-aux1');
   const auxWindow = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']);
   await eventually(() => maximized(auxWindow));
+  const focusDurations = [], primary = created.terminals.find(item => item.id === 'main');
+  for (const target of [primary, auxiliary, primary, auxiliary]) {
+    const started = performance.now();
+    await controls.manageTerminals({ action: 'open', terminalId: target.id, terminalToken: target.token });
+    focusDurations.push(Math.round(performance.now() - started));
+    assert.equal(await run('xdotool', ['getactivewindow']), target.id === 'main' ? window : auxWindow);
+  }
+  console.log(`✓ isolated real X11 terminal focus: ${focusDurations.join(', ')} ms; all four selections activated the matching window without restarting tasks`);
   await run('xdotool', ['windowclose', auxWindow]);
   await eventually(async () => !(await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal-aux1$']).catch(() => '')));
   await assert.rejects(controls.input({ action: 'key', key: 'Enter', ...destination }), { status: 409, outcome: 'rejected' });

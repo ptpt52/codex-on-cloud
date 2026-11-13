@@ -190,6 +190,34 @@ for (const kind of ['direct', 'relay']) test(`${kind}: terminal creation is boun
   peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'replay' } }); await tick(); assert.equal(calls, 1); assert.equal(peer.closed, true);
 });
 
+for (const kind of ['relay', 'direct']) test(`${kind}: desktop terminal focus stays on one stream, rejects duplicate actions and fences route changes`, async t => {
+  let release, calls = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const app = setup({ openTerminal: async body => { calls++; await gate; return { opened: body.terminalId }; } });
+  t.after(() => { release(); app.session.close(); });
+  const peer = app.peer(kind), standby = app.peer(kind === 'direct' ? 'relay' : 'direct');
+  await activate(peer, 0); assert.equal(peer.records[0].terminalOpen, 1);
+  standby.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'open-terminal', body: { terminalId: 'main', terminalToken: '%0:4000' } });
+  await tick(); assert.equal(calls, 0);
+  peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'open-terminal', body: { terminalId: 'aux1', terminalToken: '%1:4100' } });
+  peer.entry.receive({ type: 'panel', id: 2, epoch: 1, action: 'open-terminal', body: { terminalId: 'main', terminalToken: '%0:4000' } });
+  await activate(standby, 1);
+  assert.equal(calls, 1); assert.equal(peer.entry.active, true); assert.equal(standby.records.at(-1).type, 'wait');
+  assert.equal(peer.records.find(value => value.type === 'panel-result' && value.id === 2).error.outcome, 'rejected');
+  release(); await tick(); assert.equal(peer.records.find(value => value.type === 'panel-result' && value.id === 1).value.opened, 'aux1');
+  assert.equal(app.launches, 1); assert.deepEqual(app.writes, []);
+  peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'open-terminal', body: {} }); await tick();
+  assert.equal(calls, 1); assert.equal(peer.closed, true);
+});
+
+test('revoked streams cannot focus desktop terminal windows', async t => {
+  let allowed = true, calls = 0;
+  const app = setup({ valid: () => allowed, openTerminal: async () => { calls++; return {}; } }); t.after(() => app.session.close());
+  const peer = app.peer('relay'); await activate(peer, 0); allowed = false;
+  peer.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'open-terminal', body: { terminalId: 'main', terminalToken: '%0:4000' } }); await tick();
+  assert.equal(calls, 0); assert.equal(app.session.closed, true);
+});
+
 test('creation preserves unknown outcomes, rejects oversized requests before acting, and reports oversized accepted results as unknown', async t => {
   let calls = 0;
   const app = setup({ createTerminal: async body => {

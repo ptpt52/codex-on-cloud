@@ -300,7 +300,7 @@ async function connect() {
         streamPaused = value;
         if (value) health?.suspend();
         else { if (pendingOutputAck && socket) acknowledgeOutput(socket, 0); health?.wake(); size(); }
-        inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value, terminalSwitch }, location.origin);
+        inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value, terminalSwitch }, location.origin); panelBridge.report();
       },
       changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } },
       measured: () => { reportNetwork(); void refreshNetwork(); }, issue: directFailure });

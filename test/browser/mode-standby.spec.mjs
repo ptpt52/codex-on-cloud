@@ -23,6 +23,124 @@ async function prepared(page, mode) {
   return { frame, source };
 }
 
+for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: terminal 2, desktop task tabs and terminal 3 share retained viewers and confirmed targets`, async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
+  test.setTimeout(45000);
+  const activated = [], errors = [], offers = [], httpOpens = [];
+  const app = await fixture({ rfb: true, seamless: true, webrtc: direct, fastConnect: direct,
+    desktopHook: (command, args) => { if (command === 'xdotool' && args[0] === 'windowactivate') activated.push(args.at(-1)); } });
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => { if (request.method() !== 'POST') return; const path = new URL(request.url()).pathname; if (path === '/api/rtc') offers.push(request.url()); if (path === '/api/terminals') httpOpens.push(request.postDataJSON()); });
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '终端2', view: 'terminal' });
+    await app.controls.manageTerminals({ action: 'create', name: '终端3', view: 'terminal' });
+    await login(page, app, { modeStandby: true, mode: 'terminal', workspaceLayout: 'sidebar' });
+    const terminalSource = await page.locator('#desktop-frame').getAttribute('src'), desktop = await prepared(page, 'desktop');
+    if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    const connections = app.vncConnections;
+    await page.route('**/api/terminals', route => route.request().method() === 'POST' ? route.abort() : route.continue());
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click();
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await switchMode(page, 'desktop'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    const negotiated = offers.length;
+    expect(activated.at(-1)).toBe('1001');
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(desktop.source);
+    await page.locator('#terminal-tabs [data-terminal-choice=aux2]').click();
+    await expect(page.locator('#input-terminal')).toHaveValue('aux2'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    expect(activated.at(-1)).toBe('1002');
+    expect(await page.locator('#standby-frame').getAttribute('src')).toBe(terminalSource);
+    await switchMode(page, 'terminal'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(terminalSource);
+    await openInput(page); await page.locator('#mobile-input').fill('只写入终端3'); await page.locator('#paste-button').click();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    expect(app.terminalInputs).toEqual([{ terminalId: 'aux2', text: '\x1b[200~只写入终端3\x1b[201~' }]);
+    expect(httpOpens).toEqual([]); expect(offers.length).toBe(negotiated); expect(app.vncConnections).toBe(connections);
+    expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0); expect(errors).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('a rejected desktop focus clears the claimed active tab, never retries, and restores normal input only after a manual selection', async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
+  let rejectFocus = true, release, entered, attempts = 0;
+  const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const app = await fixture({ rfb: true, seamless: true, desktopHook: async (command, args) => {
+    if (command !== 'xdotool' || args[0] !== 'windowactivate') return;
+    attempts++;
+    if (rejectFocus) { entered(); await hold; throw Object.assign(Error('injected focus rejection'), { status: 409, outcome: 'rejected' }); }
+  } });
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '终端2', view: 'terminal' });
+    await login(page, app, { modeStandby: true, mode: 'terminal', workspaceLayout: 'sidebar' }); await prepared(page, 'desktop');
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await switchMode(page, 'desktop'); await started;
+    await expect(page.locator('#desktop-frame')).toHaveAttribute('inert', ''); await expect(page.locator('#paste-button')).toBeDisabled();
+    release(); await expect(page.locator('#toast')).toContainText('桌面终端窗口未确认切换');
+    await expect(page.locator('#desktop-frame')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('#terminal-tabs [aria-selected=true]')).toHaveCount(0); await expect(page.locator('#paste-button')).toBeDisabled();
+    await page.locator('#terminal-switch-refresh').evaluate(button => button.click()); await expect(page.locator('#input-terminal')).toBeEnabled();
+    expect(attempts).toBe(1); await expect(page.locator('#paste-button')).toBeDisabled();
+    rejectFocus = false; await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click();
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#paste-button')).toBeEnabled(); expect(attempts).toBe(2);
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { release(); await app.close(); }
+});
+
+test('a lost focus reply stays unknown without replaying the operation over HTTP or after reconnect', async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
+  let attempts = 0; const writes = [];
+  const app = await fixture({ rfb: true, seamless: true, desktopHook: (command, args) => { if (command === 'xdotool' && args[0] === 'windowactivate') attempts++; } });
+  await page.addInitScript(() => {
+    const original = WebSocket.prototype.addEventListener;
+    WebSocket.prototype.addEventListener = function(type, listener, options) {
+      if (type !== 'message') return original.call(this, type, listener, options);
+      return original.call(this, type, event => {
+        if (typeof event.data === 'string') {
+          let value; try { value = JSON.parse(event.data); } catch {}
+          if (value?.type === 'panel-result' && value.ok && value.value?.opened === 'aux1') { this.close(); return; }
+        }
+        listener.call(this, event);
+      }, options);
+    };
+  });
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/terminals') writes.push(request.postDataJSON()); });
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '终端2', view: 'terminal' });
+    await login(page, app, { workspaceLayout: 'sidebar' });
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click();
+    await expect(page.locator('#toast')).toContainText('操作结果未知');
+    await expect(page.locator('#connection-status')).toContainText('桌面在线'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await page.locator('#terminal-switch-refresh').evaluate(button => button.click()); await expect(page.locator('#input-terminal')).toBeEnabled();
+    expect(attempts).toBe(1); expect(writes).toEqual([]); await expect(page.locator('#terminal-tabs [aria-selected=true]')).toHaveCount(0);
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('a rejected parked terminal attachment restores its actual target and preserves the other draft', async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
+  const app = await fixture({ rfb: true, seamless: true });
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '终端2', view: 'terminal' });
+    await app.controls.manageTerminals({ action: 'create', name: '终端3', view: 'terminal' });
+    await login(page, app, { modeStandby: true, mode: 'terminal', workspaceLayout: 'sidebar' }); await prepared(page, 'desktop');
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    await switchMode(page, 'desktop'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await page.locator('#terminal-tabs [data-terminal-choice=aux2]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux2');
+    await openInput(page); await page.locator('#mobile-input').fill('终端3草稿'); await closePanels(page);
+    const target = (await app.controls.listTerminals()).terminals.find(item => item.id === 'aux2');
+    await app.controls.manageTerminals({ action: 'close', terminalId: target.id, terminalToken: target.token, confirm: true });
+    await switchMode(page, 'terminal'); await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('codex-cloud.terminals.v1')).drafts.some(draft => draft.id === 'aux2' && draft.text === '终端3草稿'))).toBe(true);
+    await openInput(page); await page.locator('#mobile-input').fill('继续终端2'); await page.locator('#paste-button').click();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    expect(app.terminalInputs).toEqual([{ terminalId: 'aux1', text: '\x1b[200~继续终端2\x1b[201~' }]);
+  } finally { await app.close(); }
+});
+
 test('standby defaults off and mode switching keeps the original single-viewer behavior', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true });
   try {
@@ -81,15 +199,14 @@ test('prepared modes reuse their iframe and connections, hidden terminal input a
   } finally { await app.close(); }
 });
 
-test('a changed desktop input target prepares the exact terminal and backgrounding releases only standby', async ({ page }) => {
+test('a changed desktop input target retains its parked terminal, while backgrounding releases only standby', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true });
   await app.controls.manageTerminals({ action: 'create', name: 'standby target', view: 'terminal' });
   try {
     await login(page, app, { modeStandby: true }); const main = await prepared(page, 'terminal');
     const desktopSource = await page.locator('#desktop-frame').getAttribute('src');
     await openInput(page); await page.locator('#input-terminal').selectOption('aux1');
-    const auxiliary = await prepared(page, 'terminal'); expect(auxiliary.source).not.toBe(main.source);
-    expect(new URL(auxiliary.source, app.config.origin).searchParams.get('terminalId')).toBe('aux1');
+    const auxiliary = await prepared(page, 'terminal'); expect(auxiliary.source).toBe(main.source);
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
     await expect(page.locator('#standby-frame')).toHaveCount(0); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(desktopSource);
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); });

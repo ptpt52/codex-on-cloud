@@ -11,7 +11,7 @@ function decode(text) {
 
 // One upstream, two authenticated paths, bounded unacknowledged output. Input
 // is never retransmitted. An uncertain input gap requires a fresh attachment.
-export function createStreamSession({ id, valid, connect, canActivate = async () => true, performPanel, createTerminal, switchTarget, closed = () => {}, ttl = STREAM_TTL }) {
+export function createStreamSession({ id, valid, connect, canActivate = async () => true, performPanel, createTerminal, openTerminal, switchTarget, closed = () => {}, ttl = STREAM_TTL }) {
   const peers = new Map(), output = [];
   let upstream, active, ended = false, epoch = 0, produced = 0, acked = 0, input = 0, assembly, assemblyTimer, expiry, activating = false, creating = false, holding = false, holdTimer, handoff, upstreamGeneration = 0;
   const stop = () => {
@@ -37,7 +37,7 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
     clearTimeout(holdTimer); holding = false; handoff = undefined;
     if (active) flush(active, active.sent); pressure();
   }
-  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalCreate: createTerminal ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0 });
+  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalCreate: createTerminal ? 1 : 0, terminalOpen: openTerminal ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0 });
   function openUpstream() {
     const generation = ++upstreamGeneration;
     upstream = connect({ push: bytes => { if (generation === upstreamGeneration) push(bytes); }, close: () => { if (generation === upstreamGeneration) stop(); } });
@@ -118,21 +118,22 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
       // Delayed records from a retired writer cannot act on the new route.
       if (active !== peer || value.epoch !== epoch) return;
       if (value.type === 'panel') {
-        const mutation = value.action === 'create-terminal';
-        if ((mutation ? !createTerminal : peer.kind !== 'direct' || !performPanel || !['state', 'terminals'].includes(value.action)) || !Number.isSafeInteger(value.id) || value.id <= peer.panelId || value.id > 2147483647) throw new Error();
+        const operation = value.action === 'create-terminal' ? createTerminal : value.action === 'open-terminal' ? openTerminal : null;
+        const mutation = ['create-terminal', 'open-terminal'].includes(value.action);
+        if ((mutation ? !operation : peer.kind !== 'direct' || !performPanel || !['state', 'terminals'].includes(value.action)) || !Number.isSafeInteger(value.id) || value.id <= peer.panelId || value.id > 2147483647) throw new Error();
         peer.panelId = value.id;
         const now = Date.now(); if (now - peer.panelAt >= 1000) { peer.panelAt = now; peer.panelCount = 0; }
         if (++peer.panelCount > 8) throw new Error();
         if (peer.panelBusy.has(value.action)) { send(peer, { type: 'panel-result', epoch, id: value.id, ok: false, error: { status: 429, message: '此项直连查询仍在处理', outcome: 'rejected' } }); return; }
-        if (mutation && (activating || creating || holding)) { send(peer, { type: 'panel-result', epoch, id: value.id, ok: false, error: { status: 409, message: '连接正在切换，创建未执行', outcome: 'rejected' } }); return; }
+        if (mutation && (activating || creating || holding)) { send(peer, { type: 'panel-result', epoch, id: value.id, ok: false, error: { status: 409, message: '连接正在切换，终端操作未执行', outcome: 'rejected' } }); return; }
         const requestEpoch = epoch, live = () => check() && active === peer && epoch === requestEpoch && peers.get(peer.kind) === peer;
         peer.panelBusy.add(value.action);
         if (mutation) creating = true;
         try {
           let result;
           try {
-            if (mutation && Buffer.byteLength(JSON.stringify(value.body) || '') > 1024) throw Object.assign(new Error('创建参数超过 1 KiB'), { status: 413, outcome: 'rejected' });
-            result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: true, value: mutation ? await createTerminal(value.body, live) : await performPanel(value.action, live) };
+            if (mutation && Buffer.byteLength(JSON.stringify(value.body) || '') > 1024) throw Object.assign(new Error('终端操作参数超过 1 KiB'), { status: 413, outcome: 'rejected' });
+            result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: true, value: mutation ? await operation(value.body, live) : await performPanel(value.action, live) };
           } catch (error) { result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: false, error: panelError(error, mutation) }; }
           if (Buffer.byteLength(JSON.stringify(result)) > 16384) result = { type: 'panel-result', epoch: requestEpoch, id: value.id, ok: false, error: { status: 413, message: '直连管理响应超过 16 KiB', outcome: mutation ? 'unknown' : 'rejected' } };
           if (live()) send(peer, result);

@@ -34,7 +34,7 @@ let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = nu
 let draftStorage;
 try { draftStorage = sessionStorage; } catch {}
 const terminalState = createTerminalState(draftStorage, nodeIdentity());
-let draftIdentity = { id: '', token: '' }, draftNotice = '';
+let draftIdentity = { id: '', token: '' }, draftNotice = '', desktopFocusFailureKey = '';
 let draftLeavePending, draftUnloadApproved = false, draftUnloadListening = false, draftCopyBusy = false;
 let inputBusy = false;
 let inputComposing = false;
@@ -117,13 +117,13 @@ const directIssues = { 'heartbeat-suspect': '心跳延迟，正在复核连接',
   'channel-timeout': 'WebRTC 路径已接通，加密数据通道建立超时',
   connection: '原 WebRTC 通道已断开，正在恢复', heartbeat: 'WebRTC 心跳无回复，已开始回退 HTTPS / WebSocket' };
 let controlReady = false, controlPending = null, controlSequence = 0, desktopTextInput = false, desktopTextFrame = '', desktopTextSequence = 0;
-let panelReady = false, terminalSwitchReady = false, terminalCreateReady = false, panelSequence = 0, panelRoute = 'https', rtcConfig;
+let panelReady = false, panelCapabilitiesKnown = false, terminalSwitchReady = false, terminalCreateReady = false, terminalOpenReady = false, panelSequence = 0, panelRoute = 'https', rtcConfig;
 const panelRequests = new Map();
 let transportSwitching = false, switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
 let confirmation = null, uiGeneration = 0;
-let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
+let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalFocusBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false;
 let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
@@ -294,23 +294,26 @@ function selectDesktopTerminal(id) {
   if (!terminal || !canManageTerminals() || inputComposing || frameComposing || confirmation || !rememberDraft()) return false;
   const generation = uiGeneration;
   void manageTerminals({ action: 'open', terminalId: terminal.id, terminalToken: terminal.token }).then(result => {
-    if (!result?.ok || generation !== uiGeneration || !owned) return;
+    if (generation !== uiGeneration || !owned) return;
+    if (!result?.ok) { if (result?.outcome === 'unknown') { desktopFocusFailureKey = `${selectedTerminal}:${selectedTerminalToken}`; renderConnection(); } return; }
     if (selectedTerminal === terminal.id && selectedTerminalToken === terminal.token && terminalSelectionState === 'ready') toast(`已切换到 ${terminal.name}，输入助手目标已同步。`);
     else toast('终端窗口已打开，输入助手目标尚未切换；请先保存草稿，再手动选择目标。', true);
   });
   return true;
 }
+function desktopFocusUnconfirmed() { return !terminalMode() && desktopFocusFailureKey === `${selectedTerminal}:${selectedTerminalToken}`; }
 function openTerminalManager() {
   shortcutMenu.close(); $('terminals-dialog').showModal(); sendDisplayPreferences(); void loadTerminals();
 }
 function renderTerminalSelection() {
-  const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error';
+  const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error' || desktopFocusUnconfirmed();
   const disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
   const desktopSidebar = !terminalMode() && $('workspace-view').classList.contains('sidebar-layout');
   const entries = terminalMode() ? terminalEntries() : terminalEntries().filter(item => !item.available);
   terminalTabs.render(entries, terminalSelectionState === 'closed' ? 'new' : selectedTerminal, { visible: owned && (terminalMode() || desktopSidebar) && entries.length > 0, disabled, invalid, loading: terminalSelectionState === 'loading', desktop: !terminalMode() });
   terminalActions.render(entries, { visible: owned && (terminalMode() || desktopSidebar), disabled });
-  const message = invalid ? '原终端未通过身份校验，草稿已保留；请刷新列表或手动选择目标。'
+  const message = desktopFocusUnconfirmed() ? '桌面窗口尚未确认切换，草稿已保留；请重新点击目标终端标签。'
+    : invalid ? '原终端未通过身份校验，草稿已保留；请刷新列表或手动选择目标。'
     : draftNotice || (terminalState.persistenceFailed ? '浏览器未能保存草稿，刷新前请复制重要文字。' : '');
   $('draft-status').textContent = message; $('draft-status').hidden = !message;
   renderDraftSafety();
@@ -552,12 +555,13 @@ $('auto-resolution').addEventListener('change', () => {
   renderDesktopSettings(); scheduleViewport();
 });
 function canInput(focused = false) {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready') && (!terminalMode() || !terminalReviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !terminalReviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
-function canManageTerminals() {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && !inputPaused() && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+function canManageTerminals(allowPaused = false) {
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && (allowPaused === true || !inputPaused()) && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function renderInputControls() {
+  $('desktop-frame').inert = terminalFocusBusy;
   $('gateway-switch-button').hidden = !document.querySelector('meta[name="gateway-entry"]') || permissions.role === 'temporary';
   const disabled = inputBusy || inputComposing || frameComposing || !canInput();
   for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
@@ -785,6 +789,9 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
   if (path === '/api/terminals' && method === 'POST' && body?.action === 'create' && terminalMode() && terminalCreateReady && owned && frameState === 'connected') {
     return framePanelRequest('create-terminal', { name: body.name, ...(body.terminalId === undefined ? {} : { terminalId: body.terminalId }) }, signal);
   }
+  if (path === '/api/terminals' && method === 'POST' && body?.action === 'open' && !terminalMode() && terminalOpenReady && owned && frameState === 'connected') {
+    return framePanelRequest('open-terminal', { terminalId: body.terminalId, terminalToken: body.terminalToken }, signal);
+  }
   const service = serviceAction(path, method);
   if (service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
     try { const value = await serviceLink.request(service, body || {}, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
@@ -834,20 +841,20 @@ function finishPanelRequest(id, error, value) {
   error ? pending.reject(error) : pending.resolve(value);
 }
 function framePanelRequest(action, body = {}, signal) {
-  const capable = action === 'switch-terminal' ? terminalSwitchReady : action === 'create-terminal' ? terminalCreateReady : panelReady;
-  if (!['state', 'terminals', 'switch-terminal', 'create-terminal'].includes(action) || !capable || !owned || !frameLoaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('连接操作未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
+  const capable = action === 'switch-terminal' ? terminalSwitchReady : action === 'create-terminal' ? terminalCreateReady : action === 'open-terminal' ? terminalOpenReady : panelReady;
+  if (!['state', 'terminals', 'switch-terminal', 'create-terminal', 'open-terminal'].includes(action) || !capable || !owned || !frameLoaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('连接操作未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
     const id = ++panelSequence, abort = () => {
       $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-cancel', frame: String(frameEpoch), id }, location.origin);
-      finishPanelRequest(id, signal?.reason || Object.assign(new Error('连接操作已取消或结果未知'), { status: 409, outcome: ['switch-terminal', 'create-terminal'].includes(action) ? 'unknown' : 'rejected' }));
+      finishPanelRequest(id, signal?.reason || Object.assign(new Error('连接操作已取消或结果未知'), { status: 409, outcome: ['switch-terminal', 'create-terminal', 'open-terminal'].includes(action) ? 'unknown' : 'rejected' }));
     };
-    panelRequests.set(id, { action, resolve, reject, signal, abort, timer: setTimeout(abort, action === 'switch-terminal' ? 11000 : action === 'create-terminal' ? 6500 : 6000) });
+    panelRequests.set(id, { action, resolve, reject, signal, abort, timer: setTimeout(abort, action === 'switch-terminal' ? 11000 : ['create-terminal', 'open-terminal'].includes(action) ? 6500 : 6000) });
     signal?.addEventListener('abort', abort, { once: true });
     $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-request', frame: String(frameEpoch), id, action, body }, location.origin);
   });
 }
 function resetPanelRequests() {
-  panelReady = terminalSwitchReady = terminalCreateReady = false;
+  panelReady = panelCapabilitiesKnown = terminalSwitchReady = terminalCreateReady = terminalOpenReady = false;
   for (const id of [...panelRequests.keys()]) finishPanelRequest(id, Object.assign(new Error('查看连接已变化'), { status: 409, outcome: 'unknown' }));
 }
 async function switchTerminalStream(identity) {
@@ -868,7 +875,11 @@ async function switchTerminalStream(identity) {
     return true;
   } catch (error) {
     if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
-    if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }
+    if (error.outcome === 'rejected' && frameTerminalKey !== `${selectedTerminal}:${selectedTerminalToken}`) {
+      const previous = terminalCatalog.find(item => item.supported && `${item.id}:${item.token}` === frameTerminalKey);
+      if (!previous || !activateTerminal({ id: previous.id, token: previous.token })) { terminalSelectionState = 'error'; stopFrame(); }
+      renderTerminalList();
+    } else if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }
     toast(error.message, error.code !== 'terminal_switch_busy' || error.outcome !== 'rejected');
     return false;
   } finally { if (generation === uiGeneration) { terminalBusy = !!terminalController; terminalSwitching = false; renderConnection(); if (loggedIn && !accessExpired && !pollController && !terminalController) { stopPolling(); void poll(); } } }
@@ -967,10 +978,10 @@ function showLogin(message = '') {
   controlsState = { available: false, maintenance: false, inputBusy: false };
   maintenancePending = false;
   $('input-status').hidden = true;
-  loggedIn = false; owned = false; csrf = ''; transferDirectory = '';
+  loggedIn = false; owned = false; csrf = ''; transferDirectory = ''; desktopFocusFailureKey = '';
   closeDraftLeave(); fileTransferController?.abort(); fileProgress.clear();
   $('transfer-path').textContent = '等待读取…';
-  terminalController?.abort(); terminalController = null; terminalBusy = false; terminalLoadAttempted = false; terminalCatalog = []; terminalSlots = []; selectedTerminal = ''; selectedTerminalToken = ''; terminalSelectionState = 'loading'; renderTerminalList();
+  terminalController?.abort(); terminalController = null; terminalBusy = terminalFocusBusy = false; terminalLoadAttempted = false; terminalCatalog = []; terminalSlots = []; selectedTerminal = ''; selectedTerminalToken = ''; terminalSelectionState = 'loading'; renderTerminalList();
   desktopReady = null; frameDimensions = null; panelState = 'auth';
   stopPolling();
   stopFrame();
@@ -1011,7 +1022,10 @@ function syncModeStandby() {
   if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || !frameLoaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
   const mode = terminalMode() ? 'desktop' : 'terminal', target = mode === 'terminal' ? standbyTarget() : null;
   const key = target ? `${target.id}:${target.token}` : '';
-  if (standbyFrame && (standbyFrame.mode !== mode || standbyFrame.key !== key)) discardStandby();
+  // A parked terminal can attach the next target on its retained stream when
+  // foregrounded. Changing the desktop selection must not tear that stream down.
+  if (standbyFrame && (standbyFrame.mode !== mode || standbyFrame.key !== key &&
+    (!streamProtocolEnabled || terminalCatalogVerified && !terminalCatalog.some(item => item.supported && `${item.id}:${item.token}` === standbyFrame.key)))) discardStandby();
   if (standbyFrame || mode === 'terminal' && !target || frameState !== 'connected' || terminalBusy) return;
   const element = document.createElement('iframe');
   element.id = 'standby-frame'; element.inert = true; element.setAttribute('aria-hidden', 'true'); element.tabIndex = -1;
@@ -1027,8 +1041,14 @@ function receiveStandby(value) {
   if (value.type === 'codex-desktop') {
     if (value.state === 'ready') { sendStandbyPreferences(); return; }
     if (value.state === 'connected') { entry.state = 'connected'; entry.transport = value.transport === 'direct' ? 'direct' : entry.mode === 'terminal' ? 'terminal' : 'relay'; sendStandbyPreferences(); }
-    else if (['disconnected', 'connecting'].includes(value.state)) entry.state = value.state === 'disconnected' ? 'reconnecting' : 'connecting';
-  } else if (value.type === 'codex-stream-state' && typeof value.paused === 'boolean') entry.paused = value.paused;
+    else if (['disconnected', 'connecting'].includes(value.state)) { entry.state = value.state === 'disconnected' ? 'reconnecting' : 'connecting'; entry.panelReady = entry.panelCapabilitiesKnown = entry.terminalSwitchReady = entry.terminalCreateReady = entry.terminalOpenReady = false; }
+  } else if (value.type === 'codex-panel-state') {
+    entry.panelCapabilitiesKnown = entry.state === 'connected' && !entry.paused;
+    entry.panelReady = value.ready === true;
+    entry.terminalSwitchReady = value.terminalSwitch === true;
+    entry.terminalCreateReady = value.terminalCreate === true;
+    entry.terminalOpenReady = value.terminalOpen === true;
+  } else if (value.type === 'codex-stream-state' && typeof value.paused === 'boolean') { entry.paused = value.paused; if (value.paused) entry.panelCapabilitiesKnown = false; }
   else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
     const record = streamInputNotice(value, { mode: entry.mode, epoch: entry.epoch, standby: true, target: entry.noticeTarget });
     if (record && record.key !== entry.inputNoticeKey) toast(record.message, true);
@@ -1046,11 +1066,11 @@ function receiveStandby(value) {
 function swapStandby(mode) {
   const next = standbyFrame;
   if (!standbyEnabled() || !next || next.mode !== mode || !frameLoaded || document.hidden ||
-    mode === 'terminal' && next.key !== `${selectedTerminal}:${selectedTerminalToken}`) return false;
+    mode === 'terminal' && next.key !== `${selectedTerminal}:${selectedTerminalToken}` && (next.state !== 'connected' || next.paused || !next.terminalSwitchReady)) return false;
   historyToolsPortal.reset();
   const previous = { element: $('desktop-frame'), epoch: frameEpoch, mode: displayPreferences.mode, key: frameTerminalKey,
     state: frameState, transport: frameTransport, paused: transportSwitching, inputNoticeKey: frameInputNoticeKey, noticeTarget: terminalMode() ? noticeTarget() : '', dimensions: frameDimensions, geometry: terminalGeometry,
-    scale: displayScale, scaleRevision, reviewing: terminalReviewing };
+    scale: displayScale, scaleRevision, reviewing: terminalReviewing, panelReady, panelCapabilitiesKnown, terminalSwitchReady, terminalCreateReady, terminalOpenReady };
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = '';
   clearTimeout(switchTimer); transportSwitching = false; resetDirectControl(); resetPanelRequests();
   previous.element.id = 'standby-frame'; previous.element.inert = true; previous.element.tabIndex = -1; previous.element.setAttribute('aria-hidden', 'true');
@@ -1059,6 +1079,11 @@ function swapStandby(mode) {
   next.element.title = mode === 'terminal' ? 'Codex 网页终端' : 'Ubuntu 开发桌面';
   historyToolsPortal.setFrame(next.element);
   frameEpoch = next.epoch; frameState = next.state; frameTransport = next.transport; frameTerminalKey = next.key;
+  panelReady = next.state === 'connected' && next.panelReady === true;
+  panelCapabilitiesKnown = next.state === 'connected' && next.panelCapabilitiesKnown === true;
+  terminalSwitchReady = mode === 'terminal' && next.state === 'connected' && next.terminalSwitchReady === true;
+  terminalCreateReady = mode === 'terminal' && next.state === 'connected' && next.terminalCreateReady === true;
+  terminalOpenReady = mode === 'desktop' && next.state === 'connected' && next.terminalOpenReady === true;
   frameDimensions = next.dimensions; terminalGeometry = next.geometry; displayScale = next.scale; scaleRevision = next.scaleRevision;
   terminalReviewing = next.reviewing; frameComposing = false; nativeIdle = frameResizeReady = false;
   transportSwitching = next.paused === true;
@@ -1407,20 +1432,29 @@ function updateTerminalCatalog(result, opened) {
   terminalCatalogVerified = true;
   reconcileTerminalSelection(opened);
 }
-async function terminalRequest(body) {
-  if (!loggedIn || terminalBusy || (body && !canManageTerminals())) return;
+async function terminalRequest(body, { waitForView = false } = {}) {
+  waitForView = waitForView && body?.action === 'open' && !terminalMode();
+  if (!loggedIn || terminalBusy || (body && !canManageTerminals(waitForView))) return;
   if (body?.action === 'close' && !rememberDraft()) return;
   const closingCurrent = body?.action === 'close' && body.terminalId === selectedTerminal && body.terminalToken === selectedTerminalToken;
   if (closingCurrent) {
     if (terminalMode()) stopFrame();
     terminalSelectionState = 'loading';
   }
-  const controller = new AbortController(), generation = uiGeneration;
+  const controller = new AbortController(), generation = uiGeneration, expectedFrame = frameEpoch;
   if (body && terminalMode()) body = { ...body, view: 'terminal' };
-  terminalController = controller; terminalBusy = true; shortcutMenu.close();
+  terminalController = controller; terminalBusy = true; terminalFocusBusy = body?.action === 'open' && !terminalMode(); shortcutMenu.close();
   const timeout = setTimeout(() => controller.abort(), 6500);
   $('terminals-status').textContent = body ? '正在处理终端操作…' : '正在读取终端列表…'; renderInputControls(); sendDisplayPreferences();
   try {
+    if (waitForView) {
+      // One admitted navigation, no command sent yet. Reuse the existing
+      // request's cancellation and deadline; never queue or replay a focus.
+      const deadline = performance.now() + 1500;
+      const current = () => generation === uiGeneration && terminalController === controller && frameEpoch === expectedFrame && loggedIn && owned && !accessExpired && !document.hidden && !pageLeaving && navigator.onLine && !terminalMode() && !controller.signal.aborted;
+      while (current() && (inputPaused() || frameState !== 'connected' || !panelCapabilitiesKnown) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      if (!current() || inputPaused() || frameState !== 'connected' || !panelCapabilitiesKnown) throw Object.assign(Error('桌面待命连接尚未就绪，打开未发送；请稍后重新点击目标标签'), { outcome: 'rejected' });
+    }
     const result = await api('/api/terminals', { method: body ? 'POST' : 'GET', body, signal: controller.signal });
     if (terminalController !== controller || generation !== uiGeneration || !loggedIn || (body && !owned)) return;
     if (body?.action === 'close' && result.closed !== body.terminalId) throw new Error('结束结果无效，请手动刷新');
@@ -1429,6 +1463,7 @@ async function terminalRequest(body) {
     const retainConnection = body?.action === 'create' && terminalMode() && frameLoaded && terminalSwitchReady;
     if (body?.action === 'create' && (result.created !== result.opened || body.terminalId !== undefined && result.created !== body.terminalId || !result.terminals?.some(item => item.id === result.created && item.supported))) throw new Error('创建结果未确认，请刷新列表核对，不要重复新建。');
     updateTerminalCatalog(result, retainConnection ? undefined : body ? result.opened : undefined);
+    if (body?.action === 'open') desktopFocusFailureKey = '';
     clearTimeout(timeout);
     if (body?.action === 'create') $('new-terminal-name').value = '';
     $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
@@ -1471,11 +1506,11 @@ async function terminalRequest(body) {
     return { ok: false, message: $('terminals-status').textContent, outcome: body && error.outcome !== 'rejected' ? 'unknown' : 'rejected' };
   } finally {
     clearTimeout(timeout);
-    if (terminalController === controller) { terminalController = null; terminalBusy = false; renderInputControls(); sendDisplayPreferences(); scheduleViewport(); if (terminalMode()) syncTerminalView(); renderConnection(); if (loggedIn && !accessExpired && !pollController && !pollTimer) void poll(); }
+    if (terminalController === controller) { terminalController = null; terminalBusy = terminalFocusBusy = false; renderInputControls(); sendDisplayPreferences(); scheduleViewport(); if (terminalMode()) syncTerminalView(); renderConnection(); if (loggedIn && !accessExpired && !pollController && !pollTimer) void poll(); }
   }
 }
 async function loadTerminals() { return terminalRequest(); }
-async function manageTerminals(body) { return terminalRequest(body); }
+async function manageTerminals(body, options) { return terminalRequest(body, options); }
 $('terminals-button').addEventListener('click', openTerminalManager);
 $('terminal-view-manage').addEventListener('click', openTerminalManager);
 $('close-terminals').addEventListener('click', () => $('terminals-dialog').close());
@@ -1514,6 +1549,15 @@ function changeMode(mode) {
   if (!reused) stopFrame();
   updateDisplayPreferences({ mode }); renderTerminalList(); openFrame();
   if (mode === 'terminal' && !frameLoaded) void loadTerminals();
+  if (mode === 'terminal' && reused && frameTerminalKey !== `${selectedTerminal}:${selectedTerminalToken}`) void switchTerminalStream({ id: selectedTerminal, token: selectedTerminalToken });
+  if (mode === 'desktop' && selectedTerminal && terminalSelectionState === 'ready') {
+    const generation = uiGeneration, identity = `${selectedTerminal}:${selectedTerminalToken}`;
+    void manageTerminals({ action: 'open', terminalId: selectedTerminal, terminalToken: selectedTerminalToken }, { waitForView: reused }).then(result => {
+      if (generation !== uiGeneration || !owned || terminalMode() || identity !== `${selectedTerminal}:${selectedTerminalToken}` || result?.ok) return;
+      desktopFocusFailureKey = identity; renderConnection();
+      toast('桌面终端窗口未确认切换；请等待连接就绪后重新点击目标标签。', true);
+    });
+  }
   renderConnection();
 }
 $('mode-standby').addEventListener('change', () => {
@@ -2030,9 +2074,11 @@ window.addEventListener('message', event => {
   if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
   if (event.data?.type === 'codex-panel-state') {
     const wasReady = panelReady;
+    panelCapabilitiesKnown = frameState === 'connected' && !transportSwitching;
     panelReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
     terminalSwitchReady = terminalMode() && frameState === 'connected' && event.data.terminalSwitch === true;
     terminalCreateReady = terminalMode() && frameState === 'connected' && event.data.terminalCreate === true;
+    terminalOpenReady = !terminalMode() && frameState === 'connected' && event.data.terminalOpen === true;
     if (panelReady && !wasReady) { stopPolling(); void poll(); }
     renderConnection(); return;
   }
@@ -2094,6 +2140,7 @@ window.addEventListener('message', event => {
     // A selected terminal is already protected by terminalBusy. Treating its
     // preparation as a route handoff would block and cancel its own wait.
     transportSwitching = event.data.paused && !(terminalSwitching && event.data.terminalSwitch === true);
+    if (event.data.paused) panelCapabilitiesKnown = false;
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-stream-reset' && event.data.reason === 'target-unknown') {

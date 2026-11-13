@@ -74,10 +74,11 @@ export function createControlClient(channel, changed) {
 
 // Fixed operations, one pending request per operation, no replay queue.
 // The parent verifies source + frame generation again before using any result.
-export function createPanelBridge({ frame, current, connected, canSwitch = () => false }) {
+export function createPanelBridge({ frame, current, connected, canSwitch = () => false, canOpen = () => false }) {
   const pending = new Map();
   const report = () => parent.postMessage({ type: 'codex-panel-state', frame, ready: connected() && current()?.panelReady === true,
-    terminalSwitch: connected() && current()?.terminalSwitch === true, terminalCreate: connected() && current()?.terminalCreate === true }, location.origin);
+    terminalSwitch: connected() && current()?.terminalSwitch === true, terminalCreate: connected() && current()?.terminalCreate === true,
+    terminalOpen: connected() && current()?.terminalOpen === true }, location.origin);
   window.addEventListener('message', event => {
     const value = event.data;
     if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame || !Number.isSafeInteger(value.id) || value.id < 1) return;
@@ -86,8 +87,8 @@ export function createPanelBridge({ frame, current, connected, canSwitch = () =>
     const source = current(), action = value.action;
     const reject = () => parent.postMessage({ type: 'codex-panel-result', frame, id: value.id, ok: false, error: { message: '连接操作未就绪或仍在处理，本次未发送', status: 409, outcome: 'rejected',
       ...(action === 'switch-terminal' ? { code: 'terminal_switch_busy' } : {}) } }, location.origin);
-    const capable = action === 'switch-terminal' ? source?.terminalSwitch && canSwitch() : action === 'create-terminal' ? source?.terminalCreate : source?.panelReady;
-    if (!['state', 'terminals', 'switch-terminal', 'create-terminal'].includes(action) || pending.has(value.id) || !connected() || !capable || [...pending.values()].some(p => p.action === action)) { reject(); return; }
+    const capable = action === 'switch-terminal' ? source?.terminalSwitch && canSwitch() : action === 'open-terminal' ? source?.terminalOpen && canOpen() : action === 'create-terminal' ? source?.terminalCreate : source?.panelReady;
+    if (!['state', 'terminals', 'switch-terminal', 'create-terminal', 'open-terminal'].includes(action) || pending.has(value.id) || !connected() || !capable || [...pending.values()].some(p => p.action === action)) { reject(); return; }
     const entry = { action, controller: new AbortController() }; pending.set(value.id, entry);
     void source.panelRequest(action, value.body, entry.controller.signal).then(result => {
       if (entry.controller.signal.aborted || source !== current()) return;

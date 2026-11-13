@@ -68,7 +68,8 @@ function reportControl() {
   panelBridge.report();
   scheduleProbe();
 }
-const panelBridge = createPanelBridge({ frame, current: () => streamClient?.socket, connected: () => viewing && transportName === 'direct' });
+const panelBridge = createPanelBridge({ frame, current: () => streamClient?.socket, connected: () => viewing && streamClient?.socket.readyState === 1,
+  canOpen: () => !preferences.standby && !preferences.blocked && !switching && !streamPaused && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy });
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame || !Number.isSafeInteger(value.id) || value.id < 1) return;
@@ -484,6 +485,7 @@ async function connect() {
         if (rfb) rfb.viewOnly = value || preferences.pan || preferences.blocked;
         desktopInput.update();
         parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
+        panelBridge.report();
       },
       changed: () => {
         transport = streamClient?.transport; transportName = streamClient?.socket.direct ? 'direct' : 'relay'; networkDetails = null;

@@ -34,6 +34,7 @@ async function activate(page, mode) {
 }
 for (const mode of ['terminal', 'desktop']) test(`a recovering cached ${mode} keeps input paused until its real relay resumes`, async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true });
+  const writes = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/terminals') writes.push(request.postDataJSON()); });
   try {
     const { frame, source } = await setup(page, app, mode);
     await frame.evaluate(() => { window.holdModeAuth = true; window.modeSockets.find(socket => socket.readyState === WebSocket.OPEN).close(); });
@@ -49,7 +50,29 @@ for (const mode of ['terminal', 'desktop']) test(`a recovering cached ${mode} ke
     });
     await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
     await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
-    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+    expect(writes).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+test('a parked desktop recovery that exceeds focus admission never sends the old selection after reconnect', async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Manual desktop task retry is checked in the wide sidebar');
+  let attempts = 0;
+  const app = await fixture({ rfb: true, seamless: true, desktopHook: (command, args) => { if (command === 'xdotool' && args[0] === 'windowactivate') attempts++; } });
+  try {
+    const { frame, source } = await setup(page, app, 'desktop');
+    await frame.evaluate(() => { window.holdModeAuth = true; window.modeSockets.find(socket => socket.readyState === WebSocket.OPEN).close(); });
+    await expect.poll(() => page.evaluate(() => window.cachedPaused)).toBe(true);
+    await activate(page, 'desktop'); await expect(page.locator('#toast')).toContainText('桌面终端窗口未确认切换');
+    expect(attempts).toBe(0);
+    await frame.evaluate(() => {
+      window.holdModeAuth = false;
+      for (const socket of window.modeSockets) if (socket.readyState === WebSocket.OPEN && socket.heldAuth) { const value = socket.heldAuth; socket.heldAuth = ''; socket.send(value); }
+    });
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await expect(page.locator('#input-terminal')).toBeEnabled(); expect(attempts).toBe(0);
+    await expect(page.locator('#paste-button')).toBeDisabled(); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    await page.locator('#terminal-tabs [data-terminal-choice=main]').click(); await expect(page.locator('#paste-button')).toBeEnabled();
+    expect(attempts).toBe(1); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
 
