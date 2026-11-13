@@ -5,6 +5,28 @@ import { fixture } from '../fixture.mjs';
 
 test.use({ serviceWorkers: 'block' });
 
+test('a stalled TURN refresh cannot interrupt state polling or input on an established direct viewer', async ({ page }) => {
+  let stalled = false, requests = 0;
+  const central = http.createServer((_req, res) => {
+    requests++; if (stalled) return;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ expiresAt: Date.now() + 60000, ttlMs: 60000, iceServers: [{ urls: ['stun:127.0.0.1:3478'] }] }));
+  });
+  central.listen(0, '127.0.0.1'); await once(central, 'listening');
+  const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true,
+    selfhostNode: { slug: 'node-a', nodeId: 'a'.repeat(32), credential: 'cocn_' + 'b'.repeat(43), turnEndpoint: `http://127.0.0.1:${central.address().port}/api/turn-credentials` } });
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 }); await expect(page.locator('#paste-button')).toBeEnabled();
+    const connections = app.vncConnections, before = requests; stalled = true;
+    await expect.poll(() => requests).toBeGreaterThan(before);
+    // Cross the five-second credential request deadline and another poll.
+    await page.waitForTimeout(6500);
+    await expect(page.locator('#diag-panel')).toContainText('可访问'); await expect(page.locator('#paste-button')).toBeEnabled();
+    expect(requests).toBe(before + 1); expect(app.vncConnections).toBe(connections); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); central.closeAllConnections(); await new Promise(resolve => central.close(resolve)); }
+});
+
 test('authenticated browser receives and uses short-lived TURN ICE servers', async ({ page }) => {
   const expiresAt = Date.now() + 3600000;
   const iceServers = [

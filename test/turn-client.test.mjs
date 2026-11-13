@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { requestTurnCredentials, validateTurnResponse } from '../panel/turn-client.mjs';
+import { requestTurnCredentials, validateTurnResponse, createTurnCache } from '../panel/turn-client.mjs';
 import { rtcOffer } from '../panel/rtc-network.mjs';
 import { rtcIceServers } from '../panel/public/rtc-ice.js';
 import { fixture } from './fixture.mjs';
@@ -17,6 +17,33 @@ const iceServers = [
   { urls: ['stun:desk.example.test:3478'] },
   { urls: ['turn:desk.example.test:3478?transport=udp', 'turn:desk.example.test:3478?transport=tcp', 'turns:desk.example.test:5349?transport=tcp'], username: '200:signed', credential: 'short-secret' },
 ];
+
+test('TURN status reads stay nonblocking, coalesce refreshes and retain only unexpired credentials through failure backoff', async () => {
+  let time = 100000, release, reject, calls = 0;
+  const cache = createTurnCache(() => { calls++; return new Promise((ok, fail) => { release = ok; reject = fail; }); }, () => time);
+  try {
+    assert.equal(await cache.read({ wait: false }), null); assert.equal(calls, 1);
+    assert.equal(await cache.read({ wait: false }), null); assert.equal(calls, 1);
+    const first = cache.read(); release({ expiresAt: time + 120000, iceServers });
+    const saved = await first; assert.deepEqual(saved.iceServers, iceServers);
+    time += 61000;
+    assert.equal(await cache.read({ wait: false }), saved); assert.equal(calls, 2);
+    const waiting = cache.read(); reject(Error('center unavailable')); assert.equal(await waiting, saved);
+    time += 14000; assert.equal(await cache.read(), saved); assert.equal(calls, 2);
+    time += 1000; const retry = cache.read(); await Promise.resolve(); assert.equal(calls, 3);
+    release({ expiresAt: time + 61000, iceServers }); await retry;
+    time += 62000; const expired = cache.read({ wait: false }); assert.equal(await expired, null);
+    const last = cache.read(); reject(Error('offline')); assert.equal(await last, null);
+    assert.equal(await cache.read(), null); assert.equal(calls, 4);
+  } finally { cache.close(); }
+});
+
+test('closing a TURN cache cancels its sole refresh and cannot publish a late result', async () => {
+  let release, signal;
+  const cache = createTurnCache(value => { signal = value; return new Promise(resolve => { release = resolve; }); });
+  const pending = cache.read(); await Promise.resolve(); cache.close(); assert.equal(signal.aborted, true);
+  release({ expiresAt: Date.now() + 3600000, iceServers }); assert.equal(await pending, null); assert.equal(await cache.read(), null);
+});
 
 test('TURN responses accept only bounded STUN/TURN URLs and short-lived credentials', async () => {
   const value = validateTurnResponse({ expiresAt: now + 3600000, ttlMs: 3600000, iceServers }, now);

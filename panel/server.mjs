@@ -33,7 +33,7 @@ import { createUIAssets } from './ui-assets.mjs';
 import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
-import { requestTurnCredentials } from './turn-client.mjs';
+import { requestTurnCredentials, createTurnCache } from './turn-client.mjs';
 
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -110,22 +110,19 @@ export async function createPanel(config) {
   let closing = false;
   let rtcBusy = false;
   let rtcClosing = Promise.resolve();
-  let turnCache = null, turnPending = null;
   const forwarding = createForwarding(config);
   const forwardAgents = createForwardAgents(config, forwarding);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
   const fileTransfers = createFileTransfers();
   const helperTransfers = createFileTransfers({ limit: 2, busyStatus: 429, busyMessage: '助手下载繁忙，请稍后重试' });
-  const turnConfig = async () => {
+  const turnCache = createTurnCache(signal => requestTurnCredentials({ endpoint: config.selfhostNode.turnEndpoint, node: config.selfhostNode, ca: config.selfhostCaBundle, signal }));
+  const turnConfig = async (wait = true) => {
     const node = config.selfhostNode;
     if (!config.webrtc || !node?.turnEndpoint) return null;
-    if (turnCache && turnCache.expiresAt > Date.now() + 60_000) return turnCache;
-    if (turnPending) return turnPending;
-    turnPending = requestTurnCredentials({ endpoint: node.turnEndpoint, node, ca: config.selfhostCaBundle }).then(value => turnCache = value).catch(() => null).finally(() => { turnPending = null; });
-    return turnPending;
+    return turnCache.read({ wait });
   };
-  const rtcConfig = async () => {
-    const turn = await turnConfig();
+  const rtcConfig = async (wait = true) => {
+    const turn = await turnConfig(wait);
     return { serviceProtocol: 1, webrtc: config.webrtc === true, rtcStunUrl: config.webrtc ? config.webrtcStunUrl || '' : '', rtcIceServers: config.webrtc && turn ? turn.iceServers : [], rtcIceExpiresAt: turn?.expiresAt };
   };
   const services = createServiceRTC({ config, authorized: token => auth.get(token), port: () => server.address().port, turn: turnConfig, helperDownloads: true,
@@ -290,7 +287,7 @@ export async function createPanel(config) {
     requireSession(req); if (!live()) throw new HttpError(409, '控制权已变化');
     const permission = accessState(req, session);
     const visibleControls = desktopAccess(req, session) ? controls : { available: controls.available, maintenance: controls.maintenance, inputBusy: false, clipboardBusy: false, viewportBusy: false };
-    return { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full, rtc: await rtcConfig() };
+    return { desktop, controls: visibleControls, access: permission, claimable: permission.canClaim && !owner, mine: permission.full, rtc: await rtcConfig(false) };
   }
 
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
@@ -870,6 +867,7 @@ export async function createPanel(config) {
     closeSockets(state => !auth.get(state.token));
   }, 10_000).unref();
   async function close() {
+    turnCache.close();
     closing = true;
     forwardAgents.close(); await forwarding.close();
     await services.close();

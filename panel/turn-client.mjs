@@ -3,6 +3,28 @@ import { centerClient, centerRequest } from './center-http.mjs';
 
 const MAX_BODY = 16 * 1024;
 
+// One memory entry and one bounded request. Status reads never wait for the
+// center; only a new negotiation/login may wait. Failures back off for 15s.
+export function createTurnCache(load, now = Date.now) {
+  let value, pending, controller, retryAt = 0, ended = false;
+  const current = () => value?.expiresAt > now() ? value : null;
+  return {
+    async read({ wait = true } = {}) {
+      if (ended) return null;
+      if (value?.expiresAt > now() + 60000) return value;
+      if (!pending && now() >= retryAt) {
+        controller = new AbortController(); const signal = controller.signal;
+        pending = Promise.resolve().then(() => load(signal)).then(next => {
+          if (!ended && !signal.aborted) { value = next; retryAt = now() + 1000; }
+        }).catch(() => { retryAt = now() + 15000; }).finally(() => { pending = undefined; });
+      }
+      if (wait && pending) await pending;
+      return ended ? null : current();
+    },
+    close() { ended = true; value = undefined; controller?.abort(); },
+  };
+}
+
 function origin(value, label) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/api/turn-credentials') throw Error(label + ' 无效');
@@ -34,12 +56,12 @@ export function validateTurnResponse(value, now = Date.now()) {
   };
 }
 
-export async function requestTurnCredentials({ endpoint, node, request = centerRequest, ca, now = Date.now() } = {}) {
+export async function requestTurnCredentials({ endpoint, node, request = centerRequest, ca, now = Date.now(), signal } = {}) {
   const url = origin(endpoint, 'TURN endpoint');
   if (!node || typeof node.credential !== 'string' || typeof node.slug !== 'string' || typeof node.nodeId !== 'string') throw Error('节点 TURN 身份无效');
   if (node.origin && new URL(url).origin !== node.origin) throw Error('TURN endpoint 与中心地址不匹配');
   const body = JSON.stringify({ slug: node.slug, nodeId: node.nodeId, credential: node.credential });
-  const result = await centerClient(new URL(url).origin, ca, request)(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body, redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const result = await centerClient(new URL(url).origin, ca, request)(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body, redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000) });
   const reader = result.body?.getReader(), chunks = []; let size = 0;
   if (!reader) throw Error('TURN 响应缺少有界数据流');
   while (true) {
