@@ -1,6 +1,6 @@
 export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dialog, list, choose, openActions, manage, changed }) {
   let signature = '', currentTerminal;
-  let layoutFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl;
+  let layoutFrame = 0, closeFocusFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl, sidebarPicker = false;
   const compact = matchMedia('(max-width: 1000px)');
   const vertical = () => tabs.getAttribute('aria-orientation') === 'vertical';
   const shown = element => !!element?.getClientRects().length;
@@ -26,6 +26,14 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
       // then keep the longest prefix that fits at the tabs' minimum widths.
       rows.forEach(row => { row.hidden = false; });
       bar.dataset.overflow = 'false';
+      bar.dataset.sidebarPicker = 'false';
+      sidebarPicker = false;
+      if (vertical() && shown(bar)) {
+        const style = getComputedStyle(tabs), rowHeight = rows[0]?.getBoundingClientRect().height || 44;
+        const required = rowHeight * 3 + (parseFloat(style.rowGap) || 0) * 2 + (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+        sidebarPicker = bar.getBoundingClientRect().height + .01 < required;
+        bar.dataset.sidebarPicker = String(sidebarPicker);
+      }
       overflowCount = 0;
       if (!vertical() && !compact.matches && shown(tabs) && tabs.scrollWidth > tabs.clientWidth + 1) {
         bar.dataset.overflow = 'true';
@@ -46,7 +54,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
       const first = buttons.find(button => shown(button) && !button.disabled);
       if (!buttons.some(button => button.tabIndex === 0) && first) first.tabIndex = 0;
       if (dialog.open && pickerDialog) {
-        if (compact.matches) dialogMode = 'all';
+        if (compact.matches || sidebarPicker) dialogMode = 'all';
         else if (overflowCount) dialogMode = 'overflow';
         else dialog.close();
       }
@@ -59,7 +67,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
             : focused === mobileActions ? active?.nextElementSibling : active || first;
           if (!shown(target)) target = shown(mobileButton) ? mobileButton : first;
         }
-        if (target && !target.disabled && document.activeElement !== target) target.focus({ preventScroll: true });
+        if (target && !target.disabled && document.activeElement !== target) target.focus({ preventScroll: !vertical() });
       }
     });
   }
@@ -152,10 +160,19 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
     // must reveal its focused item, including when the window is short.
     buttons[next].focus({ preventScroll: !vertical() });
   });
-  mobileButton.addEventListener('click', () => { pickerDialog = true; dialogMode = compact.matches ? 'all' : 'overflow'; filterList(); dialog.showModal(); changed(); });
+  mobileButton.addEventListener('click', () => { pickerDialog = true; dialogMode = compact.matches || sidebarPicker ? 'all' : 'overflow'; filterList(); dialog.showModal(); changed(); });
   dialog.addEventListener('close', () => {
     pickerDialog = false; dialogMode = 'all'; filterList();
-    if (!shown(mobileButton) && document.activeElement === document.body) tabs.querySelector('[tabindex="0"]')?.focus({ preventScroll: true });
+    // Let the dialog finish restoring its invoker before returning focus to
+    // the active tab when a resize has hidden the picker. One frame at most.
+    cancelAnimationFrame(closeFocusFrame);
+    closeFocusFrame = requestAnimationFrame(() => {
+      closeFocusFrame = 0;
+      const active = document.activeElement;
+      if (!shown(mobileButton) && shown(tabs) && !document.querySelector('dialog[open]') && (active === document.body || active === mobileButton || dialog.contains(active))) {
+        tabs.querySelector('[tabindex="0"]:not(:disabled)')?.focus({ preventScroll: !vertical() });
+      }
+    });
   });
   mobileActions.addEventListener('click', () => { if (currentTerminal && !mobileActions.disabled) openActions(currentTerminal, mobileActions); });
   document.getElementById('close-terminal-switch').addEventListener('click', () => dialog.close());

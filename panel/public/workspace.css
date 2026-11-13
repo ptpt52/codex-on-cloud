@@ -294,6 +294,10 @@
 .workspace-sidebar .terminal-tab[aria-selected=true] { box-shadow: inset 3px 0 var(--accent); font-weight: 600; }
 .workspace-sidebar .terminal-tab-actions { min-width: 44px; width: 44px; }
 .workspace-sidebar .terminal-session-button, .workspace-sidebar .terminal-session-actions { display: none !important; }
+.workspace-sidebar .terminal-session-bar[data-sidebar-picker=true] { flex-direction: row; align-items: flex-start; gap: 6px; }
+.workspace-sidebar .terminal-session-bar[data-sidebar-picker=true] .terminal-tabs { display: none; }
+.workspace-sidebar .terminal-session-bar[data-sidebar-picker=true] .terminal-session-button { display: flex !important; flex: 1 1 0; width: 0; min-width: 0; min-height: 44px; }
+.workspace-sidebar .terminal-session-bar[data-sidebar-picker=true] .terminal-session-actions:not([hidden]) { display: inline-flex !important; border: 1px solid var(--line); border-radius: 8px; }
 .sidebar-history:empty { display: none; }
 /* Reserve the three button rows, gaps, padding and two status lines,
    even while the active terminal's controls are temporarily unavailable. */

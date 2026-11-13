@@ -8,9 +8,9 @@ test.beforeEach(async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 900 });
 });
 
-async function setup(page, { mode = 'terminal', count = 2, webrtc = false, username = 'admin' } = {}) {
+async function setup(page, { mode = 'terminal', count = 2, webrtc = false, fastConnect = webrtc, username = 'admin' } = {}) {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  const app = await fixture({ mode, username, rfb: true, seamless: true, maxTerminals: 8, webrtc, fastConnect: webrtc });
+  const app = await fixture({ mode, username, rfb: true, seamless: true, maxTerminals: 8, webrtc, fastConnect });
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: `研发任务 ${n}：客户现场调试`, view: 'terminal' });
   await page.addInitScript(() => {
     if (!location.pathname.endsWith('/terminal/index.html')) return;
@@ -131,9 +131,11 @@ test('all sessions stay reachable vertically and the phone layout returns withou
     await tabs.first().focus(); await page.keyboard.press('ArrowDown'); await expect(tabs.nth(1)).toBeFocused();
     await page.keyboard.press('End'); await expect(tabs.nth(7)).toBeFocused(); await expect(tabs.nth(7)).toBeInViewport();
     await page.setViewportSize({ width: 1440, height: 480 });
-    await tabs.first().focus(); await page.keyboard.press('End');
-    await expect(tabs.nth(7)).toBeFocused(); await expect(tabs.nth(7)).toBeInViewport();
-    await page.locator('#terminal-tabs [data-terminal-choice=aux7]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux7');
+    await expect(page.locator('#terminal-session-button')).toBeVisible(); await expect(page.locator('#terminal-tabs')).toBeHidden();
+    await page.locator('#terminal-session-button').click();
+    const choice = page.locator('#terminal-switch-list [data-terminal-choice=aux7]');
+    await choice.focus(); await expect(choice).toBeInViewport(); await choice.click();
+    await expect(page.locator('#input-terminal')).toHaveValue('aux7');
     await expect(page.locator('#connection-status')).toContainText('在线');
     const connections = app.terminalConnections;
     for (const size of [{ width: 390, height: 844 }, { width: 1440, height: 480 }, { width: 1440, height: 240 }, { width: 1440, height: 900 }]) {
@@ -150,6 +152,56 @@ test('all sessions stay reachable vertically and the phone layout returns withou
       }
     }
     expect(app.terminalConnections).toBe(connections); expect(app.terminalInputs).toEqual([]); idle(app, errors);
+  } finally { await app.close(); }
+});
+
+test('the sidebar uses a full picker only below three visible tab rows and restores focus, selection and drafts', async ({ page }) => {
+  const { app, errors, frame } = await setup(page, { count: 8, fastConnect: true });
+  try {
+    const connections = app.terminalConnections, original = await app.controls.listTerminals();
+    await openInput(page); await page.locator('#mobile-input').fill('主终端未发送的草稿'); await closePanels(page);
+    await frame.evaluate(() => window.pickerOriginalTerminal = window.sidebarTerminal);
+    const tab = id => page.locator(`#terminal-tabs [data-terminal-choice=${id}]`), picker = page.locator('#terminal-session-button');
+    const cutoff = await page.locator('#terminal-tabs').evaluate(tabs => {
+      const third = tabs.children[2].getBoundingClientRect(), viewport = tabs.getBoundingClientRect();
+      return Math.ceil(innerHeight + third.bottom + parseFloat(getComputedStyle(tabs).paddingBottom) - viewport.bottom);
+    });
+    await page.setViewportSize({ width: 1440, height: cutoff + 2 });
+    await expect(picker).toBeHidden(); await expect(tab('aux2')).toBeInViewport(); await tab('aux2').focus();
+    const sidebarHeight = await page.locator('.sidebar-sessions').boundingBox();
+    await page.setViewportSize({ width: 1440, height: cutoff - 2 });
+    await expect(picker).toBeVisible(); await expect(page.locator('#terminal-tabs')).toBeHidden(); await expect(picker).toBeFocused();
+    await expect(page.locator('#input-terminal')).toHaveValue('main');
+    expect(Math.abs((await page.locator('.sidebar-sessions').boundingBox()).height - sidebarHeight.height)).toBeLessThanOrEqual(5);
+    await page.locator('#terminal-session-actions').click(); await expect(page.locator('#terminal-action-title')).toHaveText(original.terminals[0].name);
+    await page.locator('#terminal-action-dismiss').click();
+    await picker.click(); await expect(page.locator('#terminal-switch-title')).toHaveText('选择终端');
+    await expect(page.locator('#terminal-switch-list [data-terminal-choice]:visible')).toHaveCount(9);
+    await expect(page.locator('#terminal-switch-list [data-terminal-choice=new]')).toBeDisabled();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.locator('#terminal-switch-dialog')).toBeHidden(); await expect(picker).toBeHidden();
+    await expect(tab('main')).toBeFocused();
+    expect(await frame.evaluate(() => window.sidebarTerminal === window.pickerOriginalTerminal)).toBe(true);
+    expect(app.terminalConnections).toBe(connections);
+    await page.setViewportSize({ width: 1440, height: cutoff - 2 }); await expect(picker).toBeVisible(); await picker.click();
+    await page.locator('#terminal-switch-list [data-terminal-choice=aux7]').click();
+    await expect(page.locator('#input-terminal')).toHaveValue('aux7'); await expect(page.locator('#connection-status')).toContainText('在线');
+    await expect(picker).toBeEnabled();
+    await expect(picker).toContainText(original.terminals[7].name);
+    // Explicitly selecting another task can attach a new legacy viewer.
+    // Adapting that viewer's controls must keep its new connection intact.
+    const selectedFrame = page.frames().find(frame => /\/terminal\/index.html/.test(frame.url())), selectedConnections = app.terminalConnections;
+    await selectedFrame.evaluate(() => window.pickerOriginalTerminal = window.sidebarTerminal);
+    await picker.click(); await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.locator('#terminal-switch-dialog')).toBeHidden(); await expect(picker).toBeHidden();
+    await expect(tab('aux7')).toBeFocused();
+    await expect(tab('aux7')).toBeInViewport();
+    expect(await selectedFrame.evaluate(() => window.sidebarTerminal === window.pickerOriginalTerminal)).toBe(true);
+    expect(app.terminalConnections).toBe(selectedConnections);
+    await tab('main').click(); await expect(page.locator('#input-terminal')).toHaveValue('main');
+    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('主终端未发送的草稿');
+    expect(await app.controls.listTerminals()).toEqual(original);
+    expect(app.terminalInputs).toEqual([]); idle(app, errors);
   } finally { await app.close(); }
 });
 
