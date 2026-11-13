@@ -154,7 +154,10 @@ jobs:
       - run: npx playwright install --with-deps ${{ matrix.engine }}
         timeout-minutes: 20
       - name: Cross-browser compatibility
-        timeout-minutes: 20
+        # The serial WebKit tablet suite takes about 20 minutes on hosted
+        # runners. Leave time for all cases and browser cleanup; individual
+        # Playwright test deadlines and the 45-minute job bound still apply.
+        timeout-minutes: 30
         run: npm run test:compat -- ${{ matrix.projects }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: ${{ always() && (failure() || cancelled()) }}
