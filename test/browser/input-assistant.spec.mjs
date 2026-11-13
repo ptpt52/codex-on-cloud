@@ -100,7 +100,7 @@ test('a simulated visual keyboard keeps paste and Enter visible without resizing
     await page.locator('#mobile-input').fill('模拟键盘出现时保留中文草稿');
     await page.evaluate(() => { visualViewport.height = 320; visualViewport.dispatchEvent(new Event('resize')); });
     await expect(page.locator('html')).toHaveClass(/workspace-keyboard-open/);
-    for (const selector of ['#input-dock', '#paste-button', '[data-key="Enter"]']) {
+    for (const selector of ['#input-dock', '#paste-button', '[data-key="Enter"]', '#draft-backup-button']) {
       await expect.poll(async () => {
         const rect = await page.locator(selector).boundingBox();
         return !!rect && rect.y >= 0 && rect.y + rect.height <= 320;

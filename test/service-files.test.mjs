@@ -31,7 +31,7 @@ test('an early HTTP rejection drains already-sent file frames until the rejectio
  files.close();assert.deepEqual(failed,[true]);
 });
 async function setup(t,options={}){const app=await fixture({webrtc:true,...options});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
-async function fileClient(c,window=4){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter,()=>{},{window});for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
+async function fileClient(c,window=4,failed=()=>{}){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter,failed,{window});for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
 test('a temporary service peer downloads the published helper rather than a same-named shared file, and stale versions preserve service authorization',async t=>{
  const directory=await mkdtemp(join(tmpdir(),'codex-helper-direct-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const arch='windows-amd64',name=FORWARD_FILES[arch],bytes=Buffer.alloc(1024*1024,137);
@@ -62,7 +62,8 @@ test('helper source records cannot select arbitrary paths, URLs, methods or over
 for(const window of [4,16])test(`dedicated file channel with window ${window} transfers 8 MiB and empty files over real DTLS, hashes match and desktop remains untouched`,async t=>{
  const {app,c}=await setup(t),files=await fileClient(c,window),features=(await c.rpc('ping')).value;assert.equal(features.filesProtocol,1);assert.equal(features.filesWindow,16);
  const bytes=Buffer.alloc(8*1024*1024);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
- await files.upload(new File([bytes],'中文.bin'));const blob=await files.download('中文.bin',bytes.length);assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));
+ const uploaded=[],downloaded=[];await files.upload(new File([bytes],'中文.bin'),undefined,undefined,n=>uploaded.push(n));const blob=await files.download('中文.bin',bytes.length,undefined,n=>downloaded.push(n));assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));
+ assert.equal(uploaded[0],0);assert.equal(uploaded.at(-1),bytes.length);assert.equal(downloaded[0],0);assert.equal(downloaded.at(-1),bytes.length);
  await files.upload(new File([],'empty'));assert.equal((await files.download('empty',0)).size,0);
  assert.equal((await c.rpc('files')).value.files.length,2);assert.equal((await(await app.request('/api/state')).json()).mine,true);assert.equal(app.vncConnections,0);assert.deepEqual(app.inputCalls,[]);
  const original=(await c.rpc('files')).value.files.find(f=>f.name==='中文.bin');
@@ -79,6 +80,28 @@ test('file direct shares guest quotas and rejects oversized input without replay
  // A stored listing of 1000 files must be rejected by the same HTTP quota gate.
  for(let i=0;i<1000;i++)app.files.set('file'+i,Buffer.alloc(0));
  await assert.rejects(files.upload(new File(['blocked'],'blocked')),/数量上限/);assert.equal(app.files.has('blocked'),false);
+});
+test('explicit file cancellation preserves the encrypted service and permits a fresh manual transfer', async t => {
+ let recovered;const closed=new Promise(resolve=>{recovered=resolve;});
+ const {app,c}=await setup(t),failures=[],files=await fileClient(c,4,value=>{failures.push(value);recovered();});
+ let release,entered;const hold=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});const controller=new AbortController();
+ const upload=files.upload({name:'cancelled.bin',size:32760,slice(offset){return{async arrayBuffer(){if(offset){entered();await hold;}return new Uint8Array(16380).buffer;}};}},undefined,controller.signal);void upload.catch(()=>{});
+ try {
+  await started;controller.abort(Error('user canceled'));await assert.rejects(upload,/user canceled/);release();await closed;
+  assert.deepEqual(failures,[true]);assert.equal((await c.rpc('ping')).ok,true);
+  const replacement=await fileClient(c);await replacement.upload(new File(['manual retry'],'new.bin'));
+  assert.equal(app.files.get('new.bin').toString(),'manual retry');assert.equal(app.files.has('cancelled.bin'),false);assert.deepEqual(app.inputCalls,[]);
+ } finally {release();}
+});
+test('canceling a direct download drains its in-flight tail without retiring the service peer', async t => {
+ const {app,c}=await setup(t),bytes=Buffer.alloc(128*1024,79);app.files.set('download.bin',bytes);
+ let recovered;const closed=new Promise(resolve=>{recovered=resolve;}),failures=[];
+ const files=await fileClient(c,16,value=>{failures.push(value);recovered();}),controller=new AbortController();
+ const pending=files.download('download.bin',bytes.length,controller.signal,loaded=>{if(loaded>0)controller.abort(Error('cancel download'));});
+ await assert.rejects(pending,/cancel download/);await closed;
+ assert.deepEqual(failures,[true]);assert.equal((await c.rpc('ping')).ok,true);
+ const replacement=await fileClient(c,16),blob=await replacement.download('download.bin',bytes.length);
+ assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));assert.deepEqual(app.inputCalls,[]);
 });
 test('revoking a guest during a stalled direct upload aborts its transfer and sends no retry',async t=>{
  const {app,c}=await setup(t),files=await fileClient(c);let release,started;const waiting=new Promise(r=>release=r),entered=new Promise(r=>started=r);

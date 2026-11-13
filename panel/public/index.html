@@ -122,12 +122,13 @@
         <div id="desktop-overlay" class="desktop-overlay"><div class="desktop-orbit" aria-hidden="true">⌘</div><h2 id="overlay-title">正在准备桌面</h2><p id="overlay-description">连接恢复后，会回到原来的工作会话。</p><button id="takeover-button" class="primary" hidden>在这里继续使用</button><button id="access-refresh-button" class="primary" hidden>刷新页面验证</button><button id="choose-terminal-button" class="primary" hidden>选择终端</button></div>
       </div>
     <section id="input-dock" class="input-dock workspace-panel" role="dialog" aria-label="输入助手" tabindex="-1" hidden>
-      <div class="panel-heading"><h2>输入与剪贴板</h2><div><button id="input-keyboard-button" class="quiet" type="button" aria-label="打开输入键盘">键盘</button><button id="close-input-button" class="quiet" type="button" aria-label="关闭输入助手">✕</button></div></div>
+      <div class="panel-heading"><h2>输入与剪贴板</h2><div><button id="draft-backup-button" class="quiet" type="button" aria-haspopup="dialog" aria-controls="draft-leave-dialog" title="复制或导出草稿">草稿</button><button id="input-keyboard-button" class="quiet" type="button" aria-label="打开输入键盘">键盘</button><button id="close-input-button" class="quiet" type="button" aria-label="关闭输入助手">✕</button></div></div>
       <div class="assistant-directions" role="group" aria-label="文字传输方向"><button id="assistant-send-button" class="view-button" type="button" aria-controls="assistant-send-panel" aria-pressed="true">发送到远程 →</button><button id="clipboard-button" class="view-button clipboard-entry" type="button" aria-controls="clipboard-dialog" aria-pressed="false" disabled>← 取回文字</button></div>
       <div class="assistant-body">
       <section id="assistant-send-panel" class="assistant-send-panel" aria-labelledby="assistant-send-button">
       <div class="terminal-destination"><label for="input-terminal">输入目标<select id="input-terminal" disabled><option value="">当前窗口（跟随桌面焦点）</option></select></label><label class="target-label" for="paste-target">粘贴方式<select id="paste-target"><option value="terminal">终端</option><option value="application">其他应用</option></select></label><span id="terminal-target-note" class="muted">发送到桌面当前获得焦点的位置。</span></div>
       <div class="composer"><textarea id="mobile-input" rows="2" maxlength="32768" placeholder="在这里写下中文或长指令；粘贴后不会自动执行…" aria-label="要粘贴到桌面的文字" aria-describedby="terminal-target-note"></textarea><button id="paste-button" class="primary" type="button">粘贴文字 <span aria-hidden="true">↗</span></button></div>
+      <div class="draft-tools"><span id="draft-save-state" role="status"></span><div><button id="copy-draft" class="quiet" type="button">复制当前草稿</button><button id="export-drafts" class="quiet" type="button">导出本节点草稿</button></div></div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button><button id="shortcuts-button" class="shortcuts-entry" type="button" aria-haspopup="menu" aria-controls="shortcuts-menu" aria-expanded="false" disabled>更多按键 ▾</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       </section>
       <section id="clipboard-dialog" class="clipboard-panel" aria-labelledby="clipboard-button" hidden>
@@ -430,13 +431,16 @@
     <button id="open-transfer-directory" class="secondary" type="button" title="打开共享目录；已有窗口时切到该窗口，保留浏览位置" hidden>在远程桌面打开目录</button>
     <button id="upload-zone" class="upload-zone" type="button"><span aria-hidden="true">↑</span><strong>选择文件或拖到这里上传</strong><small>每次一个文件 · 上传到节点主机</small></button><input id="upload-input" type="file" aria-label="上传文件" hidden>
     <div id="file-path-fallback" class="file-path-fallback" hidden><label for="file-path-preview">服务器完整路径</label><input id="file-path-preview" readonly autocomplete="off"><p class="muted">浏览器未允许自动复制，可选中上方路径手动复制。</p></div>
-    <p id="upload-status" class="muted" role="status"></p><p id="file-list-status" class="muted" role="status"></p><div id="file-list" class="file-list"></div>
+    <p id="upload-status" class="muted" role="status"></p>
+    <section id="file-progress" class="file-progress" aria-label="当前文件传输" hidden><div class="file-progress-heading"><strong id="file-progress-title"></strong><button id="cancel-file-transfer" class="secondary" type="button">取消传输</button></div><progress id="file-progress-meter" max="100" aria-label="文件传输进度"></progress><p id="file-progress-detail" class="muted"></p></section>
+    <p id="file-list-status" class="muted" role="status"></p><div id="file-list" class="file-list"></div>
     <button id="refresh-files" class="secondary">刷新文件列表</button>
   </dialog>
   <dialog id="file-conflict-dialog" class="files-dialog action-confirmation" aria-labelledby="file-conflict-title" aria-describedby="file-conflict-name file-conflict-detail">
     <h2 id="file-conflict-title">已存在同名文件</h2><p id="file-conflict-name" class="file-conflict-name"></p><p id="file-conflict-detail" class="muted"></p>
     <div class="confirmation-actions"><button id="file-conflict-cancel" class="secondary" type="button" autofocus>取消</button><button id="file-conflict-rename" class="primary" type="button">自动改名上传</button><button id="file-conflict-replace" class="secondary interrupt-key" type="button">替换文件</button></div>
   </dialog>
+  <dialog id="draft-leave-dialog" class="files-dialog action-confirmation draft-leave-dialog" aria-labelledby="draft-leave-title" aria-describedby="draft-leave-description"><div class="dialog-heading"><h2 id="draft-leave-title">草稿尚未安全保存</h2></div><p id="draft-leave-description" class="muted">部分文字仅保留在当前页面。离开前请复制当前草稿，或导出本节点全部草稿。</p><div class="draft-leave-backup"><button id="copy-leave-draft" class="secondary" type="button">复制当前草稿</button><button id="export-leave-drafts" class="secondary" type="button">导出本节点草稿</button></div><textarea id="draft-leave-preview" readonly rows="5" aria-label="手动复制当前草稿" hidden></textarea><p id="draft-leave-status" class="muted" role="status"></p><div class="confirmation-actions"><button id="cancel-draft-leave" class="primary" type="button" autofocus>留在当前页面</button><button id="confirm-draft-leave" class="secondary interrupt-key" type="button">仍然离开</button></div></dialog>
   <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="/app.js"></script>
 </body>

@@ -55,6 +55,14 @@ export function createTerminalState(storage, nodeId = '') {
   return {
     get selection() { return selection && { ...selection }; },
     get persistenceFailed() { return persistenceFailed; },
+    get hasDrafts() { return drafts.size > 0; },
+    snapshot(identity, text) {
+      if (!validTerminalIdentity(identity) || typeof text !== 'string' || text.length > DRAFT_LIMIT) throw Error('当前草稿过长，请手动复制保护文字');
+      const values = [...drafts.values()].filter(draft => keyOf(draft) !== keyOf(identity)).map(draft => ({ ...draft }));
+      if (text) values.push({ ...identity, text });
+      // At most nine retained drafts plus the one editor that could not be saved.
+      return { version: 1, nodeId, selection: { ...identity }, drafts: values };
+    },
     read(identity) { return validTerminalIdentity(identity) ? drafts.get(keyOf(identity))?.text || '' : ''; },
     save(identity, text) {
       if (!validTerminalIdentity(identity) || typeof text !== 'string' || text.length > DRAFT_LIMIT) return false;

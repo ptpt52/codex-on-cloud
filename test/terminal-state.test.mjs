@@ -63,6 +63,16 @@ test('storage denial preserves bounded drafts in memory and reports persistence 
   const state = createTerminalState(storage); assert.equal(state.save(main, '不要丢失'), true); state.choose(main);
   assert.equal(state.read(main), '不要丢失'); assert.equal(state.persistenceFailed, true);
 });
+test('draft export includes the editor that exhausted its slots and never mutates retained drafts', () => {
+  const state = createTerminalState(memory(), 'a'.repeat(32));
+  for (let i = 0; i < DRAFT_SLOTS; i++) state.save({ id: 'main', token: `%${i}:${4000 + i}` }, `旧草稿 ${i}`);
+  assert.equal(state.hasDrafts, true); assert.equal(state.save(current, '尚未存入的文字'), false);
+  const exported = state.snapshot(current, '尚未存入的文字');
+  assert.equal(exported.drafts.length, 10); assert.equal(exported.nodeId, 'a'.repeat(32));
+  assert.equal(exported.drafts.at(-1).text, '尚未存入的文字');
+  exported.drafts[0].text = 'changed'; assert.equal(state.read({ id: 'main', token: '%0:4000' }), '旧草稿 0');
+  assert.throws(() => state.snapshot(current, 'x'.repeat(DRAFT_LIMIT + 1)));
+});
 test('malformed identities and oversized saved state cannot restore an unsafe target', () => {
   const storage = memory(); storage.setItem(TERMINAL_STATE_KEY, ' '.repeat(STATE_LIMIT + 1));
   const state = createTerminalState(storage); assert.equal(state.selection, null);

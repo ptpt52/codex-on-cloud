@@ -23,6 +23,10 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   // the request. Drain that ordered tail during the fixed retirement window;
   // closing immediately could discard the rejection before the browser sees it.
   if(recoverable)return;
+  if(value.type==='cancel'){
+   if(Object.keys(value).sort().join(',')!=='id,type'||!Number.isInteger(value.id)||value.id<=0||value.id!==lastId||active&&active.id!==value.id)throw fault(400,'文件取消参数无效');
+   recoverable=true;cleanup();wire.send({type:'cancelled',id:value.id});retireTimer=setTimeout(()=>wire.close(),1500).unref();return;
+  }
   if(value.type==='start'){
    const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload'),hasHelper=Object.hasOwn(value,'helper');
    const hasWindow=Object.hasOwn(value,'window');

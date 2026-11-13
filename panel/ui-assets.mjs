@@ -27,6 +27,7 @@ export const ASSETS = new Map([
   ['/file-client.js', ['file-client.js', 'text/javascript; charset=utf-8']],
   ['/file-upload.js', ['file-upload.js', 'text/javascript; charset=utf-8']],
   ['/file-list.js', ['file-list.js', 'text/javascript; charset=utf-8']],
+  ['/file-transfer.js', ['file-transfer.js', 'text/javascript; charset=utf-8']],
   ['/rtc-transport.js', ['rtc.js', 'text/javascript; charset=utf-8']],
   ['/rtc-stats.js', ['rtc-stats.js', 'text/javascript; charset=utf-8']],
   ['/transport-policy.js', ['transport-policy.js', 'text/javascript; charset=utf-8']],

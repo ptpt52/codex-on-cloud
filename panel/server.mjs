@@ -383,7 +383,7 @@ export async function createPanel(config) {
     }
     if (path.startsWith('/api/')) {
       const session = requireSession(req);
-      const shared = ['/api/desktop/claim', '/api/files', '/api/forward'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/') || req.method === 'GET' && ['/api/forward/agents', '/api/forward/agents/key'].includes(path);
+      const shared = ['/api/desktop/claim', '/api/files', '/api/forward'].includes(path) || path.startsWith('/api/files/') || path.startsWith('/api/forward/download/') || req.method === 'GET' && (path.startsWith('/api/file-progress/') || ['/api/forward/agents', '/api/forward/agents/key'].includes(path));
       if (!shared && !desktopAccess(req, session)) { if (!['GET', 'HEAD'].includes(req.method)) requireWrite(req); throw denied(req, session); }
     }
     if (path === '/api/security' && req.method === 'GET') { const session = requireSession(req); if (!isOwner(req, session)) throw denied(req, session); return reply(res, 200, access.status()); }
@@ -640,7 +640,13 @@ export async function createPanel(config) {
     }
     if (path === '/api/files' && req.method === 'GET') {
       requireSession(req);
-      const result = await agent('/files'); requireSession(req); return reply(res, 200, result);
+      const result = await agent('/files'); requireSession(req); return reply(res, 200, { ...result, fileProgressProtocol: 1 });
+    }
+    if (path.startsWith('/api/file-progress/') && req.method === 'GET') {
+      requireSession(req);
+      const id = path.slice('/api/file-progress/'.length);
+      if (!/^[a-f0-9]{32}$/.test(id)) throw new HttpError(400, '上传进度标识无效');
+      return reply(res, 200, fileTransfers.progress(cookieToken(req.headers.cookie), id));
     }
     if (path.startsWith('/api/files/') && ['GET', 'PUT'].includes(req.method)) {
       const session = req.method === 'PUT' ? requireWrite(req) : requireSession(req);
@@ -648,7 +654,9 @@ export async function createPanel(config) {
       let name;
       try { name = decodeURIComponent(encoded); } catch { throw new HttpError(400, '文件名无效'); }
       if (!name || name === '.' || name === '..' || name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 240) throw new HttpError(400, '文件名无效');
-      const token = cookieToken(req.headers.cookie), transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT');
+      const token = cookieToken(req.headers.cookie), progressId = req.headers['x-codex-transfer-id'];
+      if (progressId !== undefined && (req.method !== 'PUT' || typeof progressId !== 'string' || !/^[a-f0-9]{32}$/.test(progressId))) throw new HttpError(400, '上传进度标识无效');
+      const transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT', progressId ? { id: progressId, owner: token, size: Number(req.headers['content-length']) } : undefined);
       try {
       if (req.method === 'PUT') {
         const length = Number(req.headers['content-length']);
@@ -671,7 +679,7 @@ export async function createPanel(config) {
           }
           if (total - replaced + length > 1024 * 1024 * 1024) throw new HttpError(413, '共享目录已达到临时上传的 1 GiB 容量上限');
         }
-        const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; callback(this.total > MAX_UPLOAD ? new Error('文件过大') : null, chunk); } });
+        const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; try { if (this.total > MAX_UPLOAD) throw Error('文件过大'); transfer.advance(chunk.length); callback(null, chunk); } catch (error) { callback(error); } } });
         const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,

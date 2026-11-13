@@ -49,6 +49,25 @@ test('Chinese composition is committed once to the focused window; candidate Ent
   } finally { await app.close(); }
 });
 
+test('draft backup blocks late desktop text and restores input controls when closed', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    const frame = await login(page, app);
+    await openInput(page); await page.locator('#mobile-input').fill('只保存在本地的草稿'); await page.locator('#draft-backup-button').click();
+    await expect(page.locator('#draft-leave-dialog')).toBeVisible(); await expect(page.locator('#paste-button')).toBeDisabled();
+    const outcome = await frame.evaluate(() => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error('missing desktop input rejection')), 3000);
+      const receive = event => { if (event.source === parent && event.data?.type === 'codex-desktop-text-result' && event.data.id === 1) { clearTimeout(timer); removeEventListener('message', receive); resolve(event.data.outcome); } };
+      addEventListener('message', receive);
+      parent.postMessage({ type: 'codex-desktop-text', frame: new URLSearchParams(location.search).get('frame'), id: 1, text: '弹窗期间迟到的输入' }, location.origin);
+    }));
+    expect(outcome).toBe('rejected'); expect(app.inputCalls).toEqual([]);
+    await page.locator('#cancel-draft-leave').click(); await expect(page.locator('#paste-button')).toBeEnabled();
+    await expect(page.locator('#mobile-input')).toHaveValue('只保存在本地的草稿');
+    expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 test('keys and a second composition wait for the preceding paste and retain order without concurrent writes', async ({ page }) => {
   let release; const hold = new Promise(resolve => release = resolve);
   const app = await fixture({ rfb: true, inputHook: async () => hold }), sent = keys(page);

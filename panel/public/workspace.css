@@ -437,3 +437,28 @@
   .transfer-dialog .file-row > span { flex-basis: 100%; }
   .file-row-actions { width: 100%; justify-content: flex-end; }
 }
+
+.file-progress { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.file-progress-heading { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.file-progress-heading strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.file-progress-heading button { flex: none; min-height: 44px; font-size: 12px; }
+.file-progress progress { display: block; width: 100%; height: 8px; margin: 10px 0; accent-color: var(--accent); }
+.file-progress progress[value] { appearance: none; border: 0; border-radius: 4px; overflow: hidden; background: var(--line); }
+.file-progress progress[value]::-webkit-progress-bar { background: var(--line); }
+.file-progress progress[value]::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+.file-progress progress[value]::-moz-progress-bar { background: var(--accent); border-radius: 4px; }
+.file-progress p { font-size: 11px; overflow-wrap: anywhere; }
+.file-row-actions a[aria-disabled=true] { opacity: .5; }
+.draft-tools { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; }
+.draft-tools > span { font-size: 11px; color: var(--muted); }
+.draft-tools > span[data-saved=false] { color: var(--warning); }
+.draft-tools > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.draft-tools button { min-height: 44px; font-size: 11px; padding: 6px 8px; }
+.draft-leave-dialog { max-height: calc(100dvh - 24px); overflow: auto; }
+.draft-leave-dialog h2 { font-size: 20px; }
+.draft-leave-backup { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 16px; }
+.draft-leave-dialog button { min-height: 44px; }
+.draft-leave-dialog textarea { width: 100%; max-height: 30dvh; margin-bottom: 12px; font-size: 16px; }
+.draft-leave-dialog .muted { font-size: 12px; line-height: 1.6; }
+@media (max-width: 700px) { .draft-tools { gap: 2px; } .draft-tools > div { margin-left: auto; } }
+.workspace-keyboard-open .draft-tools { display: none; }

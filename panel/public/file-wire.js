@@ -2,6 +2,22 @@ import { LEGACY_TRANSFER_WINDOW, validTransferWindow } from './transfer-window.j
 export const FILE_CHUNK = 16380;
 export const FILE_MAX = 50 * 1024 * 1024;
 const BUFFER = 512 * 1024;
+// Coalesce arbitrarily small network reads into at most 800 blocks (50 MiB).
+export function createFileBuffer(size) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > FILE_MAX) throw Error('文件大小无效');
+  const parts = []; let loaded = 0, block, used = 0;
+  return {
+    append(bytes) {
+      if (!(bytes instanceof Uint8Array) || loaded + bytes.length > size) throw Error('文件大小已变化，请刷新列表');
+      for (let offset = 0; offset < bytes.length;) {
+        if (!block || used === block.length) { block = new Uint8Array(Math.min(65536, size - loaded)); parts.push(block); used = 0; }
+        const length = Math.min(block.length - used, bytes.length - offset);
+        block.set(bytes.subarray(offset, offset + length), used); offset += length; loaded += length; used += length;
+      }
+    },
+    blob() { if (loaded !== size) throw Error('文件下载不完整，请手动重试'); return new Blob(parts, { type: 'application/octet-stream' }); },
+  };
+}
 // One ordered stream in each direction, with a negotiated 4/8/16-chunk window.
 // Sequence numbers last for the channel, so old chunks/ACKs cannot be replayed.
 export function createFileWire(channel, { control, chunk, failed }) {
@@ -56,12 +72,13 @@ export function createFileWire(channel, { control, chunk, failed }) {
     },
   };
 }
-export async function sendFileChunks(source, wire, valid = () => true) {
+export async function sendFileChunks(source, wire, valid = () => true, progress) {
   const pending=[];
   for await(const bytes of source) for(let offset=0;offset<bytes.length;offset+=FILE_CHUNK){
     if(!valid())throw Error('文件传输已取消');
     if(pending.length===(wire.window || LEGACY_TRANSFER_WINDOW))await pending.shift();
-    const sent=wire.data(bytes.subarray(offset,offset+FILE_CHUNK));void sent.catch(()=>{});pending.push(sent);
+    const part=bytes.subarray(offset,offset+FILE_CHUNK), result=wire.data(part);
+    const sent=progress?result.then(()=>{if(valid())progress(part.length);}):result;void sent.catch(()=>{});pending.push(sent);
   }
   await Promise.all(pending);
 }
