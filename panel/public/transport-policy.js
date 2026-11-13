@@ -4,6 +4,10 @@ export const ROUTE_COOLDOWN = 30000;
 export const NETWORK_PROBE_INTERVAL = 5000;
 export const RTC_SIGNAL_TIMEOUT = 12000;
 export const RTC_CONNECT_TIMEOUT = 12000;
+export const HEARTBEAT_CONGESTION_GRACE = 4000;
+export function heartbeatProgress(sentAt, progressAt, now = performance.now()) {
+  return progressAt >= sentAt && now >= progressAt && now - progressAt <= 1500;
+}
 
 // Two fresh observations before comparing paths. No sample history or queue.
 export function createPathQuality(now = () => performance.now()) {

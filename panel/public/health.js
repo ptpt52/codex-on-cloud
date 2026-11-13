@@ -1,15 +1,16 @@
 // Keep one foreground sample; a restored or disconnected page must not display
 // an old path's latency as if it belonged to the current connection.
 export function createHeartbeatPolicy() {
-  let mean = null, deviation = 0, misses = 0;
+  let mean = null, deviation = 0, latest = 0, misses = 0;
   return {
-    get timeoutMs() { return Math.round(Math.max(2000, Math.min(6000, mean === null ? 2000 : mean + 4 * deviation + 500))); },
+    get timeoutMs() { return Math.round(Math.max(2000, Math.min(6000, mean === null ? 2000 : Math.max(mean + 4 * deviation + 500, latest * 2 + 1000)))); },
     get confirmationMs() { return Math.max(1000, Math.min(2000, Math.round(this.timeoutMs / 2))); },
     get suspect() { return misses > 0; },
     miss() { return ++misses; },
     cancel() { misses = 0; },
     sample(ms) {
       if (!Number.isFinite(ms) || ms < 0 || ms > 600000) return false;
+      latest = ms;
       if (mean === null) { mean = ms; deviation = ms / 2; }
       else { deviation = .75 * deviation + .25 * Math.abs(mean - ms); mean = .875 * mean + .125 * ms; }
       misses = 0; return true;
@@ -70,10 +71,11 @@ export function createHealthClient(channel) {
     close,
     get rttMs() { return latency.value; },
     cancel() { reject('直连心跳已取消'); },
-    ping({ confirmation = false } = {}) {
+    ping({ confirmation = false, timeoutMs } = {}) {
       if (ended || pending || channel.readyState === 'closed' || channel.readyState === 'closing' || sequence >= 2147483647) return Promise.reject(new Error('直连心跳不可用'));
       return new Promise((resolve, rejectProbe) => {
-        pending = { id: ++sequence, resolve, reject: rejectProbe, timer: setTimeout(() => reject('直连心跳超时', 'heartbeat_timeout'), confirmation ? policy.confirmationMs : policy.timeoutMs) };
+        const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.min(10000, Math.round(timeoutMs)) : confirmation ? policy.confirmationMs : policy.timeoutMs;
+        pending = { id: ++sequence, resolve, reject: rejectProbe, timer: setTimeout(() => reject('直连心跳超时', 'heartbeat_timeout'), budget) };
         send();
       });
     },

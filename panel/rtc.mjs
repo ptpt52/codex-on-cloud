@@ -27,8 +27,8 @@ export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl
   // arrive, so Chrome's masked addresses use our bounded, multi-record lookup.
   pc.createSctpTransport();
   for (const transport of pc.iceTransports) transport.connection.lookup = createMDNSLookup({ address, ipv6: !!ipv6Address });
-  let channel, control, health, files, upstream, terminal, ended = false, closePromise, activated = false, videoReady = false, openVideo;
-  const writer = serviceOnly ? createRTCWriter({ valid: () => authorized(), failed: () => { void handle.destroy(); } }) : undefined;
+  let channel, queuedStream, control, health, files, upstream, terminal, ended = false, closePromise, activated = false, videoReady = false, openVideo;
+  const writer = serviceOnly || connectStream ? createRTCWriter({ valid: () => authorized(), failed: () => { void handle.destroy(); } }) : undefined;
   let timer = setTimeout(() => handle.destroy(), RTC_SIGNAL_TIMEOUT + RTC_TIMEOUT + 2000).unref();
   const handle = {
     activate() {
@@ -94,8 +94,9 @@ export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl
     if (channel || !authorized() || !streamValid || !value.ordered ||
         value.maxRetransmits != null || value.maxPacketLifeTime != null) { void handle.destroy(); return; }
     channel = value;
+    if (connectStream) { try { queuedStream = writer.channel(value); } catch { void handle.destroy(); return; } }
     videoReady = value.protocol === 'rfb'; // Old clients retain their original protocol until refreshed.
-    channel.bufferedAmountLowThreshold = HIGH_WATER / 2;
+    channel.bufferedAmountLowThreshold = writer ? 0 : HIGH_WATER / 2;
     channel.bufferedAmountLow.subscribe(() => { if (authorized()) upstream?.resume(); });
     channel.error.subscribe(() => { void handle.destroy(); });
     channel.stateChange.subscribe(state => {
@@ -121,7 +122,7 @@ export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl
       if (!activated || !videoReady || channel.readyState !== 'open') return;
       if (connectTerminal || connectStream) {
         if (!authorized() || terminal) { void handle.destroy(); return; }
-        terminal = (connectStream || connectTerminal)(channel, authorized, () => { void handle.destroy(); });
+        terminal = (connectStream || connectTerminal)(queuedStream || channel, authorized, () => { void handle.destroy(); });
         clearTimeout(timer); return;
       }
       if (!authorized() || upstream) { void handle.destroy(); return; }

@@ -7,6 +7,8 @@ import { guardSCTP } from './rtc-sctp.mjs';
 import { createFlowBudget } from './flow-budget.mjs';
 import { createRTCWriter } from './rtc-writer.mjs';
 import { validTransferWindow } from './public/transfer-window.js';
+import { createHeartbeatPolicy } from './public/health.js';
+import { heartbeatProgress, HEARTBEAT_CONGESTION_GRACE } from './public/transport-policy.js';
 export { guardSCTP as guardForwardSCTP } from './rtc-sctp.mjs';
 
 export function forwardNegotiationFailure(pc) {
@@ -18,6 +20,7 @@ export function forwardNegotiationFailure(pc) {
 // Managed rules share one helper peer; one-time mappings retain their own peer.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
 export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, prefer = () => true, maxWindow = 8, flowBudget = createFlowBudget() }) {
+  const healthPolicy = createHeartbeatPolicy(); let progressAt = -Infinity;
   if (!validTransferWindow(maxWindow)) throw Error('Invalid maximum forward window');
   const allowed = host => peerAddress(host, !!ipv6Address);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl);
@@ -76,12 +79,16 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     if (!authorized() || !authenticated || control?.readyState !== 'open' || control.bufferedAmount > 4096 || nonce >= 2147483647) return void handle.destroy();
     const bytes = Buffer.alloc(4); pending = ++nonce; bytes.writeUInt32BE(pending); sentAt = performance.now();
     try { control.send(bytes); } catch { return void handle.destroy(); }
-    deadline = setTimeout(() => {
+    let deferred = false;
+    const expire = () => {
+      if (!authorized() || !pending) return;
+      if (!deferred && heartbeatProgress(sentAt, progressAt)) { deferred = true; deadline = setTimeout(expire, HEARTBEAT_CONGESTION_GRACE).unref(); return; }
       pending = 0; successes = 0; report(false, 'rtc_health_timeout');
       // A healthy existing TCP stream can outlive a delayed probe. Probe again
       // without replacing its peer or allocating any target connection.
       pingTimer = setTimeout(probe, 3000).unref();
-    }, 2000).unref();
+    };
+    deadline = setTimeout(expire, healthPolicy.timeoutMs).unref();
   }
   timer = setTimeout(() => { void handle.destroy(forwardNegotiationFailure(pc)); }, 14000).unref();
   pc.connectionStateChange.subscribe(state => {
@@ -111,7 +118,7 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
         const echo = bytes.readUInt32BE();
         if (echo <= nonce && (!pending || echo < pending)) return;
         if (!pending || echo !== pending) return void handle.destroy('protocol_error');
-        pending = 0; clearTimeout(deadline); successes++;
+        pending = 0; clearTimeout(deadline); successes++; healthPolicy.sample(performance.now() - sentAt);
         report(successes >= 2 && !draining, draining ? 'rtc_draining' : successes >= 2 ? '' : 'rtc_connecting', Math.round(performance.now() - sentAt));
         pingTimer = setTimeout(probe, successes < 2 ? 50 : 3000).unref();
       });
@@ -132,8 +139,9 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
         if (!ready) { queued.closeAfterFlush(); return; }
       }
       const socket = forwardChannel(queued, { window, budget }); sockets.add(socket);
+      const activity = channel.onMessage.subscribe(() => { if (socket.readyState === 1 && authorized()) progressAt = performance.now(); });
       const timeout = setTimeout(() => socket.terminate(), 5000).unref();
-      socket.once('close', () => { clearTimeout(timeout); sockets.delete(socket); });
+      socket.once('close', () => { clearTimeout(timeout); activity.unSubscribe(); sockets.delete(socket); });
       socket.once('message', (bytes, binary) => {
         clearTimeout(timeout);
         if (shared) {

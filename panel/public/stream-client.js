@@ -1,6 +1,6 @@
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { controlDecoder, sendControl } from '/control.js';
-import { routePolicy, STABLE_ROUTE, directRetry, createPathQuality, pathPreferred } from './transport-policy.js';
+import { routePolicy, STABLE_ROUTE, directRetry, createPathQuality, pathPreferred, HEARTBEAT_CONGESTION_GRACE, heartbeatProgress } from './transport-policy.js';
 import { rtcRouteKind } from './rtc-stats.js';
 import { TERMINAL_IDS } from '/terminal-slots.js';
 import { createRoundTrip, createHeartbeatPolicy } from '/health.js';
@@ -120,18 +120,35 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     if (peer.gone || ended || !peer.ready || peer.ping) return;
     const nonce = ++peer.nonce; peer.ping = nonce;
     const timeout = peer.health.suspect ? peer.health.confirmationMs : peer.health.timeoutMs;
-    peer.deadline = setTimeout(() => {
+    let deferred = false;
+    const expire = () => {
+      if (ended || peer.gone || peer.ping !== nonce) return;
+      // Only fresh, validated progress on this path admits one extra window.
+      // Repeated network events or a static send queue cannot extend it.
+      if (!deferred && heartbeatProgress(peer.sentAt, peer.progressAt)) {
+        deferred = true; trace('heartbeat-delayed', { path: peer.kind, waitMs: HEARTBEAT_CONGESTION_GRACE });
+        peer.deadline = setTimeout(expire, HEARTBEAT_CONGESTION_GRACE); return;
+      }
       trace('heartbeat-timeout', { path: peer.kind, durationMs: timeout, queuedBytes: peer.buffered() });
       peer.latency.clear(); if (peer === active) measured();
       const alternate = [...peers.values()].some(other => other !== peer && healthy(other));
+      peer.ping = 0; peer.transport?.health.cancel();
       if (peer.health.miss() === 1 && !alternate && peer.writable()) {
-        peer.ping = 0;
         if (peer === active) { peer.heartbeatPaused = true; pause(true); if (peer.kind === 'direct') issue('heartbeat-suspect'); }
         ping(peer);
       } else lost(peer, 'heartbeat');
-    }, timeout);
+    };
+    peer.deadline = setTimeout(expire, timeout);
     peer.sentAt = performance.now();
-    try { send(peer, { type: 'ping', id: nonce }); } catch { lost(peer); }
+    if (peer.kind === 'direct' && peer.transport?.health) {
+      void peer.transport.health.ping({ timeoutMs: timeout + HEARTBEAT_CONGESTION_GRACE }).then(() => {
+        if (!ended && !peer.gone && peer.ping === nonce) receive(peer, { type: 'pong', id: nonce });
+      }).catch(error => {
+        if (ended || peer.gone || peer.ping !== nonce) return;
+        if (error.code === 'heartbeat_timeout') { clearTimeout(peer.deadline); expire(); }
+        else lost(peer);
+      });
+    } else { try { send(peer, { type: 'ping', id: nonce }); } catch { lost(peer); } }
   }
   function heartbeat(peer, delay = 3000) {
     const due = performance.now() + delay;
@@ -179,7 +196,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (value.type === 'panel-result') {
         const pending = panelRequests.get(value.id);
         if (!pending || pending.peer !== peer || pending.epoch !== value.epoch || peer !== active || value.epoch !== epoch) return;
-        finishPanel(value.id, value.ok === true ? null : panelFailure(pending.action, value.error?.message || '连接操作失败', value.error?.status, value.error?.outcome), value.value); return;
+        peer.progressAt = performance.now(); finishPanel(value.id, value.ok === true ? null : panelFailure(pending.action, value.error?.message || '连接操作失败', value.error?.status, value.error?.outcome), value.value); return;
       }
       if (value.type === 'switched') {
         const pending = targetPending;
@@ -215,7 +232,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       }
       if (value.type === 'input-ack') {
         if (peer !== active || value.epoch !== epoch || !integer(value.id) || value.id > sent) return;
-        inputAck = Math.max(inputAck, value.id);
+        if (value.id > inputAck) peer.progressAt = performance.now(); inputAck = Math.max(inputAck, value.id);
         for (const [n, size] of inputSizes) if (n <= inputAck) { inputBytes -= size; inputSizes.delete(n); }
         return;
       }
@@ -228,6 +245,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       const bytes = decode(value.data); if (!bytes.length || bytes.length > CHUNK) throw new Error();
       if (value.at + bytes.length <= out) { send(peer, { type: 'ack', epoch, at: out }); return; }
       if (value.at !== out) throw new Error();
+      peer.progressAt = performance.now();
       out += bytes.length;
       if (terminal) {
         terminalText += textDecoder.decode(bytes, { stream: true }); if (terminalText.length > 128 * 1024) throw new Error();
@@ -298,7 +316,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     }
   }
   function peerFor(kind, send, close, buffered, deferred = false, writable = () => true) {
-    const peer = { kind, startedAt: performance.now(), send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0, latency: createRoundTrip(), health: createHeartbeatPolicy(), quality: createPathQuality(), qualityWins: 0, qualityVote: 0 };
+    const peer = { kind, startedAt: performance.now(), progressAt: -Infinity, send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0, latency: createRoundTrip(), health: createHeartbeatPolicy(), quality: createPathQuality(), qualityWins: 0, qualityVote: 0 };
     if (!deferred) peer.startTimer = setTimeout(() => lost(peer), 12000); peers.set(kind, peer); return peer;
   }
   function ensureRelay() {
@@ -392,7 +410,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (targetPending && !targetPending.sent) cancelTarget(switchBusy('页面已隐藏或离线，切换未发送；返回后请再点目标终端'));
       clearTimeout(directTimer); directTimer = undefined;
       clearTimeout(relayTimer); relayTimer = undefined;
-      for (const peer of peers.values()) { clearTimeout(peer.timer); peer.timer = undefined; clearTimeout(peer.deadline); peer.ping = 0; peer.latency.clear(); peer.health.cancel(); }
+      for (const peer of peers.values()) { clearTimeout(peer.timer); peer.timer = undefined; clearTimeout(peer.deadline); peer.ping = 0; peer.progressAt = -Infinity; peer.transport?.health.cancel(); peer.latency.clear(); peer.quality.clear(); peer.health.cancel(); }
       measured();
       if (!navigator.onLine) for (const peer of [...peers.values()]) lost(peer);
       return;

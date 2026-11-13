@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHealthClient, createRoundTrip, createHeartbeatPolicy } from '../panel/public/health.js';
 import { attachRTCHealth } from '../panel/rtc-health.mjs';
+import { heartbeatProgress, HEARTBEAT_CONGESTION_GRACE } from '../panel/public/transport-policy.js';
 
 const packet = id => { const bytes = Buffer.alloc(4); bytes.writeUInt32BE(id); return bytes; };
 test('heartbeat timing follows measured latency and variation with bounded confirmation and recovery', () => {
@@ -13,6 +14,12 @@ test('heartbeat timing follows measured latency and variation with bounded confi
   assert.equal(policy.timeoutMs, 6000);
   assert.equal(policy.sample(NaN), false); assert.equal(policy.sample(-1), false);
   policy.miss(); policy.cancel(); assert.equal(policy.suspect, false);
+});
+
+test('a recent slower sample raises the deadline even after many fast warm-up samples', () => {
+  const policy = createHeartbeatPolicy(); for (let i = 0; i < 20; i++) policy.sample(0);
+  policy.sample(900); assert.ok(policy.timeoutMs >= 2800); assert.ok(policy.timeoutMs <= 6000);
+  policy.sample(2300); assert.ok(policy.timeoutMs > 4600); assert.ok(policy.timeoutMs <= 6000);
 });
 function serverChannel() {
   const handlers = {};
@@ -28,6 +35,18 @@ class ClientChannel extends EventTarget {
   close() { this.readyState = 'closed'; this.dispatchEvent(new Event('close')); }
   reply(id) { this.dispatchEvent(new MessageEvent('message', { data: Uint8Array.from(packet(id)).buffer })); }
 }
+
+test('congestion grace requires progress after this probe and the independent probe budget stays bounded', async t => {
+  assert.equal(HEARTBEAT_CONGESTION_GRACE, 4000);
+  assert.equal(heartbeatProgress(100, 90, 200), false); assert.equal(heartbeatProgress(100, 150, 200), true);
+  assert.equal(heartbeatProgress(100, 150, 1700), false); assert.equal(heartbeatProgress(100, 250, 200), false);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const channel = new ClientChannel(), health = createHealthClient(channel);
+  let timedOut = false; const probe = health.ping({ timeoutMs: 6000 }).catch(() => { timedOut = true; });
+  t.mock.timers.tick(2000); await Promise.resolve(); assert.equal(timedOut, false); channel.reply(1); await probe;
+  const maximum = assert.rejects(health.ping({ timeoutMs: 1000000 }), error => error.code === 'heartbeat_timeout');
+  t.mock.timers.tick(10000); await maximum; health.close();
+});
 
 test('health confirmation uses a shorter bounded deadline without allowing a late old echo to satisfy it', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
