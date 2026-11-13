@@ -310,10 +310,9 @@ function openTerminalManager() {
 function renderTerminalSelection() {
   const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error' || desktopFocusUnconfirmed();
   const disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
-  const desktopSidebar = !terminalMode() && $('workspace-view').classList.contains('sidebar-layout');
   const entries = terminalMode() ? terminalEntries() : terminalEntries().filter(item => !item.available);
-  terminalTabs.render(entries, terminalSelectionState === 'closed' ? 'new' : selectedTerminal, { visible: owned && (terminalMode() || desktopSidebar) && entries.length > 0, disabled, invalid, loading: terminalSelectionState === 'loading', desktop: !terminalMode() });
-  terminalActions.render(entries, { visible: owned && (terminalMode() || desktopSidebar), disabled });
+  terminalTabs.render(entries, terminalSelectionState === 'closed' ? 'new' : selectedTerminal, { visible: owned && entries.length > 0, disabled, invalid, loading: terminalSelectionState === 'loading', desktop: !terminalMode() });
+  terminalActions.render(entries, { visible: owned, disabled });
   const message = desktopFocusUnconfirmed() ? '桌面窗口尚未确认切换，草稿已保留；请重新点击目标终端标签。'
     : invalid ? '原终端未通过身份校验，草稿已保留；请刷新列表或手动选择目标。'
     : draftNotice || (terminalState.persistenceFailed ? '浏览器未能保存草稿，刷新前请复制重要文字。' : '');

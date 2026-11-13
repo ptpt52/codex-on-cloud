@@ -6,14 +6,57 @@ test.use({ serviceWorkers: 'block' });
 
 // These cases exercise the optional horizontal layout; sidebar navigation has
 // its own full-height, scrolling and keyboard coverage in sidebar-layout.
-async function setup(page, count) {
+async function setup(page, count, mode = 'terminal', desktopHook) {
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top' })));
-  const app = await fixture({ mode: 'terminal', maxTerminals: 8, rfb: true });
+  const app = await fixture({ mode, maxTerminals: 8, rfb: true, desktopHook });
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: `辅助终端 ${n} 的任务`, view: 'terminal' });
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
-  await expect(page.locator('#connection-status')).toContainText('终端在线');
+  await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
   return app;
 }
+
+test('desktop top tabs and compact picker activate the same tasks without replacing the viewer', async ({ page }, info) => {
+  const activated = [];
+  const app = await setup(page, 8, 'desktop', (command, args) => { if (command === 'xdotool' && args[0] === 'windowactivate') activated.push(args.at(-1)); });
+  try {
+    const original = await app.controls.listTerminals(), source = await page.locator('#desktop-frame').getAttribute('src'), connections = app.vncConnections;
+    const ids = original.terminals.map(item => item.id);
+    await expect(page.locator('#terminal-tabs')).toHaveAttribute('aria-label', '桌面终端任务');
+    await expect(tab(page, 'new')).toHaveCount(0);
+    if (!info.project.use.hasTouch && !info.project.use.isMobile) {
+      await page.setViewportSize({ width: 1100, height: 900 });
+      await expect(tab(page, 'main')).toBeVisible(); await expect(picker(page)).toBeVisible();
+      await expect.poll(() => fitted(page)).toBe(true);
+      await picker(page).click(); await expect(page.locator('#terminal-switch-title')).toHaveText('更多终端');
+      await expect.poll(() => page.locator('#terminal-tabs [data-terminal-choice], #terminal-switch-list [data-terminal-choice]').evaluateAll(buttons =>
+        buttons.filter(button => button.getClientRects().length).map(button => button.dataset.terminalChoice))).toEqual(ids);
+      await list(page).locator('[data-terminal-choice=aux7]').click();
+    } else {
+      await page.setViewportSize({ width: 768, height: 900 });
+      await picker(page).click(); await expect(page.locator('#terminal-switch-title')).toHaveText('选择桌面终端');
+      expect(await visibleChoices(list(page))).toEqual(ids);
+      await list(page).locator('[data-terminal-choice=aux7]').click();
+    }
+    await expect(page.locator('#input-terminal')).toHaveValue('aux7');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(picker(page)).toContainText('辅助终端 7 的任务');
+    await expect(page.locator('#terminal-session-actions')).toBeVisible();
+    await picker(page).click(); expect(await visibleChoices(list(page))).toEqual(ids);
+    await list(page).locator('[data-terminal-choice=main]').click(); await expect(page.locator('#input-terminal')).toHaveValue('main');
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+    await page.screenshot({ path: info.outputPath('desktop-terminal-picker.png') });
+    if (!info.project.use.hasTouch && !info.project.use.isMobile) {
+      await page.setViewportSize({ width: 1920, height: 900 });
+      await expect(picker(page)).toBeHidden(); await expect(tab(page, 'aux7')).toBeVisible();
+      await tab(page, 'aux1').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+      expect(activated).toEqual(['1007', '999', '1001']);
+      await page.screenshot({ path: info.outputPath('desktop-terminal-tabs.png') });
+    } else expect(activated).toEqual(['1007', '999']);
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source); expect(app.vncConnections).toBe(connections);
+    expect(await app.controls.listTerminals()).toEqual(original);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
 const tab = (page, id) => page.locator(`#terminal-tabs [data-terminal-choice=${id}]`);
 const picker = page => page.locator('#terminal-session-button');
 const list = page => page.locator('#terminal-switch-list');

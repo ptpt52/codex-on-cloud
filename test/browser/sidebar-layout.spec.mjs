@@ -45,7 +45,8 @@ test('desktop sidebar activates existing tasks and preserves the viewer and per-
     await page.setViewportSize({ width: 1440, height: 480 }); await expect(page.locator('#terminal-session-button')).toBeVisible();
     await page.locator('#terminal-session-button').click(); await expect(page.locator('#terminal-switch-title')).toHaveText('选择桌面终端');
     await page.locator('#terminal-switch-list [data-terminal-choice=main]').click(); await expect(page.locator('#input-terminal')).toHaveValue('main');
-    await page.setViewportSize({ width: 900, height: 900 }); await expect(page.locator('#terminal-session-bar')).toBeHidden();
+    await page.setViewportSize({ width: 900, height: 900 }); await expect(page.locator('.desktop-toolbar #terminal-session-bar')).toBeVisible();
+    await expect(page.locator('#terminal-session-button')).toBeVisible();
     await page.setViewportSize({ width: 1440, height: 900 }); await expect(page.locator('#terminal-tabs')).toBeVisible();
     await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('辅助任务草稿');
