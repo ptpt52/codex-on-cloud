@@ -413,7 +413,9 @@
         <div class="forward-advanced-fields">
           <label for="forward-server-ip">节点主机直连 IP（可选）<input id="forward-server-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空自动探测"></label>
           <label for="forward-helper-ip">助手端 IP（可选）<input id="forward-helper-ip" maxlength="45" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="留空自动探测"></label>
-          <p class="muted">新规则会预填当前连接的地址提示；可按实际助手电脑修改。清空后仅使用自动探测，不改变目标 IP 或已有规则。</p>
+          <label for="forward-helper-ip-choice">从助手网卡选择<select id="forward-helper-ip-choice"><option value="">自动探测，也可手动填写</option></select></label>
+          <p id="forward-helper-ip-note" class="muted"></p>
+          <p class="muted">节点 IP 继承当前节点的提示；助手端默认自动探测，可选择助手上报的网卡地址或手动填写。清空后仅使用自动探测，映射的目标 IP 保持原值。</p>
         </div>
       </details>
       <div class="forward-rule-footer forward-wide">

@@ -1,5 +1,5 @@
 import { rtcDirectLabel } from './rtc-stats.js';
-import { rtcHints } from './rtc-hints.js';
+import { rtcHints, hintIP } from './rtc-hints.js';
 import { reverseForwardPrompt, FORWARD_PROMPT_LIMIT } from './forward-prompt.js';
 import { entryURL } from './entry-path.js';
 import { nodeIdentity } from './node-scope.js';
@@ -204,11 +204,11 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-direction').value = reverse ? 'reverse' : 'forward'; $('forward-protocol').value = rule ? forwardRuleType(c) : 'ssh';
     $('forward-local').value = c.localPort || (reverse ? 22001 : 2222); $('forward-host').value = c.targetHost || '127.0.0.1'; $('forward-target').value = c.targetPort || 22;
     $('forward-server-ip').value = edit.serverHint;
-    $('forward-helper-ip').value = rule ? c.hints?.browser || '' : hints().browser || '';
+    $('forward-helper-ip').value = rule ? c.hints?.browser || '' : '';
     const serial = c.serial || { path: '', baud: 115200, dataBits: 8, parity: 'none', stopBits: 1, dtr: false, rts: false };
     for (const [field, value] of Object.entries({ path: serial.path, baud: serial.baud, bits: serial.dataBits, parity: serial.parity, stop: serial.stopBits })) $('forward-serial-' + field).value = value;
     $('forward-serial-dtr').checked = serial.dtr; $('forward-serial-rts').checked = serial.rts;
-    serialOptions(); $('forward-rule-error').textContent = ''; $('forward-rule-title').textContent = agent.name + (rule ? ' · 编辑规则' : ' · 新增规则');
+    serialOptions(); helperIPOptions(); $('forward-rule-error').textContent = ''; $('forward-rule-title').textContent = agent.name + (rule ? ' · 编辑规则' : ' · 新增规则');
     $('forward-rule-advanced').open = false;
     editor.showModal(); update(); edit.initial = draftValues(); $('forward-rule-name').focus(); $('forward-rule-name').select();
   }
@@ -253,6 +253,22 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
   });
   $('forward-serial-choice').addEventListener('change', () => { if ($('forward-serial-choice').value) $('forward-serial-path').value = $('forward-serial-choice').value; });
   $('forward-serial-path').addEventListener('input', () => { $('forward-serial-choice').value = selected()?.inventory?.serialPorts.includes($('forward-serial-path').value) ? $('forward-serial-path').value : ''; });
+  function helperIPOptions() {
+    const agent = selected(), select = $('forward-helper-ip-choice'), current = $('forward-helper-ip').value.trim();
+    const items = (agent?.inventory?.interfaces || []).flatMap(iface => iface.addresses.filter(ip => hintIP(ip.address)).map(ip => ({ address: ip.address, name: iface.name, up: iface.up })));
+    const signature = JSON.stringify([agent?.id, agent?.online, statusKnown, items]);
+    if (select.dataset.inventory !== signature) {
+      select.dataset.inventory = signature;
+      select.replaceChildren(new Option('自动探测，也可手动填写', ''), ...items.map(item => {
+        const option = new Option(`${item.name} · ${item.address}${item.up ? '' : '（网卡停用）'}`, item.address); option.disabled = !item.up; return option;
+      }));
+    }
+    select.disabled = !statusKnown || !agent?.online || !items.some(item => item.up);
+    select.value = items.some(item => item.up && item.address === current) ? current : '';
+    $('forward-helper-ip-note').textContent = !statusKnown ? '助手状态未确认，可手动填写。' : !agent?.online ? '助手离线，列表为最后上报信息；可手动填写，接入后再核对。' : '列表来自当前助手；选择地址只填写直连提示。';
+  }
+  $('forward-helper-ip-choice').addEventListener('change', () => { $('forward-helper-ip').value = $('forward-helper-ip-choice').value; renderDirection(); });
+  $('forward-helper-ip').addEventListener('input', helperIPOptions);
   function serialOptions() {
     const ports = selected()?.inventory?.serialPorts || [], select = $('forward-serial-choice'), path = $('forward-serial-path').value;
     if (select.dataset.ports !== JSON.stringify(ports)) { select.dataset.ports = JSON.stringify(ports); select.replaceChildren(new Option('从列表选择，或手动填写', ''), ...ports.map(p => new Option(p, p))); }
@@ -306,7 +322,7 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
         target.append(node('p', '串口：' + (info.serialPorts.join('、') || '未发现，可手动填写。'), 'muted'));
       }
     }
-    if (editor.open) serialOptions();
+    if (editor.open) { serialOptions(); helperIPOptions(); }
     if (rowsAgent !== agent.id) { rowsAgent = agent.id; rows.clear(); $('forward-agent-rules').replaceChildren(); }
     for (const [id, row] of rows) if (!agent.rules.some(r => r.id === id)) { row.root.remove(); rows.delete(id); }
     for (const rule of agent.rules) {
