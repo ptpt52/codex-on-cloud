@@ -5,6 +5,29 @@ import { fixture } from '../fixture.mjs';
 
 test.use({ serviceWorkers: 'block' });
 
+for (const refused of [false, true]) test(`expired cached TURN credentials ${refused ? 'stop on authorization refusal' : 'refresh before creating a peer'}`, async ({ page }) => {
+  const app = await fixture({ webrtc: true });
+  try {
+    await page.goto(app.config.origin); await page.waitForLoadState('networkidle');
+    const result = await page.evaluate(async refused => {
+      const { desktopTransport } = await import('/rtc-transport.js');
+      const Native = RTCPeerConnection, originalFetch = fetch;
+      let reads = 0, names = [], peer;
+      const settings = { csrf: 'test-csrf', webrtc: true, rtcStunUrl: '', rtcIceExpiresAt: Date.now() - 1,
+        rtcIceServers: [{ urls: ['turn:127.0.0.1:3478?transport=udp'], username: 'expired-test', credential: 'synthetic-test' }] };
+      window.RTCPeerConnection = class extends Native { constructor(config) { super(config); names.push(...config.iceServers.map(server => server.username)); } };
+      window.fetch = (...args) => {
+        if (!String(args[0]).includes('/api/me')) return originalFetch(...args);
+        reads++; return Promise.resolve(new Response(JSON.stringify({ ...settings, rtcIceExpiresAt: Date.now() + 3600000,
+          rtcIceServers: [{ ...settings.rtcIceServers[0], username: 'fresh-test' }] }), { status: refused ? 403 : 200 }));
+      };
+      try { peer = await desktopTransport('a'.repeat(32), () => {}, { probe: true, bootstrap: () => settings }); return { reads, names, created: !!peer }; }
+      finally { peer?.close(); window.fetch = originalFetch; window.RTCPeerConnection = Native; }
+    }, refused);
+    expect(result).toEqual({ reads: 1, names: refused ? [] : ['fresh-test'], created: !refused });
+  } finally { await app.close(); }
+});
+
 test('a stalled TURN refresh cannot interrupt state polling or input on an established direct viewer', async ({ page }) => {
   let stalled = false, requests = 0;
   const central = http.createServer((_req, res) => {

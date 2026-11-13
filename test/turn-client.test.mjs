@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requestTurnCredentials, validateTurnResponse, createTurnCache } from '../panel/turn-client.mjs';
 import { rtcOffer } from '../panel/rtc-network.mjs';
-import { rtcIceServers } from '../panel/public/rtc-ice.js';
+import { rtcIceServers, rtcCredentialsNeedRefresh } from '../panel/public/rtc-ice.js';
 import { fixture } from './fixture.mjs';
 
 const now = Date.now();
@@ -73,6 +73,18 @@ test('relay candidates require the trusted address and port range', () => {
 test('browser ICE sanitizer deduplicates TURN credentials and ignores malformed entries', () => {
   assert.deepEqual(rtcIceServers({ rtcIceServers: [...iceServers, iceServers[0], { urls: ['https://evil.test'], username: 'x', credential: 'y' }, { urls: ['turn:no-credentials.test:3478'] }] }), iceServers);
   assert.deepEqual(rtcIceServers({ rtcStunUrl: 'stun:legacy.example.test:3478' }), [{ urls: ['stun:legacy.example.test:3478'] }]);
+});
+
+test('new peers refresh expiring TURN credentials and never use expired or undated relay credentials', () => {
+  const config = { rtcIceServers: iceServers, rtcStunUrl: 'stun:legacy.example.test:3478', rtcIceExpiresAt: now + 60000 };
+  assert.equal(rtcCredentialsNeedRefresh(config, now), false);
+  assert.equal(rtcCredentialsNeedRefresh(config, now + 30000), true);
+  assert.equal(rtcCredentialsNeedRefresh({ rtcStunUrl: config.rtcStunUrl }, now), false);
+  assert.equal(rtcCredentialsNeedRefresh({ rtcIceServers: iceServers }, now), true);
+  assert.deepEqual(rtcIceServers(config, { now }), [...iceServers, { urls: [config.rtcStunUrl] }]);
+  for (const expiry of [undefined, now, now - 1]) {
+    assert.deepEqual(rtcIceServers({ ...config, rtcIceExpiresAt: expiry }, { now }), [iceServers[0], { urls: [config.rtcStunUrl] }]);
+  }
 });
 
 test('panel returns fresh TURN ICE configuration to authenticated pages', async t => {

@@ -5,7 +5,7 @@ import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureSta
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
 import { nodeHeaders } from '/node-scope.js';
 import { entryPath } from '/entry-path.js';
-import { rtcIceServers } from '/rtc-ice.js';
+import { rtcIceServers, rtcCredentialsNeedRefresh } from '/rtc-ice.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -38,7 +38,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     // Read the same bounded browser entry without waiting for that message.
     if (settings?.hints === undefined) { let storage; try { storage = localStorage; } catch {} storedHints = createRTCHints(storage).value; }
     const hints = rtcHints(settings?.hints ?? storedHints);
-    if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256) {
+    if (!settings || typeof settings.webrtc !== 'boolean' || typeof settings.csrf !== 'string' || !settings.csrf || typeof settings.rtcStunUrl !== 'string' || settings.rtcStunUrl.length > 256 || rtcCredentialsNeedRefresh(settings)) {
       const response = await fetch(entryPath('/api/me'), { headers: nodeHeaders(), redirect: 'manual', signal: controller.signal });
       if (!response.ok) { failure(response.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(response.status)); throw new Error('无法验证连接'); }
       settings = await response.json();
@@ -46,7 +46,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     const { csrf, webrtc, rtcStunUrl } = settings;
     if (controller.signal.aborted) throw new Error('连接已取消');
     if (!webrtc) { failure('disabled'); enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
-    peer = new RTCPeerConnection({ iceServers: rtcIceServers(settings) });
+    peer = new RTCPeerConnection({ iceServers: rtcIceServers(settings, { now: Date.now() }) });
     let channel, ended = false, videoReadySent = false, resolveReady, rejectReady, grace;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     void ready.catch(() => {});

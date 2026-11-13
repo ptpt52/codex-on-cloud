@@ -186,7 +186,7 @@ window.addEventListener('message', event => {
   if (value.type === 'codex-direct-probe') { networkChanged(); return; }
   if (value.type !== 'codex-desktop-options') return;
   if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
-    try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, rtcIceServers: rtcIceServers(value.rtc), hints: rtcHints(value.rtc.hints) }; } catch {}
+    try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, rtcIceServers: rtcIceServers(value.rtc), rtcIceExpiresAt: value.rtc.rtcIceExpiresAt, hints: rtcHints(value.rtc.hints) }; } catch {}
   }
   if (!(['fit', 'width'].includes(value.zoom) || (Number.isFinite(value.zoom) && value.zoom >= 0.1 && value.zoom <= 2)) || typeof value.pan !== 'boolean' || typeof value.blocked !== 'boolean') return;
   if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0)) return;
