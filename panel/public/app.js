@@ -1060,7 +1060,7 @@ async function poll() {
     renderConnection();
   } catch (error) {
     if (loggedIn && pollController === controller) {
-      if (!(direct && panelReady && [409, 429].includes(error.status))) panelState = 'offline';
+      if (!(frameTransport === 'direct' && panelReady && [409, 429].includes(error.status))) panelState = 'offline';
       renderConnection();
     }
   } finally {

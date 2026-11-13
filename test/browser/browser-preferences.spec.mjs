@@ -27,6 +27,30 @@ async function login(page, app) {
 const stored = page => page.evaluate(() => JSON.parse(localStorage.getItem('codex-cloud.display.v1')));
 const defaultFont = page => page.viewportSize().width <= 700 ? 10 : 15;
 
+for (const status of [429, 503]) test(`a failed background state poll (${status}) recovers without a page error or repeated login and claim`, async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true });
+  const errors = []; let states = 0, logins = 0, claims = 0;
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => {
+    if (request.method() !== 'POST') return;
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/login') logins++;
+    if (path === '/api/desktop/claim') claims++;
+  });
+  try {
+    await setup(page); await login(page, app);
+    const connections = app.terminalConnections;
+    await page.route('**/api/state', route => ++states === 1
+      ? route.fulfill({ status, json: { error: 'Temporarily unavailable' } }) : route.continue());
+    await expect.poll(() => states, { timeout: 12000 }).toBeGreaterThanOrEqual(2);
+    await online(page); expect(errors).toEqual([]);
+    expect(logins).toBe(1); expect(claims).toBe(1);
+    expect(app.terminalConnections).toBe(connections);
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+    expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 test('a slow unavailable startup snapshot recovers on the next state poll without repeating login or control claims', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true }); let states = 0, logins = 0, claims = 0;
   page.on('request', request => {
