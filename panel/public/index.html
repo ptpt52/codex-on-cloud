@@ -135,33 +135,49 @@
     </section>
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，任务继续运行</span><span><span id="ui-update-note" hidden>界面有更新，保存草稿后刷新生效 · </span><span id="version-label"></span></span></footer>
   </main>
-  <dialog id="unlock-dialog" class="files-dialog action-confirmation" aria-labelledby="unlock-title">
+  <dialog id="unlock-dialog" class="files-dialog action-confirmation settings-dialog settings-prompt" aria-labelledby="unlock-title">
     <div class="dialog-heading"><h2 id="unlock-title">解锁并在这里使用</h2><button id="unlock-close" class="quiet" type="button" aria-label="取消解锁">✕</button></div>
-    <p class="muted">输入屏幕锁密码后，才能查看和操作桌面或网页终端。取消后，既有双向端口映射继续工作；连接状态、服务器访问本地设备映射和文件中转仍可使用。</p>
     <!-- Classify this local verification separately from saved account passwords.
          The code autofill hint does not make the screen-lock password an OTP. -->
-    <form id="unlock-form" name="screen-unlock" autocomplete="off" method="post" action="/api/desktop/claim"><label for="unlock-password">屏幕锁密码</label><input id="unlock-password" name="lockPassword" type="password" autocomplete="section-screen-unlock one-time-code" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="128" required><p id="unlock-error" class="error" role="status"></p><div class="confirmation-actions"><button id="unlock-cancel" class="secondary" type="button">取消</button><button id="unlock-submit" class="primary" type="submit">解锁并在这里使用</button></div></form>
+    <form id="unlock-form" name="screen-unlock" autocomplete="off" method="post" action="/api/desktop/claim">
+      <div class="settings-dialog-body">
+        <p class="muted settings-help">输入屏幕锁密码后，在本页查看和操作桌面或网页终端。取消后，原任务、既有双向映射和文件中转继续工作。</p>
+        <div class="settings-field"><label for="unlock-password">屏幕锁密码</label><input id="unlock-password" name="lockPassword" type="password" autocomplete="section-screen-unlock one-time-code" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="128" required aria-describedby="unlock-error"></div>
+      </div>
+      <div class="settings-dialog-footer unlock-dialog-footer"><p id="unlock-error" class="error" role="status"></p><div class="confirmation-actions"><button id="unlock-cancel" class="secondary" type="button">取消</button><button id="unlock-submit" class="primary" type="submit">解锁并在这里使用</button></div></div>
+    </form>
   </dialog>
-  <dialog id="access-dialog" class="files-dialog access-dialog" aria-labelledby="access-title">
+  <dialog id="access-dialog" class="files-dialog access-dialog settings-dialog" aria-labelledby="access-title">
     <div class="dialog-heading"><h2 id="access-title">访问与屏幕锁</h2><button id="access-close" class="quiet" type="button" aria-label="关闭访问设置">✕</button></div>
-    <form id="screen-lock-form" name="screen-lock-settings" class="access-form" autocomplete="off" method="post" action="/api/security/screen-lock">
-      <h3>屏幕锁</h3><label class="access-checkbox"><input id="screen-lock-enabled" type="checkbox">开启屏幕锁</label>
+    <div class="settings-dialog-body access-sections">
+    <form id="screen-lock-form" name="screen-lock-settings" class="access-form settings-section" aria-labelledby="screen-lock-title" autocomplete="off" method="post" action="/api/security/screen-lock">
+      <div class="settings-section-heading"><h3 id="screen-lock-title">屏幕锁</h3><span id="screen-lock-current" class="settings-badge">正在读取</span></div>
+      <label class="access-checkbox settings-toggle"><input id="screen-lock-enabled" type="checkbox"><span><strong>开启屏幕锁</strong><small>首次进入或重新接管时，使用独立的锁密码验证。</small></span></label>
       <!-- Match the local verification hint used for unlocking, including during
            setup: new-password makes Chrome offer to save an account password. -->
-      <label for="screen-lock-password">新屏幕锁密码</label><input id="screen-lock-password" name="lockPassword" type="password" autocomplete="section-screen-lock-settings one-time-code" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="128" placeholder="4–128 个字符；已有密码时留空保留">
-      <p class="muted">首次进入和重新接管需解锁。锁定后已授权的双向映射全部保留，仍可建立新 TCP 连接并按原规则恢复；原任务继续运行。</p><button id="screen-lock-save" class="primary" type="submit">保存屏幕锁</button>
+      <div class="settings-field"><label for="screen-lock-password">新屏幕锁密码</label><input id="screen-lock-password" name="lockPassword" type="password" autocomplete="section-screen-lock-settings one-time-code" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="4" maxlength="128" placeholder="4–128 个字符；已有密码时留空保留" aria-describedby="screen-lock-help"></div>
+      <p id="screen-lock-help" class="settings-help muted">锁定后，桌面和终端需解锁；运行中的任务及已授权的双向映射继续工作。</p>
+      <div class="settings-actions"><button id="screen-lock-save" class="primary" type="submit">保存屏幕锁</button></div>
     </form>
-    <form id="temporary-account-form" class="access-form" method="post" action="/api/security/temporary-account">
-      <h3>临时账号</h3><label class="access-checkbox"><input id="temporary-enabled" type="checkbox">允许临时账号登录</label>
-      <label for="temporary-username">临时用户名</label><input id="temporary-username" name="username" autocomplete="off" maxlength="64" placeholder="与管理员不同，例如 visitor">
-      <label for="temporary-password">临时密码</label><input id="temporary-password" name="password" type="password" autocomplete="new-password" maxlength="128" placeholder="8–128 个字符；留空保留现有密码">
-      <label for="temporary-duration">从本次保存起有效</label><select id="temporary-duration"><option value="3600000">1 小时</option><option value="21600000">6 小时</option><option value="86400000" selected>24 小时</option><option value="259200000">3 天</option><option value="604800000">7 天</option></select>
-      <p id="temporary-current" class="muted"></p><p class="muted">可上传、下载共享中转文件，并查看管理员在各助手页开放的 key；不能解锁桌面、使用终端或管理助手规则。更新账号会撤销旧临时登录，不影响助手和保存的规则。</p>
-      <div class="desktop-actions"><button id="temporary-save" class="primary" type="submit">保存临时账号</button><button id="temporary-copy" class="secondary" type="button" disabled>复制本次账号密码</button></div>
+    <form id="temporary-account-form" class="access-form settings-section" aria-labelledby="temporary-account-title" method="post" action="/api/security/temporary-account">
+      <div class="settings-section-heading"><h3 id="temporary-account-title">临时账号</h3><span id="temporary-state" class="settings-badge">正在读取</span></div>
+      <label class="access-checkbox settings-toggle"><input id="temporary-enabled" type="checkbox"><span><strong>允许临时账号登录</strong><small>用于分享文件和管理员开放的助手 key。</small></span></label>
+      <div class="settings-field"><label for="temporary-username">临时用户名</label><input id="temporary-username" name="username" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64" pattern="[A-Za-z0-9_\-]{1,64}" title="1–64 位字母、数字、下划线或短横线，与管理员用户名不同" placeholder="例如 visitor"></div>
+      <div class="settings-field"><label for="temporary-password">临时密码</label><input id="temporary-password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="8–128 个字符；留空保留现有密码"></div>
+      <div class="settings-field"><label for="temporary-duration">从本次保存起有效</label><select id="temporary-duration" aria-describedby="temporary-current"><option value="3600000">1 小时</option><option value="21600000">6 小时</option><option value="86400000" selected>24 小时</option><option value="259200000">3 天</option><option value="604800000">7 天</option></select></div>
+      <p id="temporary-current" class="settings-help muted"></p><p class="settings-help muted">桌面、终端和映射管理仅向管理员开放。更新账号会撤销旧临时登录，助手与保存的规则继续保留。</p>
+      <div class="settings-actions"><button id="temporary-save" class="primary" type="submit">保存临时账号</button><button id="temporary-copy" class="secondary" type="button" aria-describedby="temporary-copy-note" disabled>复制访问信息</button></div>
+      <p id="temporary-copy-note" class="settings-help muted">保存时输入新密码，才可复制本次访问信息；关闭窗口后清空。</p>
       <textarea id="temporary-share" readonly rows="4" hidden aria-label="临时访问信息"></textarea>
-    </form><p id="access-status" class="muted" role="status"></p>
+    </form>
+    </div>
+    <div class="settings-dialog-footer"><span class="settings-footer-hint">两项设置分别保存，关闭后清空已输入的密码。</span><p id="access-status" class="muted" role="status"></p></div>
   </dialog>
-  <dialog id="access-confirm" class="files-dialog action-confirmation" aria-labelledby="access-confirm-title"><h2 id="access-confirm-title">更新临时访问？</h2><p class="muted">旧临时登录及其创建的设备映射会立即失效。管理员的登录、任务和映射保留。</p><div class="confirmation-actions"><button id="access-confirm-cancel" class="secondary" type="button" autofocus>取消</button><button id="access-confirm-accept" class="primary" type="button">确认更新</button></div></dialog>
+  <dialog id="access-confirm" class="files-dialog action-confirmation settings-dialog settings-prompt" aria-labelledby="access-confirm-title">
+    <div class="dialog-heading"><h2 id="access-confirm-title">更新临时访问？</h2></div>
+    <div class="settings-dialog-body"><p class="muted settings-help">旧临时登录将立即失效。管理员的登录、任务和助手规则保留。</p><p class="muted settings-help">已分享的助手 key 继续有效；撤销 key 需在对应助手页重新生成。</p></div>
+    <div class="settings-dialog-footer confirmation-actions"><button id="access-confirm-cancel" class="secondary" type="button" autofocus>取消</button><button id="access-confirm-accept" class="primary" type="button">确认更新</button></div>
+  </dialog>
   <div id="shortcuts-menu" class="shortcuts-menu" role="menu" aria-label="Codex 和终端快捷键" tabindex="-1" popover="auto" hidden>
     <p class="shortcuts-title">Codex 和终端快捷键</p>
     <p class="shortcuts-help">可上下滚动查看，点击条目发送一次。先点选远程 Codex 终端；用途按默认键位标注，自定义键位以当前程序为准。</p>
@@ -229,31 +245,39 @@
     <div class="clipboard-actions"><button id="copy-clipboard" class="primary" type="button" disabled>复制到本机</button><button id="select-clipboard" class="secondary" type="button" disabled>选择文字</button></div>
     <p id="clipboard-status" class="muted" role="status">只在点击读取时获取；关闭窗口会清空预览。</p>
   </dialog>
-  <dialog id="desktop-settings-dialog" class="files-dialog desktop-settings-dialog">
-    <div class="dialog-heading"><h2>服务器桌面设置</h2><button id="close-desktop-settings" class="quiet" aria-label="关闭桌面设置">✕</button></div>
-    <p class="muted settings-help">这里修改共享服务器桌面。阅读大小请使用本浏览器的画面缩放；网页终端字号在工具中调整。</p>
-    <p id="settings-current" class="muted">正在读取当前桌面…</p>
-    <label class="viewport-option"><input id="auto-resolution" type="checkbox"><span>桌面大小跟随浏览器窗口，保留当前任务</span></label>
+  <dialog id="desktop-settings-dialog" class="files-dialog desktop-settings-dialog settings-dialog" aria-labelledby="desktop-settings-title">
+    <div class="dialog-heading"><h2 id="desktop-settings-title">服务器桌面设置</h2><button id="close-desktop-settings" class="quiet" type="button" aria-label="关闭桌面设置">✕</button></div>
+    <div class="settings-dialog-body">
+    <p class="muted settings-help">修改当前服务器的共享桌面。只想放大文字或画面时，可使用工具中的本浏览器缩放设置。</p>
+    <section class="settings-section" aria-labelledby="settings-resolution-title">
+    <div class="settings-section-heading"><h3 id="settings-resolution-title">桌面分辨率</h3></div>
+    <p id="settings-current" class="settings-summary" role="status">正在读取当前桌面…</p>
+    <label class="viewport-option settings-toggle"><input id="auto-resolution" type="checkbox"><span><strong>桌面跟随浏览器窗口</strong><small>自动调整服务器桌面的大小，保留当前任务。</small></span></label>
     <p id="viewport-note" class="muted settings-help"></p>
-    <form id="desktop-settings-form">
-      <label class="settings-label" for="resolution-preset">分辨率预设</label>
+    <form id="desktop-settings-form" class="settings-fields">
+      <div class="settings-field"><label for="resolution-preset">固定分辨率预设</label>
       <select id="resolution-preset"><option value="1280x1280">1280 × 1280</option><option value="1600x1600">1600 × 1600</option><option value="1600x3200">1600 × 3200</option><option value="1920x1600">1920 × 1600</option><option value="custom">自定义尺寸</option></select>
+      </div>
       <div class="settings-dimensions"><label for="desktop-width">宽度<input id="desktop-width" type="number" min="320" max="4096" step="1" required></label><span aria-hidden="true">×</span><label for="desktop-height">高度<input id="desktop-height" type="number" min="320" max="4096" step="1" required></label></div>
-    <p class="muted settings-help">宽高 320–4096 像素。保存后点击应用；显示上限内立即生效并保留当前任务，超出上限才需确认重启。</p>
-      <button id="save-desktop-settings" class="primary" type="submit" disabled>保存设置</button>
+      <p class="muted settings-help">宽高均为 320–4096 像素。先保存，再应用到服务器桌面。</p>
+      <div class="settings-actions"><button id="save-desktop-settings" class="secondary" type="submit" disabled>保存分辨率</button></div>
     </form>
-    <p id="settings-pending" class="muted settings-help"></p>
-    <div class="terminal-display-actions"><button id="maximize-terminal" class="secondary" disabled>最大化终端</button><button id="restore-terminal" class="secondary" disabled>恢复窗口</button></div>
-    <p class="muted settings-help">窗口操作作用于共享服务器桌面，保留 tmux 中的任务。</p>
+    <p id="settings-pending" class="settings-summary muted"></p>
     <div class="desktop-apply-section">
-      <div id="desktop-restart-notice" hidden>
+      <div id="desktop-restart-notice" class="settings-warning" hidden>
       <p id="settings-recovery" class="muted"></p>
       <label class="restart-confirmation"><input id="confirm-desktop-restart" type="checkbox">我已了解：重启会终止当前进程和其他桌面应用。仅恢复已识别的对话，不自动继续旧任务。</label>
       </div>
-      <button id="apply-desktop-settings" class="primary" disabled>重启桌面并恢复会话</button>
+      <div class="settings-actions"><button id="apply-desktop-settings" class="primary" type="button" disabled>应用分辨率</button></div>
     </div>
-    <p id="desktop-settings-status" class="muted settings-help" role="status"></p>
-    <button id="refresh-desktop-settings" class="quiet">刷新设置</button>
+    </section>
+    <section class="settings-section" aria-labelledby="settings-window-title">
+      <div class="settings-section-heading"><h3 id="settings-window-title">服务器终端窗口</h3></div>
+      <p class="muted settings-help">调整服务器上的图形终端窗口，保留 tmux 中的任务。</p>
+      <div class="terminal-display-actions settings-actions"><button id="maximize-terminal" class="secondary" type="button" disabled>最大化终端</button><button id="restore-terminal" class="secondary" type="button" disabled>恢复窗口</button></div>
+    </section>
+    </div>
+    <div class="settings-dialog-footer"><p id="desktop-settings-status" class="muted" role="status"></p><button id="refresh-desktop-settings" class="quiet" type="button">刷新设置</button></div>
   </dialog>
   <dialog id="connection-dialog" class="files-dialog connection-dialog" aria-labelledby="connection-title">
     <div class="dialog-heading"><h2 id="connection-title">连接状态</h2><button id="close-connection" class="quiet" type="button" aria-label="关闭连接状态">✕</button></div>

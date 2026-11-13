@@ -65,8 +65,17 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
     document.documentElement.classList.toggle('workspace-keyboard-open', bottom > 100);
     cancelAnimationFrame(viewportFrame);
     viewportFrame = requestAnimationFrame(() => {
+      const focused = document.activeElement;
+      const settingsBody = focused.closest?.('.settings-dialog-body');
+      // Focusing an already focused control does not reveal it again after
+      // a resize. Scroll only its settings body, preserving the modal chrome.
+      if (settingsBody?.closest('dialog[open]')) {
+        const bounds = settingsBody.getBoundingClientRect(), rect = focused.getBoundingClientRect();
+        if (rect.bottom > bounds.bottom) settingsBody.scrollTop += rect.bottom - bounds.bottom;
+        else if (rect.top < bounds.top) settingsBody.scrollTop -= bounds.top - rect.top;
+      }
       if (active !== 'input') return;
-      const body = input.querySelector('.assistant-body'), focused = document.activeElement;
+      const body = input.querySelector('.assistant-body');
       if (!body?.contains(focused)) return;
       const bounds = body.getBoundingClientRect(), rect = focused.getBoundingClientRect();
       if (rect.bottom > bounds.bottom) body.scrollTop += rect.bottom - bounds.bottom;
@@ -76,6 +85,9 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
   window.addEventListener('resize', viewportChanged);
   window.visualViewport?.addEventListener('resize', viewportChanged);
   window.visualViewport?.addEventListener('scroll', viewportChanged);
+  document.addEventListener('focusin', event => { if (event.target.closest?.('.settings-dialog-body')) viewportChanged(); });
+  const settingsObserver = new ResizeObserver(viewportChanged);
+  document.querySelectorAll('.settings-dialog-body').forEach(body => settingsObserver.observe(body));
   viewportChanged();
   return { render, focus, get active() { return active; } };
 }
