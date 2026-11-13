@@ -149,7 +149,14 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
         activating = true;
         let committed = false;
         try {
-          if (!await canActivate(true) || !live()) { reject({ status: 409, message: '终端忙碌或控制权已变化' }); return; }
+          // Foregrounding a parked terminal sends view/resize records. Their
+          // stream ACK can precede the helper's result; drain that existing
+          // work before deciding whether the selected target can be attached.
+          // One admitted switch, no replay or additional request queue.
+          const deadline = performance.now() + 1500;
+          while (live() && upstream?.idle === false && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+          if (!live()) return;
+          if (upstream?.idle === false || !await canActivate(true) || !live()) { reject({ status: 409, message: '终端忙碌或控制权已变化' }); return; }
           const change = await switchTarget(value.target, live);
           if (!live()) return;
           if (assembly || value.input !== input) { reject({ status: 409, message: '输入状态已变化，请重新选择终端' }); return; }

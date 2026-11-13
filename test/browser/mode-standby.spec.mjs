@@ -1,6 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { openTools, openInput, closePanels } from './ui.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 
 async function login(page, app, saved) {
   if (saved) await page.addInitScript(saved => { if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', ...saved })); }, saved);
@@ -23,7 +28,7 @@ async function prepared(page, mode) {
   return { frame, source };
 }
 
-for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: terminal 2, desktop task tabs and terminal 3 share retained viewers and confirmed targets`, async ({ page }, info) => {
+for (const direct of [false, true]) for (const [from, to] of [['main', 'aux1'], ['aux1', 'aux2']]) test(`${direct ? 'direct' : 'relay'}: ${from} to ${to} through desktop task tabs shares retained viewers and confirmed targets`, async ({ page }, info) => {
   test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
   test.setTimeout(45000);
   const activated = [], errors = [], offers = [], httpOpens = [];
@@ -39,26 +44,82 @@ for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: termin
     if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
     const connections = app.vncConnections;
     await page.route('**/api/terminals', route => route.request().method() === 'POST' ? route.abort() : route.continue());
-    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click();
-    await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await page.locator(`#terminal-tabs [data-terminal-choice=${from}]`).click();
+    await expect(page.locator('#input-terminal')).toHaveValue(from); await expect(page.locator('#input-terminal')).toBeEnabled();
     await switchMode(page, 'desktop'); await expect(page.locator('#input-terminal')).toBeEnabled();
     if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
     const negotiated = offers.length;
-    expect(activated.at(-1)).toBe('1001');
-    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    expect(activated.at(-1)).toBe(from === 'main' ? '999' : '1001');
+    await expect(page.locator(`#terminal-tabs [data-terminal-choice=${from}]`)).toHaveAttribute('aria-selected', 'true');
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(desktop.source);
-    await page.locator('#terminal-tabs [data-terminal-choice=aux2]').click();
-    await expect(page.locator('#input-terminal')).toHaveValue('aux2'); await expect(page.locator('#input-terminal')).toBeEnabled();
-    expect(activated.at(-1)).toBe('1002');
+    await page.locator(`#terminal-tabs [data-terminal-choice=${to}]`).click();
+    await expect(page.locator('#input-terminal')).toHaveValue(to); await expect(page.locator('#input-terminal')).toBeEnabled();
+    expect(activated.at(-1)).toBe(to === 'aux1' ? '1001' : '1002');
     expect(await page.locator('#standby-frame').getAttribute('src')).toBe(terminalSource);
     await switchMode(page, 'terminal'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await expect(page.locator(`#terminal-tabs [data-terminal-choice=${to}]`)).toHaveAttribute('aria-selected', 'true');
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(terminalSource);
     await openInput(page); await page.locator('#mobile-input').fill('只写入终端3'); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
-    expect(app.terminalInputs).toEqual([{ terminalId: 'aux2', text: '\x1b[200~只写入终端3\x1b[201~' }]);
+    expect(app.terminalInputs).toEqual([{ terminalId: to, text: '\x1b[200~只写入终端3\x1b[201~' }]);
     expect(httpOpens).toEqual([]); expect(offers.length).toBe(negotiated); expect(app.vncConnections).toBe(connections);
     expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0); expect(errors).toEqual([]);
   } finally { await app.close(); }
+});
+
+for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: returning from the desktop waits for the parked terminal view to restore before attaching the selected target`, async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
+  const parked = new Set();
+  const app = await fixture({ rfb: true, seamless: true, webrtc: direct, fastConnect: direct, terminalViewHook: async (id, standby) => {
+    if (standby) parked.add(id);
+    else if (parked.delete(id)) await new Promise(resolve => setTimeout(resolve, 300));
+  } });
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '终端2', view: 'terminal' });
+    await login(page, app, { modeStandby: true, mode: 'terminal', workspaceLayout: 'sidebar' }); await prepared(page, 'desktop');
+    if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    await switchMode(page, 'desktop'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await expect.poll(() => parked.has('main')).toBe(true);
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await switchMode(page, 'terminal'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+  } finally { await app.close(); }
+});
+
+test('real tmux viewers follow main to the second terminal after parking and desktop focus', async ({ page }, info) => {
+  test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
+  test.setTimeout(45000);
+  const directory = await mkdtemp(join(tmpdir(), 'codex-real-mode-target-')), socket = join(directory, 'tmux.sock');
+  const exec = promisify(execFile), children = [], env = { ...process.env, TERM: 'xterm-256color', HISTFILE: '/dev/null', DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
+  delete env.TMUX; delete env.DISPLAY; delete env.XAUTHORITY;
+  const tmux = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 8192 });
+  let app;
+  try {
+    const tokens = {};
+    for (const [id, session] of [['main', 'codex'], ['aux1', 'codex-aux1']]) {
+      await tmux(['-f', resolve('desktop/tmux.conf'), 'new-session', '-d', '-s', session, '-x', '80', '-y', '24', 'bash', '--noprofile', '--norc']);
+      tokens[id] = (await tmux(['display-message', '-p', '-t', session, '#{pane_id}:#{pane_pid}'])).stdout.trim();
+    }
+    app = await fixture({ rfb: true, seamless: true });
+    await app.controls.manageTerminals({ action: 'create', name: '终端2', view: 'terminal' });
+    app.config.terminalLaunch = target => {
+      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, target.terminalId, tokens[target.terminalId], '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+      children.push(child); return child;
+    };
+    await login(page, app, { modeStandby: true, mode: 'terminal', workspaceLayout: 'sidebar' }); await prepared(page, 'desktop');
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    await page.locator('#terminal-tabs [data-terminal-choice=main]').click();
+    await switchMode(page, 'desktop'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await switchMode(page, 'terminal'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+  } finally {
+    await app?.close(); for (const child of children) child.kill();
+    await tmux(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('a rejected desktop focus clears the claimed active tab, never retries, and restores normal input only after a manual selection', async ({ page }, info) => {

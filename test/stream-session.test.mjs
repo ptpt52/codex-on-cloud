@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createStreamSession, STREAM_LIMIT } from '../panel/stream-session.mjs';
 const id = 'a'.repeat(32), tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(options = {}) {
   const writes = [], connections = []; let callbacks, launches = 0, ended = 0;
   const session = createStreamSession({ id, valid: () => true, ...options,
-    connect(value) { callbacks = value; connections.push(value); launches++; return { write: bytes => writes.push(bytes.toString()), close: () => ended++, pause() {}, resume() {} }; } });
+    connect(value) { callbacks = value; connections.push(value); launches++; return { write: bytes => writes.push(bytes.toString()), close: () => ended++, pause() {}, resume() {}, get idle() { return options.upstreamIdle?.() ?? true; } }; } });
   const peer = kind => { const records = []; let closed = false; const entry = session.attach(kind, { send: value => records.push(value), buffered: () => 0, close: () => { closed = true; } }); return { entry, records, get closed() { return closed; } }; };
   return { session, peer, writes, connections, push: text => callbacks.push(Buffer.from(text)), get launches() { return launches; }, get ended() { return ended; } };
 }
@@ -117,6 +118,56 @@ for (const kind of ['direct', 'relay']) test(`${kind}: switching a terminal reti
   app.connections[0].push(Buffer.from('must not leak')); app.connections[0].close(); assert.equal(app.session.closed, false);
   app.push('new screen'); assert.equal(Buffer.from(direct.records.at(-1).data, 'base64').toString(), 'new screen');
   direct.entry.receive(input(1, 2, 'retired epoch')); direct.entry.receive(input(2, 2, 'new input')); await tick(); assert.deepEqual(app.writes, ['old input', 'new input']);
+});
+
+for (const kind of ['relay', 'direct']) test(`${kind}: target switching drains pending viewer replies and admits no second switch or route change`, async t => {
+  let idle = true, calls = 0, commits = 0;
+  const app = setup({ upstreamIdle: () => idle, switchTarget: async target => { calls++; return { target, commit() { commits++; } }; } });
+  t.after(() => app.session.close()); const peer = app.peer(kind); await activate(peer, 0); idle = false;
+  const request = { type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } };
+  peer.entry.receive(request); await tick(); assert.equal(calls, 0);
+  peer.entry.receive({ ...request, id: 2 });
+  const standby = app.peer(kind === 'direct' ? 'relay' : 'direct'); await activate(standby, 1);
+  assert.equal(peer.records.find(value => value.type === 'switch-result' && value.id === 2).ok, false);
+  assert.equal(standby.records.at(-1).type, 'wait'); assert.equal(peer.entry.active, true);
+  app.push('old target stays live'); assert.equal(peer.records.at(-1).type, 'chunk');
+  idle = true; for (let i = 0; i < 50 && !commits; i++) await delay(20);
+  assert.equal(calls, 1); assert.equal(commits, 1); assert.equal(app.launches, 2);
+  assert.equal(peer.records.find(value => value.type === 'switched').target.terminalId, 'aux1'); assert.deepEqual(app.writes, []);
+});
+
+for (const reason of ['revoked', 'detached', 'closed']) test(`a target waiting for viewer replies cannot execute after its owner is ${reason}`, async t => {
+  let idle = true, allowed = true, calls = 0;
+  const app = setup({ upstreamIdle: () => idle, valid: () => allowed, switchTarget: async target => { calls++; return { target, commit() {} }; } });
+  t.after(() => app.session.close()); const peer = app.peer('relay'); await activate(peer, 0); idle = false;
+  peer.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } }); await tick();
+  if (reason === 'revoked') allowed = false;
+  else if (reason === 'detached') peer.entry.close();
+  else app.session.close();
+  idle = true; await delay(40);
+  assert.equal(calls, 0); assert.equal(app.launches, 1); assert.equal(peer.records.some(value => value.type === 'switched'), false); assert.deepEqual(app.writes, []);
+  assert.equal(app.session.closed, reason !== 'detached');
+});
+
+test('viewer reply drain is bounded and keeps the original target when still busy', async t => {
+  let idle = true, calls = 0;
+  const app = setup({ upstreamIdle: () => idle, switchTarget: async target => { calls++; return { target, commit() {} }; } });
+  t.after(() => app.session.close()); const peer = app.peer('relay'); await activate(peer, 0); idle = false;
+  peer.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } });
+  for (let i = 0; i < 125 && !peer.records.some(value => value.type === 'switch-result'); i++) await delay(20);
+  assert.equal(peer.records.find(value => value.type === 'switch-result').ok, false);
+  assert.equal(calls, 0); assert.equal(app.launches, 1); assert.equal(app.session.closed, false); assert.equal(peer.entry.active, true);
+  app.push('original target'); assert.equal(peer.records.at(-1).type, 'chunk'); assert.deepEqual(app.writes, []);
+});
+
+test('input arriving during viewer restore is delivered once and prevents the waiting target from committing', async t => {
+  let idle = true, committed = false;
+  const app = setup({ upstreamIdle: () => idle, switchTarget: async target => ({ target, commit() { committed = true; } }) });
+  t.after(() => app.session.close()); const peer = app.peer('relay'); await activate(peer, 0); idle = false;
+  peer.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target: { terminalId: 'aux1', terminalToken: '%1:4100' } });
+  peer.entry.receive(input(1, 1, 'once')); idle = true; await delay(40);
+  assert.equal(committed, false); assert.equal(app.launches, 1); assert.equal(peer.records.find(value => value.type === 'switch-result').ok, false);
+  assert.deepEqual(app.writes, ['once']); assert.equal(app.session.closed, false);
 });
 
 test('a rejected target or raced input keeps the original terminal; revoked asynchronous reads and switches cannot commit', async t => {
