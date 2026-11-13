@@ -49,15 +49,7 @@ export function createForwardPool({ config, scope, valid, configuration, connect
     try {
       const hints = configuration();
       let offer = rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6 });
-      // Hints are node-admin policy, aggregated only within this helper. Keep
-      // four extra candidates total, in addition to the automatic candidates.
-      const hinted = (description, addresses, ipv6) => {
-        const originals = new Set(description.sdp.split(/\r?\n/).filter(line => line.startsWith('a=candidate:')));
-        for (const address of addresses) description = withHintCandidates(description, address, { ipv6 });
-        let extras = 0;
-        return { ...description, sdp: description.sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || originals.has(line) || ++extras <= 4).join('\r\n') };
-      };
-      offer = hinted(offer, hints.browser, !!config.webrtcIPv6);
+      offer = withHintCandidates(offer, hints.browser, { ipv6: !!config.webrtcIPv6 });
       peerAt = performance.now();
       await peer?.destroy();
       if (!live() || ws !== link) return;
@@ -86,7 +78,7 @@ export function createForwardPool({ config, scope, valid, configuration, connect
         status: state => { if (peer === candidate && live()) report(state); },
         closed: () => { if (peer === candidate) peer = undefined; } });
       peer = candidate; report(peer.state);
-      const sdp = hinted({ type: 'answer', sdp: await candidate.answer(offer) }, hints.server, !!ipv6Address).sdp;
+      const sdp = withHintCandidates({ type: 'answer', sdp: await candidate.answer(offer) }, hints.server, { ipv6: !!ipv6Address }).sdp;
       if (live() && ws === link && peer === candidate) send({ type: 'rtc_answer', id: value.id, typeDescription: 'answer', sdp });
     } catch { rejected('rtc_negotiation_failed'); }
     finally { release(); }

@@ -76,6 +76,18 @@ test('hints remain behind signaling authentication and never become arbitrary ta
   assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
 });
 
+test('shared hints reserve a candidate for every address before adding more ports and never reuse foundations', () => {
+  const automatic = offer(Array.from({ length: 4 }, (_, n) => candidate(`192.168.1.${n + 1}`, 45000 + n)));
+  const hinted = withHintCandidates(automatic, ['10.0.0.11', '10.0.0.12', '10.0.0.11']);
+  const extra = candidates(hinted).slice(4).map(line => line.split(' '));
+  assert.deepEqual(extra.map(row => [row[4], row[5]]), [['10.0.0.11', '45000'], ['10.0.0.12', '45000'], ['10.0.0.11', '45001'], ['10.0.0.12', '45001']]);
+  for (const line of candidates(automatic)) assert.ok(candidates(hinted).includes(line));
+  const four = withHintCandidates(automatic, ['10.0.0.11', '10.0.0.12', '10.0.0.13', '10.0.0.14']);
+  assert.deepEqual(candidates(four).slice(4).map(line => line.split(' ')[4]), ['10.0.0.11', '10.0.0.12', '10.0.0.13', '10.0.0.14']);
+  const again = candidates(withHintCandidates(hinted, '10.0.0.13')).map(line => line.split(' ')[0]);
+  assert.equal(new Set(again.filter(value => value.startsWith('a=candidate:hint'))).size, 4);
+});
+
 test('real ICE sends authenticated checks to a browser hint while preserving unresolved mDNS and returns an unassigned server alias', async t => {
   const app = await fixture({ webrtc: true });
   const peer = new RTCPeerConnection({ iceServers: [], iceUseIpv4: true, iceUseIpv6: false, iceUseTcp: false,
