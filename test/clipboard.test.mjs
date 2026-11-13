@@ -67,6 +67,8 @@ test('clipboard read is exclusive with inputs, desktop actions and other reads, 
   app.clipboardText.clipboard = 'private preview';
   const first = app.request('/api/clipboard/read', { method: 'POST', body: { source: 'clipboard' } });
   await started.promise;
+  assert.equal((await app.request('/api/desktop/transfer-directory', { method: 'POST', body: {} })).status, 409);
+  assert.equal(app.managementStats.folderOpens, 0);
   assert.equal(app.controls.status().clipboardBusy, true);
   for (const [path, body] of [['/api/clipboard/read', { source: 'primary' }], ['/api/key', { key: 'Enter' }], ['/api/desktop/terminal-display', { action: 'maximize' }]]) assert.equal((await app.request(path, { method: 'POST', body })).status, 409);
   assert.deepEqual(app.clipboardReads, ['clipboard']); assert.deepEqual(app.inputCalls, []);

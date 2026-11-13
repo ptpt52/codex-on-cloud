@@ -11,7 +11,7 @@ async function login(page, app) {
 }
 async function open(page) {
   await openInput(page); await page.locator('#clipboard-button').click();
-  await expect(page.getByRole('heading', { name: '取回远程文字' })).toBeVisible();
+  await expect(page.locator('#clipboard-dialog')).toBeVisible();
 }
 
 test('remote text is read only on request, copied after preview and cleared when source or dialog changes', async ({ page }) => {
@@ -40,12 +40,12 @@ test('remote text is read only on request, copied after preview and cleared when
     expect(app.clipboardReads).toEqual(['clipboard']);
     await page.locator('#read-clipboard').click();
     await expect(page.locator('#clipboard-preview')).toHaveValue('远程选中文字');
-    await page.locator('#close-clipboard').click();
+    await page.locator('#close-input-button').click();
     await expect(page.locator('#clipboard-preview')).toHaveValue('');
     await open(page); await expect(page.locator('#clipboard-preview')).toHaveValue('');
     expect(app.clipboardReads).toEqual(['clipboard', 'primary']);
     expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }).includes('远程选中文字'))).toBe(false);
-    await page.locator('#close-clipboard').click();
+    await page.locator('#close-input-button').click();
     await expect(page.locator('#mobile-input')).toHaveValue('保留原草稿');
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     expect(app.clipboardReads).toHaveLength(2); expect(app.inputCalls).toHaveLength(0);
@@ -97,7 +97,7 @@ test('late contents cannot repopulate a changed or closed preview', async ({ pag
     hold = gate(); app.clipboardText.primary = '关闭后不保留';
     await page.locator('#read-clipboard').click();
     await expect.poll(() => app.clipboardReads.length).toBe(2);
-    await page.locator('#close-clipboard').click(); hold.release();
+    await page.locator('#close-input-button').click(); hold.release();
     await expect.poll(() => app.controls.status().clipboardBusy).toBe(false);
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(page.locator('#clipboard-button')).toBeEnabled();

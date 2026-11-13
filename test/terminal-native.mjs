@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createDesktopControls, desktopEnvironment, RESUME_COMMAND } from '../native/desktop-controls.mjs';
 import { runInputCommand } from '../native/input.mjs';
+import { createDesktopActions } from '../native/desktop-actions.mjs';
 
 const exec = promisify(execFile), source = resolve(import.meta.dirname, '..');
 const root = await mkdtemp(join(tmpdir(), 'codex-display-'));
@@ -261,7 +262,25 @@ try {
   const result = join(config.workspace, 'resume-args.json');
   await eventually(async () => !!(await readFile(result, 'utf8')));
   assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { args: ['resume', '--cd', cwd, resumeId], cwd });
-  console.log(`✓ isolated real X11 and PTY: new/reopened windows maximize, existing restored windows keep their geometry; browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, ${keyCases.length} key encodings, font/clipboard and dummy resume passed without starting Codex`);
+  const panesBeforeFolder = await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_pid}']);
+  const actions = createDesktopActions(config, env, { spawnProcess(command, args, options) {
+    const child = spawn(command, args, { ...options, detached: true }); children.push(child); return child;
+  } });
+  try {
+    await actions.perform('/transfer-directory', {});
+    let folderWindow;
+    await eventually(async () => { folderWindow = await run('xdotool', ['search', '--onlyvisible', '--class', '^CodexCloudTransfer$']); return /^\d+$/.test(folderWindow); });
+    await run('xdotool', ['windowminimize', folderWindow]);
+    await eventually(async () => (await run('xwininfo', ['-id', folderWindow])).includes('Map State: IsUnMapped'));
+    await actions.perform('/transfer-directory', {});
+    await eventually(async () => (await run('xdotool', ['search', '--onlyvisible', '--class', '^CodexCloudTransfer$'])) === folderWindow);
+    assert.equal(await run('xdotool', ['search', '--onlyvisible', '--class', '^CodexCloudTransfer$']), folderWindow, 'restore the one existing transfer window');
+    await run('xdotool', ['key', '--clearmodifiers', 'ctrl+l']);
+    await run('xdotool', ['key', '--clearmodifiers', 'ctrl+c']);
+    await eventually(async () => (await run('xclip', ['-selection', 'clipboard', '-out'])).replace(/\/$/, '') === config.transfer);
+    assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-a', '-F', '#{pane_pid}']), panesBeforeFolder);
+  } finally { actions.close(); }
+  console.log(`✓ isolated real X11 and PTY: new/reopened windows maximize, existing restored windows keep their geometry; browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, ${keyCases.length} key encodings, font/clipboard, dummy resume and fixed transfer-folder open/reuse passed without starting Codex`);
 } finally {
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }

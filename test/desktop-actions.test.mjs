@@ -4,10 +4,86 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import { createDesktopActions, createDesktopActionServer, desktopActionClient } from '../native/desktop-actions.mjs';
 import { executeInput } from '../native/input.mjs';
 import { serviceUnits } from '../native/service-units.mjs';
+import { fixture } from './fixture.mjs';
+
+test('opening the fixed transfer directory requires owner, Origin and CSRF and never accepts a path', async t => {
+  const app = await fixture(); t.after(() => app.close());
+  const path = '/api/desktop/transfer-directory', options = { method: 'POST', body: {} };
+  assert.equal((await app.request(path, options)).status, 401);
+  await app.login(); assert.equal((await app.request(path, options)).status, 409);
+  await app.claim();
+  assert.equal((await app.request(path, { ...options, headers: { origin: 'https://invalid.example' } })).status, 403);
+  assert.equal((await app.request(path, { ...options, headers: { 'x-csrf-token': '' } })).status, 403);
+  assert.equal((await app.request(path, { ...options, body: { path: '/etc' } })).status, 400);
+  assert.equal(app.managementStats.folderOpens, 0);
+  const result = await app.request(path, options);
+  assert.equal(result.status, 200); assert.deepEqual(await result.json(), { ok: true });
+  assert.equal(app.managementStats.folderOpens, 1); assert.deepEqual(app.inputCalls, []);
+  assert.equal(app.managementStats.restarts, 0);
+});
+
+test('terminal-only deployments cannot open a graphical transfer directory', async t => {
+  const app = await fixture({ mode: 'terminal' }); t.after(() => app.close()); await app.login(); await app.claim();
+  assert.equal((await app.request('/api/desktop/transfer-directory', { method: 'POST', body: {} })).status, 501);
+  assert.equal(app.managementStats.folderOpens, 0);
+});
+
+test('transfer folder action uses a fixed private file manager, restores minimized windows and bounds children', async () => {
+  const calls = [], children = []; let window = '';
+  const env = { DISPLAY: ':synthetic', XAUTHORITY: '/private/auth' };
+  const actions = createDesktopActions({ transfer: "/workspace/a '$(never)/transfer" }, env, {
+    async run(command, args) {
+      calls.push([command, args]);
+      if (command === 'xprop') return '_NET_CLIENT_LIST(WINDOW): window id # 0x7b, 0x1c8';
+      return args[0] === 'search' && !args.includes('--onlyvisible') ? window : '';
+    },
+    spawnProcess(command, args, options) {
+      calls.push([command, args]); assert.equal(options.env, env);
+      const child = new EventEmitter(); Object.assign(child, { exitCode: null, signalCode: null, stdin: { end() {} }, kill() { this.signalCode = 'SIGTERM'; } });
+      children.push(child); queueMicrotask(() => child.emit('spawn')); return child;
+    },
+  });
+  await assert.rejects(actions.perform('/transfer-directory', { path: '/etc' }), { status: 400 });
+  assert.deepEqual(await actions.perform('/transfer-directory', {}), { ok: true });
+  assert.deepEqual(calls.find(call => call[0] === 'dbus-run-session'), ['dbus-run-session', ['--', 'thunar', '--class=CodexCloudTransfer', '--', "/workspace/a '$(never)/transfer"]]);
+  await assert.rejects(actions.perform('/transfer-directory', {}), { status: 409 });
+  window = 'invalid\n999\n123\n456';
+  assert.deepEqual(await actions.perform('/transfer-directory', {}), { ok: true });
+  assert.deepEqual(calls.at(-1), ['xdotool', ['windowactivate', '--sync', '123']]);
+  assert.equal(children.length, 1);
+  actions.close(); assert.equal(children[0].signalCode, 'SIGTERM');
+  await assert.rejects(actions.perform('/transfer-directory', {}), { status: 503 });
+});
+
+test('stopping transfer folder actions during a window probe prevents late launch', async () => {
+  let release; const hold = new Promise(resolve => { release = resolve; });
+  const actions = createDesktopActions({ transfer: '/fixed' }, {}, { async run() { await hold; return ''; }, spawnProcess() { throw Error('late launch'); } });
+  const pending = actions.perform('/transfer-directory', {}); actions.close(); release();
+  await assert.rejects(pending, { status: 503 });
+});
+
+test('a failed file manager spawn releases its slot for an explicit manual retry', async () => {
+  let spawns = 0;
+  const actions = createDesktopActions({ transfer: '/fixed' }, {}, {
+    async run() { return ''; },
+    spawnProcess() {
+      const child = new EventEmitter(); Object.assign(child, { exitCode: null, signalCode: null, stdin: { end() {} }, kill() {} });
+      const fail = ++spawns === 1;
+      queueMicrotask(() => { if (fail) { child.emit('error', Error('spawn failed')); child.emit('close', -2); } else child.emit('spawn'); });
+      return child;
+    },
+  });
+  try {
+    await assert.rejects(actions.perform('/transfer-directory', {}), /spawn failed/);
+    assert.equal(spawns, 1, 'never retry automatically');
+    assert.deepEqual(await actions.perform('/transfer-directory', {}), { ok: true });
+    assert.equal(spawns, 2);
+  } finally { actions.close(); }
+});
 
 test('desktop action socket authenticates, bounds bodies and admits only one action without a queue', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'codex-actions-')); t.after(() => rm(dir, { recursive: true, force: true }));

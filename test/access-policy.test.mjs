@@ -87,6 +87,8 @@ test('temporary accounts cannot unlock, inspect terminals, manage other sessions
   for(const path of ['/api/terminals','/api/desktop/settings','/api/forward/agents','/api/security','/desktop/index.html','/terminal/index.html'])assert.equal((await guest.request(path)).status,403,path);
   assert.equal((await guest.claim('test-screen-password')).status,403);
   assert.equal((await guest.request('/api/forward/agents/rule',{})).status,403);
+  assert.equal((await guest.request('/api/desktop/transfer-directory',{})).status,403);
+  assert.equal(app.managementStats.folderOpens,0);
   const maps=await(await guest.request('/api/forward')).json();assert.equal(maps.managedHelpersProtocol,2);assert.equal(maps.agents,undefined);assert.equal(maps.mappings,undefined);
   const rejected=await new Promise(resolve=>{const ws=new WebSocket(app.config.origin.replace('http','ws')+'/desktop/websockify?viewer='+guest.viewer,{headers:{origin:app.config.origin,cookie:guest.cookie}});ws.on('error',()=>{});ws.on('unexpected-response',(_q,r)=>{r.resume();ws.terminate();resolve(r.statusCode);});ws.on('open',()=>{ws.terminate();resolve(101);});});assert.equal(rejected,403);
   const upload=await fetch(app.config.origin+'/api/files/test.txt',{method:'PUT',headers:{origin:app.config.origin,cookie:guest.cookie,'x-csrf-token':guest.csrf,'content-type':'application/octet-stream'},body:'guest file'});assert.equal(upload.status,200);
@@ -102,6 +104,8 @@ test('locked sessions reject all terminal and desktop APIs and retain CSRF check
   for(const path of ['/api/terminals','/api/desktop/settings','/api/forward/agents','/api/security'])assert.equal((await admin.request(path)).status,423,path);
   for(const path of ['/api/paste','/api/key','/api/terminal','/api/clipboard/read','/api/desktop/rtc','/api/terminal/rtc','/api/terminal/history','/api/desktop/settings','/api/desktop/resolution','/api/desktop/viewport','/api/forward/agents','/api/forward/agents/rule/remove','/api/security/screen-lock'])assert.equal((await admin.request(path,{})).status,423,path);
   const invalid=await fetch(app.config.origin+'/api/files/no.txt',{method:'PUT',headers:{origin:app.config.origin,cookie:admin.cookie,'content-type':'application/octet-stream'},body:'no'});assert.equal(invalid.status,403);
+  assert.equal((await admin.request('/api/desktop/transfer-directory',{})).status,423);
+  assert.equal(app.managementStats.folderOpens,0);
   assert.deepEqual(app.inputCalls,[]);assert.deepEqual(app.terminalInputs,[]);
 });
 

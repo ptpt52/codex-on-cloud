@@ -463,6 +463,12 @@ export async function createPanel(config) {
       if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，本次终端操作未发送');
       return reply(res, 200, await managerRequest(config, '/terminals', body));
     }
+    if (path === '/api/desktop/transfer-directory' && req.method === 'POST') {
+      const body = await ownedBody(req, 128);
+      if (Object.keys(body).length) throw new HttpError(400, '共享目录操作不接受参数');
+      if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，本次打开目录操作未发送');
+      return reply(res, 200, await managerRequest(config, '/transfer-directory', body));
+    }
     if (['/api/desktop/viewport', '/api/desktop/resolution'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
       if (maintenancePending) throw new HttpError(409, '桌面操作正在进行');

@@ -1,5 +1,11 @@
 export const UPLOAD_PROTOCOL = 1;
 export const UPLOAD_CONFIRM_MS = 120000;
+export function transferFilePath(directory, name) {
+  if (typeof directory !== 'string' || !directory.startsWith('/') || /[\x00-\x1f\x7f]/.test(directory) || new TextEncoder().encode(directory).length > 4096) throw Error('服务器共享目录尚未就绪，请刷新后重试');
+  uploadResult({ ok: true, name });
+  return directory.replace(/\/+$/, '') + '/' + name;
+}
+export const quoteFilePath = path => "'" + path.replaceAll("'", "'\\''") + "'";
 export function uploadResult(value) {
   if (!value || value.ok !== true || typeof value.name !== 'string' || !value.name || value.name === '.' || value.name === '..' || value.name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(value.name) || new TextEncoder().encode(value.name).length > 240) {
     throw Object.assign(Error('上传完成信息不完整，结果未知；请刷新文件列表确认'), { status: 502, outcome: 'unknown' });

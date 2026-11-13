@@ -18,7 +18,7 @@ import { normalizeEntryBasePath } from '../panel/entry-path.mjs';
 const { parseArgs, parseEnv } = util;
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
-const packages = ['xvfb', 'x11vnc', 'xfwm4', 'xfdesktop4', 'xfce4-panel', 'xfce4-settings', 'xterm', 'tmux', 'xclip', 'xdotool', 'xauth', 'x11-utils', 'dbus', 'fontconfig', 'fonts-noto-cjk', 'python3'];
+const packages = ['xvfb', 'x11vnc', 'xfwm4', 'xfdesktop4', 'xfce4-panel', 'xfce4-settings', 'xterm', 'tmux', 'xclip', 'xdotool', 'thunar', 'xauth', 'x11-utils', 'dbus', 'fontconfig', 'fonts-noto-cjk', 'python3'];
 export const help = `用法：npm run deploy -- [选项]
 需要普通 Linux 用户、systemd 用户服务和 Node.js 22+；桌面模式另需 Codex CLI，纯终端模式可不安装。
 默认自动执行 npm ci、初始化、依赖检查、安装并启动用户服务。

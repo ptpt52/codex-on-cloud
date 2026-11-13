@@ -27,6 +27,61 @@ async function setup(page, { mode = 'terminal', count = 2, webrtc = false, fastC
 function output(app, text) {
   app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from(text).toString('base64') }) + '\n');
 }
+
+test('desktop sidebar activates existing tasks and preserves the viewer and per-target drafts', async ({ page }) => {
+  const { app, errors } = await setup(page, { mode: 'desktop', count: 3 });
+  const opens = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/terminals') opens.push(request.postDataJSON()); });
+  try {
+    const original = await app.controls.listTerminals(), source = await page.locator('#desktop-frame').getAttribute('src'), connections = app.vncConnections;
+    await expect(page.locator('#terminal-tabs')).toHaveAttribute('aria-label', '桌面终端任务');
+    await expect(page.locator('#terminal-tabs [data-terminal-choice]')).toHaveCount(3);
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toHaveCount(0);
+    await openInput(page); await page.locator('#mobile-input').fill('当前窗口草稿'); await closePanels(page);
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click();
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue(''); await page.locator('#mobile-input').fill('辅助任务草稿'); await closePanels(page);
+    await page.setViewportSize({ width: 1440, height: 480 }); await expect(page.locator('#terminal-session-button')).toBeVisible();
+    await page.locator('#terminal-session-button').click(); await expect(page.locator('#terminal-switch-title')).toHaveText('选择桌面终端');
+    await page.locator('#terminal-switch-list [data-terminal-choice=main]').click(); await expect(page.locator('#input-terminal')).toHaveValue('main');
+    await page.setViewportSize({ width: 900, height: 900 }); await expect(page.locator('#terminal-session-bar')).toBeHidden();
+    await page.setViewportSize({ width: 1440, height: 900 }); await expect(page.locator('#terminal-tabs')).toBeVisible();
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('辅助任务草稿');
+    await page.locator('#input-terminal').selectOption(''); await expect(page.locator('#mobile-input')).toHaveValue('当前窗口草稿');
+    expect(opens.map(body => body.action)).toEqual(['open', 'open', 'open']);
+    expect(opens.map(body => body.terminalToken)).toEqual([original.terminals[1].token, original.terminals[0].token, original.terminals[1].token]);
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source); expect(app.vncConnections).toBe(connections);
+    expect(await app.controls.listTerminals()).toEqual(original); expect(app.terminalInputs).toEqual([]); idle(app, errors);
+  } finally { await app.close(); }
+});
+
+test('desktop task activation reports an unswitched input target when drafts fill during the request', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (location.pathname !== '/') return;
+    sessionStorage.setItem('codex-cloud.terminals.v1', JSON.stringify({ version: 1, selection: { id: '', token: '' },
+      drafts: Array.from({ length: 9 }, (_, i) => ({ id: 'main', token: `%${100 + i}:${4000 + i}`, text: `保留的旧草稿 ${i}` })) }));
+  });
+  let release, entered;
+  const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const { app, errors } = await setup(page, { mode: 'desktop', count: 2 }); let opens = 0;
+  try {
+    await page.route('**/api/terminals', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      opens++; const response = await route.fetch(); entered(); await hold; await route.fulfill({ response });
+    });
+    await openInput(page);
+    await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await started;
+    await page.locator('#mobile-input').fill('请求期间新增的草稿');
+    await expect(page.locator('#draft-status')).toContainText('草稿空间已满');
+    release();
+    await expect(page.locator('#toast')).toContainText('输入助手目标尚未切换');
+    await expect(page.locator('#input-terminal')).toHaveValue('');
+    await expect(page.locator('#mobile-input')).toHaveValue('请求期间新增的草稿');
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'false');
+    expect(opens).toBe(1); idle(app, errors);
+  } finally { release(); await app.close(); }
+});
 const geometry = page => page.locator('#desktop-frame').boundingBox();
 const attachedHistory = page => page.evaluate(() => {
   const panel = document.getElementById('history-tools').getBoundingClientRect(), terminal = document.getElementById('desktop-frame').getBoundingClientRect();

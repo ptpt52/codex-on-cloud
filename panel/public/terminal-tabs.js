@@ -1,5 +1,5 @@
 export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dialog, list, choose, openActions, manage, changed }) {
-  let signature = '', currentTerminal;
+  let signature = '', currentTerminal, desktopContext = false;
   let layoutFrame = 0, closeFocusFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl, sidebarPicker = false;
   const compact = matchMedia('(max-width: 1000px)');
   const vertical = () => tabs.getAttribute('aria-orientation') === 'vertical';
@@ -8,7 +8,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
   function filterList() {
     const focused = list.contains(document.activeElement) ? document.activeElement : null;
     [...list.children].forEach((row, index) => { row.hidden = dialogMode === 'overflow' && !tabs.children[index]?.hidden; });
-    document.getElementById('terminal-switch-title').textContent = dialogMode === 'overflow' ? '更多终端' : '选择终端';
+    document.getElementById('terminal-switch-title').textContent = dialogMode === 'overflow' ? '更多终端' : desktopContext ? '选择桌面终端' : '选择终端';
     if (dialog.open && focused && !shown(focused)) {
       const first = [...list.querySelectorAll('[data-terminal-choice]:not(:disabled)')].find(shown);
       (first || document.getElementById('close-terminal-switch')).focus({ preventScroll: true });
@@ -86,7 +86,10 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
     mobileButton.dataset.active = String(more && currentOverflow);
   };
   narrow.addEventListener('change', label);
-  function render(catalog, selected, { visible, disabled, invalid, loading }) {
+  function render(catalog, selected, { visible, disabled, invalid, loading, desktop = false }) {
+    desktopContext = desktop;
+    tabs.setAttribute('aria-label', desktop ? '桌面终端任务' : '终端会话');
+    tabs.title = desktop ? '点击切换已有终端窗口；选中项为输入助手目标。直接键盘输入仍跟随桌面焦点。' : '';
     bar.hidden = !visible;
     mobileButton.disabled = disabled;
     const current = catalog.find(item => item.id === selected);
@@ -96,10 +99,10 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
     mobileActions.disabled = disabled || !currentTerminal;
     mobileActions.title = mobileActions.ariaLabel = currentTerminal ? `操作 ${currentTerminal.name}` : '当前终端操作';
     bar.dataset.closable = String(!!currentTerminal);
-    fullLabel = invalid ? '原终端已失效 · 选择终端' : loading ? '正在核对终端…' : current?.name || '选择终端';
+    fullLabel = invalid ? '原终端已失效 · 选择终端' : loading ? '正在核对终端…' : current?.name || (desktop ? '选择桌面终端' : '选择终端');
     shortLabel = invalid ? '选择终端' : loading ? '核对中…' : current?.id === 'main' && current.name === 'Codex 主终端' ? '主终端' : fullLabel;
     label();
-    const next = JSON.stringify({ catalog, selected, disabled, invalid });
+    const next = JSON.stringify({ catalog, selected, disabled, invalid, desktop });
     if (signature === next) return;
     signature = next;
     const focused = tabs.contains(document.activeElement) ? document.activeElement : null;
@@ -118,7 +121,7 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
         if (compact) { button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(active)); button.tabIndex = active ? 0 : -1; }
         else {
           button.setAttribute('aria-pressed', String(active));
-          const note = document.createElement('small'); note.textContent = terminal.available ? terminal.supported ? '点击创建新的 shell' : '已达到终端数量上限' : !terminal.supported ? '当前布局不可用' : active ? '当前查看和输入目标' : terminal.command || '已有终端'; button.append(note);
+          const note = document.createElement('small'); note.textContent = terminal.available ? terminal.supported ? '点击创建新的 shell' : '已达到终端数量上限' : !terminal.supported ? '当前布局不可用' : active ? desktop ? '输入助手目标' : '当前查看和输入目标' : terminal.command || '已有终端'; button.append(note);
         }
         button.addEventListener('click', () => { if (choose(terminal.id)) dialog.close(); });
         row.append(button);

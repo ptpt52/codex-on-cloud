@@ -43,17 +43,24 @@ test('send and receive directions preserve the draft and clear remote text when 
   app.clipboardText.clipboard = '只在点击读取后可见的远程文字';
   try {
     await login(page, app);
+    const frameURL = await page.locator('#desktop-frame').getAttribute('src');
+    const sendBox = await page.locator('#input-dock').boundingBox();
     await page.locator('#mobile-input').fill('尚未发送的草稿');
     await page.locator('#clipboard-button').click();
     await expect(page.locator('#clipboard-dialog')).toBeVisible();
+    expect(await page.locator('#input-dock').boundingBox()).toEqual(sendBox);
+    await expect(page.locator('#assistant-send-panel')).toBeHidden();
+    await expect(page.locator('[data-key="Enter"]')).toBeHidden();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
     expect(app.clipboardReads).toEqual([]);
     await page.locator('#read-clipboard').click();
     await expect(page.locator('#clipboard-preview')).toHaveValue(app.clipboardText.clipboard);
-    await page.locator('#clipboard-send-button').click();
+    await page.locator('#assistant-send-button').click();
     await expect(page.locator('#clipboard-dialog')).toBeHidden();
     await expect(page.locator('#clipboard-preview')).toHaveValue('');
     await expect(page.locator('#mobile-input')).toHaveValue('尚未发送的草稿');
     await expect(page.locator('#mobile-input')).toBeFocused();
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(frameURL);
     expect(app.inputCalls).toEqual([]);
     await page.locator('#close-input-button').click();
     await page.reload();
@@ -62,6 +69,22 @@ test('send and receive directions preserve the draft and clear remote text when 
     await expect(page.locator('#mobile-input')).toHaveValue('尚未发送的草稿');
     expect(app.clipboardReads).toEqual(['clipboard']);
   } finally { await app.close(); }
+});
+
+test('switching direction cancels a pending preview without a late read, draft loss or input replay', async ({ page }) => {
+  let release; const hold = new Promise(resolve => { release = resolve; });
+  const app = await fixture({ rfb: true, clipboardHook: async () => hold }); app.clipboardText.clipboard = '迟到的远程文字';
+  try {
+    await login(page, app); await page.locator('#mobile-input').fill('保留草稿');
+    await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click();
+    await expect.poll(() => app.clipboardReads.length).toBe(1);
+    await page.locator('#assistant-send-button').click(); release();
+    await expect(page.locator('#mobile-input')).toHaveValue('保留草稿');
+    await page.locator('#clipboard-button').click();
+    await expect(page.locator('#clipboard-preview')).toHaveValue('');
+    await expect(page.locator('#copy-clipboard')).toBeDisabled();
+    expect(app.clipboardReads).toEqual(['clipboard']); expect(app.inputCalls).toEqual([]);
+  } finally { release(); await app.close(); }
 });
 
 test('a simulated visual keyboard keeps paste and Enter visible without resizing or restarting the desktop', async ({ page }) => {

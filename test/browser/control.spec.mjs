@@ -28,7 +28,7 @@ test('direct paste, separate Enter and maximum escaped clipboard use encrypted c
     await openInput(page); await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click();
     await expect(page.locator('#clipboard-preview')).toHaveValue(app.clipboardText.clipboard);
     expect(app.clipboardReads).toEqual(['clipboard']); expect(http).toBe(0);
-    await page.locator('#close-clipboard').click();
+    await page.locator('#close-input-button').click();
     await expect(page.locator('#mobile-input')).toHaveValue(text);
   } finally { await app.close(); }
 });

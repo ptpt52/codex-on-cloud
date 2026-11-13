@@ -8,10 +8,10 @@ import { TERMINALS } from './terminals.mjs';
 const exec = promisify(execFile);
 const reject = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
 
-// Eight terminal children and one foreground selection owner. No action queue,
+// Eight terminal children, one transfer window and two bounded selection owners. No action queue,
 // shell strings, credentials on disk, or automatic clipboard reads.
 export function createDesktopActions(config, env, { spawnProcess = spawn, run = async (command, args) => (await exec(command, args, { env, timeout: 1000, maxBuffer: 8192 })).stdout.trim() } = {}) {
-  const windows = new Map(), owners = new Set(); let clipboard, stopped = false;
+  const windows = new Map(), owners = new Set(); let clipboard, transferWindow, stopped = false;
   const alive = child => child && child.exitCode === null && child.signalCode === null;
   function start(command, args, stderr = 'ignore') {
     const child = spawnProcess(command, args, { env, stdio: ['pipe', 'ignore', stderr] });
@@ -20,6 +20,29 @@ export function createDesktopActions(config, env, { spawnProcess = spawn, run = 
   return {
     async perform(path, body) {
       if (stopped) throw reject(503, '桌面执行服务已停止');
+      if (path === '/transfer-directory') {
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) throw reject(400, '共享目录操作不接受参数');
+        let existing = '';
+        try {
+          const [matches, clients] = await Promise.all([
+            run('xdotool', ['search', '--class', '^CodexCloudTransfer$']), run('xprop', ['-root', '_NET_CLIENT_LIST']),
+          ]);
+          // GTK also creates an invisible group-leader window with this class.
+          // Only activate a managed client, including one that is minimized.
+          const managed = new Set([...clients.matchAll(/0x([a-f0-9]+)/gi)].map(match => String(parseInt(match[1], 16))));
+          existing = matches.split('\n').find(value => /^\d+$/.test(value) && managed.has(value)) || '';
+        } catch {}
+        if (stopped) throw reject(503, '桌面执行服务已停止');
+        if (existing) { await run('xdotool', ['windowactivate', '--sync', existing]); return { ok: true }; }
+        if (alive(transferWindow)) throw reject(409, '共享目录窗口正在启动或关闭，请稍后查看');
+        // A private D-Bus session avoids forwarding this request to a file manager
+        // on the physical desktop. The directory and executable are fixed by config.
+        const child = transferWindow = start('dbus-run-session', ['--', 'thunar', '--class=CodexCloudTransfer', '--', config.transfer]);
+        child.stdin.end();
+        child.once('close', () => { if (transferWindow === child) transferWindow = undefined; });
+        await new Promise((resolve, fail) => { child.once('spawn', resolve); child.once('error', fail); });
+        return { ok: true };
+      }
       if (path === '/terminal') {
         const deadline = performance.now() + 2500;
         if (Object.keys(body).join(',') !== 'id') throw reject(400, '终端参数无效');
@@ -67,7 +90,7 @@ export function createDesktopActions(config, env, { spawnProcess = spawn, run = 
         return { ok: true };
       } catch (error) { child.kill('SIGKILL'); if (clipboard === child) clipboard = alive(previous) ? previous : undefined; throw error; }
     },
-    close() { stopped = true; for (const child of owners) child.kill('SIGKILL'); for (const child of windows.values()) child.kill(); windows.clear(); },
+    close() { stopped = true; for (const child of owners) child.kill('SIGKILL'); for (const child of windows.values()) child.kill(); if (alive(transferWindow)) transferWindow.kill(); windows.clear(); },
   };
 }
 
@@ -77,7 +100,7 @@ export function createDesktopActionServer(secret, actions) {
     const reply = (status, body) => { if (!res.destroyed) { res.writeHead(status, { 'content-type': 'application/json', connection: 'close' }); res.end(JSON.stringify(body)); } };
     const actual = Buffer.from(req.headers.authorization || '');
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return reply(401, { error: '桌面执行接口认证失败', outcome: 'rejected' });
-    if (req.method !== 'POST' || !['/terminal', '/clipboard'].includes(req.url)) return reply(404, { error: '动作不存在', outcome: 'rejected' });
+    if (req.method !== 'POST' || !['/terminal', '/clipboard', '/transfer-directory'].includes(req.url)) return reply(404, { error: '动作不存在', outcome: 'rejected' });
     if (active) return reply(409, { error: '桌面执行服务繁忙，本次操作未发送', outcome: 'rejected' });
     active = true; req.setTimeout(3000, () => req.destroy());
     try {

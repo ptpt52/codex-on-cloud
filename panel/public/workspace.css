@@ -179,7 +179,7 @@
   .settings-dialog .settings-actions button { flex: 1 1 auto; }
   .settings-dialog-footer { padding: 8px 14px; }
 }
-.input-dock.workspace-panel { inset: auto 16px calc(42px + var(--workspace-keyboard-inset, 0px)) auto; width: min(660px, calc(100vw - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 130px); display: flex; flex-direction: column; overflow: hidden; }
+.input-dock.workspace-panel { inset: auto 16px calc(16px + var(--workspace-keyboard-inset, 0px)) auto; width: min(660px, calc(100vw - 32px)); height: min(520px, calc(var(--workspace-visible-height, 100dvh) - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 32px); display: flex; flex-direction: column; overflow: hidden; }
 .input-dock .panel-heading { flex: none; }
 .assistant-directions { display: flex; gap: 8px; margin-bottom: 12px; flex: none; }
 .assistant-directions button { flex: 1; font-size: 12px; min-height: 44px; }
@@ -196,9 +196,20 @@
 .input-dock .keys .interrupt-key { margin-left: 4px; }
 .input-dock .dock-note { font-size: 11px; }
 .input-dock .input-status { flex: none; max-height: 4.5em; overflow: auto; }
-.clipboard-dialog { position: fixed; inset: auto 16px calc(42px + var(--workspace-keyboard-inset, 0px)) auto; margin: 0; width: min(660px, calc(100vw - 32px)); max-width: none; max-height: calc(var(--workspace-visible-height, 100dvh) - 130px); border-radius: 14px; }
-.clipboard-dialog .dialog-heading h2 { margin: 0; font-size: 16px; }
-.clipboard-dialog .dialog-heading button { min-height: 44px; min-width: 44px; }
+.input-dock .assistant-body { flex: 1 1 auto; }
+.assistant-send-panel { display: flex; flex-direction: column; min-height: 100%; gap: 12px; }
+.assistant-send-panel .composer { flex: 1 0 auto; }
+.assistant-send-panel .composer textarea { align-self: stretch; }
+.assistant-send-panel .dock-bottom { margin-top: auto; }
+.clipboard-panel { display: grid; gap: 8px; font-size: 12px; }
+.clipboard-source-row { display: flex; align-items: flex-end; gap: 8px; }
+.clipboard-source-row label { display: grid; flex: 1; min-width: 0; gap: 6px; }
+.clipboard-source-row select { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 14px; }
+.clipboard-source-row > button { flex: none; min-height: 44px; font-size: 12px; }
+.clipboard-panel .clipboard-help, .clipboard-panel #clipboard-status, .clipboard-panel #clipboard-meta { margin: 0; font-size: 11px; line-height: 1.5; }
+.clipboard-panel #clipboard-preview { width: 100%; min-height: 80px; height: 130px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); font-size: 14px; resize: vertical; }
+.clipboard-panel .clipboard-actions { display: flex; gap: 8px; }
+.clipboard-panel .clipboard-actions button { min-height: 44px; padding: 10px 14px; font-size: 12px; }
 .desktop-card:fullscreen .workspace-panel { bottom: 8px; max-height: calc(100dvh - 72px); }
 .desktop-card:fullscreen .tools-panel { top: 60px; }
 .desktop-card:fullscreen .input-dock { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
@@ -230,9 +241,10 @@
   .workspace-panel { left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); width: auto; border-radius: 16px; padding: 12px; max-height: min(70dvh, calc(100dvh - 118px)); }
   .tools-panel { top: auto; padding: 0; max-height: min(84dvh, calc(var(--workspace-visible-height, 100dvh) - 116px)); }
   .tools-panel .terminal-view-controls select, .tools-panel .pointer-options select, .tools-panel .workspace-layout-option select { font-size: 16px; }
-  .input-dock.workspace-panel, .clipboard-dialog { top: auto; left: 8px; right: 8px; bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--workspace-keyboard-inset, 0px)); width: auto; max-height: min(70dvh, calc(var(--workspace-visible-height, 100dvh) - 16px)); margin: 0; }
+  .input-dock.workspace-panel { top: auto; left: 8px; right: 8px; bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--workspace-keyboard-inset, 0px)); width: auto; max-height: min(70dvh, calc(var(--workspace-visible-height, 100dvh) - 16px)); margin: 0; }
   .input-dock .terminal-destination { grid-template-columns: minmax(0, 1fr) 100px; }
-  .input-dock .composer .primary { min-width: 76px; height: auto; min-height: 44px; align-self: stretch; }
+  .input-dock .composer .primary { min-width: 76px; height: 44px; min-height: 44px; align-self: flex-end; }
+  .clipboard-panel #clipboard-preview, .clipboard-source-row select { font-size: 16px; }
   .input-dock .terminal-destination select { min-height: 44px; font-size: 16px; }
   .workspace-keyboard-open .input-dock .panel-heading { margin-bottom: 4px; }
   .workspace-keyboard-open .input-dock #terminal-target-note { display: none; }
@@ -405,3 +417,23 @@
 .history-tools-floating.history-tools-sidebar { border: 0; border-bottom: 1px solid #4a4a4a; border-radius: 0; box-shadow: none; animation: history-sidebar-in 160ms cubic-bezier(.2,.8,.2,1); }
 @keyframes history-sidebar-in { from { clip-path: inset(0 0 100% 0); opacity: 0; } to { clip-path: inset(0); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .history-tools-floating.history-tools-sidebar { animation: none; } }
+
+/* Transfer actions stay with each file; paths are never submitted as input. */
+.transfer-dialog { width: 620px; max-width: calc(100vw - 24px); }
+.transfer-dialog #transfer-path { overflow-wrap: anywhere; }
+.transfer-dialog #open-transfer-directory { min-height: 44px; margin-top: 12px; font-size: 12px; }
+.transfer-dialog .upload-zone { width: 100%; min-height: 100px; margin: 16px 0; transition: background .15s, border-color .15s; }
+.transfer-dialog .upload-zone.drag-over { background: var(--accent-soft); border: 2px solid var(--accent); }
+.transfer-dialog .file-row { align-items: flex-start; flex-wrap: wrap; gap: 6px 12px; }
+.transfer-dialog .file-row > span { flex: 1 1 180px; padding-block: 9px; }
+.file-row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.file-row-actions a, .file-row-actions button { min-height: 44px; display: inline-flex; align-items: center; padding: 8px; font-size: 12px; white-space: nowrap; }
+.file-path-fallback { display: grid; gap: 6px; margin-top: 12px; font-size: 12px; }
+.file-path-fallback input { width: 100%; min-height: 44px; }
+.file-path-fallback p { font-size: 11px; }
+.input-dock.is-receiving #input-status, .input-dock.is-receiving #draft-status { display: none; }
+@media (max-width: 420px) {
+  .transfer-dialog { padding: 20px 16px; }
+  .transfer-dialog .file-row > span { flex-basis: 100%; }
+  .file-row-actions { width: 100%; justify-content: flex-end; }
+}

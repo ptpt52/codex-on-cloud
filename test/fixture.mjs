@@ -27,7 +27,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const fileVersions = new WeakMap(); let fileGeneration = 0;
   const fileVersion = bytes => { if (!fileVersions.has(bytes)) fileVersions.set(bytes, createHash('sha256').update(String(++fileGeneration)).digest('hex')); return fileVersions.get(bytes); };
   const screenGeometry = { width: rfbSize?.width ?? 1600, height: rfbSize?.height ?? 1600 };
-  const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0, viewportResizes: 0 };
+  const managementStats = { saves: 0, restarts: 0, resumes: 0, fontChanges: 0, maximizes: 0, restores: 0, viewportResizes: 0, folderOpens: 0 };
   const tunnel = { tunnelID: 'private-tunnel-id', connectorID: 'private-connector-id', connections: [
     { isConnected: true, edgeAddress: '2001:db8::1' }, { isConnected: true, edgeAddress: '2001:db8::2' },
     { isConnected: true, edgeAddress: '192.0.2.1' }, { isConnected: false, edgeAddress: '192.0.2.2' },
@@ -125,6 +125,10 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   const controls = createDesktopControls({ root: directory, maxTerminals, runtime: directory, display: ':99', workspace: '/test-workspace', transfer: '/test-workspace/transfer',
     env: process.env, preferencesFile, defaultPreferences }, {
     viewport: viewportControls,
+    actions: async (path, body) => {
+      if (path !== '/transfer-directory' || Object.keys(body).length) throw Error('unsupported fixture action');
+      managementStats.folderOpens++; return { ok: true };
+    },
     performInput: async value => { inputCalls.push(value); await inputHook?.(value); },
     readClipboard: async source => {
       clipboardReads.push(source);

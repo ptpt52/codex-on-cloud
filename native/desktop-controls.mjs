@@ -154,6 +154,14 @@ export function createDesktopControls(config, dependencies = {}) {
     try { return await terminals.manage(body); }
     finally { inputActive = false; }
   }
+  async function openTransferDirectory(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) throw new ControlError(400, '共享目录操作不接受参数');
+    if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，本次打开目录操作未发送');
+    if (!dependencies.actions) throw new ControlError(503, '桌面执行服务未就绪');
+    inputActive = true;
+    try { return await dependencies.actions('/transfer-directory', {}); }
+    finally { inputActive = false; }
+  }
   async function clipboard(body) {
     const source = clipboardSource(body?.source);
     if (busy()) throw new ControlError(409, '输入或桌面操作正在进行，请稍后手动读取');
@@ -299,5 +307,5 @@ export function createDesktopControls(config, dependencies = {}) {
       }
     });
   }
-  return { ready, get, save, apply, applyResolution, terminal, input, status, clipboard, resizeViewport, listTerminals: terminals.list, manageTerminals };
+  return { ready, get, save, apply, applyResolution, terminal, input, status, clipboard, openTransferDirectory, resizeViewport, listTerminals: terminals.list, manageTerminals };
 }

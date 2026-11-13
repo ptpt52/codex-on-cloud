@@ -3,8 +3,17 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { fixture } from './fixture.mjs';
-import { uploadOptions, uploadHeaders, readUploadHeaders, uploadResult } from '../panel/public/file-upload.js';
+import { uploadOptions, uploadHeaders, readUploadHeaders, uploadResult, transferFilePath, quoteFilePath } from '../panel/public/file-upload.js';
 import { settings } from '../native/config.mjs';
+
+test('transfer paths are absolute, bounded and quoted as literal shell arguments', () => {
+  const name = "中 文'$(never)`echo no`.txt", path = transferFilePath('/work dir/transfer///', name);
+  assert.equal(path, '/work dir/transfer/' + name);
+  assert.equal(quoteFilePath(path), "'/work dir/transfer/中 文'\\''$(never)`echo no`.txt'");
+  assert.equal(transferFilePath('/', 'root.txt'), '/root.txt');
+  for (const directory of ['', 'relative/path', '/path\nsecret', '/' + '中'.repeat(1400)]) assert.throws(() => transferFilePath(directory, 'ok.txt'));
+  for (const invalid of ['../escape', '.', '..', 'back\\slash', 'newline\n', '中'.repeat(81)]) assert.throws(() => transferFilePath('/safe', invalid));
+});
 
 test('independent file helper port defaults to the desktop helper and rejects invalid ports', () => {
   assert.equal(settings({ AGENT_PORT: '31001' }).fileAgentPort, 31001);

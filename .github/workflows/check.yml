@@ -217,7 +217,7 @@ jobs:
       - name: Isolated desktop dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb x11vnc xfwm4 xfdesktop4 xfce4-panel xfce4-settings xterm tmux xclip xdotool xauth x11-utils x11-xserver-utils dbus-x11 fonts-noto-cjk fonts-dejavu-core imagemagick python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb x11vnc xfwm4 xfdesktop4 xfce4-panel xfce4-settings xterm tmux xclip xdotool thunar xauth x11-utils x11-xserver-utils dbus-x11 fonts-noto-cjk fonts-dejavu-core imagemagick python3-pil
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Select the pinned Playwright browser

@@ -21,7 +21,7 @@ const selectedUnits = modeServices(config.mode);
 const dependencies = new Map([
   ['Xvfb', 'xvfb'], ['x11vnc', 'x11vnc'], ['xfwm4', 'xfwm4'],
   ['xfdesktop', 'xfdesktop4'], ['xfce4-panel', 'xfce4-panel'], ['xfsettingsd', 'xfce4-settings'],
-  ['xterm', 'xterm'], ['tmux', 'tmux'], ['xclip', 'xclip'], ['xdotool', 'xdotool'],
+  ['xterm', 'xterm'], ['tmux', 'tmux'], ['xclip', 'xclip'], ['xdotool', 'xdotool'], ['thunar', 'thunar'],
   ['xauth', 'xauth'], ['xdpyinfo', 'x11-utils'], ['xprop', 'x11-utils'], ['xwininfo', 'x11-utils'], ['dbus-run-session', 'dbus'],
   ['python3', 'python3'], ['codex', null],
 ]);

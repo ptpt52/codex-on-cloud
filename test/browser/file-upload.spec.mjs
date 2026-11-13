@@ -9,6 +9,95 @@ async function open(page, app) {
 const select = (page, name = '资料.txt') => page.locator('#upload-input').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('new content') });
 const writes = app => app.received.filter(r => r.method === 'PUT' && r.url.startsWith('/files/'));
 
+test('files provide full paths with manual copy fallback and add a quoted path to the existing draft without sending', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  const name = "资料 '$(never)`never`.txt", fullPath = '/test-workspace/transfer/' + name;
+  app.files.set(name, Buffer.from('content'));
+  await page.addInitScript(() => { window.copiedPaths = []; window.rejectPathCopy = false;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { if (window.rejectPathCopy) throw Error('denied'); window.copiedPaths.push(text); } } });
+  });
+  try {
+    await open(page, app); await page.locator('#close-files').click();
+    await page.locator('#toggle-input-button').click(); await page.locator('#mobile-input').fill('请读取这个文件');
+    await page.locator('#close-input-button').click();
+    const frameURL = await page.locator('#desktop-frame').getAttribute('src');
+    await page.locator('#files-button').click();
+    const row = page.locator('.file-row').filter({ hasText: name });
+    await row.getByRole('button', { name: /复制.*服务器路径/ }).click();
+    expect(await page.evaluate(() => window.copiedPaths)).toEqual([fullPath]);
+    await page.evaluate(() => { window.rejectPathCopy = true; });
+    await row.getByRole('button', { name: /复制.*服务器路径/ }).click();
+    await expect(page.locator('#file-path-preview')).toHaveValue(fullPath);
+    expect(await page.locator('#file-path-preview').evaluate(input => [input.selectionStart, input.selectionEnd])).toEqual([0, fullPath.length]);
+    await row.getByRole('button', { name: /加入输入草稿/ }).click();
+    await expect(page.locator('#files-dialog')).toBeHidden();
+    await expect(page.locator('#mobile-input')).toHaveValue("请读取这个文件\n'/test-workspace/transfer/资料 '\\''$(never)`never`.txt'");
+    await expect(page.locator('#mobile-input')).toBeFocused();
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(frameURL);
+    expect(app.inputCalls).toEqual([]); expect(writes(app)).toHaveLength(0); expect(app.managementStats.restarts).toBe(0);
+    await page.locator('#mobile-input').fill('x'.repeat(32768));
+    await page.locator('#files-button').click();
+    await row.getByRole('button', { name: /加入输入草稿/ }).click();
+    await expect(page.locator('#toast')).toContainText('超过 32 KiB');
+    await expect(page.locator('#files-dialog')).toBeVisible();
+    await expect(page.locator('#mobile-input')).toHaveValue('x'.repeat(32768));
+    await expect(page.locator('#open-transfer-directory')).toBeHidden();
+  } finally { await app.close(); }
+});
+
+test('dropping files uses the same single-file upload and explicit conflict confirmation', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); app.files.set('资料.txt', Buffer.from('original'));
+  const drop = names => page.locator('#upload-zone').evaluate((zone, names) => {
+    const dataTransfer = new DataTransfer(); for (const name of names) dataTransfer.items.add(new File(['dropped content'], name, { type: 'text/plain' }));
+    zone.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  }, names);
+  try {
+    await open(page, app);
+    const chooser = page.waitForEvent('filechooser'); await page.locator('#upload-zone').press('Enter');
+    await (await chooser).setFiles([]);
+    await drop(['one.txt', 'two.txt']);
+    await expect(page.locator('#toast')).toContainText('每次请拖入一个文件'); expect(writes(app)).toHaveLength(0);
+    await drop(['资料.txt']); await expect(page.locator('#file-conflict-dialog')).toBeVisible();
+    expect(writes(app)).toHaveLength(0); expect(app.files.get('资料.txt').toString()).toBe('original');
+    await page.locator('#file-conflict-rename').click();
+    await expect(page.locator('#upload-status')).toContainText('上传完成：资料 (2).txt');
+    expect(app.files.get('资料.txt').toString()).toBe('original'); expect(app.files.get('资料 (2).txt').toString()).toBe('dropped content');
+    expect(writes(app)).toHaveLength(1); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('a delayed copy failure cannot restore a path preview after closing and reopening files', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); app.files.set('old.txt', Buffer.from('content'));
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: () => new Promise((_resolve, reject) => { window.rejectFileCopy = () => reject(Error('denied')); }),
+  } }));
+  try {
+    await open(page, app); await page.getByRole('button', { name: '复制 old.txt 的服务器路径' }).click();
+    await expect.poll(() => page.evaluate(() => typeof window.rejectFileCopy)).toBe('function');
+    await page.locator('#close-files').click(); await page.locator('#files-button').click();
+    await page.evaluate(() => window.rejectFileCopy());
+    await expect(page.getByRole('button', { name: '复制 old.txt 的服务器路径' })).toBeEnabled();
+    await expect(page.locator('#file-path-fallback')).toBeHidden();
+    await expect(page.locator('#file-path-preview')).toHaveValue('');
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('desktop transfer directory opens through one fixed authorized action and keeps the viewer and tasks', async ({ page }) => {
+  const app = await fixture({ rfb: true }); const actions = [];
+  page.on('request', request => { if (request.url().endsWith('/api/desktop/transfer-directory')) actions.push(request.postDataJSON()); });
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    const frameURL = await page.locator('#desktop-frame').getAttribute('src');
+    await page.locator('#files-button').click(); await page.locator('#open-transfer-directory').click();
+    await expect(page.locator('#files-dialog')).toBeHidden();
+    expect(app.managementStats.folderOpens).toBe(1); expect(actions).toEqual([{}]);
+    expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(frameURL);
+  } finally { await app.close(); }
+});
+
 test('same-name upload defaults to cancel and offers accessible rename and versioned replacement', async ({ page }, info) => {
   const app = await fixture({ mode: 'terminal' }); app.files.set('资料.txt', Buffer.from('original'));
   try {
