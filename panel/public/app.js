@@ -1106,6 +1106,7 @@ async function showWorkspace(user) {
   if (permissions.canClaim && !permissions.requiresUnlock) initializeTerminalSelection();
   else { selectedTerminal = ''; selectedTerminalToken = ''; terminalCatalog = []; terminalSlots = []; $('mobile-input').value = ''; }
   $('user-label').textContent = user.username + (permissions.role === 'temporary' ? ' · 临时访问' : '') + (nodeIdentity() ? ' · 节点 ' + nodeIdentity().slice(0, 8) : '');
+  $('user-label').title = $('user-label').textContent;
   $('password').value = '';
   $('login-view').hidden = true;
   $('workspace-view').hidden = false;

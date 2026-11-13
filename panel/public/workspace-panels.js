@@ -152,9 +152,9 @@ export function createHistoryToolsPortal({ frame, container, valid, opened, comp
     entry.panel.style.top = `${boundary - entry.panel.getBoundingClientRect().height}px`;
     entry.panel.classList.toggle('history-tools-sidebar', sidebarActive());
     if (sidebarActive()) {
-      const top = Math.max(visibleTop + 8, frameBox.top + 8);
+      const top = Math.max(visibleTop, frameBox.top);
       const panelHeight = Math.max(44, Math.min(280, visibleBottom - top - 8));
-      entry.panel.style.left = `${frameBox.left + 8}px`; entry.panel.style.width = `${Math.min(660, Math.max(1, frameBox.width - 16))}px`;
+      entry.panel.style.left = `${frameBox.left}px`; entry.panel.style.width = `${frameBox.width}px`;
       entry.panel.style.top = `${top}px`; entry.panel.style.maxHeight = `${panelHeight}px`;
       entry.panel.style.setProperty('--history-panel-height', `${panelHeight}px`);
       entry.panel.classList.toggle('history-tools-short', panelHeight < 96);

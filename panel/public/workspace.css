@@ -271,7 +271,10 @@
 .sidebar-layout .desktop-card { display: grid; grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1 1 0; min-height: 0; border-radius: 12px; }
 .sidebar-layout .desktop-toolbar { display: none; }
 .sidebar-layout .desktop-stage { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; height: 100%; }
-.workspace-sidebar { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; padding: 16px 12px 10px; overflow: auto; overscroll-behavior: contain; background: var(--surface); border-right: 1px solid var(--line); }
+.sidebar-layout .desktop-card:not(.terminal-mode) { column-gap: 8px; background: var(--bg); }
+.sidebar-layout .desktop-card:not(.terminal-mode) .workspace-sidebar { border-right: 1px solid var(--line); }
+.sidebar-layout .desktop-card:not(.terminal-mode) .desktop-stage { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.workspace-sidebar { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; padding: 16px 12px 10px; overflow: auto; overscroll-behavior: contain; background: var(--surface); }
 .sidebar-brand .brand { gap: 9px; font-size: 15px; }
 .sidebar-brand img { flex: none; border-radius: 7px; }
 .sidebar-brand .brand-light { font-size: 12px; }
@@ -279,6 +282,7 @@
 .sidebar-mode .mode-switch { width: 100%; gap: 4px; margin: 0; }
 .sidebar-mode .mode-switch button { flex: 1; min-height: 44px; font-size: 12px; }
 .sidebar-sessions { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 136px; }
+.sidebar-layout .terminal-mode .sidebar-sessions { overflow: hidden; }
 .sidebar-heading { font-size: 11px; letter-spacing: .04em; color: var(--muted); padding: 0 4px; }
 .sidebar-heading strong { font-weight: 500; }
 .sidebar-terminals { display: flex; min-height: 0; flex: 1; }
@@ -291,17 +295,24 @@
 .workspace-sidebar .terminal-tab-actions { min-width: 44px; width: 44px; }
 .workspace-sidebar .terminal-session-button, .workspace-sidebar .terminal-session-actions { display: none !important; }
 .sidebar-history:empty { display: none; }
-.sidebar-history { border-top: 1px solid var(--line); padding-top: 12px; }
+/* Reserve the three button rows, gaps, padding and two status lines,
+   even while the active terminal's controls are temporarily unavailable. */
+.sidebar-history { flex: none; height: calc(172px + 2.8em); margin-inline: -6px; padding: 11px; border: 0; border-radius: 0; background: #292929; color: #e7eee9; color-scheme: dark; font-size: 11px; }
+.sidebar-layout .terminal-mode .sidebar-history:empty { display: block; visibility: hidden; }
 .sidebar-history #terminal-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; font-size: 11px; }
-.sidebar-history #terminal-tools > button { min-width: 44px; min-height: 44px; padding: 7px 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.sidebar-history #terminal-tools > button { min-width: 44px; min-height: 44px; padding: 7px 4px; border: 1px solid #505050; border-radius: 6px; background: #333; color: #e7eee9; font: inherit; font-size: 12px; }
 .sidebar-history #history-program { grid-column: 1 / -1; }
-.sidebar-history #terminal-tools > button[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
+.sidebar-history #terminal-tools > button[aria-pressed=true] { background: #f7971d; border-color: #f7971d; color: #231815; }
+.sidebar-history #terminal-tools > button[aria-expanded=true] { background: #403021; border-color: #f7971d; color: #ffc477; }
+.sidebar-history #terminal-tools > button:focus-visible { outline: 2px solid #f7971d; outline-offset: 2px; }
 .sidebar-history #terminal-tools > button:disabled { cursor: default; }
 .sidebar-history #history-status-row { grid-column: 1 / -1; min-width: 0; }
-.sidebar-history #history-state { display: block; max-height: 2.8em; overflow: hidden; line-height: 1.4; color: var(--muted); }
+/* Reserve two lines so paging and search notices cannot move the controls. */
+.sidebar-history #history-state { display: block; height: 2.8em; overflow: hidden; line-height: 1.4; color: #c7c7c7; }
 .sidebar-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; border-top: 1px solid var(--line); padding-top: 12px; }
 .sidebar-actions > button { min-width: 0; min-height: 44px; padding: 8px 4px; margin: 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 12px; white-space: nowrap; }
-.sidebar-actions > button:hover, .sidebar-history #terminal-tools > button:hover { background: var(--surface-hover); }
+.sidebar-actions > button:hover { background: var(--surface-hover); }
+.sidebar-history #terminal-tools > button:not(:disabled):not([aria-pressed=true]):not([aria-expanded=true]):hover { background: #3a3a3a; }
 .sidebar-actions > button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-line); }
 .sidebar-actions .sidebar-only { display: inline; margin-left: 5px; }
 .sidebar-account { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
@@ -317,4 +328,6 @@
 .sidebar-layout .input-dock.workspace-panel { top: auto; bottom: calc(16px + var(--workspace-keyboard-inset, 0px)); width: min(660px, calc(100vw - var(--workspace-sidebar-width) - 32px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 32px); }
 .sidebar-layout .desktop-card:fullscreen { border-radius: 0; }
 .sidebar-layout .desktop-card:fullscreen .workspace-panel { left: calc(var(--workspace-sidebar-width) + 8px); }
-.history-tools-floating.history-tools-sidebar { border: 1px solid #4a4a4a; border-radius: 10px; box-shadow: 0 12px 32px #0004; animation: none; }
+.history-tools-floating.history-tools-sidebar { border: 0; border-bottom: 1px solid #4a4a4a; border-radius: 0; box-shadow: none; animation: history-sidebar-in 160ms cubic-bezier(.2,.8,.2,1); }
+@keyframes history-sidebar-in { from { clip-path: inset(0 0 100% 0); opacity: 0; } to { clip-path: inset(0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .history-tools-floating.history-tools-sidebar { animation: none; } }
