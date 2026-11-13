@@ -40,32 +40,43 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
   async function negotiate({ token, session, viewer, body, headers, signal }) {
     if (!config.webrtc) throw error(404, '服务端已关闭直连');
     if (stopped || !authorized(token)) throw error(401, '登录已失效');
-    if (!/^[a-f0-9-]{16,64}$/.test(viewer || '') || Object.keys(body).some(key => !['type', 'sdp', 'hints'].includes(key))) throw error(400, '服务协商参数无效');
+    if (!/^[a-f0-9-]{16,64}$/.test(viewer || '') || Object.keys(body).some(key => !['type', 'sdp', 'hints', 'recheck'].includes(key)) || body.recheck !== undefined && body.recheck !== true) throw error(400, '服务协商参数无效');
     let hints, offer;
     let ice;
     try { hints = rtcHints(body.hints); ice = await turn?.(); offer = withHintCandidates(rtcOffer(body, { ipv6: !!config.webrtcIPv6, relay: ice?.relay, hints: [hints.browser] }), hints.browser, { ipv6: !!config.webrtcIPv6 }); }
     catch (err) { throw error(400, err.message); }
-    const key = session.hash + ':' + viewer;
+    const base = session.hash + ':' + viewer, key = base + (body.recheck ? ':candidate' : '');
     if (pages.has(key)) throw error(429, '本页面服务直连仍在运行');
     const role = session.role || 'admin';
     if (entries.size >= 8 || [...entries].filter(e => e.role === role).length >= 4 || [...entries].filter(e => e.session === session.hash).length >= 2) throw error(429, '服务直连名额已满，继续使用 HTTPS');
-    const controller = new AbortController(), entry = { key, role, session: session.hash, token, peer: null };
-    const valid = () => !stopped && !controller.signal.aborted && !signal.aborted && pages.get(key) === entry && !!authorized(token);
+    const controller = new AbortController(), entry = { key, candidate: body.recheck === true, role, session: session.hash, token, peer: null };
+    let candidateTimer;
+    const valid = () => !stopped && !controller.signal.aborted && !signal.aborted && pages.get(entry.key) === entry && !!authorized(token);
     entry.close = () => {
       if (entry.closing) return entry.closing;
+      clearTimeout(candidateTimer);
       entry.closing = Promise.resolve().then(() => entry.peer?.destroy()).finally(() => entries.delete(entry));
-      controller.abort(); if (pages.get(key) === entry) pages.delete(key);
+      controller.abort(); if (pages.get(entry.key) === entry) pages.delete(entry.key);
       return entry.closing;
     };
     entries.add(entry); pages.set(key, entry);
+    if (entry.candidate) candidateTimer = setTimeout(() => { void entry.close(); }, 26000).unref();
     signal.addEventListener('abort', () => { void entry.close(); }, { once: true });
     try {
       const { address, ipv6Address } = rtcBindAddresses(config, hints.server);
       entry.peer = createRTCBridge({ address, ipv6Address, remoteHints: [hints.browser], iceServers: ice?.iceServers || [], stunUrl: config.webrtcStunUrl, relay: ice?.relay, turnCa: config.selfhostCaBundle, serviceOnly: true, valid, closed: () => { void entry.close(); },
-        ...(connectFiles ? { connectFiles: (channel, live, fail) => connectFiles(channel, live, headers, controller.signal, fail) } : {}),
+        ...(connectFiles ? { connectFiles: (channel, live, fail) => { if (entry.candidate) { void entry.close(); return; } return connectFiles(channel, live, headers, controller.signal, fail); } } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
           if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, filesWindow: connectFiles ? 16 : 4, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
+          if (action === 'promote') {
+            if (!entry.candidate) throw error(409, '服务连接已变化');
+            const previous = pages.get(base);
+            clearTimeout(candidateTimer);
+            pages.delete(entry.key); entry.key = base; entry.candidate = false; pages.set(base, entry);
+            void previous?.close(); return { promoted: true };
+          }
+          if (entry.candidate) throw error(409, '候选连接尚未启用');
           const result = await localServiceRequest(port(), headers, action, value, controller.signal, config.entryBasePath);
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
           return result;

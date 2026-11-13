@@ -8,7 +8,7 @@ import { createTerminalTabs, createTerminalActions } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
 import { HISTORY_ROWS } from './terminal-history-limits.js';
 import { createBrowserPreferences } from './browser-preferences.js';
-import { createRTCHints } from './rtc-hints.js';
+import { createRTCHints, hintIP } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
 import { createUploadPrompt, uploadHeaders, uploadResult, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL } from './file-upload.js';
@@ -143,8 +143,10 @@ let browserStorage;
 try { browserStorage = localStorage; } catch {}
 const browserPreferences = createBrowserPreferences(browserStorage, { compact: matchMedia('(max-width: 700px)').matches }), displayPreferences = browserPreferences.value;
 const directHints = createRTCHints(browserStorage, { nodeId: nodeIdentity(), basePath: entryBasePath });
+let hintProbe, hintProbeSequence = 0;
 let workspaceInitialized = false, serviceProtocol = 0;
 const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection(),
+  canReplace: () => !fileTransferController && !fileListReader?.busy,
   trace: (type, detail) => recordConnection(type, detail, 'service') });
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
@@ -659,6 +661,10 @@ function renderConnection() {
   if ($('connection-summary-note').textContent !== overviewNote) $('connection-summary-note').textContent = overviewNote;
   renderConnectionNotice();
   const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
+  const selected = route || serviceLink.state.route, hints = directHints.value;
+  $('direct-hints-active').textContent = !selected ? '当前未确认 WebRTC 端点，保存的提示尚不能证明已生效。' :
+    (route ? '工作区当前路径：' : '文件与服务当前路径：') + rtcRouteLabel(selected) + '。' + [['server', 'remote', '节点'], ['browser', 'local', '浏览器']].filter(([key]) => hints[key]).map(([key, side, label]) =>
+      `${label}提示：${!selected[side]?.address ? '端点被隐藏，无法确认' : hintIP(selected[side].address) === hints[key] ? '与当前端点一致' : '与当前端点不同'}`).join('；');
   const panelPath = panelRoute === 'service' ? rtcRouteLabel(serviceLink.state.route) : panelRoute === 'direct' ? rtcRouteLabel(route) : panelRoute === 'terminal' ? 'HTTPS / WebSocket' : 'HTTPS';
   const routeStatus = value => ({ direct: '已建立加密直连', relay: '已建立 TURN 中继（端到端加密）', unknown: '已建立 WebRTC 加密通道，路径待确认' })[rtcRouteKind(value)];
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? `可访问（${panelPath}）` : panelState === 'offline' ? '连接中断' : '等待检测';
@@ -893,6 +899,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame({ keepLogout = false } = {}) {
+  if (hintProbe?.phase === 'workspace') finishHintProbe();
   discardStandby();
   historyToolsPortal.reset();
   terminalController?.abort();
@@ -964,6 +971,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  finishHintProbe();
   clearConnectionTrace();
   clearInputNotices();
   clearFileURLs();
@@ -1829,26 +1837,54 @@ $('connection-button').addEventListener('click', () => {
 $('close-connection').addEventListener('click', () => $('connection-dialog').close());
 $('connection-dialog').addEventListener('close', stopDiagnostics);
 $('refresh-connection').addEventListener('click', () => { void poll(); void loadDiagnostics(); });
+const hintProbeLabels = { probing: '正在验证新候选，当前连接继续运行。', waiting: '候选已验证，等待操作空闲及备用通道就绪。', switching: '正在选择并切换可用路径。',
+  selected: '新连接已启用，实际路径见下方。', verified: '新候选已验证并待命，按路径质量选择。', kept: '已验证候选，保留当前更快的连接。',
+  deferred: '当前切换条件尚未满足，保留可用连接，可稍后重新探测。', failed: '本次探测未成功，继续使用可用连接。', cancelled: '本次探测已结束，保留可用连接。', busy: '已有协商或操作进行中，可稍后重新探测。', unavailable: '当前未具备探测条件，提示将在后续协商使用。' };
+function finishHintProbe() {
+  clearTimeout(hintProbe?.timer); hintProbe = undefined;
+  for (const id of ['save-direct-hints', 'save-direct-hints-only', 'import-direct-hints', 'clear-direct-hints']) $(id).disabled = false;
+}
+function hintProbeReport(id, phase, value) {
+  if (!hintProbe || hintProbe.id !== id || hintProbe.phase !== phase || !Object.hasOwn(hintProbeLabels, value.state)) return;
+  const text = (phase === 'workspace' ? '工作区：' : '文件与服务：') + hintProbeLabels[value.state];
+  $('direct-probe-status').textContent = (phase === 'service' && hintProbe.workspaceResult ? hintProbe.workspaceResult + ' ' : '') + text;
+  if (['probing', 'waiting', 'switching'].includes(value.state)) return;
+  if (phase === 'workspace' && serviceLink.running) {
+    hintProbe.workspaceResult = text;
+    clearTimeout(hintProbe.timer); hintProbe.phase = 'service';
+    hintProbe.timer = setTimeout(() => { hintProbeReport(id, 'service', { state: 'cancelled' }); }, 32000);
+    void serviceLink.recheck(state => hintProbeReport(id, 'service', state));
+  } else finishHintProbe();
+}
+function startHintProbe() {
+  if (hintProbe || !loggedIn || accessExpired || hintProbeSequence >= 2147483647) return;
+  const id = ++hintProbeSequence, phase = frameLoaded && owned ? 'workspace' : 'service';
+  hintProbe = { id, phase, timer: setTimeout(() => hintProbeReport(id, phase, { state: 'cancelled' }), 32000) };
+  for (const name of ['save-direct-hints', 'save-direct-hints-only', 'import-direct-hints', 'clear-direct-hints']) $(name).disabled = true;
+  hintProbeReport(id, phase, { state: 'probing' });
+  if (phase === 'workspace') $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-recheck', frame: String(frameEpoch), id }, location.origin);
+  else void serviceLink.recheck(state => hintProbeReport(id, phase, state));
+}
 $('direct-hints-form').addEventListener('submit', event => {
   event.preventDefault();
   try {
     directHints.save({ server: $('direct-server-ip').value, browser: $('direct-browser-ip').value });
     $('direct-server-ip').value = directHints.value.server;
     $('direct-browser-ip').value = directHints.value.browser;
-    $('direct-hints-status').textContent = `${directHints.persisted ? '已保存到当前浏览器。' : '浏览器未能保存；仅当前页面生效。'}后续直连协商将使用这些提示，现有连接继续运行。`;
+    $('direct-hints-status').textContent = `${directHints.persisted ? '已保存到当前浏览器的当前节点。' : '浏览器未能保存；仅当前页面生效。'}后续直连协商将使用这些提示。`;
     $('import-direct-hints').hidden = true;
     sendDisplayPreferences();
-    serviceLink.wake();
-    if (frameLoaded && owned) $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-probe', frame: String(frameEpoch) }, location.origin);
+    renderConnection();
+    if (event.submitter?.id !== 'save-direct-hints-only') startHintProbe();
   } catch (error) { $('direct-hints-status').textContent = error.message; }
 });
 $('import-direct-hints').addEventListener('click', () => {
   const legacy = directHints.legacy; if (!legacy) return;
   $('direct-server-ip').value = legacy.server; $('direct-browser-ip').value = legacy.browser;
-  $('direct-hints-form').requestSubmit();
+  $('direct-hints-form').requestSubmit($('save-direct-hints-only'));
 });
 $('clear-direct-hints').addEventListener('click', () => {
-  $('direct-server-ip').value = ''; $('direct-browser-ip').value = ''; $('direct-hints-form').requestSubmit();
+  $('direct-server-ip').value = ''; $('direct-browser-ip').value = ''; $('direct-hints-form').requestSubmit($('save-direct-hints-only'));
 });
 for (const id of ['access-refresh-button', 'login-refresh-button']) $(id).addEventListener('click', () => leaveWorkspace('refresh'));
 function clipboardAccess() {
@@ -2081,6 +2117,7 @@ window.addEventListener('message', event => {
   if (standbyFrame && event.source === standbyFrame.element.contentWindow && event.data?.frame === String(standbyFrame.epoch)) { receiveStandby(event.data); return; }
   if (event.source !== $('desktop-frame').contentWindow) return;
   if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  if (event.data.type === 'codex-direct-recheck-state') { hintProbeReport(event.data.id, 'workspace', event.data); return; }
   if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
   if (event.data?.type === 'codex-panel-state') {
     const wasReady = panelReady;

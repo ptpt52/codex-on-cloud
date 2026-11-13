@@ -10,6 +10,7 @@ export function createFileListReader({ request, valid, render, status }) {
     status('');
   }
   return {
+    get busy() { return !!pending; },
     cancel,
     revalidate() { if (pending && !valid()) cancel('access'); },
     async read(signal) {

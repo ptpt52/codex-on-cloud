@@ -1,13 +1,15 @@
 import { directRetry } from './transport-policy.js';
 import { desktopTransport } from '/rtc-transport.js';
 import { createFileClient } from './file-client.js';
+import { createRTCRecheck } from './rtc-recheck.js';
 const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'GET /api/forward': 'forward-list' };
 export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
 
 // Separate authenticated service link: no frame, desktop claim or input replay.
-export function createServiceLink({ viewer, options, changed, trace = () => {} }) {
+export function createServiceLink({ viewer, options, changed, canReplace = () => true, trace = () => {} }) {
   let running = false, epoch = 0, current, files, pending, retry, timer, delay = 15000, busy = false, checking = false;
   let attempts = 0, halted = false, healthMisses = 0, retryDue = 0, probeAt = -Infinity;
+  let replacing = false;
   const state = { ready: false, issue: '', route: null };
   const publish = () => changed({ ...state });
   function retire(issue = '') { clearTimeout(timer); healthMisses = 0; const old = current, oldFiles = files; current = files = undefined; state.ready = false; state.route = null; state.issue = issue; oldFiles?.close(); old?.close(); publish(); }
@@ -48,7 +50,7 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
   }
   async function probe() {
     clearTimeout(retry); retry = undefined;
-    if (!running || halted || current || pending || document.hidden || !navigator.onLine) return;
+    if (!running || recheck.running || halted || current || pending || document.hidden || !navigator.onLine) return;
     const version = epoch, controller = pending = new AbortController(); let candidate;
     probeAt = performance.now(); state.issue = 'connecting'; publish();
     try {
@@ -71,19 +73,45 @@ export function createServiceLink({ viewer, options, changed, trace = () => {} }
     } finally { if (pending === controller) pending = undefined; }
   }
   function wake() { if (!running) return; if (current && !checking) { clearTimeout(timer); timer = setTimeout(() => void monitor(epoch, current), 100); } else if (!current) schedule(Math.max(100, 5000 - (performance.now() - probeAt))); }
+  const recheck = createRTCRecheck({
+    allowed: () => running && !pending,
+    idle: () => !busy && !files?.busy && !checking && !replacing && canReplace(),
+    current: () => current && ({ rttMs: current.health.rttMs }),
+    open: async signal => {
+      let candidate; const promoteRequired = !!current;
+      candidate = await desktopTransport(viewer, () => {}, { service: true, recheck: promoteRequired, probe: true, trace, signal, bootstrap: options,
+        failed: reason => { if (current === candidate) { retire(reason); schedule(1000); } } });
+      if (candidate) candidate.promoteRequired = promoteRequired;
+      return candidate;
+    },
+    replace: async candidate => {
+      if (busy || files?.busy || checking || !canReplace()) return;
+      replacing = true;
+      try {
+        const route = await candidate.stats();
+        if (candidate.promoteRequired) await candidate.control.request('promote', {});
+        clearTimeout(timer); const old = current, oldFiles = files;
+        current = candidate; files = undefined; state.ready = true; state.issue = ''; state.route = route;
+        oldFiles?.close(); old?.close(); healthMisses = 0; publish();
+        if (candidate.features?.filesProtocol === 1) openFiles(candidate);
+        timer = setTimeout(() => void monitor(epoch, candidate), 3000);
+        return { retained: true, state: 'selected' };
+      } finally { replacing = false; }
+    },
+  });
   window.addEventListener('online', wake); navigator.connection?.addEventListener('change', wake);
   document.addEventListener('visibilitychange', wake);
   return { state, get running() { return running; }, get ready() { return !!current && state.ready; }, get busy() { return busy; },
     get rttMs() { return current?.health.rttMs ?? null; },
     get transport() { return current; },
-    get files() { return files?.ready ? files : null; },
-    get helperFiles() { return current?.features?.helperDownloadsProtocol === 1 && files?.ready ? files : null; },
+    get files() { return !replacing && files?.ready ? files : null; },
+    get helperFiles() { return !replacing && current?.features?.helperDownloadsProtocol === 1 && files?.ready ? files : null; },
     start() { if (running) return; running = true; epoch++; delay = 15000; attempts = 0; halted = false; void probe(); },
-    wake,
-    stop() { running = false; epoch++; clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },
+    wake, async recheck(report) { await recheck.run(report); if (running && !current) schedule(1000); },
+    stop() { running = false; epoch++; recheck.cancel(); clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },
     async request(action, body, signal) {
       const peer = current;
-      if (!peer || !state.ready || busy || signal?.aborted) throw Object.assign(Error('服务直连未就绪，本次操作未发送'), { outcome: 'rejected' });
+      if (!peer || !state.ready || busy || replacing || signal?.aborted) throw Object.assign(Error('服务直连未就绪，本次操作未发送'), { outcome: 'rejected' });
       busy = true;
       try {
         const value = await peer.control.request(action, body);

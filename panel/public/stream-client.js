@@ -5,6 +5,7 @@ import { rtcRouteKind } from './rtc-stats.js';
 import { TERMINAL_IDS } from '/terminal-slots.js';
 import { createRoundTrip, createHeartbeatPolicy } from '/health.js';
 import { nodeURL } from '/node-scope.js';
+import { createRTCRecheck } from '/rtc-recheck.js';
 
 const CHUNK = 12 * 1024, integer = n => Number.isSafeInteger(n) && n >= 0 && n <= 2 ** 40;
 const encode = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
@@ -83,7 +84,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     socket.lastError = reason; trace('session-ended', { reason: reason || 'closed', queuedBytes: inputBytes });
     if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason, eventId: id, path: active?.kind || lastPath }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
-    ended = true; directController?.abort();
+    ended = true; recheck.cancel(); directController?.abort();
     for (const [id, pending] of panelRequests) finishPanel(id, panelFailure(pending.action, '连接已关闭，操作结果请核对终端列表'));
     finishTarget(uncertainTarget ? failure('终端切换结果未知，请重新选择') : switchBusy('连接已关闭，切换未发送；恢复后请再点目标终端'));
     for (const timer of [relayTimer, directTimer, promotionTimer, recoveryTimer]) clearTimeout(timer);
@@ -335,7 +336,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     }, opened ? relayDelay : 0);
   }
   function scheduleDirect(delay = probeDelay) {
-    if (ended || directHalted || targetPending || directController || peers.has('direct') || !canTryDirect() || document.hidden || !navigator.onLine || active?.kind === 'direct') return;
+    if (ended || recheck.running || directHalted || targetPending || directController || peers.has('direct') || !canTryDirect() || document.hidden || !navigator.onLine || active?.kind === 'direct') return;
     const wait = directExpedited ? Math.max(Math.min(delay, 1000), routes.networkWait()) : Math.max(delay, routes.remaining()), due = performance.now() + wait;
     if (directTimer && directDue <= due) return;
     clearTimeout(directTimer); directDue = due;
@@ -372,27 +373,29 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (!ended && !peer.gone && active !== peer) { clearTimeout(promotionTimer); promotionTimer = setTimeout(() => void promote(peer), Math.max(1000, peer.networkProbe ? 0 : routes.remaining())); }
     }
   }
-  async function connectDirect() {
+  async function connectDirect(prepared) {
     if (ended || directHalted || targetPending || directController || peers.has('direct') || document.hidden || !navigator.onLine || !canTryDirect()) return;
     trace('direct-start', { path: 'direct' });
     const expedited = directExpedited; directExpedited = false;
     if (expedited) routes.networkProbeStarted();
     const controller = directController = new AbortController(); let transport, peer, failureReason = 'negotiation';
     try {
-      transport = await desktopTransport(viewer, live => { if (!live && peer) lost(peer); }, { probe: true, signal: controller.signal, terminal, streamId: id, standby, bootstrap, failed: reason => { failureReason = reason; issue(reason); }, trace });
+      transport = prepared?.transport || await desktopTransport(viewer, live => { if (!live && peer) lost(peer); }, { probe: true, signal: controller.signal, terminal, streamId: id, standby, bootstrap, failed: reason => { failureReason = reason; issue(reason); }, trace });
       if (!transport) throw new Error();
       const channel = transport.video(); channel.binaryType = 'arraybuffer';
       peer = peerFor('direct', value => sendControl(channel, value), () => transport.close(), () => channel.bufferedAmount, true, () => channel.readyState === 'open'); peer.transport = transport;
+      if (prepared) prepared.peer = peer;
       peer.networkProbe = expedited;
       const decoder = controlDecoder(value => receive(peer, value), () => lost(peer));
       channel.addEventListener('message', event => { if (!peer.gone) decoder.push(event.data); }); channel.addEventListener('close', () => lost(peer)); channel.addEventListener('error', () => lost(peer));
-      await transport.start(); await transport.control.request('ping', {});
+      if (!prepared) await transport.start(); await transport.control.request('ping', {});
       if (active) await new Promise((resolve, reject) => { const timer = setTimeout(resolve, STABLE_ROUTE); controller.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('cancelled')); }, { once: true }); });
       if (ended || peer.gone || controller.signal.aborted) throw new Error();
       await transport.control.request('ping', {}); await transport.control.request('activate', {});
       await new Promise((resolve, reject) => { peer.welcome = resolve; transport.viewerReady(); const timer = setTimeout(() => reject(new Error('no standby')), 3000); peer.welcome = () => { clearTimeout(timer); resolve(); }; });
       peer.networkProbe ||= directExpedited; directExpedited = false;
       directAttempts = 0; probeDelay = 15000; void promote(peer);
+      return peer;
     } catch (error) {
       if (peer) lost(peer); else transport?.close();
       if (!controller.signal.aborted) {
@@ -402,6 +405,32 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     }
     finally { if (directController === controller) directController = undefined; scheduleDirect(); }
   }
+  let preparedProbe;
+  const recheck = createRTCRecheck({
+    allowed: () => !ended && !!active?.ready && !targetPending && !directController,
+    idle: () => idle() && settled() && inputAck === sent && !creating() && !targetPending && !transitioning && !claiming && healthy(peers.get('relay')),
+    current: () => active && ({ rttMs: active.quality.rttMs ?? socket.rttMs }),
+    open: async signal => {
+      clearTimeout(directTimer); directTimer = undefined; ensureRelay();
+      const prepared = preparedProbe = {};
+      prepared.transport = await desktopTransport(viewer, live => { if (!live && prepared.peer) lost(prepared.peer); }, { probe: true, signal, terminal, streamId: id, standby, bootstrap, trace });
+      return prepared.transport;
+    },
+    replace: async (transport, signal) => {
+      const relay = peers.get('relay'), previous = peers.get('direct');
+      if (signal.aborted || !healthy(relay)) return;
+      relay.networkProbe = true; relay.networkProbePending = false;
+      if (active !== relay && !await activate(relay, true)) return;
+      if (signal.aborted || active !== relay || !healthy(relay)) return;
+      if (previous) lost(previous);
+      directHalted = false; directExpedited = true;
+      const prepared = preparedProbe;
+      const peer = await connectDirect(prepared);
+      // The lifetime callback belongs to the candidate adopted by this call.
+      if (prepared) prepared.peer = peer;
+      return peer && !peer.gone ? { retained: true, state: active === peer ? 'selected' : 'verified' } : undefined;
+    },
+  });
   function wake(event) {
     if (ended) return;
     trace('network-change', { reason: document.hidden ? 'hidden' : !navigator.onLine ? 'offline' : event?.type === 'visibilitychange' ? 'visible' : event?.type === 'online' ? 'online' : 'changed' });
@@ -477,6 +506,6 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalOpen: { get: () => !terminal && !ended && active?.ready === true && active.terminalOpen === true }, terminalCreate: { get: () => !!terminal && !ended && active?.ready === true && active.terminalCreate === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
   for (const name of ['online', 'offline']) window.addEventListener(name, wake);
   navigator.connection?.addEventListener('change', wake); document.addEventListener('visibilitychange', wake);
-  return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake,
+  return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake, async recheck(report) { await recheck.run(report); scheduleDirect(); },
     get paused() { return isPaused; }, get transport() { return active?.transport || null; }, get idle() { return inputAck === sent; } };
 }

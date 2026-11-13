@@ -13,9 +13,9 @@ async function settings(page) {
   await page.locator('#connection-button').click();
   if (await page.locator('.direct-hints').getAttribute('open') === null) await page.locator('.direct-hints summary').click();
 }
-async function save(page, server, browser) {
+async function save(page, server, browser, probe = true) {
   await page.locator('#direct-server-ip').fill(server); await page.locator('#direct-browser-ip').fill(browser);
-  await page.locator('#save-direct-hints').click();
+  await page.locator(probe ? '#save-direct-hints' : '#save-direct-hints-only').click();
 }
 
 test('legacy global hints require explicit import and clearing affects only the current node', async ({ page }) => {
@@ -65,7 +65,7 @@ test('optional IP hints are sent on a new probe, preserve automatic discovery an
     await expect(page.locator('#mobile-input')).toHaveValue('地址更新时保留的草稿');
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source); expect(app.terminalChildren).toHaveLength(1);
     const count = offers.length;
-    await settings(page); await save(page, '10.123.254.252', '');
+    await settings(page); await save(page, '10.123.254.252', '', false);
     await page.locator('#close-connection').click();
     await page.waitForTimeout(1300);
     expect(offers).toHaveLength(count); await expect(page.locator('#diag-transport')).toContainText('WebRTC');
@@ -123,7 +123,7 @@ test('updating hints during signaling leaves that negotiation snapshot and its s
     });
     await login(page, app); await pending;
     const source = await page.locator('#desktop-frame').getAttribute('src');
-    await settings(page); await save(page, '10.123.254.253', ''); await page.locator('#close-connection').click();
+    await settings(page); await save(page, '10.123.254.253', '', false); await page.locator('#close-connection').click();
     expect(offers).toHaveLength(1); expect(offers[0].hints).toBeUndefined();
     release(); await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
     expect(offers).toHaveLength(1); expect(app.terminalChildren).toHaveLength(1); expect(app.terminalInputs).toEqual([]);

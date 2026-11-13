@@ -331,15 +331,17 @@
     </details>
     <details class="direct-hints">
       <summary>直连地址提示（可选）</summary>
-      <p class="muted">自动探测继续运行。可填写服务器 IP、浏览器端电脑 IP，或两者都填；留空使用自动发现。支持私有 IPv4、普通公网 IPv6，不含端口。</p>
+      <p class="muted">填写当前工作台节点和浏览器所在设备的可达 IP，可只填一项；留空自动发现。支持私有或普通公网 IPv4、普通公网 IPv6，以及明确指定的 VPN 地址。不填端口。</p>
       <form id="direct-hints-form">
-        <label for="direct-server-ip">服务器 IP<input id="direct-server-ip" type="text" maxlength="45" placeholder="例如：192.168.1.10" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
+        <label for="direct-server-ip">节点主机直连 IP<input id="direct-server-ip" type="text" maxlength="45" placeholder="例如：192.168.1.10" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
         <label for="direct-browser-ip">浏览器端 IP<input id="direct-browser-ip" type="text" maxlength="45" placeholder="例如：192.168.1.20" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
-        <button id="save-direct-hints" type="submit" class="secondary">保存并尝试直连</button>
+        <div class="confirmation-actions"><button id="save-direct-hints-only" type="submit" class="secondary">保存</button><button id="save-direct-hints" type="submit" class="secondary">保存并重新探测</button></div>
       </form>
-      <p class="muted">地址按当前节点保存到此浏览器，并随直连协商发送给节点。修改用于后续探测，已建立的连接继续运行；清空后保存可移除提示。</p>
+      <p class="muted">节点 IP 填运行任务的机器地址。地址按节点保存到此浏览器；重新探测先验证候选，再等操作空闲后选择路径。已有任务继续运行。</p>
       <div class="confirmation-actions"><button id="import-direct-hints" type="button" class="secondary" hidden>导入旧提示到当前节点</button><button id="clear-direct-hints" type="button" class="quiet">恢复自动发现</button></div>
       <p id="direct-hints-status" class="muted" role="status"></p>
+      <p id="direct-probe-status" class="muted" role="status"></p>
+      <p id="direct-hints-active" class="muted"></p>
     </details>
   </dialog>
   <dialog id="forward-dialog" class="files-dialog forward-dialog" aria-labelledby="forward-title">

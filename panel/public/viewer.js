@@ -10,6 +10,7 @@ import { createStreamClient } from './stream-client.js';
 import { afterFirstFrame } from './first-frame.js';
 import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
+import { createRTCRecheck } from '/rtc-recheck.js';
 import { createDesktopInput } from '/desktop-input.js';
 
 const status = document.getElementById('status');
@@ -25,6 +26,23 @@ let lastMouse = { x: 0, y: 0, buttons: 0 }, releaseMouse = false;
 const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
 const preferences = { standby: false, zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
+const legacyRecheck = createRTCRecheck({
+  allowed: () => viewing && !stopping && !preferences.standby && !switching && !probeController,
+  idle: idleForSwitch,
+  current: () => transport && ({ rttMs: transport.health.rttMs }),
+  open: async signal => {
+    let candidate;
+    candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal, trace, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }) });
+    return candidate;
+  },
+  replace: async (candidate, signal) => {
+    if (!await prepareSwitch(signal) || pressedKeys.size || pressedPointers.size || pointerControls.busy || desktopInput.composing || desktopInput.busy || performance.now() - lastInteraction < 800 || signal.aborted) return;
+    switching = true; switchingFrom = rfb; frameHold.capture(canvas);
+    let adopted = false;
+    try { await candidate.control.request('activate', {}); attachViewer(candidate); adopted = true; return { retained: true, state: 'selected' }; }
+    finally { if (!adopted) finishSwitch(); }
+  },
+});
 let rfb, retry, stopping = false, resizeReady = false, frameReadiness;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
@@ -184,6 +202,12 @@ window.addEventListener('message', event => {
     const request = desktopText; desktopText = undefined; clearTimeout(request.timer); request.resolve({ outcome: value.outcome }); return;
   }
   if (value.type === 'codex-direct-probe') { networkChanged(); return; }
+  if (value.type === 'codex-direct-recheck' && Number.isSafeInteger(value.id) && value.id > 0) {
+    const report = state => parent.postMessage({ type: 'codex-direct-recheck-state', frame, id: value.id, ...state }, location.origin);
+    if (preferences.standby || preferences.blocked || !viewing) report({ state: 'unavailable' });
+    else void (streamClient ? streamClient.recheck(report) : legacyRecheck.run(report).finally(() => scheduleProbe()));
+    return;
+  }
   if (value.type !== 'codex-desktop-options') return;
   if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
     try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, rtcIceServers: rtcIceServers(value.rtc), rtcIceExpiresAt: value.rtc.rtcIceExpiresAt, hints: rtcHints(value.rtc.hints) }; } catch {}
@@ -272,7 +296,7 @@ panLayer.addEventListener('keydown', event => {
   viewport.scrollTop += steps[event.key][1];
 });
 function needsProbe() {
-  return !streamClient && !stopping && viewing && !switching && canTryDirect() && (!transport || !transport.control.ready);
+  return !legacyRecheck.running && !streamClient && !stopping && viewing && !switching && canTryDirect() && (!transport || !transport.control.ready);
 }
 function stopHealth() {
   healthGeneration++;
@@ -528,6 +552,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
+  legacyRecheck.cancel();
   cancelAnimationFrame(desktopFocusFrame);
   desktopInput.cancel();
   if (desktopText) { clearTimeout(desktopText.timer); desktopText.resolve({ outcome: 'unknown' }); desktopText = undefined; }

@@ -12,7 +12,7 @@ export function canTryDirect() { return enabled && window.isSecureContext && !!w
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
 // noVNC attaches to the connecting channel before negotiation can deliver bytes.
-export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, standby = false, bootstrap, service = false, trace = () => {} } = {}) {
+export async function desktopTransport(viewer, controlChanged = () => {}, { probe = false, signal, failed = () => {}, terminal, streamId, standby = false, bootstrap, service = false, recheck = false, trace = () => {} } = {}) {
   if (signal?.aborted) return null;
   if (!canTryDirect()) { failed('unsupported'); return null; }
   const controller = new AbortController();
@@ -91,7 +91,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const result = await fetch(entryPath(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc'), { method: 'POST', redirect: 'manual', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...nodeHeaders() },
-          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
+          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(service && recheck ? { recheck: true } : {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
         });
         if (!result.ok) { const reason = result.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(result.status); failure(reason); throw Object.assign(new Error('直连暂不可用'), { reason, status: result.status }); }
         const answer = await result.json();

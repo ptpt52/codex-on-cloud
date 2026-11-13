@@ -29,3 +29,15 @@ test('service peers are bounded per login and refuse VNC channels without openin
  c.peer.createDataChannel('codex-vnc',{ordered:true,protocol:'rfb'});
  for(let n=0;n<100&&c.channel.readyState!=='closed';n++)await new Promise(r=>setTimeout(r,20));assert.equal(c.channel.readyState,'closed');assert.equal(app.vncConnections,0);
 });
+
+test('a service recheck keeps the old peer usable and admits only one restricted candidate until promotion', async t => {
+ const app=await fixture({webrtc:true});t.after(()=>app.close());await setup(app);
+ const old=await serviceClient(app);t.after(()=>old.close());
+ const candidate=await serviceClient(app,{reuse:old,recheck:true});t.after(()=>candidate.close());
+ assert.equal((await old.rpc('files')).ok,true);assert.equal((await candidate.rpc('files')).error.status,409);
+ assert.equal((await candidate.request('/api/service/rtc',{...candidate.peer.localDescription,recheck:true})).status,429);
+ assert.equal(old.channel.readyState,'open');assert.equal((await candidate.rpc('promote')).value.promoted,true);
+ assert.equal((await candidate.rpc('files')).ok,true);
+ for(let n=0;n<100&&old.channel.readyState!=='closed';n++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(old.channel.readyState,'closed');assert.equal(app.vncConnections,0);assert.deepEqual(app.inputCalls,[]);
+});

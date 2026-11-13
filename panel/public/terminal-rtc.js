@@ -23,6 +23,6 @@ export async function terminalDirect(viewer, terminal, options) {
   });
   socket.send = text => sendControl(channel, JSON.parse(text)); socket.close = close;
   socket.stats = () => transport.stats();
-  return { socket, close, start: () => transport.start(), ping: () => transport.control.request('ping', {}),
+  return { socket, close, health: transport.health, start: () => transport.start(), ping: () => transport.control.request('ping', {}),
     activate: () => transport.control.request('activate', {}), attach: () => transport.viewerReady(), stats: () => transport.stats() };
 }

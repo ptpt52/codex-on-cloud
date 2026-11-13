@@ -10,6 +10,7 @@ import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
 import { createStreamClient } from '/desktop/stream-client.js';
 import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
+import { createRTCRecheck } from '/rtc-recheck.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
@@ -407,7 +408,7 @@ function acknowledgeOutput(current, bytes) {
   if (!pendingOutputAck) return;
   try { current.send(JSON.stringify({ type: 'ack', bytes: pendingOutputAck })); pendingOutputAck = 0; } catch {}
 }
-function needsProbe() { return ready && socket && !socket.session && !socket.direct && !stopped && canTryDirect(); }
+function needsProbe() { return !legacyRecheck.running && ready && socket && !socket.session && !socket.direct && !stopped && canTryDirect(); }
 function nativeIdle() { return !composing && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800; }
 function idleForSwitch() { return !blocked && !busy && !pending && !switching && !history?.reviewing && nativeIdle(); }
 function stopProbe() {
@@ -474,9 +475,27 @@ async function probeDirect() {
     scheduleProbe();
   }
 }
+const legacyRecheck = createRTCRecheck({
+  allowed: () => ready && !stopped && !standby && !switching && !candidateController,
+  idle: idleForSwitch,
+  current: () => ({ rttMs: health?.rttMs }),
+  open: signal => terminalDirect(viewer, { terminalId, terminalToken }, { trace, signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }) }),
+  replace: async (candidate, signal) => {
+    if (!await prepareSwitch(signal) || !nativeIdle() || signal.aborted) return;
+    switching = true; switchingFrom = socket; health?.suspend(); inputState();
+    try { await candidate.activate(); attachSocket(candidate.socket); candidate.attach(); return { retained: true, state: 'selected' }; }
+    finally { finishSwitch(true); }
+  },
+});
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent) return;
+  if (value?.type === 'codex-direct-recheck' && value.frame === frame && Number.isSafeInteger(value.id) && value.id > 0) {
+    const report = state => parent.postMessage({ type: 'codex-direct-recheck-state', frame, id: value.id, ...state }, location.origin);
+    if (standby || blocked || !ready) report({ state: 'unavailable' });
+    else void (streamClient ? streamClient.recheck(report) : legacyRecheck.run(report).finally(() => scheduleProbe()));
+    return;
+  }
   if (value?.type === 'codex-direct-probe' && value.frame === frame) { resume(); return; }
   if (value?.type === 'codex-direct-approved' && value.frame === frame && switchApproval?.id === value.id) { switchApproval.finish(value.allowed === true); return; }
   if (value?.type === 'codex-desktop-options') {
@@ -536,7 +555,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => resume());
 window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session) retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
-window.addEventListener('pagehide', event => { stopped = true; history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; term?.dispose(); term = fit = undefined; } });
+window.addEventListener('pagehide', event => { stopped = true; legacyRecheck.cancel(); history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });
 for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(name, event => {
   lastInteraction = performance.now();
