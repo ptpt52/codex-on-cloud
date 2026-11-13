@@ -1,3 +1,4 @@
+import { vpnIP } from './rtc-address.js';
 function endpoint(value) {
   if (!value) return null;
   const address = value?.address || value?.ip;
@@ -36,6 +37,7 @@ export function rtcDirectKind(route) {
   if (rtcRouteKind(route) !== 'direct') return 'unknown';
   const values = [route.local, route.remote];
   const family = route.family || (values.some(value => value.address?.includes(':')) ? 'IPv6' : values.some(value => /^\d+\.\d+\.\d+\.\d+$/.test(value.address || '')) ? 'IPv4' : 'unknown');
+  if (values.some(value => vpnIP(value.address))) return 'vpn';
   if (family === 'IPv6') return 'ipv6';
   if (family !== 'IPv4') return 'unknown';
   const private4 = value => /^(?:10\.|127\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(value.address || '');
@@ -44,7 +46,7 @@ export function rtcDirectKind(route) {
   return values.every(value => /^\d+\.\d+\.\d+\.\d+$/.test(value.address || '')) ? 'public-ipv4' : 'unknown';
 }
 
-export function rtcDirectLabel(kind) { return { lan: '局域网', ipv6: 'IPv6', nat: 'NAT 打洞', 'public-ipv4': '公网 IPv4' }[kind] || ''; }
+export function rtcDirectLabel(kind) { return { vpn: 'VPN', lan: '局域网', ipv6: 'IPv6', nat: 'NAT 打洞', 'public-ipv4': '公网 IPv4' }[kind] || ''; }
 
 export function gatherCandidates(peer, signal) {
   if (signal.aborted) return Promise.reject(new Error('直连协商已取消'));

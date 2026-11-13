@@ -295,7 +295,7 @@ test('real isolated setup uses the documented desktop size and preserves existin
   const directory=await mkdtemp(join(tmpdir(),'codex-real-setup-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   for(const folder of ['scripts','native'])await mkdir(join(directory,folder));
   await mkdir(join(directory,'panel','public'),{recursive:true});
-  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs','native/deployment-mode.mjs','panel/public/terminal-slots.js','panel/forward-agent-state.mjs','panel/forward-validation.mjs','panel/auth.mjs','panel/serial-config.mjs','panel/public/rtc-hints.js'])await copyFile(resolve(file),join(directory,file));
+  for(const file of ['scripts/setup.mjs','native/config.mjs','native/preferences.mjs','native/deployment-mode.mjs','panel/public/terminal-slots.js','panel/forward-agent-state.mjs','panel/forward-validation.mjs','panel/auth.mjs','panel/serial-config.mjs','panel/public/rtc-hints.js','panel/public/rtc-address.js'])await copyFile(resolve(file),join(directory,file));
   const exec=promisify(execFile);await exec(process.execPath,[join(directory,'scripts/setup.mjs')],{maxBuffer:8192});
   const files=['.env','secrets/panel_password','secrets/agent_secret','secrets/credentials.txt','data/panel/forward-agents.json'];
   const before=await Promise.all(files.map(file=>readFile(join(directory,file),'utf8')));

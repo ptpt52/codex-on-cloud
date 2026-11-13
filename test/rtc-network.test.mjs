@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { globalIPv4, globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL, rtcIceConfiguration } from '../panel/rtc-network.mjs';
+import { globalIPv4, globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL, rtcIceConfiguration, rtcBindAddresses, peerAddress } from '../panel/rtc-network.mjs';
 import { selectedRoute, gatherCandidates, rtcRouteKind, rtcRouteLabel } from '../panel/public/rtc-stats.js';
 
 const offer = candidates => ({ type: 'offer', sdp: ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
@@ -36,7 +36,7 @@ test('IPv6 selection prefers the LAN interface, reselects after address changes 
   assert.equal(rtcIPv6Address(undefined, '192.168.1.2', interfaces), '2408:8000::3');
   assert.equal(rtcIPv6Address('2408:8000:0:0:0:0:0:3', '192.168.1.2', interfaces), '2408:8000::3');
   assert.equal(rtcIPv6Address(undefined, '127.0.0.1', {}), undefined);
-  for (const ip of ['2408:8000::8', 'fd00::2', '::1']) assert.throws(() => rtcIPv6Address(ip, '192.168.1.2', interfaces));
+  for (const ip of ['2408:8000::8', '::1']) assert.throws(() => rtcIPv6Address(ip, '192.168.1.2', interfaces));
 });
 
 test('dual-stack offers reserve both families and deduplicate candidates', () => {
@@ -50,6 +50,16 @@ test('dual-stack offers reserve both families and deduplicate candidates', () =>
   assert.equal(rtcOffer(offer(Array(30).fill(candidate('2408:8000::1'))), { ipv6: true }).sdp.match(/a=candidate:/g).length, 1);
   assert.ok(!rtcOffer(offer(mixed)).sdp.includes('2408:8000:'));
   assert.ok(!rtcOffer(offer(['a=remote-candidates:1 8.8.8.8 53'])).sdp.includes('remote-candidates'));
+});
+
+test('local address hints bind assigned interfaces per negotiation and aliases keep the existing bind', () => {
+  const interfaces = { lan: [{ address: '192.168.1.2' }, { address: '2408::2' }], vpn: [{ address: '100.64.0.2' }, { address: 'fd00::2' }] };
+  const config = { webrtcAddress: '192.168.1.2', webrtcIPv6: true, webrtcIPv6Address: '2408::2' };
+  assert.deepEqual(rtcBindAddresses(config, ['100.64.0.2', 'fd00::2'], interfaces), { address: '100.64.0.2', ipv6Address: 'fd00::2' });
+  assert.deepEqual(rtcBindAddresses(config, '10.123.254.253', interfaces), { address: '192.168.1.2', ipv6Address: '2408::2' });
+  assert.deepEqual(rtcBindAddresses({ ...config, webrtcIPv6: false }, 'fd00::2', interfaces), { address: '192.168.1.2', ipv6Address: undefined });
+  assert.equal(rtcIPv6Address('fd00::2', '192.168.1.2', interfaces), 'fd00::2');
+  assert.equal(rtcRouteLabel({ family: 'IPv4', local: { address: '100.64.0.2', type: 'host' }, remote: { address: '100.64.0.3', type: 'host' } }), 'WebRTC 加密直连（VPN）');
 });
 
 test('STUN configuration permits one bounded UDP URL and rejects relays, credentials and URL injection', () => {

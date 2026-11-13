@@ -10,6 +10,21 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func TestVPNHintsAreScopedToTheConfiguredPeer(t *testing.T) {
+	for _, host := range []string{"100.64.0.2", "fd00::2"} {
+		ip := net.ParseIP(host)
+		if directIP(ip, true) || hintedDirectIP(ip, true, nil) || !hintedDirectIP(ip, true, []string{host}) {
+			t.Fatal("VPN candidate escaped its explicit hint policy", host)
+		}
+		if hintedDirectIP(ip, true, []string{"100.64.0.3"}) {
+			t.Fatal("unrelated peer allowed", host)
+		}
+	}
+	if hintedDirectIP(net.ParseIP("fd00::2"), false, []string{"fd00::2"}) {
+		t.Fatal("IPv6 disabled")
+	}
+}
+
 func TestHealthyStandbyPeerIsNotRenegotiatedWhenWSSHasLowerLatency(t *testing.T) {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {

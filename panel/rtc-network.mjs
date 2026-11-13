@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { hintIP, hintedAddress } from './public/rtc-address.js';
 import { networkInterfaces } from 'node:os';
 import { openSync, readSync, closeSync } from 'node:fs';
 
@@ -24,7 +25,7 @@ export function privateIPv4(address) {
 export function globalIPv6(address) {
   return typeof address === 'string' && !address.includes('%') && net.isIP(address) === 6 && global.check(address, 'ipv6') && !special.check(address, 'ipv6');
 }
-export function peerAddress(address, ipv6) { return privateIPv4(address) || globalIPv4(address) || (ipv6 && globalIPv6(address)); }
+export function peerAddress(address, ipv6, hints = []) { return privateIPv4(address) || globalIPv4(address) || (ipv6 && globalIPv6(address)) || hintedAddress(address, hints, ipv6); }
 
 // Explicit servers only: an empty list must never enable the library's default.
 export function rtcIceConfiguration(stun = '', servers = []) {
@@ -64,10 +65,21 @@ export function rtcIPv6Address(explicit, ipv4, interfaces = networkInterfaces())
   const ordered = preferred ? [preferred, ...entries.filter(entry => entry !== preferred)] : entries;
   const addresses = ordered.flatMap(([, rows]) => rows.filter(row => !row.internal && globalIPv6(row.address)).map(row => canonical(row.address)));
   if (explicit) {
-    if (!globalIPv6(explicit) || !addresses.includes(canonical(explicit))) throw new Error('WEBRTC_IPV6_ADDRESS 必须是本机已分配的公网 IPv6 地址');
+    if (!hintIP(explicit)?.includes(':') || !entries.some(([, rows]) => rows.some(row => row.address.includes(':') && canonical(row.address.split('%')[0]) === canonical(explicit)))) throw new Error('WEBRTC_IPV6_ADDRESS 必须是本机已分配的公网或 VPN IPv6 地址');
     return canonical(explicit);
   }
   return addresses[0];
+}
+
+// At most one socket per family. A local hint selects an assigned interface
+// only for this negotiation; aliases remain extra destinations on real ports.
+export function rtcBindAddresses(config, hints = [], interfaces = networkInterfaces()) {
+  const requested = (Array.isArray(hints) ? hints : [hints]).slice(0, 4).map(hintIP).filter(Boolean);
+  const local = new Set(Object.values(interfaces).flatMap(rows => rows.map(row => hintIP(row.address)).filter(Boolean)));
+  const address = requested.find(ip => !ip.includes(':') && local.has(ip)) || (config.webrtcAddressAuto ? rtcAddress(undefined, interfaces) : config.webrtcAddress) || '127.0.0.1';
+  const ipv6Address = config.webrtcIPv6 ? requested.find(ip => ip.includes(':') && local.has(ip)) ||
+    (config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address, interfaces) : config.webrtcIPv6Address) : undefined;
+  return { address, ipv6Address };
 }
 
 export function stunURL(value = 'stun:stun.cloudflare.com:3478') {
@@ -88,7 +100,7 @@ export function relayAddress(host, port, policy) {
   return !!policy?.addresses?.includes(host) && Number.isInteger(Number(port)) && Number(port) >= policy.minPort && Number(port) <= policy.maxPort;
 }
 // At most eight candidates, reserving room for both address families.
-export function rtcOffer(body, { ipv6 = false, relay } = {}) {
+export function rtcOffer(body, { ipv6 = false, relay, hints = [] } = {}) {
   if (body.type !== 'offer' || typeof body.sdp !== 'string' || Buffer.byteLength(body.sdp) > 32768 || /\0/.test(body.sdp)) throw new Error('连接协商内容无效');
   const lines = body.sdp.split(/\r?\n/);
   const media = lines.filter(line => line.startsWith('m='));
@@ -98,10 +110,10 @@ export function rtcOffer(body, { ipv6 = false, relay } = {}) {
   for (const line of lines) {
     if (!line.startsWith('a=candidate:')) continue;
     const [, component, transport, , host, port, typ, kind] = line.slice(12).split(/ +/);
-    const public6 = ipv6 && globalIPv6(host);
+    const public6 = ipv6 && (globalIPv6(host) || hintedAddress(host, hints, true) && host.includes(':'));
     const mdns = /^[a-zA-Z0-9-]{1,63}\.local$/.test(host || '');
     if (component !== '1' || transport?.toLowerCase() !== 'udp' || !/^\d+$/.test(port) || Number(port) < 1024 || Number(port) > 65535 || typ !== 'typ' ||
-        !(kind === 'host' && (privateIPv4(host) || globalIPv4(host) || mdns || public6) || kind === 'srflx' && (peerAddress(host, false) || public6) || kind === 'relay' && relayAddress(host, port, relay))) continue;
+        !(kind === 'host' && (peerAddress(host, ipv6, hints) || mdns || public6) || kind === 'srflx' && (peerAddress(host, ipv6, hints) || public6) || kind === 'relay' && relayAddress(host, port, relay))) continue;
     const list = kind === 'relay' ? relays : public6 ? v6 : kind === 'srflx' ? reflexive4 : host4, key = `${public6 ? canonical(host) : host}:${Number(port)}:${kind}`;
     if (list.length >= 8 || seen.has(key)) continue;
     seen.add(key); list.push(line);

@@ -19,10 +19,10 @@ export function forwardNegotiationFailure(pc) {
 
 // Managed rules share one helper peer; one-time mappings retain their own peer.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, prefer = () => true, maxWindow = 8, flowBudget = createFlowBudget() }) {
+export function createForwardPeer({ address, ipv6Address, remoteHints = [], stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, prefer = () => true, maxWindow = 8, flowBudget = createFlowBudget() }) {
   const healthPolicy = createHeartbeatPolicy(); let progressAt = -Infinity;
   if (!validTransferWindow(maxWindow)) throw Error('Invalid maximum forward window');
-  const allowed = host => peerAddress(host, !!ipv6Address);
+  const allowed = host => peerAddress(host, !!ipv6Address, remoteHints);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl);
   const pc = new RTCPeerConnection({ ...ice, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false,
     iceInterfaceAddresses: { udp4: address, ...(ipv6Address ? { udp6: ipv6Address } : {}) }, icePortRange: [40016, 40047],

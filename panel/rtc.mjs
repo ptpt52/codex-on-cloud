@@ -8,13 +8,13 @@ import { guardIceAgent } from './rtc-guard.mjs';
 import { guardSCTP } from './rtc-sctp.mjs';
 import { createRTCWriter } from './rtc-writer.mjs';
 import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT } from './public/transport-policy.js';
-export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress } from './rtc-network.mjs';
+export { privateIPv4, rtcOffer, rtcIPv6Address, rtcAddress, rtcBindAddresses } from './rtc-network.mjs';
 
 export const RTC_TIMEOUT = RTC_CONNECT_TIMEOUT;
 const MAX_MESSAGE = 64 * 1024, HIGH_WATER = 256 * 1024;
 
-export function createRTCBridge({ address, ipv6Address, iceServers = [], stunUrl = '', relay, turnCa, vncSocket, valid, closed, performControl, connectTerminal, connectStream, serviceOnly = false, connectFiles }) {
-  const allowed = (host, port) => peerAddress(host, !!ipv6Address) || relayAddress(host, port, relay);
+export function createRTCBridge({ address, ipv6Address, iceServers = [], remoteHints = [], stunUrl = '', relay, turnCa, vncSocket, valid, closed, performControl, connectTerminal, connectStream, serviceOnly = false, connectFiles }) {
+  const allowed = (host, port) => peerAddress(host, !!ipv6Address, remoteHints) || relayAddress(host, port, relay);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl, iceServers);
   const pc = new RTCPeerConnection({
     ...ice, iceUseIpv4: true, iceUseIpv6: !!ipv6Address, iceUseTcp: false, turnTlsOptions: turnCa ? { ca: turnCa, rejectUnauthorized: true } : undefined,

@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws';
 import { equal } from './auth.mjs';
 import { rtcOffer } from './rtc-network.mjs';
 import { withHintCandidates } from './rtc-hints.mjs';
-import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
+import { rtcBindAddresses } from './rtc.mjs';
 import { forwardHeartbeat } from './forward-heartbeat.mjs';
 import { createForwardMux, MUX_LIMITS } from './forward-mux.mjs';
 import { createPathQuality, pathPreferred, ROUTE_COOLDOWN } from './public/transport-policy.js';
@@ -27,7 +27,7 @@ export function createForwardPool({ config, scope, valid, configuration, connect
   function options() {
     const hints = configuration();
     return { type: 'rtc_config', enabled: !!config.webrtc && hints.active, ipv6: !!config.webrtcIPv6, stun: config.webrtcStunUrl || '', window: 16, preflight: 1,
-      hints: { server: hints.server[0] || '', browser: hints.browser[0] || '' }, hintRevision: createHash('sha256').update(JSON.stringify([hints.server, hints.browser])).digest('hex') };
+      hints: { server: hints.server[0] || '', browser: hints.browser[0] || '' }, hintAddresses: { server: hints.server, browser: hints.browser }, hintRevision: createHash('sha256').update(JSON.stringify([hints.server, hints.browser])).digest('hex') };
   }
   function configure() {
     if (!live()) return;
@@ -48,13 +48,12 @@ export function createForwardPool({ config, scope, valid, configuration, connect
     if (performance.now() - peerAt < 10000 || peer?.streams || !acquire(!!peer)) return rejected('rtc_busy');
     try {
       const hints = configuration();
-      let offer = rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6 });
+      let offer = rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6, hints: hints.browser });
       offer = withHintCandidates(offer, hints.browser, { ipv6: !!config.webrtcIPv6 });
       peerAt = performance.now();
       await peer?.destroy();
       if (!live() || ws !== link) return;
-      const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress || '127.0.0.1';
-      const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
+      const { address, ipv6Address } = rtcBindAddresses(config, hints.server);
       peerId = value.id;
       let candidate;
       const directQuality = createPathQuality(); let preferred = 'direct', wins = 0, changedAt = -Infinity;
@@ -70,7 +69,7 @@ export function createForwardPool({ config, scope, valid, configuration, connect
         if (wins >= 2 && performance.now() - changedAt >= ROUTE_COOLDOWN) { preferred = candidatePath; changedAt = performance.now(); wins = 0; }
         return preferred === 'direct';
       };
-      candidate = createPeer({ address, ipv6Address, stunUrl: config.webrtcStunUrl, id: value.id, shared: true,
+      candidate = createPeer({ address, ipv6Address, remoteHints: hints.browser, stunUrl: config.webrtcStunUrl, id: value.id, shared: true,
         prefer,
         valid: () => live() && peer === candidate,
         authenticate: value => live() && typeof value === 'string' && value.length === 43 && equal(value, token),

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { createRTCBridge, rtcAddress, rtcIPv6Address, rtcOffer } from './rtc.mjs';
+import { createRTCBridge, rtcBindAddresses, rtcOffer } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 
@@ -43,7 +43,7 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
     if (!/^[a-f0-9-]{16,64}$/.test(viewer || '') || Object.keys(body).some(key => !['type', 'sdp', 'hints'].includes(key))) throw error(400, '服务协商参数无效');
     let hints, offer;
     let ice;
-    try { hints = rtcHints(body.hints); ice = await turn?.(); offer = withHintCandidates(rtcOffer(body, { ipv6: !!config.webrtcIPv6, relay: ice?.relay }), hints.browser, { ipv6: !!config.webrtcIPv6 }); }
+    try { hints = rtcHints(body.hints); ice = await turn?.(); offer = withHintCandidates(rtcOffer(body, { ipv6: !!config.webrtcIPv6, relay: ice?.relay, hints: [hints.browser] }), hints.browser, { ipv6: !!config.webrtcIPv6 }); }
     catch (err) { throw error(400, err.message); }
     const key = session.hash + ':' + viewer;
     if (pages.has(key)) throw error(429, '本页面服务直连仍在运行');
@@ -60,9 +60,8 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
     entries.add(entry); pages.set(key, entry);
     signal.addEventListener('abort', () => { void entry.close(); }, { once: true });
     try {
-      const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
-      const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
-      entry.peer = createRTCBridge({ address, ipv6Address, iceServers: ice?.iceServers || [], stunUrl: config.webrtcStunUrl, relay: ice?.relay, turnCa: config.selfhostCaBundle, serviceOnly: true, valid, closed: () => { void entry.close(); },
+      const { address, ipv6Address } = rtcBindAddresses(config, hints.server);
+      entry.peer = createRTCBridge({ address, ipv6Address, remoteHints: [hints.browser], iceServers: ice?.iceServers || [], stunUrl: config.webrtcStunUrl, relay: ice?.relay, turnCa: config.selfhostCaBundle, serviceOnly: true, valid, closed: () => { void entry.close(); },
         ...(connectFiles ? { connectFiles: (channel, live, fail) => connectFiles(channel, live, headers, controller.signal, fail) } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');

@@ -17,14 +17,14 @@ const candidates = description => description.sdp.split('\r\n').filter(line => l
 test('optional address hints use the direct-connect IP policy and reject ports, URLs, hostnames and unbounded input', () => {
   assert.deepEqual(rtcHints(), { server: '', browser: '' });
   assert.deepEqual(rtcHints({ server: ' 192.168.1.1 ', browser: '2408:8000:0:0::1' }), { server: '192.168.1.1', browser: '2408:8000::1' });
-  for (const address of ['127.0.0.1', '10.0.0.1', '172.31.255.255', '192.168.0.1', '2408::1', '2001:4860::1', '3ffe::1', '3fff:1000::1']) {
+  for (const address of ['127.0.0.1', '10.0.0.1', '172.31.255.255', '192.168.0.1', '2408::1', '2001:4860::1', '3ffe::1', '3fff:1000::1', '8.8.8.8']) {
     assert.equal(peerAddress(address, true), true, address); assert.ok(hintIP(address), address);
   }
-  for (const address of ['8.8.8.8', '100.64.0.1', '169.254.1.1', '0.0.0.0', '192.168.1.256', '192.168.01.1',
-    'localhost', 'chrome.local', 'http://192.168.1.1', '192.168.1.1:40000', '[2408::1]', '::1', '::', 'fd00::1', 'fe80::1%eth0',
+  for (const address of ['169.254.1.1', '0.0.0.0', '192.168.1.256', '192.168.01.1',
+    'localhost', 'chrome.local', 'http://192.168.1.1', '192.168.1.1:40000', '[2408::1]', '::1', '::', 'fe80::1%eth0',
     '2001::1', '2001:100::1', '2001:db8::1', '2002::1', '3fff:fff::1', '4000::1', '::ffff:192.168.1.1', 'x'.repeat(46)]) {
     assert.equal(hintIP(address), null, address);
-    assert.throws(() => rtcHints({ server: address }), /服务器 IP/);
+    assert.throws(() => rtcHints({ server: address }), /节点主机 IP/);
   }
   for (const value of [null, [], '192.168.1.1', { browser: [] }, { server: 123 }, { command: 'anything' }]) assert.throws(() => rtcHints(value));
 });
@@ -44,6 +44,21 @@ test('browser storage keeps one bounded pair, rejects corrupt data and works wit
   for (const store of [undefined, { getItem() { throw Error('denied'); }, setItem() { throw Error('denied'); } }]) {
     const hints = createRTCHints(store); hints.save({ server: '10.0.0.1' }); assert.equal(hints.persisted, false); assert.equal(hints.value.server, '10.0.0.1');
   }
+});
+
+test('public IPv4 hints and explicit VPN hints share validation while VPN destinations remain session scoped', () => {
+  for (const address of ['8.8.8.8', '100.64.0.1', '100.127.255.254', 'fd00::1', 'fc00::1']) assert.equal(hintIP(address), address);
+  for (const address of ['100.64.0.1', 'fd00::1']) {
+    assert.equal(peerAddress(address, true), false);
+    assert.equal(peerAddress(address, true, [address]), true);
+    assert.equal(peerAddress(address, true, ['100.64.0.2']), false);
+    assert.equal(candidates(rtcOffer(offer([candidate(address)]), { ipv6: true })).length, 0);
+    assert.equal(candidates(rtcOffer(offer([candidate(address)]), { ipv6: true, hints: [address] })).length, 1);
+  }
+  assert.equal(peerAddress('fd00::1', false, ['fd00::1']), false);
+  assert.equal(candidates(withHintCandidates(offer([candidate('8.8.8.8')]), '100.64.0.1')).length, 2);
+  assert.equal(candidates(withHintCandidates(offer([candidate('fd00::1')]), 'fd00::2', { ipv6: true })).length, 2);
+  for (const address of ['192.0.2.1', '198.18.0.1', '224.0.0.1', '255.255.255.255', 'fd00::xyz', 'fe80::1']) assert.equal(hintIP(address), null);
 });
 
 test('hints isolate nodes and paths, merge stale tabs, offer explicit legacy import and evict only within the byte budget', () => {
@@ -72,7 +87,7 @@ test('hint candidates preserve all automatic candidates, credentials, families a
   assert.deepEqual(candidates(hinted).slice(8).map(line => line.split(' ')[5]), ['45000', '45001', '45002', '45003']);
   assert.ok(hinted.sdp.indexOf('hint1') < hinted.sdp.indexOf('a=end-of-candidates'));
   assert.equal(candidates(withHintCandidates(hinted, '10.0.0.8')).length, 12);
-  for (const address of ['', '8.8.8.8', '2408::1']) assert.equal(withHintCandidates(automatic, address), automatic);
+  for (const address of ['', '2408::1']) assert.equal(withHintCandidates(automatic, address), automatic);
   const v6 = rtcOffer(offer([candidate('2408::1')]), { ipv6: true });
   assert.equal(candidates(withHintCandidates(v6, '2408::2', { ipv6: true })).length, 2);
   const expanded = offer([candidate('2408:0:0:0:0:0:0:1')]);
@@ -88,7 +103,7 @@ test('hints remain behind signaling authentication and never become arbitrary ta
   assert.equal((await app.request('/api/desktop/rtc', { method: 'POST', body })).status, 401);
   await app.login(); await app.claim();
   assert.equal((await app.request('/api/desktop/rtc', { method: 'POST', body, headers: { origin: 'https://invalid.example' } })).status, 403);
-  for (const hints of [{ browser: '10.0.0.1:22' }, { server: 'attacker.example' }, { server: '8.8.8.8' }, { browser: ['10.0.0.1'] }, { port: 22 }]) {
+  for (const hints of [{ browser: '10.0.0.1:22' }, { server: 'attacker.example' }, { server: '192.0.2.1' }, { browser: ['10.0.0.1'] }, { port: 22 }]) {
     assert.equal((await app.request('/api/desktop/rtc', { method: 'POST', body: { ...body, hints } })).status, 400);
   }
   assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
@@ -165,4 +180,30 @@ test('a server hint can establish real ICE and DTLS through an IP alias without 
   assert.equal(peer.connectionState, 'connected'); assert.ok(forwarded > 0);
   assert.equal(peer.iceTransports[0].connection.nominated.remoteCandidate.host, '127.0.0.2');
   assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
+});
+
+test('assigned VPN hints establish actual IPv4 and IPv6 ICE DTLS and authenticated heartbeats', async t => {
+  if (process.env.RTC_VPN_TEST !== '1') return t.skip('requires an isolated namespace with 100.64.0.2/3 and fd00::2/3 assigned');
+  for (const ipv6 of [false, true]) {
+    const server = ipv6 ? 'fd00::2' : '100.64.0.2', browser = ipv6 ? 'fd00::3' : '100.64.0.3';
+    const app = await fixture({ webrtc: true, webrtcIPv6: ipv6 });
+    const peer = new RTCPeerConnection({ iceServers: [], iceUseIpv4: !ipv6, iceUseIpv6: ipv6, iceUseTcp: false, iceInterfaceAddresses: ipv6 ? { udp6: browser } : { udp4: browser } });
+    try {
+      peer.createDataChannel('codex-control', { ordered: true, protocol: 'codex-control-v1' });
+      const health = peer.createDataChannel('codex-health', { ordered: true, protocol: 'codex-health-v1' });
+      for (const transport of peer.iceTransports) transport.connection.stunServer = undefined;
+      await peer.setLocalDescription(await peer.createOffer());
+      await app.login(); await app.claim();
+      const response = await app.request('/api/desktop/rtc', { method: 'POST', body: { type: 'offer', sdp: peer.localDescription.sdp, hints: { server, browser } } });
+      assert.equal(response.status, 200); const answer = await response.json();
+      assert.ok(answer.sdp.includes(' ' + server + ' '));
+      const echo = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('VPN DTLS heartbeat deadline')), 5000);
+        health.stateChange.subscribe(state => { if (state === 'open') health.send(Buffer.from([0, 0, 0, 1])); });
+        health.onMessage.subscribe(bytes => { clearTimeout(timer); resolve(Buffer.from(bytes)); });
+      });
+      await peer.setRemoteDescription(answer); assert.deepEqual(await echo, Buffer.from([0, 0, 0, 1]));
+      assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
+    } finally { await peer.close(); await app.close(); }
+  }
 });

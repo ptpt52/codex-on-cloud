@@ -13,7 +13,7 @@ test('mapping hint updates preserve grants and targets, are bounded, validated a
  const grant=forwarding.create({localPort:2222,targetPort:22,hints},'owner',()=> '');
  hints.server='10.10.0.9';assert.equal(forwarding.list().mappings[0].hints.server,'10.10.0.1');hints.server='10.10.0.1';
  assert.throws(()=>forwarding.updateHints({id:grant.id,hints},()=>false),{status:403});
- assert.throws(()=>forwarding.updateHints({id:grant.id,hints:{browser:'8.8.8.8'}},()=>true),{status:400});
+ assert.throws(()=>forwarding.updateHints({id:grant.id,hints:{browser:'192.0.2.1'}},()=>true),{status:400});
  forwarding.updateHints({id:grant.id,hints:{server:'10.0.0.2'}},()=>true);
  const item=forwarding.list().mappings[0];assert.equal(item.state,'pending');assert.equal(item.targetPort,22);assert.deepEqual(item.hints,{server:'10.0.0.2',browser:''});
 });

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,7 +61,40 @@ func directLocalIP(ip net.IP, ipv6 bool) bool {
 	address, ok := netip.AddrFromSlice(ip)
 	return directIP(ip, ipv6) || ok && carrierFour.Contains(address.Unmap())
 }
-func directSDP(sdp string, ipv6 bool) (string, error) {
+
+// Explicit VPN targets are scoped to this authenticated helper pool.
+func hintedDirectIP(ip net.IP, ipv6 bool, hints []string) bool {
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	address = address.Unmap()
+	if address.Is6() && !ipv6 {
+		return false
+	}
+	if !carrierFour.Contains(address) && !(address.Is6() && address.IsPrivate()) {
+		return false
+	}
+	for _, text := range hints[:min(len(hints), 4)] {
+		if hint, err := netip.ParseAddr(text); err == nil && hint == address {
+			return true
+		}
+	}
+	return false
+}
+func (value directSignal) hintAddresses(server bool) []string {
+	if server {
+		if len(value.HintAddresses.Server) > 0 {
+			return value.HintAddresses.Server[:min(len(value.HintAddresses.Server), 4)]
+		}
+		return []string{value.Hints.Server}
+	}
+	if len(value.HintAddresses.Browser) > 0 {
+		return value.HintAddresses.Browser[:min(len(value.HintAddresses.Browser), 4)]
+	}
+	return []string{value.Hints.Browser}
+}
+func directSDP(sdp string, ipv6 bool, allowedHints ...string) (string, error) {
 	if len(sdp) > 32768 || strings.ContainsRune(sdp, 0) {
 		return "", failure("protocol_error")
 	}
@@ -89,7 +123,7 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 			continue
 		}
 		fields := strings.Fields(strings.TrimPrefix(line, "a=candidate:"))
-		if len(fields) < 8 || fields[1] != "1" || strings.ToLower(fields[2]) != "udp" || !directIP(net.ParseIP(fields[4]), ipv6) || (fields[7] != "host" && fields[7] != "srflx") {
+		if len(fields) < 8 || fields[1] != "1" || strings.ToLower(fields[2]) != "udp" || !(directIP(net.ParseIP(fields[4]), ipv6) || hintedDirectIP(net.ParseIP(fields[4]), ipv6, allowedHints)) || (fields[7] != "host" && fields[7] != "srflx") {
 			continue
 		}
 		port, err := strconv.Atoi(fields[5])
@@ -152,16 +186,20 @@ func directSDP(sdp string, ipv6 bool) (string, error) {
 }
 
 type directSignal struct {
-	Type         string `json:"type"`
-	ID           uint32 `json:"id"`
-	SDP          string `json:"sdp"`
-	Enabled      bool   `json:"enabled"`
-	IPv6         bool   `json:"ipv6"`
-	STUN         string `json:"stun"`
-	HintRevision string `json:"hintRevision"`
-	Window       int    `json:"window"`
-	Preflight    int    `json:"preflight"`
-	Hints        struct {
+	Type          string `json:"type"`
+	ID            uint32 `json:"id"`
+	SDP           string `json:"sdp"`
+	Enabled       bool   `json:"enabled"`
+	IPv6          bool   `json:"ipv6"`
+	STUN          string `json:"stun"`
+	HintRevision  string `json:"hintRevision"`
+	HintAddresses struct {
+		Server  []string `json:"server"`
+		Browser []string `json:"browser"`
+	} `json:"hintAddresses"`
+	Window    int `json:"window"`
+	Preflight int `json:"preflight"`
+	Hints     struct {
 		Server  string `json:"server"`
 		Browser string `json:"browser"`
 	} `json:"hints"`
@@ -252,7 +290,7 @@ func (m *directManager) accept(value directSignal) {
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
-		if m.configured && m.config.Hints == value.Hints && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision && m.config.Window == value.Window && m.config.Preflight == value.Preflight {
+		if m.configured && m.config.Hints == value.Hints && slices.Equal(m.config.HintAddresses.Server, value.HintAddresses.Server) && slices.Equal(m.config.HintAddresses.Browser, value.HintAddresses.Browser) && m.config.Enabled == value.Enabled && m.config.IPv6 == value.IPv6 && m.config.STUN == value.STUN && m.config.HintRevision == value.HintRevision && m.config.Window == value.Window && m.config.Preflight == value.Preflight {
 			m.mu.Unlock()
 			return
 		}
@@ -276,7 +314,7 @@ func (m *directManager) accept(value directSignal) {
 			m.mu.Unlock()
 			return
 		}
-		if value.Route != "lan" && value.Route != "nat" && value.Route != "ipv6" && value.Route != "public-ipv4" {
+		if value.Route != "lan" && value.Route != "nat" && value.Route != "ipv6" && value.Route != "public-ipv4" && value.Route != "vpn" {
 			value.Route = ""
 		}
 		if value.Family != "IPv4" && value.Family != "IPv6" {
@@ -305,7 +343,7 @@ func (m *directManager) accept(value directSignal) {
 		m.peer.updated = time.Now()
 		label := "新连接使用 WSS 中转"
 		if m.peer.available {
-			kind := map[string]string{"lan": "局域网", "nat": "NAT 打洞", "ipv6": "IPv6", "public-ipv4": "公网 IPv4"}[value.Route]
+			kind := map[string]string{"vpn": "VPN", "lan": "局域网", "nat": "NAT 打洞", "ipv6": "IPv6", "public-ipv4": "公网 IPv4"}[value.Route]
 			label = "新连接优先使用 " + value.Family + " / UDP 加密直连"
 			if kind != "" {
 				label += "（" + kind + "）"
@@ -364,7 +402,7 @@ func (m *directManager) run() {
 		m.mu.Lock()
 		enabled := m.configured && m.config.Enabled
 		p := m.peer
-			healthy := p != nil && p.ready && (p.healthy || p.available) && !p.draining && time.Since(p.updated) < 10*time.Second
+		healthy := p != nil && p.ready && (p.healthy || p.available) && !p.draining && time.Since(p.updated) < 10*time.Second
 		busy := p != nil && (len(p.streams) > 0 || p.opening > 0)
 		var disabled *directPeer
 		if !enabled && p != nil && !busy {
@@ -451,8 +489,12 @@ func (m *directManager) negotiate() (reason string) {
 	var settings webrtc.SettingEngine
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6})
 	settings.SetIncludeLoopbackCandidate(true)
-	settings.SetIPFilter(func(ip net.IP) bool { return directLocalIP(ip, config.IPv6) })
-	settings.SetRemoteIPFilter(func(ip net.IP) bool { return directIP(ip, config.IPv6) })
+	settings.SetIPFilter(func(ip net.IP) bool {
+		return directLocalIP(ip, config.IPv6) || hintedDirectIP(ip, config.IPv6, config.hintAddresses(false))
+	})
+	settings.SetRemoteIPFilter(func(ip net.IP) bool {
+		return directIP(ip, config.IPv6) || hintedDirectIP(ip, config.IPv6, config.hintAddresses(true))
+	})
 	settings.SetSCTPMaxReceiveBufferSize(1024 * 1024)
 	settings.SetSCTPMaxMessageSize(chunkSize)
 	settings.SetICETimeouts(5*time.Second, 15*time.Second, 2*time.Second)
@@ -577,7 +619,7 @@ func (m *directManager) negotiate() (reason string) {
 		timer.Stop()
 		return
 	}
-	sdp, err := directSDP(pc.LocalDescription().SDP, config.IPv6)
+	sdp, err := directSDP(pc.LocalDescription().SDP, config.IPv6, config.hintAddresses(false)...)
 	if err != nil {
 		return
 	}
@@ -595,7 +637,7 @@ func (m *directManager) negotiate() (reason string) {
 			if answer.Type == "rtc_status" {
 				return answer.Reason
 			}
-			sdp, err = directSDP(answer.SDP, config.IPv6)
+			sdp, err = directSDP(answer.SDP, config.IPv6, config.hintAddresses(true)...)
 			if err != nil {
 				return
 			}

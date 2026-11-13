@@ -7,7 +7,7 @@ import { equal } from './auth.mjs';
 import { FORWARD_ERRORS } from './forward-errors.mjs';
 import { createForwardPeer } from './forward-rtc.mjs';
 import { rtcOffer } from './rtc-network.mjs';
-import { rtcAddress, rtcIPv6Address } from './rtc.mjs';
+import { rtcBindAddresses } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
 import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
@@ -251,17 +251,16 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     if (!config.webrtc) return rejected('rtc_disabled');
     if (negotiating || now() - item.peerAt < 10000 || item.peer?.streams || peers.size >= 4 && !item.peer) return rejected('rtc_busy');
     const hints = { ...item.hints };
-    let offer; try { offer = withHintCandidates(rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6 }), hints.browser, { ipv6: !!config.webrtcIPv6 }); } catch { return rejected('rtc_negotiation_failed'); }
+    let offer; try { offer = withHintCandidates(rtcOffer({ type: 'offer', sdp: value.sdp }, { ipv6: !!config.webrtcIPv6, hints: [hints.browser] }), hints.browser, { ipv6: !!config.webrtcIPv6 }); } catch { return rejected('rtc_negotiation_failed'); }
     negotiating = true; item.peerAt = now();
     try {
       await item.peer?.destroy();
       if (!current()) return;
-      const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress || '127.0.0.1';
-      const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
+      const { address, ipv6Address } = rtcBindAddresses(config, hints.server);
       let peer;
       item.peerId = value.id;
       const live = () => authorized(item) && item.peer === peer && (item.keepStreams || current());
-      peer = trackedPeer({ address, ipv6Address, stunUrl: config.webrtcStunUrl, id: value.id, valid: live,
+      peer = trackedPeer({ address, ipv6Address, remoteHints: [hints.browser], stunUrl: config.webrtcStunUrl, id: value.id, valid: live,
         authenticate: token => active(item) && live() && typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token) && equal(digest(token), item.streamHash),
         status: state => { if (live()) report(item, state); }, closed: () => { if (item.peer === peer) item.peer = null; },
         reverse: item.direction === 'reverse',

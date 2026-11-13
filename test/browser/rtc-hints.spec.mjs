@@ -88,7 +88,7 @@ test('IP hints validate locally, stay independent of display preferences, and st
     await page.addInitScript(() => { if (window === parent) Storage.prototype.setItem = () => { throw Error('denied'); }; });
     await page.route('**/api/terminal/rtc', route => { offers.push(route.request().postDataJSON()); return route.fulfill({ status: 503, json: { error: 'probe unavailable' } }); });
     await login(page, app); await expect.poll(() => offers.length).toBe(1); await settings(page);
-    await save(page, 'https://192.168.1.1', ''); await expect(page.locator('#direct-hints-status')).toContainText('服务器 IP');
+    await save(page, 'https://192.168.1.1', ''); await expect(page.locator('#direct-hints-status')).toContainText('节点主机 IP');
     expect(offers).toHaveLength(1);
     await save(page, '', '192.168.1.22'); await expect(page.locator('#direct-hints-status')).toContainText('仅当前页面生效');
     await page.locator('#close-connection').click();

@@ -11,7 +11,7 @@ import { canonicalLoginUsername, createLoginIdentity, nodeLoginScope } from './l
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { createServiceDiagnostics } from './service-diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
-import { createRTCBridge, rtcOffer, rtcAddress, rtcIPv6Address } from './rtc.mjs';
+import { createRTCBridge, rtcOffer, rtcBindAddresses } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { validateInput } from '../native/input.mjs';
 import { clipboardSource } from '../native/clipboard.mjs';
@@ -533,7 +533,7 @@ export async function createPanel(config) {
       try {
         hints = rtcHints(body.hints);
         const turn = await turnConfig();
-        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true, relay: turn?.relay }), hints.browser, { ipv6: config.webrtcIPv6 === true });
+        offer = withHintCandidates(rtcOffer(body, { ipv6: config.webrtcIPv6 === true, relay: turn?.relay, hints: [hints.browser] }), hints.browser, { ipv6: config.webrtcIPv6 === true });
         iceServers = turn?.iceServers || []; relay = turn?.relay;
       } catch (error) { throw new HttpError(400, error.message); }
       let target;
@@ -566,9 +566,8 @@ export async function createPanel(config) {
         if (terminalMode) state.inputIdle = () => terminalSession?.idle === true;
         const valid = () => !closing && !maintenancePending && owner === expected && !!auth.get(token) && sockets.get(bridge) === state &&
           (!resumable || streamStates.get(body.streamId)?.stream === stream && (!!streamEntry || JSON.stringify(streamStates.get(body.streamId).target) === JSON.stringify(target)));
-        const address = config.webrtcAddressAuto ? rtcAddress() : config.webrtcAddress;
-        const ipv6Address = config.webrtcIPv6 ? config.webrtcIPv6AddressAuto ? rtcIPv6Address(undefined, address) : config.webrtcIPv6Address : undefined;
-        bridge = createRTCBridge({ address, ipv6Address, iceServers, stunUrl: config.webrtcStunUrl, relay, turnCa: config.selfhostCaBundle, vncSocket: config.vncSocket, valid,
+        const { address, ipv6Address } = rtcBindAddresses(config, hints.server);
+        bridge = createRTCBridge({ address, ipv6Address, remoteHints: [hints.browser], iceServers, stunUrl: config.webrtcStunUrl, relay, turnCa: config.selfhostCaBundle, vncSocket: config.vncSocket, valid,
           ...(resumable ? { connectStream: (channel, authorized, fail) => {
             streamEntry = streamRTC(channel, stream, authorized, fail); return streamEntry;
           } } : terminalMode ? { connectTerminal: (channel, authorized, fail) => {
