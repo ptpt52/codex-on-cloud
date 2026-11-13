@@ -19,6 +19,11 @@ const streamEnabled = query.get('stream') === '1';
 let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
 let terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken'), rtcConfig;
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
+const touchPointer = matchMedia('(pointer: coarse)');
+// On touch screens the six-pixel scrollbar lives in the eight-pixel right
+// gutter (terminal.css leaves two pixels outside it), rather than taking a
+// second, empty gutter out of the text grid.
+const scrollbarWidth = () => touchPointer.matches ? 6 : 14;
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
@@ -95,7 +100,9 @@ function size() {
   }
   layout = requestAnimationFrame(() => {
     if (stopped || !term || !fit || !host.clientWidth || !host.clientHeight) return;
-    const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${devicePixelRatio}`;
+    const gutter = scrollbarWidth();
+    if (term.options.overviewRuler.width !== gutter) term.options.overviewRuler = { ...term.options.overviewRuler, width: gutter };
+    const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${devicePixelRatio}:${gutter}`;
     if (key !== layoutKey || !fittedSize) {
       term.options.fontSize = fontSize;
       let proposed = fit.proposeDimensions(); if (!proposed) return;
@@ -226,9 +233,10 @@ function createTerminalSelection(current) {
 function createTerminal() {
   if (term) { size(); return; }
   host.replaceChildren();
-  term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: historyRows,
+  term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: historyRows, overviewRuler: { width: scrollbarWidth() },
     scrollOnUserInput: false, scrollOnEraseInDisplay: false,
-    cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine, theme: TERMINAL_THEME });
+    cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine,
+    theme: { ...TERMINAL_THEME, overviewRulerBorder: TERMINAL_THEME.background } });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
   const current = term;
   let sgrMouse = false;
@@ -507,6 +515,7 @@ window.addEventListener('message', event => {
   pending = { id, parentId: value.id };
 });
 new ResizeObserver(size).observe(host);
+touchPointer.addEventListener('change', size);
 document.fonts?.ready.then(() => { layoutKey = ''; size(); });
 document.fonts?.addEventListener('loadingdone', () => { layoutKey = ''; size(); });
 window.visualViewport?.addEventListener('resize', size);

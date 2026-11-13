@@ -28,6 +28,40 @@ const dimensions = frame => frame.evaluate(() => {
 });
 function geometry(app, maxCols) { app.terminalGeometry.maxCols = maxCols; app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'geometry', maxCols }) + '\n'); }
 
+test.describe('touch terminal right edge', () => {
+  test.use({ viewport: { width: 407, height: 900 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  test('scrollbar stays outside the last column and both text gutters differ by at most one cell', async ({ page }, info) => {
+    const app = await fixture({ mode: 'terminal' });
+    try {
+      await prepare(page, 'viewport'); const frame = await login(page, app);
+      for (const width of [320, 390, 407, 768]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect.poll(() => frame.evaluate(() => {
+          const screen = document.querySelector('.xterm-screen').getBoundingClientRect(), t = window.widthTerminal;
+          return Math.abs(screen.left - (innerWidth - screen.right)) <= t._core._renderService.dimensions.css.cell.width + 1;
+        })).toBe(true);
+        const edge = await frame.evaluate(async () => {
+          const t = window.widthTerminal;
+          await new Promise(resolve => t.write('\x1b[2J\x1b[H\x1b[42m' + 'W'.repeat(t.cols - 1) + 'Z\x1b[0m', resolve));
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const screen = document.querySelector('.xterm-screen').getBoundingClientRect();
+          const scrollbar = document.querySelector('.xterm-scrollable-element > .scrollbar.vertical').getBoundingClientRect();
+          const range = document.createRange(); range.selectNodeContents(document.querySelector('.xterm-rows > div'));
+          return { textRight: range.getBoundingClientRect().right, screenRight: screen.right, scrollbarLeft: scrollbar.left, scrollbarWidth: scrollbar.width, viewport: innerWidth };
+        });
+        expect(edge.scrollbarWidth).toBe(6); expect(edge.scrollbarLeft).toBeGreaterThanOrEqual(edge.screenRight - .5);
+        expect(edge.textRight).toBeLessThanOrEqual(edge.screenRight + .5); expect(edge.screenRight).toBeLessThan(edge.viewport);
+      }
+      await page.setViewportSize({ width: 407, height: 900 });
+      await expect.poll(() => frame.evaluate(() => Math.abs(document.querySelector('.xterm-screen').getBoundingClientRect().left -
+        (innerWidth - document.querySelector('.xterm-screen').getBoundingClientRect().right)) <= window.widthTerminal._core._renderService.dimensions.css.cell.width + 1)).toBe(true);
+      await frame.evaluate(() => new Promise(resolve => window.widthTerminal.write('\x1b[2J\x1b[H\x1b[42m' + 'W'.repeat(window.widthTerminal.cols - 1) + 'Z\x1b[0m', resolve)));
+      await page.screenshot({ path: info.outputPath('touch-terminal-right-edge.png') });
+      expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+    } finally { await app.close(); }
+  });
+});
+
 test('viewport layout keeps the chosen font and reflows columns from phone to wide screen without reconnect or input', async ({ page }) => {
   const app = await fixture({ webrtc: true, terminalMaxCols: 122 });
   try {
