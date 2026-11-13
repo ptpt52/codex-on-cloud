@@ -2,6 +2,7 @@ import { LEGACY_TRANSFER_WINDOW, validTransferWindow } from './transfer-window.j
 export const FILE_CHUNK = 16380;
 export const FILE_MAX = 50 * 1024 * 1024;
 const BUFFER = 512 * 1024;
+const DATA_BUFFER = BUFFER - 4096; // Keep one maximum control message available.
 // Coalesce arbitrarily small network reads into at most 800 blocks (50 MiB).
 export function createFileBuffer(size) {
   if (!Number.isSafeInteger(size) || size < 0 || size > FILE_MAX) throw Error('文件大小无效');
@@ -21,12 +22,28 @@ export function createFileBuffer(size) {
 // One ordered stream in each direction, with a negotiated 4/8/16-chunk window.
 // Sequence numbers last for the channel, so old chunks/ACKs cannot be replayed.
 export function createFileWire(channel, { control, chunk, failed }) {
-  let ended = false, sent = 0, received = 0, queued = 0, chain = Promise.resolve(), window = LEGACY_TRANSFER_WINDOW;
+  let ended = false, sent = 0, received = 0, queued = 0, chain = Promise.resolve(), window = LEGACY_TRANSFER_WINDOW, writable;
   const pending = new Map();
   channel.binaryType = 'arraybuffer';
   const failure = message => Object.assign(Error(message || '文件直连已断开；请检查文件状态后手动重试'), { outcome: 'unknown' });
+  function finishWritable(error) {
+    if (!writable) return;
+    const entry = writable; writable = undefined; clearTimeout(entry.timer); clearTimeout(entry.deadline);
+    error ? entry.reject(error) : entry.resolve();
+  }
+  function checkWritable() {
+    if (!writable) return;
+    clearTimeout(writable.timer);
+    if (ended || channel.readyState !== 'open') { finishWritable(failure()); return; }
+    if (channel.bufferedAmount + writable.length + 4 <= DATA_BUFFER) { finishWritable(); return; }
+    // Native adapters may not expose bufferedamountlow; retain one bounded poll.
+    writable.timer = setTimeout(checkWritable, 25);
+  }
+  channel.bufferedAmountLowThreshold = BUFFER / 2;
+  channel.addEventListener('bufferedamountlow', checkWritable);
   function close(reason = failure()) {
     if (ended) return; ended = true;
+    finishWritable(reason);
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(reason); } pending.clear();
     channel.close(); failed(reason);
   }
@@ -62,8 +79,16 @@ export function createFileWire(channel, { control, chunk, failed }) {
       if (!validTransferWindow(value) || ended || value !== window && (pending.size || queued)) throw failure('文件窗口协商无效');
       window = value;
     },
+    waitWritable(length) {
+      if (ended || channel.readyState !== 'open' || writable || !Number.isInteger(length) || length <= 0 || length > FILE_CHUNK) return Promise.reject(failure('文件发送窗口暂不可用'));
+      if (channel.bufferedAmount + length + 4 <= DATA_BUFFER) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        writable = { length, resolve, reject, deadline: setTimeout(() => close(failure('文件发送缓冲等待超时')), 15000) };
+        checkWritable();
+      });
+    },
     data(bytes) {
-      if (ended || channel.readyState !== 'open' || !bytes.length || bytes.length > FILE_CHUNK || pending.size >= window || sent >= 2147483647 || channel.bufferedAmount + bytes.length + 4 > BUFFER) return Promise.reject(failure('文件发送窗口暂不可用'));
+      if (ended || channel.readyState !== 'open' || !bytes.length || bytes.length > FILE_CHUNK || pending.size >= window || sent >= 2147483647 || channel.bufferedAmount + bytes.length + 4 > DATA_BUFFER) return Promise.reject(failure('文件发送窗口暂不可用'));
       const seq=++sent, frame=new Uint8Array(bytes.length+4);new DataView(frame.buffer).setUint32(0,seq);frame.set(bytes,4);
       return new Promise((resolve,reject)=>{
         pending.set(seq,{resolve,reject,timer:setTimeout(()=>close(failure('文件分块确认超时')),15000)});
@@ -77,7 +102,10 @@ export async function sendFileChunks(source, wire, valid = () => true, progress)
   for await(const bytes of source) for(let offset=0;offset<bytes.length;offset+=FILE_CHUNK){
     if(!valid())throw Error('文件传输已取消');
     if(pending.length===(wire.window || LEGACY_TRANSFER_WINDOW))await pending.shift();
-    const part=bytes.subarray(offset,offset+FILE_CHUNK), result=wire.data(part);
+    const part=bytes.subarray(offset,offset+FILE_CHUNK);
+    if(wire.waitWritable)await wire.waitWritable(part.length);
+    if(!valid())throw Error('文件传输已取消');
+    const result=wire.data(part);
     const sent=progress?result.then(()=>{if(valid())progress(part.length);}):result;void sent.catch(()=>{});pending.push(sent);
   }
   await Promise.all(pending);
