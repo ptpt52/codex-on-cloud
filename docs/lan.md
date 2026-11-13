@@ -48,6 +48,8 @@ WEBRTC_STUN_URL=stun:stun.cloudflare.com:3478
 
 `WEBRTC_STUN_URL` 同时用于浏览器、节点和助手发现 NAT 映射，只接受单个 UDP `stun:` 地址，设为空可关闭该配置提供的 STUN 发现。自建中心已经提供自己的 STUN / TURN；可统一设置为 `stun:desk.example.com:3478`，不需要 Cloudflare STUN。不要把 TURN 用户名、密码或 `turn:` URL 填进该项。
 
+跨网部署需允许浏览器、节点及助手各自访问所配置的 STUN 服务。节点的局域网绑定地址只决定本机 socket，公网 NAT 映射仍需发现；仅让浏览器访问 STUN 不足以覆盖所有打洞拓扑。
+
 修改配置后只重启面板：
 
 ```sh

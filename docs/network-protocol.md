@@ -39,7 +39,9 @@ WebRTC 仅在协商时绑定所选 IPv4/IPv6 地址的 **UDP 40000–40015**，�
 
 IPv6 默认优先选择与 LAN IPv4 同一网卡上的一个公网地址，没有可用地址时保留 IPv4；未固定地址时每次协商重新选择。`WEBRTC_IPV6=0` 关闭公网 IPv6。普通公网 IPv6 限于 2000::/3，并排除文档、6to4、2001::/23 等特殊范围；ULA、链路本地、scope ID、映射地址和组播不作为公网候选。固定地址必须已分配给本机，地址变化后需更新配置并重启面板。
 
-STUN 只发现地址，不转发桌面数据；默认服务为 Cloudflare 的 `stun:stun.cloudflare.com:3478`，配置不接受 TURN、凭据或查询参数。服务端已知自身绑定地址，不使用外部 STUN；显式清除固定依赖在空 iceServers 时隐式选用的默认 STUN。浏览器地址发现超时后仍使用已收集的 host 候选，不阻塞现有 LAN 连接。[Cloudflare STUN 文档](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/)
+STUN 只发现地址，不转发桌面数据；默认服务为 Cloudflare 的 `stun:stun.cloudflare.com:3478`，配置不接受 TURN、凭据或查询参数。浏览器、节点和端口映射助手都使用显式配置的 STUN 发现 NAT 映射，需要允许向该服务发送 UDP 并接收响应。本机绑定地址不能替代公网 NAT 映射的发现。空配置会清除固定依赖的隐式默认 STUN；发现超时后仍使用已收集的 host 候选，不阻塞现有 LAN 连接。[Cloudflare STUN 文档](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/)
+
+TURN 凭据在节点内存中保留一份，每次至多一个刷新请求，失败后退避 15 秒。状态查询只读取尚有效的缓存并触发后台刷新，不等待中心接口；登录、配置读取与新协商可等待有界刷新。浏览器保留凭据有效期，新协商前在剩余不足 30 秒时重新读取配置，不将过期凭据交给新 peer。刷新配置不重建健康的连接，也不重发输入。
 
 依赖由锁文件固定；在隔离开发目录安装依赖，活动部署按[维护指南](operations.md)更新。仅修改网络配置时重启面板：
 
