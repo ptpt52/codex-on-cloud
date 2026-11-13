@@ -364,7 +364,7 @@ func (m *directManager) run() {
 		m.mu.Lock()
 		enabled := m.configured && m.config.Enabled
 		p := m.peer
-		healthy := p != nil && p.ready && p.available && time.Since(p.updated) < 10*time.Second
+			healthy := p != nil && p.ready && (p.healthy || p.available) && !p.draining && time.Since(p.updated) < 10*time.Second
 		busy := p != nil && (len(p.streams) > 0 || p.opening > 0)
 		var disabled *directPeer
 		if !enabled && p != nil && !busy {

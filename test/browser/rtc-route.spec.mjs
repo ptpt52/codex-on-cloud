@@ -12,6 +12,11 @@ async function instrument(page, mode) {
       window.routeProfiles = { frame: ['relay', 'relay'], service: ['host', 'host'] };
     }
     const Native = RTCPeerConnection;
+    const Socket = WebSocket;
+    window.WebSocket = class extends Socket { constructor(...args) { super(...args); if (new URL(this.url).pathname === '/session/connect') this.addEventListener('message', event => {
+      if (!event.isTrusted || JSON.parse(event.data).type !== 'pong') return;
+      event.stopImmediatePropagation(); setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: event.data })), 150);
+    }); } };
     window.RTCPeerConnection = class extends Native {
       async getStats(...args) {
         const stats = await super.getStats(...args), types = window.top.routeProfiles[window === window.top ? 'service' : 'frame'];

@@ -27,6 +27,7 @@ var failureMessages = map[string]string{
 	"rtc_health_timeout":           "直连心跳超时，新连接使用 WSS 中转。",
 	"rtc_channel_failed":           "直连通道未能打开，新连接使用 WSS 中转。",
 	"rtc_busy":                     "直连资源暂忙，稍后继续探测。",
+	"rtc_path_slower":              "WSS 中转延迟更低，新连接使用中转；已有直连保持原通道。",
 	"rtc_draining":                 "直连通道正在轮换，新连接暂用 WSS 中转，已有连接保持原通道。",
 	"pair_invalid":                 "规则通道授权无效，等待控制台重新下发。",
 	"pair_expired":                 "规则通道授权已过期，等待控制台重新下发。",

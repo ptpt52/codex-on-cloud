@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { disconnectGrace, routePolicy, ROUTE_COOLDOWN, NETWORK_PROBE_INTERVAL, rtcFailureStatus, directRetry } from '../panel/public/transport-policy.js';
+import { disconnectGrace, routePolicy, ROUTE_COOLDOWN, NETWORK_PROBE_INTERVAL, rtcFailureStatus, directRetry, createPathQuality, pathPreferred } from '../panel/public/transport-policy.js';
+test('path quality uses fresh repeated samples, favors comparable direct paths and requires a margin for TURN or switching back', () => {
+  let time = 1000; const quality = createPathQuality(() => time);
+  quality.sample(100); assert.equal(quality.rttMs, null); quality.sample(120); assert.equal(quality.rttMs, 110);
+  time += 10001; assert.equal(quality.rttMs, null); quality.clear(); quality.sample(5); assert.equal(quality.rttMs, null);
+  for (const [candidateMs, currentMs, candidate, turn, expected] of [[15, 10, 'direct', false, true], [200, 20, 'direct', false, false],
+    [20, 20, 'direct', true, false], [20, 100, 'direct', true, true], [10, 20, 'relay', false, false], [20, 100, 'relay', false, true], [null, 20, 'direct', false, false]]) {
+    assert.equal(pathPreferred({ candidateMs, currentMs, candidate, turn }), expected);
+  }
+});
 test('a transient disconnect recovers without retirement; hard failure cancels the one deadline', () => {
   let expire, failed = 0, cancelled = 0;
   const grace = disconnectGrace(() => failed++, { schedule: fn => { expire = fn; return 1; }, cancel: () => cancelled++ });

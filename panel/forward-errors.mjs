@@ -1,4 +1,5 @@
 export const FORWARD_ERRORS = Object.freeze({
+  rtc_path_slower: 'WSS 中转延迟更低，新连接使用中转；已有直连保持原通道。',
   rtc_disabled: '管理员未启用直连，新连接使用 WSS 中转。',
   rtc_waiting_helper: '等待新版助手启用直连探测。',
   rtc_connecting: '正在探测加密直连；新连接可先使用 WSS 中转。',

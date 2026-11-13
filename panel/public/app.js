@@ -109,7 +109,7 @@ $('copy-connection-trace')?.addEventListener('click', async () => {
   }
 });
 let relayProbeController, relayProbeAt = -Infinity;
-const directIssues = { 'heartbeat-suspect': '心跳延迟，正在复核连接', busy: '服务器协商繁忙，稍后重试', auth: '连接权限已变化，请重新登录或接管', target: '终端身份已变化，请重新选择目标', protocol: '连接参数未被服务器接受，请检查配置', 'signal-failed': '协商服务暂不可达，稍后重试', unsupported: '当前浏览器环境不支持 WebRTC', disabled: '服务端已关闭 WebRTC', signaling: 'WebRTC 协商请求未完成',
+const directIssues = { quality: '保留当前延迟更低的连接，备用通道继续待命', 'heartbeat-suspect': '心跳延迟，正在复核连接', busy: '服务器协商繁忙，稍后重试', auth: '连接权限已变化，请重新登录或接管', target: '终端身份已变化，请重新选择目标', protocol: '连接参数未被服务器接受，请检查配置', 'signal-failed': '协商服务暂不可达，稍后重试', unsupported: '当前浏览器环境不支持 WebRTC', disabled: '服务端已关闭 WebRTC', signaling: 'WebRTC 协商请求未完成',
   negotiation: 'WebRTC 未建立，等待后续探测', timeout: 'WebRTC 协商超时，等待后续探测',
   'signaling-timeout': 'WebRTC 协商请求超时，等待后续探测',
   'gathering-timeout': 'WebRTC 地址收集超时，等待后续探测',

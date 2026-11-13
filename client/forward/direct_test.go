@@ -10,6 +10,38 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func TestHealthyStandbyPeerIsNotRenegotiatedWhenWSSHasLowerLatency(t *testing.T) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := make(chan struct{}, 1)
+	peer := &directPeer{pc: pc, ready: true, healthy: true, available: false, updated: time.Now(), streams: make(map[*directChannel]struct{})}
+	manager := &directManager{ctx: ctx, cancel: cancel, peer: peer, configured: true, config: directSignal{Enabled: true},
+		write: func(any) error {
+			select {
+			case attempts <- struct{}{}:
+			default:
+			}
+			return failure("rtc_unavailable")
+		}, report: func(string) {},
+		wake: make(chan struct{}, 1), answers: make(chan directSignal, 1), done: make(chan struct{})}
+	go manager.run()
+	defer manager.Close()
+	select {
+	case <-attempts:
+		t.Fatal("quality preference must not renegotiate a healthy standby")
+	case <-time.After(500 * time.Millisecond):
+	}
+	manager.mu.Lock()
+	retained := manager.peer == peer
+	manager.mu.Unlock()
+	if !retained || pc.ConnectionState() == webrtc.PeerConnectionStateClosed {
+		t.Fatal("healthy RTC standby was replaced")
+	}
+}
+
 func TestDirectCandidatesRequireEncryptedDataAndKeepBoundedUnicast(t *testing.T) {
 	base := "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 " + strings.Repeat("AB:", 31) + "AB\r\n"
 	candidates := ""

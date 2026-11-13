@@ -17,7 +17,7 @@ export function forwardNegotiationFailure(pc) {
 
 // Managed rules share one helper peer; one-time mappings retain their own peer.
 // Unhealthy peers stop receiving new streams; existing streams never migrate.
-export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, maxWindow = 8, flowBudget = createFlowBudget() }) {
+export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, valid, authenticate, connect, status, closed, reverse = false, shared = false, prefer = () => true, maxWindow = 8, flowBudget = createFlowBudget() }) {
   if (!validTransferWindow(maxWindow)) throw Error('Invalid maximum forward window');
   const allowed = host => peerAddress(host, !!ipv6Address);
   const { stun, ...ice } = rtcIceConfiguration(stunUrl);
@@ -38,7 +38,8 @@ export function createForwardPeer({ address, ipv6Address, stunUrl = '', id, vali
     const endpoint = candidate => ({ address: candidate?.host, type: candidate?.type });
     const mapped = pair && connection.reflexiveBySocket.get(pair.protocol);
     const local = mapped && (mapped.host !== pair.localCandidate.host || mapped.port !== pair.localCandidate.port) ? mapped : pair?.localCandidate;
-    current = { id, available, healthy: successes >= 2, reason, rttMs, family, window,
+    const preferred = prefer(rttMs);
+    current = { id, available: available && preferred, healthy: successes >= 2, reason: available && !preferred ? 'rtc_path_slower' : reason, rttMs, family, window,
       route: available ? rtcDirectKind({ family, local: endpoint(local), remote: endpoint(pair.remoteCandidate) }) : 'unknown' };
     status(current);
     // Keep actual direct-path health independent of the pooled WSS. The

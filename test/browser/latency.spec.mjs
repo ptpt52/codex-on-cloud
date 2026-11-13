@@ -33,7 +33,7 @@ async function instrument(page, mode = 'terminal') {
           }
           if (!pong) return;
           event.stopImmediatePropagation();
-          setTimeout(() => channel.dispatchEvent(new MessageEvent('message', { data: event.data })), 600);
+          setTimeout(() => channel.dispatchEvent(new MessageEvent('message', { data: event.data })), window.latencyDirectDelay ?? 600);
         });
         return channel;
       }
@@ -75,8 +75,10 @@ for (const mode of ['desktop', 'terminal']) test(`${mode} relay displays applica
 test('direct to relay switches display the selected path RTT instead of retained ICE or old path samples', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true, fastConnect: true, webrtc: true });
   try {
-    await instrument(page); await login(page, app);
+    await instrument(page); await page.addInitScript(() => { window.latencyDirectDelay = 1; }); await login(page, app);
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    const current = page.frames().find(value => value.url().includes('/terminal/index.html'));
+    await current.evaluate(() => { window.latencyDirectDelay = 600; });
     await measured(page, 550);
     const frame = page.frames().find(value => value.url().includes('/terminal/index.html'));
     await frame.evaluate(() => window.latencyPeers.at(-1).close());

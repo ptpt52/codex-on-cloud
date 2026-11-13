@@ -1,6 +1,7 @@
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { controlDecoder, sendControl } from '/control.js';
-import { routePolicy, STABLE_ROUTE, directRetry } from './transport-policy.js';
+import { routePolicy, STABLE_ROUTE, directRetry, createPathQuality, pathPreferred } from './transport-policy.js';
+import { rtcRouteKind } from './rtc-stats.js';
 import { TERMINAL_IDS } from '/terminal-slots.js';
 import { createRoundTrip, createHeartbeatPolicy } from '/health.js';
 import { nodeURL } from '/node-scope.js';
@@ -109,7 +110,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       active = undefined; claiming = false; pause(true); changed();
       if (peer.kind === 'direct') { routes.changed(); issue(reason === 'heartbeat' ? 'heartbeat' : 'connection'); }
       recoveryTimer ??= setTimeout(() => close('resume-timeout'), 12000);
-      const backup = peers.get('relay');
+      const backup = [...peers.values()].find(other => other !== peer && healthy(other)) || [...peers.values()].find(other => other !== peer && other.ready);
       if (healthy(backup)) void activate(backup);
       else { if (backup?.ready) heartbeat(backup, 0); ensureRelay(); }
     }
@@ -154,7 +155,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         peer.terminalOpen = value.terminalOpen === 1;
         peer.terminalSwitch = value.terminalSwitch === 1 && (peer.kind === 'direct' || value.terminalSwitchRelay === 1);
         if (!peer.ready) trace(peer.kind === 'relay' ? 'relay-ready' : 'direct-ready', { path: peer.kind, durationMs: Math.round(performance.now() - peer.startedAt) });
-        peer.ready = true; peer.healthyAt = performance.now(); clearTimeout(peer.startTimer); heartbeat(peer);
+        peer.ready = true; peer.healthyAt = performance.now(); clearTimeout(peer.startTimer); heartbeat(peer, 0);
         if (peer.prepareWait || peer.wait?.handoff !== undefined) { peer.prepareWait?.reject(new Error('busy')); peer.wait?.reject(new Error('busy')); return; }
         if (peer.wait && claiming) { send(peer, { type: 'activate', epoch: value.epoch, out, input: sent }); return; }
         peer.welcome?.(); if (!active && !claiming) void activate(peer); return;
@@ -163,13 +164,15 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         if (!integer(value.id) || !peer.ping || value.id !== peer.ping) return;
         const wasHeartbeatPaused = peer.heartbeatPaused; peer.heartbeatPaused = false;
         peer.latency.set(performance.now() - peer.sentAt); peer.health.sample(performance.now() - peer.sentAt);
+        peer.quality.sample(performance.now() - peer.sentAt);
         peer.healthyAt = performance.now();
-        clearTimeout(peer.deadline); peer.ping = 0; heartbeat(peer);
+        clearTimeout(peer.deadline); peer.ping = 0; heartbeat(peer, peer.quality.warming ? 250 : 3000);
         if (peer.networkProbePending) { peer.networkProbePending = false; peer.networkProbe = true; directExpedited = false; if (active !== peer) void promote(peer); }
         if (peer === active) {
           if (wasHeartbeatPaused && !transitioning && !targetPending && !claiming) { pause(false); if (peer.kind === 'direct') issue(''); }
           measured();
         } else if (!active && !claiming) void activate(peer);
+        else void promote(peer);
         return;
       }
       if (value.type === 'reset') return close(value.reason || 'session-reset');
@@ -235,7 +238,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     } catch { lost(peer); }
   }
   async function activate(peer, planned = false) {
-    if (ended || transitioning || creating() || peer.gone || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
+    if (ended || targetPending || claiming || transitioning || creating() || peer.gone || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
     transitioning = true;
     let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
     try {
@@ -295,7 +298,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     }
   }
   function peerFor(kind, send, close, buffered, deferred = false, writable = () => true) {
-    const peer = { kind, startedAt: performance.now(), send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0, latency: createRoundTrip(), health: createHeartbeatPolicy() };
+    const peer = { kind, startedAt: performance.now(), send, close, buffered, writable, ready: false, gone: false, epoch: 0, nonce: 0, ping: 0, latency: createRoundTrip(), health: createHeartbeatPolicy(), quality: createPathQuality(), qualityWins: 0, qualityVote: 0 };
     if (!deferred) peer.startTimer = setTimeout(() => lost(peer), 12000); peers.set(kind, peer); return peer;
   }
   function ensureRelay() {
@@ -322,9 +325,34 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     directTimer = setTimeout(() => { directTimer = undefined; void connectDirect(); }, wait);
   }
   async function promote(peer) {
-    if (ended || targetPending || peer.gone || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return;
-    if (!active || (idle() && !peer.networkProbePending && (!routes.remaining() || peer.networkProbe))) await activate(peer, !!active);
-    if (!ended && !peer.gone && active !== peer) { clearTimeout(promotionTimer); promotionTimer = setTimeout(() => void promote(peer), Math.max(1000, peer.networkProbe ? 0 : routes.remaining())); }
+    if (ended || targetPending || peer.gone || peer.health.suspect || peer.promoting || active === peer || document.hidden || !navigator.onLine) return;
+    peer.promoting = true;
+    try {
+      const previous = active;
+      if (previous) {
+        const direct = peer.kind === 'direct' ? peer : previous;
+        if (direct.transport && (!direct.routeAt || performance.now() - direct.routeAt > 3000)) {
+          direct.routeKind = rtcRouteKind(await direct.transport.stats()); direct.routeAt = performance.now();
+        }
+        if (active !== previous || ended || targetPending || creating() || peer.gone) return;
+        const preferred = healthy(peer) && pathPreferred({ candidateMs: peer.quality.rttMs, currentMs: previous.quality.rttMs, candidate: peer.kind, turn: direct.routeKind === 'relay' });
+        if (peer.qualityVote !== peer.quality.version) { peer.qualityVote = peer.quality.version; peer.qualityWins = preferred ? Math.min(2, peer.qualityWins + 1) : 0; }
+        if (!preferred || peer.qualityWins < 2) {
+          if (!preferred && peer.kind === 'direct' && peer.quality.rttMs !== null && previous.quality.rttMs !== null && !peer.qualityReported) { peer.qualityReported = true; issue('quality'); }
+          return;
+        }
+        if (peer.qualityReported) { peer.qualityReported = false; issue(''); }
+      }
+      if (!active || (idle() && !peer.networkProbePending && (!routes.remaining() || peer.networkProbe))) {
+        if (await activate(peer, !!active)) {
+          peer.qualityWins = 0;
+          if (peer.kind === 'relay') issue('quality');
+        }
+      }
+    } catch {} finally {
+      peer.promoting = false;
+      if (!ended && !peer.gone && active !== peer) { clearTimeout(promotionTimer); promotionTimer = setTimeout(() => void promote(peer), Math.max(1000, peer.networkProbe ? 0 : routes.remaining())); }
+    }
   }
   async function connectDirect() {
     if (ended || directHalted || targetPending || directController || peers.has('direct') || document.hidden || !navigator.onLine || !canTryDirect()) return;

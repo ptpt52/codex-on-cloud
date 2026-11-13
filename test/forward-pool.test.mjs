@@ -64,6 +64,25 @@ async function rule(app, helper, targetPort, localPort) {
   return { ...result, ws, ready };
 }
 
+test('helper path preference uses repeated RTT samples, keeps its healthy peer during cooldown and ignores an unavailable WSS', async () => {
+  let options, destroyed = 0;
+  const app = await fixture({ webrtc: true, forwardPorts: '*', forwardPeerFactory: value => {
+    options = value; return { state: { available: true }, streams: 0, async answer(offer) { return offer.sdp; }, async destroy() { destroyed++; value.closed(); } };
+  } }); const clients = [];
+  try {
+    await app.login(); await app.claim(); const helper = await agent(app); clients.push(helper.ws);
+    const mapping = await rule(app, helper, 22, 22001); clients.push(mapping.ws);
+    const transport = await pool(app, helper); clients.push(transport.ws);
+    const sdp = ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'), 'a=candidate:1 1 udp 123 127.0.0.1 40048 typ host', ''].join('\r\n');
+    transport.ws.send(JSON.stringify({ type: 'rtc_offer', id: 1, sdp })); await until(() => !!options);
+    await until(() => transport.packets.filter(value => value.type === 'pool-ping').length >= 2);
+    assert.equal(options.prefer(200), true); assert.equal(options.prefer(200), true); assert.equal(options.prefer(200), false);
+    for (let i = 0; i < 10; i++) assert.equal(options.prefer(0), false, 'cooldown prevents route oscillation');
+    transport.ws.terminate(); await until(() => options.prefer(0));
+    assert.equal(destroyed, 0); assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);
+  } finally { for (const ws of clients) ws.terminate(); await app.close(); }
+});
+
 test('pooled WSS isolates rule capabilities and revocation, never dials targets during preflight, and survives agent-control loss', async () => {
   const app = await fixture({ forwardPorts: '*' }), clients = [], targets = new Set(); let accepted = 0;
   const echo = net.createServer(tcp => { accepted++; targets.add(tcp); tcp.on('error', () => {}); tcp.once('close', () => targets.delete(tcp)); tcp.pipe(tcp); });

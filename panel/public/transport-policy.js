@@ -4,6 +4,22 @@ export const ROUTE_COOLDOWN = 30000;
 export const NETWORK_PROBE_INTERVAL = 5000;
 export const RTC_SIGNAL_TIMEOUT = 12000;
 export const RTC_CONNECT_TIMEOUT = 12000;
+
+// Two fresh observations before comparing paths. No sample history or queue.
+export function createPathQuality(now = () => performance.now()) {
+  let mean = null, count = 0, at = -Infinity, version = 0;
+  return {
+    sample(ms) { if (!Number.isFinite(ms) || ms < 0 || ms > 600000) return; mean = mean === null ? ms : (mean + ms) / 2; count = Math.min(3, count + 1); at = now(); version++; },
+    get rttMs() { return count >= 2 && now() >= at && now() - at <= 10000 ? mean : null; },
+    get warming() { return count < 3; }, get version() { return version; },
+    clear() { mean = null; count = 0; at = -Infinity; version++; },
+  };
+}
+export function pathPreferred({ candidateMs, currentMs, candidate = 'direct', turn = false }) {
+  if (![candidateMs, currentMs].every(ms => Number.isFinite(ms) && ms >= 0)) return false;
+  if (candidate === 'direct' && !turn) return candidateMs <= currentMs + Math.max(15, currentMs * .2);
+  return currentMs - candidateMs >= Math.max(candidate === 'relay' && !turn ? 40 : 20, currentMs * (candidate === 'relay' && !turn ? .35 : .2));
+}
 export function rtcFailureStatus(status) {
   if ([401, 403, 423].includes(status)) return 'auth';
   if (status === 409) return 'target';
