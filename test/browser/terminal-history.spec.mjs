@@ -1,4 +1,4 @@
-import { openTools, openInput } from './ui.mjs';
+import { openTools, openInput, closePanels } from './ui.mjs';
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { spawn, execFile } from 'node:child_process';
@@ -117,6 +117,9 @@ test('alternate-screen redraws never become scrollback, and history preserves th
     const fontSize = Number(await page.locator('#terminal-font-label').textContent()) + 3;
     for (let i = 0; i < 3; i++) await page.locator('#terminal-font-up').click();
     await expect(page.locator('#terminal-font-label')).toHaveText(String(fontSize));
+    // The phone tools sheet can cover the history toolbar. Close it before
+    // returning to the terminal, preserving the existing read-only snapshot.
+    await closePanels(page);
     await expect.poll(() => frame.evaluate(() => getComputedStyle(document.getElementById('history-archive')).fontSize)).toBe(fontSize + 'px');
     const style = await frame.evaluate(() => {
       const pre = document.getElementById('history-archive'), css = getComputedStyle(pre), term = window.historyTerminal;
