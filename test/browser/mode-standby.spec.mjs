@@ -92,7 +92,9 @@ test('real tmux viewers follow main to the second terminal after parking and des
   test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
   test.setTimeout(45000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-real-mode-target-')), socket = join(directory, 'tmux.sock');
-  const exec = promisify(execFile), children = [], env = { ...process.env, TERM: 'xterm-256color', HISTFILE: '/dev/null', DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
+  // Only the PTY/tmux side is real here; desktop focus uses the fixture's X11
+  // mock. Do not require xdotool or a running display in browser-only CI jobs.
+  const exec = promisify(execFile), children = [], env = { ...process.env, DEPLOY_MODE: 'terminal', TERM: 'xterm-256color', HISTFILE: '/dev/null', DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
   delete env.TMUX; delete env.DISPLAY; delete env.XAUTHORITY;
   const tmux = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 8192 });
   let app;

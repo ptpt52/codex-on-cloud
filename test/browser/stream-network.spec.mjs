@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
+
+// HTTP failure injection must reach Playwright rather than the offline worker.
+test.use({ serviceWorkers: 'block' });
 async function login(page, app) {
   await page.addInitScript(() => {
     if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true, terminalInputCollapsed: true }));

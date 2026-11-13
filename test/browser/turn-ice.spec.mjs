@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import http from 'node:http';
+import dgram from 'node:dgram';
 import { once } from 'node:events';
+import { Message, classes, methods, parseMessage } from 'werift';
 import { fixture } from '../fixture.mjs';
 
 test.use({ serviceWorkers: 'block' });
@@ -29,11 +31,23 @@ for (const refused of [false, true]) test(`expired cached TURN credentials ${ref
 });
 
 test('a stalled TURN refresh cannot interrupt state polling or input on an established direct viewer', async ({ page }) => {
+  // Test credential refresh independently of STUN availability. An absent
+  // STUN server can prevent Firefox from establishing the initial ICE path.
+  const stun = dgram.createSocket('udp4'); let bindings = 0;
+  stun.on('message', (bytes, remote) => {
+    if (++bindings > 128 || bytes.length > 1024) return;
+    const request = parseMessage(bytes);
+    if (!request || request.messageMethod !== methods.BINDING || request.messageClass !== classes.REQUEST) return;
+    const response = new Message(methods.BINDING, classes.RESPONSE, request.transactionId)
+      .setAttribute('XOR-MAPPED-ADDRESS', [remote.address, remote.port]).addFingerprint();
+    stun.send(response.bytes, remote.port, remote.address);
+  });
+  stun.bind(0, '127.0.0.1'); await once(stun, 'listening');
   let stalled = false, requests = 0;
   const central = http.createServer((_req, res) => {
     requests++; if (stalled) return;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ expiresAt: Date.now() + 60000, ttlMs: 60000, iceServers: [{ urls: ['stun:127.0.0.1:3478'] }] }));
+    res.end(JSON.stringify({ expiresAt: Date.now() + 60000, ttlMs: 60000, iceServers: [{ urls: [`stun:127.0.0.1:${stun.address().port}`] }] }));
   });
   central.listen(0, '127.0.0.1'); await once(central, 'listening');
   const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true,
@@ -47,7 +61,7 @@ test('a stalled TURN refresh cannot interrupt state polling or input on an estab
     await page.waitForTimeout(6500);
     await expect(page.locator('#diag-panel')).toContainText('可访问'); await expect(page.locator('#paste-button')).toBeEnabled();
     expect(requests).toBe(before + 1); expect(app.vncConnections).toBe(connections); expect(app.inputCalls).toEqual([]);
-  } finally { await app.close(); central.closeAllConnections(); await new Promise(resolve => central.close(resolve)); }
+  } finally { await app.close(); central.closeAllConnections(); await new Promise(resolve => central.close(resolve)); await new Promise(resolve => stun.close(resolve)); }
 });
 
 test('authenticated browser receives and uses short-lived TURN ICE servers', async ({ page }) => {
