@@ -40,8 +40,8 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 | `TZ` | 安装器写入 `Asia/Shanghai` | 重启需要使用新时区的服务；已有 shell 自身环境保持 |
 | `WEBRTC_ENABLED` | 1；0 / 1 | 重启 panel；关闭后使用 HTTPS / WebSocket 中转 |
 | `WEBRTC_LAN_ADDRESS` | 自动选择可用 IPv4 | 重启 panel；多网卡时固定本机已分配的私有、普通公网或运营商共享 IPv4 |
-| `WEBRTC_IPV6` | 1；0 / 1 | 重启 panel，控制公网 IPv6 直连 |
-| `WEBRTC_IPV6_ADDRESS` | 自动选择公网 IPv6 | 重启 panel；可固定本机已分配的公网 IPv6 |
+| `WEBRTC_IPV6` | 1；0 / 1 | 重启 panel，控制公网 / 显式 VPN IPv6 直连 |
+| `WEBRTC_IPV6_ADDRESS` | 自动选择公网 IPv6 | 重启 panel；可固定本机已分配的公网或 VPN IPv6 |
 | `WEBRTC_STUN_URL` | 普通节点默认 `stun:stun.cloudflare.com:3478`；自建节点未配置时使用中心的 3478；空值关闭此项发现 | 重启 panel；浏览器、节点和助手用于 IPv4 NAT 打洞，与 IPv6 开关独立 |
 | `TCP_FORWARD_PORTS` | `*`；或最多 16 个逗号分隔端口；空值禁用 | 重启 panel；管理端口始终排除 |
 | `TUNNEL_EDGE_IP_VERSION` | `auto` / `4` / `6` | 重启 tunnel，影响与 Cloudflare 边缘的连接 |
@@ -92,7 +92,7 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 浏览器字号、缩放、宽度适配、网页历史行数、亮屏选择和面板折叠属于当前浏览器，详见 [浏览器偏好](browser-preferences.md)。终端选择和草稿属于当前标签页。连接诊断、控制权、实际亮屏锁和在线状态属于运行状态。
 
-“连接状态”里的服务器 IP / 浏览器端 IP 直连提示也属于当前浏览器；它们随已认证协商发给服务端，作为额外 ICE 候选使用，不写 `.env`，不替换自动发现或部署时选择的监听地址。
+“连接状态”里的节点主机 IP / 浏览器端 IP 提示按浏览器和节点身份保存。提示不写 `.env`；新协商中，属于本机网卡的节点提示可优先选择该接口，每个地址族最多一个 host socket。外部别名只补充已有端口上的目标候选，需要真实可达的转发路径。操作、VPN 地址范围、重新探测与迁移见[直连提示](lan.md#浏览器手动地址提示)。
 
 每份草稿 32768 字符、每节点最多 9 份；同一标签页最多持久保存 16 个节点、合计 2 MiB。这是浏览器草稿上限，不是中心可接入的节点数上限。文件上传、并发传输、WebRTC 端口与背压等属于代码中的资源或协议边界，不能在 `.env` 中随意设置，详见[文件](files.md)、[网络](lan.md)和[映射协议](forward-protocol.md)。终端保活会话不占 `MAX_TERMINALS` 名额。
 

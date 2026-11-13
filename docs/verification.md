@@ -59,6 +59,30 @@ FORWARD_BENCH_WINDOW=16 npm run test:forward:bench
 
 基准使用隔离面板、真实 Go/Pion 和 werift，分别跑 1 / 4 / 8 条 8 MiB TCP 回显流，同时测另一条流的小包 P95、CPU 和总吞吐；校验摘要并确认全部走 RTC。默认八块窗口，可比较 4 / 8 / 16；一次运行不代表稳定性能结论。它测量本机回环，未模拟公网 RTT 或物理局域网。网络、CPU 与 SCTP 拥塞控制均会影响结果，窗口扩大不保证吞吐按比例提升；需要用目标设备和实际网络另行验收。测试不连接生产桌面或 CF。
 
+## 直连地址提示与重新探测
+
+```sh
+node --test test/rtc-hints.test.mjs test/rtc-network.test.mjs test/service-rtc.test.mjs
+npm run test:browser -- test/browser/rtc-hints.spec.mjs test/browser/rtc-recheck.spec.mjs test/browser/forward-hints.spec.mjs
+```
+
+重点核对同源不同节点的隔离、旧提示手动导入、多个地址公平取得候选名额、助手网卡选择，以及探测失败继续使用可用通道。浏览器回归检查健康桌面 / 终端重新探测时复用渲染器和统一上游、按键未释放时等待、文件上传未确认时保留原服务 peer。TURN 路径分类由浏览器统计替身覆盖，真实 TURN 数据通道另运行 `npm run test:turn`。
+
+VPN 用例默认跳过，实际 ICE / DTLS / 心跳验证须在空白网络 namespace 内分配测试地址：
+
+```sh
+unshare --user --map-root-user --net -- sh -ec '
+  ip link set lo up
+  for test_address in 100.64.0.2/32 100.64.0.3/32 fd00::2/128 fd00::3/128
+  do
+    ip addr add "$test_address" dev lo nodad
+  done
+  RTC_VPN_TEST=1 node --test --test-name-pattern="assigned VPN hints" test/rtc-hints.test.mjs
+'
+```
+
+此拓扑只有隔离回环和合成测试地址；上游仍为 fixture，不替代用户 VPN、路由、防火墙、手机或映射助手目标电脑的实际验收。
+
 ## 验证环境的区别
 
 | 检查 | 实际运行 | 不代表什么 |
