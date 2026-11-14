@@ -114,6 +114,6 @@ npm run server:leave -- --recover
 
 每个节点独立注册 `/node/<slug>/` 下的 Service Worker，缓存按节点路径区分；账号、草稿和请求也绑定自己的节点。所有节点仍共享浏览器源，只能接入相互信任的机器，不能据此提供不受信任的多租户托管。
 
-接入命令显示“配置已完成、入口尚未就绪”时，先运行 `server:doctor` 并修复提示的问题。验收应同时检查完整节点路径的 `/readyz`、浏览器登录、终端或桌面、文件中转以及启用的助手下载；不要仅检查 frpc 为 active。
+接入命令显示“配置已完成、入口尚未就绪”时，先运行 `server:doctor` 并修复提示的问题。完成接入后运行 `npm run verify:deployment`，需要助手时增加 `-- --forward`。综合命令会复用 `server:doctor` 并检查完整节点路径，随后按报告验证浏览器登录、终端或桌面、文件和目标助手；选项见[部署后自动验收](deployment-verification.md)。
 
 [文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

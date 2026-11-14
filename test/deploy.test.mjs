@@ -62,6 +62,7 @@ test('terminal-only deployment installs minimal packages and production JS witho
   assert.ok([...units.values()].every(text=>!text.includes('desktop.mjs')&&!text.includes('desktop-worker.mjs')&&!text.includes('PartOf=')));
   assert.match(units.get('codex-cloud-terminal.service'),/Restart=no/);
   assert.ok(h.calls.every(c=>c.capture||!c.args.some(arg=>/codex-cloud-(desktop|actions)/.test(arg))));
+  assert.ok(h.logs.some(text => text.includes('npm run verify:deployment')));
 });
 
 test('deployment mode is retained on rerun and a requested conversion stops before installing or touching services', async t => {

@@ -55,6 +55,8 @@ ssh -N -L 36080:127.0.0.1:36080 user@your-server
 
 面板和 helper 保持回环监听，VNC 使用私有 Unix socket，无需向公网开放 36080 或 VNC 端口。
 
+安装、完成最终入口接入或更新后，执行 `npm run verify:deployment` 获取自动验收报告；需要助手时增加 `-- --forward`，明确验证账号时增加 `--login`。自动通过后继续完成报告中的人工项，详见[部署后验收](docs/deployment-verification.md)。
+
 ## 接入自己的域名
 
 按实际需要选择一种主入口：
@@ -85,6 +87,7 @@ ssh -N -L 36080:127.0.0.1:36080 user@your-server
 域名、节点 slug 等：填写自己的信息；已有部署优先读取现有配置。
 凭据通过私有文件或交互输入提供，不打印到聊天或日志。
 请按清单验证实际入口和所选功能；需要助手时必须构建并核对四个平台下载。
+请运行 verify:deployment 并读取人工项；JSON 使用 npm run --silent verify:deployment -- --json，明确需要时增加 --login 和 --forward。
 未完成、无法验证或需要我操作的步骤请明确列出，不以进程启动成功代替部署完成。
 ```
 

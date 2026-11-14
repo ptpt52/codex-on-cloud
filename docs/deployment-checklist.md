@@ -56,6 +56,8 @@ npm run build:forward
 
 ## 4. 部署结束前逐项核对
 
+节点先运行 `npm run verify:deployment`；需要助手时使用 `npm run verify:deployment -- --forward`，明确检查实际账号登录时再增加 `--login`。中心命令、JSON 输出及完整检查范围见[部署后自动验收](deployment-verification.md)。命令退出 `0` 只证明自动项通过；按报告继续完成下面的人工验收。
+
 | 验收项 | 完成标准 |
 | --- | --- |
 | 工作台节点 | 所选模式和入口服务正常；实际节点 `/readyz` 的 `ok`、`host`、`files` 为 true，节点身份正确 |

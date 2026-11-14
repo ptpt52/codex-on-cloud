@@ -6,11 +6,12 @@
 
 ```sh
 npm run deploy -- --check
+npm run verify:deployment
 npm run native:status
 journalctl --user -u codex-cloud-panel.service -n 50 --no-pager
 ```
 
-`--check` 只检查，不安装、写配置或重启服务。进程 active 不能代替实际入口就绪；网页“连接状态”和入口 `/readyz` 应确认宿主与文件服务均已就绪。
+`deploy --check` 只检查本机环境；`verify:deployment` 复用适用环境检查，并核对实际入口、节点身份、界面及已发布助手。两者不安装、写配置或重启服务。后者默认不登录，自动通过后仍需完成人工项，见[验收命令与 JSON](deployment-verification.md)。
 
 | 入口 | 额外检查 |
 | --- | --- |
@@ -25,6 +26,7 @@ journalctl --user -u codex-cloud-panel.service -n 50 --no-pager
 ```sh
 git pull --ff-only
 npm run deploy
+npm run verify:deployment
 ```
 
 普通更新保留模式、密码和 `.env`，不会主动重启 desktop / terminal 任务宿主；files、manager、panel 可以更新。面板重启会断开观看连接及旧 TCP；助手使用原 key 重连并重建启用规则。业务客户端需重连，不重放旧字节，桌面与终端原任务保留。

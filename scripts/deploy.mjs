@@ -231,6 +231,7 @@ async function deployUnderLease(values, { root = projectRoot, run = execute, hea
   const env = parseEnv(await boundedFile(join(root, '.env'), 65536));
   const entry = new URL(env.PUBLIC_ORIGIN || 'http://localhost:36080').origin + (env.ENTRY_BASE_PATH && env.ENTRY_BASE_PATH !== '/' ? env.ENTRY_BASE_PATH : '');
   log(`部署完成，面板和${mode === 'terminal' ? '终端后台' : '桌面'}已就绪。入口：` + entry);
+  log('下一步：npm run verify:deployment' + (values['build-forward'] ? ' -- --forward' : '') + '；按报告完成实际登录和人工验收，自动检查不替代功能验收。');
   const downloads = await createForwardDownloads(join(root, 'data', 'forward-client'), { server: entry }).list();
   log(downloads.length === 4 ? '端口映射助手：四个平台下载项已发布，请在网页“端口映射”中下载核对。' : '端口映射助手：下载包尚未就绪或不匹配当前入口。需要远程调试时，请完成最终节点接入后运行 npm run build:forward，再在网页“端口映射”中核对四项下载。');
   log('登录信息：' + join(root, 'secrets', 'credentials.txt') + '（密码不打印到日志）');

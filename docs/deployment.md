@@ -139,6 +139,8 @@ npm run deploy -- --mode terminal --install-deps --enable-linger \
 
 ## 5. 确认部署完成
 
+运行 `npm run verify:deployment` 汇总本机及实际入口检查，需要助手时增加 `-- --forward`。中心使用对应角色命令，选项与 JSON 报告见[部署后自动验收](deployment-verification.md)。
+
 按[共用验收表](deployment-checklist.md#4-部署结束前逐项核对)核对实际节点的 `/readyz`、登录、原任务保留和每项已选功能。中心首页、节点在线或进程 active 不能代替工作台验收；需要助手时，四个平台下载和实际使用平台的接入结果须分别确认。未完成的步骤明确保留为待办，不把未启用的可选功能计为故障。
 
 ## 运行环境与独立部署

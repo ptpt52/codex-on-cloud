@@ -216,6 +216,8 @@ sudo systemctl restart codex-selfhost-center.service
 
 ## 验收
 
+在保留的中心源码仓库运行[中心自动验收命令](deployment-verification.md#自建中心)，检查实际 HTTPS、首页、管理子路径和公开节点列表；普通节点模式与中心模式分别报告。需要单项定位时使用以下命令：
+
 在中心服务器核对系统服务，再从客户端检查 HTTPS：
 
 ```sh

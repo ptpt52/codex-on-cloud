@@ -122,7 +122,7 @@ WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
 
 ## 自己部署后的验收
 
-部署步骤与完成标准统一使用[人工 / AI 检查清单](deployment-checklist.md)；本节补充健康地址和测试范围。
+部署步骤与完成标准统一使用[人工 / AI 检查清单](deployment-checklist.md)。先按[部署后自动验收](deployment-verification.md)运行综合命令，检查角色、最终入口、身份、界面和所需助手；再完成交互、重连及目标设备验证。本节补充健康地址和测试范围，不重复命令选项。
 
 1. 按下表选择真正的工作台入口，确认节点 `/readyz` 的 `ok`、`host`、`files` 均为 true，并核对节点身份。
 2. 使用自己的账号登录，确认终端或桌面可用；明确区分粘贴与 Enter。

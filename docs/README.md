@@ -7,7 +7,7 @@
 | 当前任务 | 阅读顺序 |
 | --- | --- |
 | 第一次安装自己的工作台 | [选择组合](deployment.md) → [执行与验收清单](deployment-checklist.md) → [准备工具](node-prerequisites.md) → 执行对应安装指南 |
-| 交给 AI 部署，或人工检查是否遗漏 | [共用检查清单](deployment-checklist.md)，同时提供自己的模式、入口和助手需求；AI 先读 [AGENTS.md](../AGENTS.md) |
+| 交给 AI 部署，或人工检查是否遗漏 | [共用检查清单](deployment-checklist.md) → [部署后自动验收](deployment-verification.md)，提供自己的模式、入口和助手需求；AI 先读 [AGENTS.md](../AGENTS.md) |
 | 接入管理员已建好的中转中心 | [节点接入与恢复](selfhost-node.md)，无需先安装中心 |
 | 用自己的公网服务器统一接入节点 | [中心部署](selfhost-server.md) → [中心管理](selfhost-admin.md) → [节点接入](selfhost-node.md) |
 | 用自己的 Cloudflare 域名 | [单节点接入](cloudflare.md)；多节点继续看[网关部署](gateway.md) |
@@ -23,6 +23,7 @@
 | --- | --- |
 | [部署组合](deployment.md) | 工作区、入口的区别，常用组合及安装命令 |
 | [部署检查清单](deployment-checklist.md) | 人工 / AI 共用流程、最终入口、助手四平台构建和完成标准 |
+| [部署后自动验收](deployment-verification.md) | 综合检查命令、节点／中心、可选登录、四平台助手及 JSON 报告 |
 | [节点工具与依赖](node-prerequisites.md) | 固定版本、PATH、Node / Go 与系统依赖的职责 |
 | [纯终端模式](terminal-only.md) | 不使用图形栈的节点安装与生命周期 |
 | [Windows WSL](wsl.md) | systemd、发行版启动与镜像网络 |
@@ -63,4 +64,4 @@
 
 用户操作放在功能指南，协议参数与资源上限放在开发参考；跨页使用相对链接。版本与命令对照锁文件、脚本和当前 CLI，不用某次本机测试数量代表通用兼容性。部署现场域名、凭据、绝对路径和临时产物保存在仓库外，示例统一使用占位值。
 
-部署选择以 [deployment.md](deployment.md) 为入口，完成标准以[共用检查清单](deployment-checklist.md)为准，配置默认值以[配置清单](deployment-config.md)为参考，更新与重启范围以[维护指南](operations.md)为参考。
+部署选择以 [deployment.md](deployment.md) 为入口，完成标准以[共用检查清单](deployment-checklist.md)为准；[自动验收](deployment-verification.md)解释命令与报告，[测试与验证](verification.md)解释开发规格和真机边界。配置默认值以[配置清单](deployment-config.md)为参考，更新与重启范围以[维护指南](operations.md)为参考。
