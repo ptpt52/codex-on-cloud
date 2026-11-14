@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { HISTORY_BYTES, LEGACY_HISTORY_BYTES, HISTORY_CHUNK } from './public/terminal-history-limits.js';
+import { validTerminalWidths } from './public/terminal-unicode.js';
 
 const helper = fileURLToPath(new URL('../desktop/web-terminal.py', import.meta.url));
+const widthCache = new Map(); // At most eight node tables, each below 16 KiB.
 export const TERMINAL_KEYS = Object.freeze({ Enter: '\r', Tab: '\t', Escape: '\x1b', Backspace: '\x7f', Delete: '\x1b[3~',
   ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowLeft: '\x1b[D', ArrowRight: '\x1b[C', Home: '\x1b[H', End: '\x1b[F',
   PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Shift+Tab': '\x1b[Z', 'Ctrl+ArrowLeft': '\x1b[1;5D', 'Ctrl+ArrowRight': '\x1b[1;5C',
@@ -17,7 +19,7 @@ export function terminalPaste(text, bracketed) {
   return bracketed ? `\x1b[200~${clean}\x1b[201~` : clean;
 }
 export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env, valid, verify, readClipboard, launch }) {
-  const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken, '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken, '--geometry'], { env: { ...(env || process.env), CODEX_TERMINAL_WIDTHS: widthCache.get(socketPath) || '' }, stdio: ['pipe', 'pipe', 'ignore'] });
   let ended = false, ready = false, pending = '', outstanding = 0, sequence = 0, lastClientId = 0, busy = false;
   const requests = new Map(); // At most 64 streamed records / 64 KiB in the helper.
   let rawWindow = Date.now(), rawBytes = 0;
@@ -64,7 +66,12 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       if (value.type === 'ready' && !ready) {
         const columnAlignment = value.columnAlignment === undefined ? 1 : value.columnAlignment;
         if (![1, 2].includes(columnAlignment)) return close();
-        ready = true; clearTimeout(startTimer); send({ type: 'ready', historyStyles: true, columnAlignment });
+        if (value.widths !== undefined) {
+          if (!validTerminalWidths(value.widths) || JSON.stringify(value.widths).length > 16384) return close();
+          if (widthCache.size >= 8) widthCache.delete(widthCache.keys().next().value);
+          widthCache.set(socketPath, JSON.stringify(value.widths));
+        }
+        ready = true; clearTimeout(startTimer); send({ type: 'ready', historyStyles: true, columnAlignment, ...(value.widths ? { widths: value.widths } : {}) });
       }
       else if (value.type === 'geometry' && ready && Number.isInteger(value.maxCols) && value.maxCols >= 2 && value.maxCols <= 500) {
         geometryMaxCols = value.maxCols;

@@ -51,6 +51,16 @@ test('terminal column alignment forwards supported capabilities and rejects malf
   });
 });
 
+test('terminal width tables reach clients and malformed tables close before any output', async t => {
+  const widths = { key: 'a'.repeat(64), ranges: [[0x301, 0x301, 0], [0x1f4c1, 0x1f4c1, 2]] };
+  for (const value of [widths, null, { ...widths, ranges: [[3, 2, 0]] }, { ...widths, ranges: [[1, 2, 3]] }, { ...widths, ranges: [[2, 4, 2], [3, 5, 0]] }]) await t.test(JSON.stringify(value), async t => {
+    const app = await fixture(); app.config.terminalWidths = value; t.after(() => app.close());
+    await app.login(); await app.claim(); const { ws, records } = await connected(app); t.after(() => ws.terminate());
+    if (value === widths) { await until(() => records.some(value => value.type === 'ready')); assert.deepEqual(records.find(value => value.type === 'ready').widths, widths); }
+    else { await once(ws, 'close'); assert.equal(records.some(value => value.type === 'ready'), false); }
+  });
+});
+
 test('terminal paste and fixed keys preserve separate Enter, protect multiline paste and read remote clipboard only explicitly', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
   const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));

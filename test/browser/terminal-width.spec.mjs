@@ -207,6 +207,34 @@ test('real tmux shared with a narrower PTY fits without dot padding, follows pee
     expect((await dimensions(frame)).cols).toBeGreaterThan(180);
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token);
     expect(await readFile(proof, 'utf8')).toBe('once\n'); expect(app.managementStats.restarts).toBe(0);
+    // A real backend's emoji width must place the following letter in the
+    // same cell as tmux, including on hosts whose Unicode library is older.
+    await run(['send-keys', '-t', token.split(':')[0], '-l', "printf '\\033[2J\\033[H0123456789\\r\\nA📁B\\r\\nA👩‍💻B\\r\\nA🇨🇳B\\r\\nA👍🏻B'; read -r -n1 width_test_stop"]);
+    await run(['send-keys', '-t', token.split(':')[0], 'Enter']);
+    await expect(frame.locator('.xterm-rows')).toContainText('A📁B');
+    const serverCursor = Number((await run(['display-message', '-p', '-t', 'codex', '#{cursor_x}'])).stdout.trim());
+    await expect.poll(() => frame.evaluate(() => {
+      const t = window.widthTerminal, b = t.buffer.active, line = b.getLine(b.baseY + b.cursorY);
+      for (let col = 0; col < t.cols; col++) if (line.getCell(col).getChars() === 'B') return col;
+    })).toBe(serverCursor - 1);
+    expect(await frame.evaluate(() => window.widthTerminal.unicode.activeVersion)).toBe('node');
+    await expect(frame.locator('.xterm-rows > div').first()).toHaveText('0123456789');
+    const positions = await frame.evaluate(() => {
+      const t = window.widthTerminal, buffer = t.buffer.active, cellWidth = document.querySelector('.xterm-screen').getBoundingClientRect().width / t.cols;
+      return [...document.querySelectorAll('.xterm-rows > div')].flatMap((row, index) => {
+        if (!row.textContent.startsWith('A') || !row.textContent.includes('B')) return [];
+        const line = buffer.getLine(buffer.viewportY + index), walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT), range = document.createRange();
+        let col = 0, node;
+        while (line.getCell(col)?.getChars() !== 'B' && col < t.cols) col++;
+        while ((node = walker.nextNode())) {
+          const offset = node.textContent.indexOf('B');
+          if (offset >= 0) { range.setStart(node, offset); range.setEnd(node, offset + 1); break; }
+        }
+        return [{ text: row.textContent, difference: range.getBoundingClientRect().left - row.getBoundingClientRect().left - col * cellWidth }];
+      });
+    });
+    expect(positions).toHaveLength(4);
+    for (const position of positions) expect(Math.abs(position.difference), position.text).toBeLessThanOrEqual(1);
   } finally {
     await app?.close(); for (const child of clients) if (child.exitCode === null) child.kill('SIGTERM');
     await run(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true });

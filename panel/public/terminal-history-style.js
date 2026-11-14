@@ -10,6 +10,7 @@ export const TERMINAL_THEME = Object.freeze({ background: '#222222', foreground:
 export const HISTORY_STYLE_LIMIT = 4096;
 export const HISTORY_TEXT_LIMIT = HISTORY_BYTES, HISTORY_SEARCH_LIMIT = 1000, HISTORY_QUERY_LIMIT = 128;
 const defaults = () => ({ fg: null, bg: null, underlineColor: null, bold: false, dim: false, italic: false, underline: 0, inverse: false, hidden: false, strike: false, overline: false });
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
 const rgb = values => '#' + values.map(value => value.toString(16).padStart(2, '0')).join('');
 function color(index) {
@@ -239,14 +240,16 @@ export function createHistoryGrid(term, host) {
       if (group && value !== groupSpacing) flush();
       groupSpacing = value; group += cluster; cluster = '';
     };
-    for (const char of text) {
+    for (const { segment: char } of graphemes.segment(text)) {
       if (nodes >= 16384) {
         limited = true; parent.append(group + cluster + controls + text.slice(consumed)); return;
       }
-      if (['\n', '\r', '\t'].includes(char)) { emit(); flush(); controls += char; }
+      if (/^[\n\r\t]+$/.test(char)) { emit(); flush(); controls += char; }
       else {
         if (controls) { parent.append(controls); controls = ''; }
-        const width = unicode.wcwidth(char.codePointAt(0));
+        if (char.length > 64) { emit(); flush(); limited = true; parent.append(char); consumed += char.length; continue; }
+        let width = 0;
+        for (const point of char) width += unicode.wcwidth(point.codePointAt(0));
         if (width === 0 && cluster && cluster.length + char.length <= 64) cluster += char;
         else { emit(); cluster = char; columns = width; }
       }

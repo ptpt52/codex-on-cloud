@@ -2,11 +2,15 @@
 """One bounded PTY client for an existing private tmux session, never a task owner."""
 import base64
 import collections
+import ctypes
+import hashlib
+import locale
 from contextlib import contextmanager
 import fcntl
 import json
 import os
 import select
+import shlex
 import re
 import signal
 import stat
@@ -21,6 +25,103 @@ HISTORY_BYTES = 1024 * 1024
 HISTORY_CHUNK = 8192
 HISTORY_ROWS = 10000
 HISTORY_SCAN_BYTES = 32 * 1024 * 1024
+
+
+def width_query(socket, args):
+    child = subprocess.Popen(['tmux', '-S', socket] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    data = bytearray()
+    deadline = time.monotonic() + 1
+    try:
+        os.set_blocking(child.stdout.fileno(), False)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([child.stdout], [], [], remaining)[0]:
+                raise ValueError('width query deadline')
+            chunk = os.read(child.stdout.fileno(), 8193 - len(data))
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > 8192:
+                raise ValueError('width query limit')
+        child.wait(timeout=max(0.01, deadline - time.monotonic()))
+        return bytes(data)
+    finally:
+        child.stdout.close()
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=1)
+
+
+def terminal_widths(socket, pid, version):
+    """Mirror the running server's locale/library, not the browser's Unicode age.
+
+    The panel retains at most eight 16 KiB tables in memory and passes one back
+    on reconnect. No files, task input, tmux settings or dependency changes.
+    """
+    if not re.fullmatch(r'[1-9][0-9]{0,9}', pid):
+        raise ValueError('invalid server pid')
+    def proc(name):
+        with open('/proc/' + pid + '/' + name, 'rb') as source:
+            data = source.read(131073)
+        if len(data) > 131072:
+            raise ValueError('server metadata limit')
+        return data
+    server_env = dict(item.split(b'=', 1) for item in proc('environ').split(b'\0') if b'=' in item)
+    language = next((server_env[key].decode() for key in [b'LC_ALL', b'LC_CTYPE', b'LANG'] if server_env.get(key)), 'C.UTF-8')
+    locale.setlocale(locale.LC_CTYPE, language)
+    maps = proc('maps').decode()
+    library = next((line.split()[-1] for line in maps.splitlines() if '/libutf8proc.so' in line), None)
+    # Modern tmux also has explicit overrides. Bound this otherwise external
+    # configuration before parsing it or including it in the cache identity.
+    options = width_query(socket, ['show-options', '-sv', 'codepoint-widths'])
+    key = hashlib.sha256((pid + ':' + version + ':' + language + ':' + str(library)).encode() + options).hexdigest()
+    cached = os.environ.get('CODEX_TERMINAL_WIDTHS', '')
+    if cached and len(cached) <= 16384:
+        try:
+            value = json.loads(cached)
+            if value.get('key') == key and isinstance(value.get('ranges'), list) and len(value['ranges']) <= 1024:
+                return value
+        except (ValueError, AttributeError):
+            pass
+    function = ctypes.CDLL(library).utf8proc_charwidth if library else ctypes.CDLL(None).wcwidth
+    function.argtypes = [ctypes.c_int32 if library else ctypes.c_wchar]
+    function.restype = ctypes.c_int
+    widths = bytearray(0x110000)
+    for codepoint in range(len(widths)):
+        width = function(codepoint if library else chr(codepoint))
+        widths[codepoint] = width if width in (0, 2) else 1
+    # Ask newer servers about their built-in emoji exceptions. Old tmux does
+    # not support the w modifier and uses the native table above unchanged.
+    points = list(range(0x2300, 0x2800)) + list(range(0x1f000, 0x1fb00))
+    template = '#{w:A};' + ''.join('#{w:' + chr(point) + '}' for point in points)
+    measured = width_query(socket, ['display-message', '-p', template]).strip()
+    if measured.startswith(b'1;'):
+        values = measured[2:]
+        if len(values) != len(points) or any(value not in b'012' for value in values):
+            raise ValueError('invalid server widths')
+        for point, width in zip(points, values):
+            widths[point] = width - 48
+    for entry in shlex.split(options.decode()):
+        match = re.fullmatch(r'(?:U\+([0-9a-fA-F]{1,6})(?:-U\+([0-9a-fA-F]{1,6}))?|(.))=([012])', entry)
+        if not match:
+            raise ValueError('unsupported width override')
+        start = int(match[1], 16) if match[1] else ord(match[3])
+        end = int(match[2], 16) if match[2] else start
+        if not 0 <= start <= end < len(widths):
+            raise ValueError('invalid width override')
+        widths[start:end + 1] = bytes([int(match[4])]) * (end - start + 1)
+    ranges = []
+    for point, width in enumerate(widths):
+        if width == 1:
+            continue
+        if ranges and ranges[-1][1] == point - 1 and ranges[-1][2] == width:
+            ranges[-1][1] = point
+        else:
+            ranges.append([point, point, width])
+    value = {'key': key, 'ranges': ranges}
+    if len(ranges) > 1024 or len(json.dumps(value, separators=(',', ':'))) > 16384:
+        raise ValueError('width table limit')
+    return value
 
 
 def column_alignment(version):
@@ -244,12 +345,13 @@ def main():
     master, slave = os.openpty()
     tty = os.ttyname(slave)
     dimensions = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', session,
-                                 '#{pane_width} #{pane_height} #{status} #{version}'], stdout=subprocess.PIPE,
+                                 '#{pane_width} #{pane_height} #{status} #{version} #{pid}'], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, check=True, timeout=1).stdout
     if len(dimensions) > 64:
         raise ValueError('invalid initial geometry')
-    cols_text, rows_text, status_lines, version = dimensions.decode().split()
+    cols_text, rows_text, status_lines, version, server_pid = dimensions.decode().split()
     alignment = column_alignment(version)
+    widths = terminal_widths(socket, server_pid, version)
     cols, rows = int(cols_text), int(rows_text)
     rows += 1 if status_lines == 'on' else int(status_lines) if status_lines.isdecimal() else 0
     if not (2 <= cols <= 4096 and 1 <= rows <= 4096):
@@ -290,7 +392,7 @@ def main():
             if child.poll() is not None or time.monotonic() >= deadline:
                 raise ValueError('terminal target unavailable')
             time.sleep(0.03)
-        emit({'type': 'ready', 'columnAlignment': alignment})
+        emit({'type': 'ready', 'columnAlignment': alignment, 'widths': widths})
         last_id = 0
         last_width = None
         width_at = 0

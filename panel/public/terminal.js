@@ -5,6 +5,7 @@ import { createTerminalHealth } from './terminal-health.js';
 import { terminalDirect, canTryDirect } from './terminal-rtc.js';
 import { createTerminalHistory } from './terminal-history.js';
 import { TERMINAL_THEME } from './terminal-history-style.js';
+import { terminalWidthProvider, terminalGraphemeRanges } from '/terminal-unicode.js';
 import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS, HISTORY_BYTES, HISTORY_CHUNK } from './terminal-history-limits.js';
 import { routePolicy, STABLE_ROUTE } from '/desktop/transport-policy.js';
 import { createStreamClient } from '/desktop/stream-client.js';
@@ -256,9 +257,12 @@ function createTerminal() {
   host.replaceChildren();
   term = new Terminal({ fontSize, fontFamily: 'ui-monospace, "Noto Sans Mono CJK SC", monospace', scrollback: historyRows, overviewRuler: { width: scrollbarWidth() },
     scrollOnUserInput: false, scrollOnEraseInDisplay: false,
-    cursorBlink: true, allowProposedApi: false, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine,
+    cursorBlink: true, allowProposedApi: true, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine,
     theme: { ...TERMINAL_THEME, overviewRulerBorder: TERMINAL_THEME.background } });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
+  // Reserve all server cells occupied by a combined emoji. Otherwise the DOM
+  // may ligate separately measured cells and pull following text to the left.
+  term.registerCharacterJoiner(terminalGraphemeRanges);
   const current = term;
   let sgrMouse = false;
   for (const [final, enabled] of [['h', true], ['l', false]]) current.parser.registerCsiHandler({ prefix: '?', final }, params => {
@@ -381,6 +385,10 @@ function attachSocket(current) {
       if (ready) return retire(current);
       if (value.columnAlignment !== undefined && ![1, 2].includes(value.columnAlignment)) return retire(current);
       columnAlignment = value.columnAlignment ?? 1;
+      if (value.widths !== undefined) {
+        try { term.unicode.register(terminalWidthProvider(value.widths)); term.unicode.activeVersion = 'node'; }
+        catch { return retire(current); }
+      }
       clearTimeout(connectingTimer); connectingTimer = undefined;
       ready = true; historyStyles = value.historyStyles === true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
       if (current.direct) directIssue = '';
