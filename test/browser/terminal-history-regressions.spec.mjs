@@ -36,9 +36,12 @@ test('wrapped commands remain searchable and copyable intact without changing th
     const selected = await frame.locator('#history-archive').evaluate(element => {
       const selection = getSelection(), range = document.createRange(); range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range);
       const event = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: new DataTransfer() }); element.dispatchEvent(event);
-      return event.clipboardData.getData('text/plain');
+      return { copied: event.clipboardData.getData('text/plain'), visible: selection.toString() };
     });
-    expect(selected).toContain(seed.text + '\nHARD\nBREAK');
+    const physical = seed.rows.slice(0, seed.rows.indexOf('HARD')).join('\n');
+    expect(selected.visible).toContain(physical);
+    expect(selected.copied).toBe(selected.visible.replace(physical, seed.text));
+    expect(selected.copied).toContain(seed.text + '\nHARD\nBREAK');
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });

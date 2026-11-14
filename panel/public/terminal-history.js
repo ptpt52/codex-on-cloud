@@ -108,12 +108,24 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   function selectedText() {
     const selection = window.getSelection();
     if (archiveOpen && selection?.rangeCount && selection.rangeCount <= 8 && archive.contains(selection.anchorNode) && archive.contains(selection.focusNode)) {
-      let text = '';
+      const visible = selection.toString();
+      if (!visible || !view.parsed.softBreaks?.length) return visible;
+      const ranges = [];
       for (let index = 0; index < selection.rangeCount; index++) {
         const range = selection.getRangeAt(index), prefix = range.cloneRange();
         prefix.selectNodeContents(archive); prefix.setEnd(range.startContainer, range.startOffset);
-        const start = prefix.cloneContents().textContent.length, length = range.cloneContents().textContent.length;
-        text += historyText(view.parsed, start, start + length);
+        ranges.push({ start: prefix.toString().length, text: range.toString() });
+      }
+      // Chromium can omit a terminal newline from the rendered selection.
+      // Map only the text it actually selected, then remove display wraps;
+      // raw Range text must never add characters to a user's selection.
+      const raw = ranges.map(range => range.text).join(''), first = raw.indexOf(visible);
+      if (first < 0) return visible;
+      const last = first + visible.length; let offset = 0, text = '';
+      for (const range of ranges) {
+        const start = Math.max(0, first - offset), end = Math.min(range.text.length, last - offset);
+        if (end > start) text += historyText(view.parsed, range.start + start, range.start + end);
+        offset += range.text.length;
       }
       return text;
     }
