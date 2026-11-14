@@ -2,7 +2,8 @@
 // Nothing survives a focus/connection change or gets retried after an unknown result.
 export function createDesktopInput({ screen, field, status, current, allowed, paste, changed }) {
   const MAX_EVENTS = 64, MAX_BYTES = 32768;
-  let enabled = true, composing = false, generation = 0, pending, queue = [], bytes = 0, sequence = 0, lastCommit = '', compositionInput = false, reported = '', printable, blockedReason = '';
+  const TOUCH_ANCHOR = '\u200b'; // Gives soft keyboards a local character to delete.
+  let enabled = true, composing = false, touch = false, generation = 0, pending, queue = [], bytes = 0, sequence = 0, lastCommit = '', compositionInput = false, handledInput = '', reported = '', printable, blockedReason = '';
   const suppressed = new Set(), accepted = new Set(), delivered = new Map();
   const ready = () => enabled && allowed() && !!current() && !document.hidden && navigator.onLine;
   const show = text => { status.textContent = text; status.hidden = !text; };
@@ -13,10 +14,17 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     for (const value of delivered.values()) canvas?.dispatchEvent(new KeyboardEvent('keyup', { ...value, repeat: false }));
     delivered.clear();
   };
-  const report = () => { const busy = !!pending || !!queue.length, key = `${composing}:${busy}`; if (key !== reported) { reported = key; changed({ composing, busy }); } };
-  const clearField = () => { field.value = ''; field.classList.remove('composing'); };
+  const report = () => { const busy = !!pending || !!queue.length, key = `${composing}:${busy}:${touch}`; if (key !== reported) { reported = key; changed({ composing, busy, touch }); } };
+  const clearField = () => {
+    field.value = touch ? TOUCH_ANCHOR : ''; field.classList.remove('composing');
+    if (touch) field.setSelectionRange(field.value.length, field.value.length);
+  };
+  const fieldText = () => touch && field.value.startsWith(TOUCH_ANCHOR) ? field.value.slice(1) : field.value;
   function cancel(message = '') {
-    generation++; queue = []; bytes = 0; composing = false; lastCommit = ''; compositionInput = false; printable = undefined; suppressed.clear(); accepted.clear(); blockedReason = message; clearField(); release(); report(); show(message);
+    const dismiss = touch && document.activeElement === field;
+    generation++; queue = []; bytes = 0; composing = touch = false; lastCommit = ''; compositionInput = false; handledInput = ''; printable = undefined; suppressed.clear(); accepted.clear(); clearField(); release();
+    if (dismiss) field.blur();
+    blockedReason = message; report(); show(message);
   }
   function fail(message) { cancel(message); }
   function drain() {
@@ -58,10 +66,28 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     if (size > MAX_BYTES) return fail('一次输入不能超过 32 KiB，请使用输入助手分段粘贴。');
     enqueue({ kind: 'text', text: value, size });
   }
+  function press(name) {
+    const code = ['Escape', 'Tab', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(name) ? name : undefined;
+    if (!code || !ready() || composing || document.activeElement !== field) return false;
+    const value = { key: name, code, bubbles: true, cancelable: true };
+    enqueue({ kind: 'key', type: 'keydown', value }); enqueue({ kind: 'key', type: 'keyup', value }); return true;
+  }
+  function softAction(type) {
+    if (type === 'deleteContentBackward') press('Backspace');
+    // Candidate confirmation is not a command submission. Soft-keyboard line
+    // breaks use the explicit Enter button; hardware Enter keeps its key path.
+    else show('请点快捷栏 Enter 提交；长文本可在输入助手中编辑。');
+    clearField();
+  }
+  const softActionType = type => ['deleteContentBackward', 'insertLineBreak', 'insertParagraph'].includes(type);
   function key(event) {
     event.stopImmediatePropagation();
     const code = event.code || event.key;
     if (event.key.length > 64 || code.length > 64) { event.preventDefault(); return fail('按键数据无效，未发送。'); }
+    // Virtual keyboards can report an ordinary-looking key as well as a DOM
+    // edit. Without a physical code, handle these through beforeinput/input
+    // only; otherwise one tap can delete twice or submit a candidate.
+    if (touch && !event.code && ['Enter', 'Backspace'].includes(event.key)) return;
     const releaseAccepted = event.type === 'keyup' && accepted.has(code);
     if (!releaseAccepted && (event.isComposing || composing || event.keyCode === 229 || ['Process', 'Dead', 'Compose', 'Unidentified'].includes(event.key))) {
       if (event.type === 'keydown' && suppressed.size < 64) suppressed.add(code);
@@ -93,11 +119,20 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
   });
   field.addEventListener('beforeinput', event => {
     compositionInput = composing || event.isComposing || /Composition/.test(event.inputType);
+    handledInput = '';
+    if (touch && !compositionInput && softActionType(event.inputType) && event.cancelable) {
+      event.preventDefault(); handledInput = event.inputType; softAction(event.inputType);
+    }
   });
   field.addEventListener('input', event => {
     const echo = compositionInput || /Composition/.test(event.inputType); compositionInput = false;
     if (composing || event.isComposing) return;
-    const value = field.value;
+    if (touch && !echo && softActionType(event.inputType)) {
+      if (handledInput !== event.inputType) softAction(event.inputType);
+      handledInput = ''; clearField(); return;
+    }
+    handledInput = '';
+    const value = fieldText();
     // Only the final composition event is an echo. A following insertText or
     // paste with the same characters is a separate user input, even immediately.
     if (echo && lastCommit && (value === lastCommit || !value && event.data === lastCommit)) { lastCommit = ''; clearField(); return; }
@@ -131,8 +166,14 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
   window.addEventListener('blur', () => cancel());
   window.addEventListener('offline', () => cancel('连接已断开，未完成的输入不会自动重发。'));
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancel(); });
-  return { focus, cancel, update(value = enabled) {
+  return { focus, cancel, press, openTouch() {
+    if (!ready() || pending && pending.generation !== generation) return false;
+    if (!touch) { touch = true; clearField(); }
+    // Called synchronously by the viewer's button, preserving the user gesture
+    // needed by touch browsers to present their own system keyboard.
+    field.focus({ preventScroll: true }); report(); return document.activeElement === field;
+  }, closeTouch() { cancel(); field.blur(); }, update(value = enabled) {
     enabled = value;
     if (!ready()) { cancel(); if (document.activeElement === field) field.blur(); }
-  }, get composing() { return composing; }, get busy() { return !!pending || !!queue.length; } };
+  }, get composing() { return composing; }, get busy() { return !!pending || !!queue.length; }, get touch() { return touch; } };
 }

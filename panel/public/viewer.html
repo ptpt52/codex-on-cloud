@@ -11,8 +11,25 @@
     <div id="screen"></div>
   </div>
   <div id="pan-layer" tabindex="0" role="region" aria-label="拖动查看桌面，点击和按键不会发送到远程桌面" hidden></div>
-  <textarea id="desktop-input" aria-label="远程桌面键盘输入，支持本机中文输入法" tabindex="-1" autocomplete="off" autocapitalize="off" spellcheck="false" rows="1" maxlength="32768"></textarea>
+  <textarea id="desktop-input" aria-label="远程桌面键盘输入，支持本机中文输入法" tabindex="-1" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text" rows="1" maxlength="32768"></textarea>
   <p id="desktop-input-status" role="status" hidden></p>
+  <div id="desktop-touch-input" aria-label="触屏键盘" hidden>
+    <button id="desktop-touch-keyboard" type="button" aria-expanded="false" aria-controls="desktop-touch-panel">键盘</button>
+    <section id="desktop-touch-panel" aria-label="桌面直输快捷键" hidden>
+      <div class="desktop-touch-heading"><span>直输桌面当前窗口 · Enter 单独提交</span><button type="button" data-touch-action="assistant">长文本</button></div>
+      <div id="desktop-touch-menu" class="desktop-touch-menu" role="group" aria-label="更多桌面按键" hidden>
+        <button type="button" data-touch-key="ArrowLeft" aria-label="光标左移">←</button><button type="button" data-touch-key="ArrowRight" aria-label="光标右移">→</button>
+        <button type="button" data-touch-key="ArrowUp" aria-label="向上或上一条历史">↑</button><button type="button" data-touch-key="ArrowDown" aria-label="向下或下一条历史">↓</button>
+        <button type="button" data-touch-action="interrupt">Ctrl C…</button><button type="button" data-touch-action="assistant">输入助手</button>
+      </div>
+      <div class="desktop-touch-keys" role="group" aria-label="常用桌面按键">
+        <button type="button" data-touch-key="Escape">Esc</button><button type="button" data-touch-key="Tab">Tab</button>
+        <button class="desktop-touch-arrow" type="button" data-touch-key="ArrowUp" aria-label="向上或上一条历史">↑</button><button class="desktop-touch-arrow" type="button" data-touch-key="ArrowDown" aria-label="向下或下一条历史">↓</button>
+        <button type="button" data-touch-key="Backspace">退格</button><button class="desktop-touch-enter" type="button" data-touch-key="Enter">Enter</button>
+        <button id="desktop-touch-more" type="button" aria-expanded="false" aria-controls="desktop-touch-menu">更多</button><button id="desktop-touch-close" type="button" aria-label="收起键盘">收起</button>
+      </div>
+    </section>
+  </div>
   <div id="touch-cursor" aria-hidden="true" hidden></div>
   <div id="pointer-controls" role="group" aria-label="桌面触控操作" hidden>
     <button id="pointer-left" type="button">左键</button><button id="pointer-right" type="button">右键</button><button id="pointer-drag" type="button" aria-pressed="false">拖动</button>

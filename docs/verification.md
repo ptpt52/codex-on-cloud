@@ -27,6 +27,7 @@ npm run test:compat
 
 ```sh
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/desktop-input.spec.mjs
+npm run test:browser -- test/browser/desktop-touch-input.spec.mjs
 npm run test:desktop-input
 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 ```
@@ -35,9 +36,13 @@ DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 
 输入专项也覆盖合成结束后再次插入相同文字、迟到的合成回声、死键 / 未识别输入法按键及在途请求未完成时返回输入。X11 焦点检查保留实际子窗口 ID，仅在查找窗口类型时向父窗口遍历，最多 16 层、每次检查 1.5 秒；读取命令单次最多 500 毫秒和 16 KiB 输出。
 
+触屏规格覆盖一键聚焦、带输入锚点的中英文提交、无键盘事件时的软键盘退格、选字及软键盘回车隔离、快捷键与粘贴的顺序、长文本草稿、当前焦点 Ctrl+C 确认，以及 320–1024px 布局和模拟可见区域变化期间不改远程尺寸。浏览器模拟不能唤起真实系统键盘；Android 中文输入法、iPhone / iPad 软键盘、语音输入和实体键盘仍需真机核对。
+
 可将 `DESKTOP_IME_TEST_TK_PYTHON` 指向已安装 Tk 的 Python，再运行原生规格，验证真实普通应用的 Ctrl+V 及剪贴板准备期间换窗拒绝；未设置时会明确跳过此部分。所有组合事件由测试注入，不代表真实系统输入法候选窗、手机系统键盘或生产 Codex 已验收。
 
 中文与数字、空格的顺序、全角标点、输入框清理和点击位置附近的候选窗处理，参考了 [WechatOnCloud 的输入法实现](https://github.com/Gloridust/WechatOnCloud/blob/86d82519c5e6b28aae7ef3caa279086afa244d4d/panel/web/src/pages/Desktop.tsx#L27)。本项目的等待缓冲限制为 64 项、文字合计 32 KiB，结果未知时清理后续输入；原有远程剪贴板按键路径保留。
+
+触屏功能也对照同一版本的功能键及输入条（`Desktop.tsx` 的 `FUNC_KEYS`、`sendImeText`）：采用明确的“退格”文字，输入助手粘贴后保留本地焦点，补测中文后连续数字、空格和全角标点的顺序。实现使用本项目独立输入框和有界队列，不依赖 KasmVNC 私有输入框；粘贴与 Enter 分开，未知结果不继续发送后续按键。
 
 ## 端口映射的重点回归
 

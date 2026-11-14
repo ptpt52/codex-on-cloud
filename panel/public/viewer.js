@@ -12,6 +12,7 @@ import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
 import { createRTCRecheck } from '/rtc-recheck.js';
 import { createDesktopInput } from '/desktop-input.js';
+import { createDesktopTouchInput } from '/desktop-touch-input.js';
 
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
@@ -51,7 +52,7 @@ let networkDetails = null, directIssue = '', statsPending = false;
 const pressedKeys = new Set(), pressedPointers = new Set();
 let lastInteraction = -Infinity, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
-let desktopText, desktopFocusFrame = 0;
+let desktopText, desktopFocusFrame = 0, touchControls;
 const desktopInput = createDesktopInput({ screen, field: document.getElementById('desktop-input'), status: document.getElementById('desktop-input-status'),
   current: () => canvas, allowed: () => viewing && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
   paste: (text, id) => new Promise(resolve => {
@@ -60,7 +61,12 @@ const desktopInput = createDesktopInput({ screen, field: document.getElementById
       desktopText = undefined; resolve({ outcome: 'unknown' });
     }, 8500) };
     parent.postMessage({ type: 'codex-desktop-text', frame, id, text }, location.origin);
-  }), changed: value => { parent.postMessage({ type: 'codex-desktop-input-state', frame, ...value }, location.origin); reportView(); } });
+  }), changed: value => { parent.postMessage({ type: 'codex-desktop-input-state', frame, ...value }, location.origin); touchControls?.update(); reportView(); } });
+touchControls = createDesktopTouchInput({ input: desktopInput, field: document.getElementById('desktop-input'), root: document.getElementById('desktop-touch-input'),
+  allowed: () => !!canvas && viewing && preferences.desktopIme !== false && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
+  // Dispatch on the current iframe synchronously so opening the parent's long
+  // text field also retains the touch gesture required to show its keyboard.
+  action: action => window.frameElement?.dispatchEvent(new CustomEvent('codex-desktop-touch-action', { bubbles: true, detail: { frame, action } })) });
 const pointerControls = createDesktopPointer({ viewport, screen, cursor: document.getElementById('touch-cursor'), controls: document.getElementById('pointer-controls'),
   changed: () => { lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); },
   chooseScroll: scrollTarget => parent.postMessage({ type: 'codex-pointer-options', frame, scrollTarget }, location.origin) });
@@ -111,7 +117,7 @@ function reportView() {
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
     const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height,
-      resizeReady, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && performance.now() - lastInteraction >= 800 };
+      resizeReady, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800 };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -155,6 +161,7 @@ function applyView() {
   if (!preferences.pan && !preferences.blocked) stopDrag();
   panLayer.hidden = !preferences.pan && !preferences.blocked;
   desktopInput.update(preferences.desktopIme !== false);
+  touchControls.update();
   layoutFrame = requestAnimationFrame(() => {
     if (!viewing || !canvas?.width || !canvas?.height) return;
     if (restoringView && viewAnchor?.zoom === preferences.zoom && (manual || widthFit)) {
@@ -335,7 +342,7 @@ function monitorDirect(delay = 3000) {
   healthTimer = setTimeout(tick, delay);
 }
 function idleForSwitch() {
-  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && performance.now() - lastInteraction >= 800;
+  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800;
 }
 function scheduleProbe(delay = probeDelay) {
   if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;

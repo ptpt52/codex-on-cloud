@@ -125,7 +125,7 @@ let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', vie
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalFocusBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
-let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false;
+let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false, frameTouchInput = false;
 let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
 const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $('shortcuts-menu'), list: $('shortcuts-list'),
@@ -524,7 +524,7 @@ function waitForViewport(actual, signal) {
 async function resizeViewport() {
   viewportTimer = null;
   if (terminalMode() || !loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
-  if (!nativeIdle || inputPaused() || inputBusy || terminalBusy || terminalActions.busy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
+  if (!nativeIdle || frameTouchInput || document.documentElement.classList.contains('workspace-keyboard-open') || inputPaused() || inputBusy || terminalBusy || terminalActions.busy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
   if (!followsViewport() && (controlsState.viewport.maximum.width < size.width || controlsState.viewport.maximum.height < size.height)) return;
@@ -914,7 +914,7 @@ function stopFrame({ keepLogout = false } = {}) {
   frameTransport = '';
   frameInputNoticeKey = '';
   frameTerminalKey = ''; terminalGeometry = null; terminalReviewing = false;
-  frameComposing = false;
+  frameComposing = frameTouchInput = false;
   frameNetwork = null; frameLatency.clear(); directIssue = '';
   frameEpoch = ++frameSerial;
   displayScale = 0;
@@ -1092,7 +1092,7 @@ function swapStandby(mode) {
   terminalCreateReady = mode === 'terminal' && next.state === 'connected' && next.terminalCreateReady === true;
   terminalOpenReady = mode === 'desktop' && next.state === 'connected' && next.terminalOpenReady === true;
   frameDimensions = next.dimensions; terminalGeometry = next.geometry; displayScale = next.scale; scaleRevision = next.scaleRevision;
-  terminalReviewing = next.reviewing; frameComposing = false; nativeIdle = frameResizeReady = false;
+  terminalReviewing = next.reviewing; frameComposing = frameTouchInput = false; nativeIdle = frameResizeReady = false;
   transportSwitching = next.paused === true;
   frameInputNoticeKey = next.inputNoticeKey;
   const notice = inputNotices.snapshot().find(record => record.key === next.inputNoticeKey);
@@ -1246,10 +1246,12 @@ function confirmationValid(pending) {
   if (pending.kind === 'drafts-clear') return terminalCatalogVerified && !inputBusy && !inputComposing && terminalState.stale(terminalCatalog, draftIdentity) > 0;
   if (pending.epoch !== frameEpoch || pending.frameState !== frameState || pending.owned !== owned) return false;
   if (pending.kind === 'mode') return !document.hidden && pending.body?.from === displayPreferences.mode && ['desktop', 'terminal'].includes(pending.body.mode) && pending.body.mode !== displayPreferences.mode && !modeChangeBusy();
-  if (pending.destination && JSON.stringify(pending.destination) !== JSON.stringify(inputDestination(false))) return false;
+  const focused = pending.destination?.target === 'focused';
+  if (focused && terminalMode()) return false;
+  if (pending.destination && !focused && JSON.stringify(pending.destination) !== JSON.stringify(inputDestination(false))) return false;
   if (['terminal-open', 'terminal-close'].includes(pending.kind) && !terminalCatalog.some(item => item.id === pending.body?.terminalId && item.token === pending.body.terminalToken && item.supported)) return false;
   if (['terminal-open', 'terminal-create', 'terminal-close'].includes(pending.kind)) return canManageTerminals() && !inputComposing && !frameComposing;
-  return pending.kind === 'reconnect' ? panelState === 'online' && navigator.onLine && !maintenancePending && !controlsState.maintenance : !inputBusy && canInput();
+  return pending.kind === 'reconnect' ? panelState === 'online' && navigator.onLine && !maintenancePending && !controlsState.maintenance : !inputBusy && canInput(focused);
 }
 function closeConfirmation() {
   confirmation = null;
@@ -1262,7 +1264,7 @@ function requestConfirmation(kind, key, body) {
   if (kind === 'shortcut' && !shortcut?.confirm) return;
   shortcutMenu.close();
   const pending = { kind, key: shortcut?.key, generation: uiGeneration, epoch: frameEpoch, frameState, owned,
-    destination: ['interrupt', 'shortcut'].includes(kind) ? inputDestination(false) : null, body: body ? { ...body } : null };
+    destination: ['interrupt', 'shortcut'].includes(kind) ? body?.target === 'focused' && !terminalMode() ? { target: 'focused' } : inputDestination(false) : null, body: body ? { ...body } : null };
   if (!confirmationValid(pending)) return;
   const copy = {
     logout: ['退出当前登录？', '退出后需要重新登录。远程桌面和正在运行的任务会继续保留。', '确认退出'],
@@ -1307,7 +1309,7 @@ $('accept-confirmation').addEventListener('click', () => {
   if (pending.kind === 'terminal') return void inputAction('/api/terminal', {}, '打开终端', '已打开终端，连接原有 tmux 会话');
   if (pending.kind === 'mode') return changeMode(pending.body.mode);
   if (['terminal-create', 'terminal-open', 'terminal-close'].includes(pending.kind)) return void manageTerminals(pending.kind === 'terminal-close' ? { ...pending.body, confirm: true } : pending.body);
-  if (pending.kind === 'interrupt') void inputAction('/api/key', { key: 'Ctrl+C' }, '发送中断', 'Ctrl C 已发送', pending.destination);
+  if (pending.kind === 'interrupt') void inputAction('/api/key', { key: 'Ctrl+C', ...pending.destination }, '发送中断', 'Ctrl C 已发送', pending.destination);
   if (pending.kind === 'shortcut' && SHORTCUT_BY_KEY.get(pending.key)?.confirm) void inputAction('/api/key', { key: pending.key }, '发送按键', `${pending.key} 已发送`, pending.destination);
 });
 function sendShortcut(key) {
@@ -1598,6 +1600,11 @@ $('logout-button').addEventListener('click', () => { rememberDraft(); if (drafts
 $('takeover-button').addEventListener('click', () => void action($('takeover-button'), claim));
 $('reconnect-button').addEventListener('click', () => requestConfirmation('reconnect'));
 $('terminal-button').addEventListener('click', () => requestConfirmation('terminal'));
+$('input-dock').addEventListener('pointerdown', event => {
+  // Preserve the system keyboard when pasting or sending a shortcut from the
+  // touch assistant. Dialogs such as Ctrl+C still move focus explicitly.
+  if (navigator.maxTouchPoints > 0 && document.activeElement === $('mobile-input') && event.target.closest('#paste-button, [data-key]')) event.preventDefault();
+});
 $('paste-button').addEventListener('click', () => {
   const text = $('mobile-input').value;
   if (!text) return inputMessage('rejected', '先输入要粘贴的文字');
@@ -1612,6 +1619,11 @@ $('fullscreen-button').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(error => toast(error.message, true));
   else if ($('desktop-card').requestFullscreen) $('desktop-card').requestFullscreen().catch(error => toast(error.message, true));
   else toast('此浏览器不支持网页全屏，可以横屏或添加到主屏幕使用');
+});
+document.addEventListener('codex-desktop-touch-action', event => {
+  if (event.target !== $('desktop-frame') || event.detail?.frame !== String(frameEpoch) || !frameLoaded || terminalMode() || inputBusy || frameComposing || !canInput(true)) return;
+  if (event.detail.action === 'interrupt') requestConfirmation('interrupt', null, { target: 'focused' });
+  else if (event.detail.action === 'assistant' && workspacePanels.active !== 'input') toggleWorkspacePanel('input');
 });
 
 function sizeLabel(size) { return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`; }
@@ -2137,7 +2149,7 @@ window.addEventListener('message', event => {
     frameComposing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
   }
   if (event.data?.type === 'codex-desktop-input-state' && !terminalMode() && typeof event.data.composing === 'boolean') {
-    frameComposing = event.data.composing; renderInputControls(); return;
+    frameComposing = event.data.composing; frameTouchInput = event.data.touch === true; renderInputControls(); scheduleViewport(); return;
   }
   if (event.data?.type === 'codex-desktop-text' && !terminalMode()) {
     // Use the parent's postMessage function for replies. In WebKit the child
