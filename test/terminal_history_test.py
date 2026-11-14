@@ -18,6 +18,10 @@ spec.loader.exec_module(terminal)
 
 
 class TerminalCapabilitiesTests(unittest.TestCase):
+    def test_combining_cells_follow_the_running_server_version(self):
+        for version, expected in [('2.6', 0), ('3.3a', 0), ('3.4', 21), ('3.5a', 21), ('3.6a', 32), ('invalid', 0)]:
+            self.assertEqual(terminal.combining_limit(version), expected)
+
     def test_even_columns_are_only_requested_for_tmux_26(self):
         for version in ['2.6', '2.6a']:
             self.assertEqual(terminal.column_alignment(version), 2)

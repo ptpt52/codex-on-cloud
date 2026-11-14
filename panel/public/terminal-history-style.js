@@ -223,7 +223,26 @@ export function historyMatchRanges(parsed, matches) {
   };
   return matches.map(match => ({ start: visual(match.start, true), end: visual(match.end, false) }));
 }
-export function wrapHistoryRows(parsed, cols, wcwidth) {
+function* historyCells(text, unicode) {
+  let properties = 0, start = 0, offset = 0, width = 0, cell = '';
+  for (const char of text) {
+    if (char === '\n' || char === '\r' || char === '\t') {
+      if (cell) yield { offset: start, text: cell, width };
+      yield { offset, text: char, width: 0 }; offset += char.length;
+      properties = 0; cell = ''; continue;
+    }
+    const next = unicode.charProperties?.(char.codePointAt(0), properties);
+    const scalar = next === undefined ? unicode.wcwidth(char.codePointAt(0)) : (next >>> 1) & 3;
+    const join = next === undefined ? scalar === 0 && !!cell : !!(next & 1);
+    if (!join && cell) { yield { offset: start, text: cell, width }; cell = ''; }
+    if (!cell) start = offset;
+    cell += char; offset += char.length;
+    width = next === undefined && join ? width : scalar; properties = next || 0;
+  }
+  if (cell) yield { offset: start, text: cell, width };
+}
+export function wrapHistoryRows(parsed, cols, widths) {
+  const unicode = typeof widths === 'function' ? { wcwidth: widths } : widths;
   const result = { runs: [], simplified: parsed.simplified, softBreaks: [] };
   // capture-pane -J retains the last row's empty padding. Match ordinary
   // capture-pane's trimmed line endings before placing the joined text.
@@ -233,7 +252,8 @@ export function wrapHistoryRows(parsed, cols, wcwidth) {
     if (padding.length >= MAX_HISTORY_ROWS + 200) { result.simplified = true; break; }
     padding.push([found.index, found.index + found[0].length]);
   }
-  let column = 0, offset = 0, sourceOffset = 0, paddingIndex = 0;
+  const trimmed = { runs: [], simplified: parsed.simplified };
+  let sourceOffset = 0, paddingIndex = 0;
   for (const run of parsed.runs) {
     let text = '';
     for (const char of run.text) {
@@ -241,20 +261,33 @@ export function wrapHistoryRows(parsed, cols, wcwidth) {
       const skip = paddingIndex < padding.length && sourceOffset >= padding[paddingIndex][0];
       sourceOffset += char.length;
       if (skip) continue;
-      const width = wcwidth(char.codePointAt(0));
-      if (char === '\n' || char === '\r') column = 0;
-      else if (width > 0) {
-        if (column + width > cols) {
-          if (result.softBreaks.length >= MAX_HISTORY_ROWS + 200) {
-            result.simplified = true;
-          } else { result.softBreaks.push(offset); text += '\n'; offset++; }
-          column = 0;
-        }
-        column += width;
-      }
-      text += char; offset += char.length;
+      text += char;
     }
-    appendRun(result, text, run.style);
+    appendRun(trimmed, text, run.style);
+  }
+  // Find row boundaries using the same context-sensitive cells as xterm.
+  // A modifier can widen its previous cell; wrap the complete cell together.
+  const breaks = []; let column = 0;
+  for (const cell of historyCells(trimmed.runs.map(run => run.text).join(''), unicode)) {
+    if (cell.text === '\n' || cell.text === '\r') column = 0;
+    else if (cell.width > 0) {
+      if (column + cell.width > cols) {
+        if (breaks.length >= MAX_HISTORY_ROWS + 200) result.simplified = true;
+        else breaks.push(cell.offset);
+        column = 0;
+      }
+      column += cell.width;
+    }
+  }
+  let offset = 0, breakIndex = 0;
+  for (const run of trimmed.runs) {
+    let text = '', cursor = 0;
+    while (breakIndex < breaks.length && breaks[breakIndex] < offset + run.text.length) {
+      const end = breaks[breakIndex] - offset;
+      text += run.text.slice(cursor, end) + '\n'; cursor = end;
+      result.softBreaks.push(breaks[breakIndex] + breakIndex); breakIndex++;
+    }
+    appendRun(result, text + run.text.slice(cursor), run.style); offset += run.text.length;
   }
   return result;
 }
@@ -323,7 +356,8 @@ export function createHistoryGrid(term, host) {
         if (controls) { parent.append(controls); controls = ''; }
         if (char.length > 64) { emit(); flush(); limited = true; parent.append(char); consumed += char.length; continue; }
         let width = 0;
-        for (const point of char) width += unicode.wcwidth(point.codePointAt(0));
+        if (unicode.getStringCellWidth) width = unicode.getStringCellWidth(char);
+        else for (const point of char) width += unicode.wcwidth(point.codePointAt(0));
         if (width === 0 && cluster && cluster.length + char.length <= 64) cluster += char;
         else { emit(); cluster = char; columns = width; }
       }

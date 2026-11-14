@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { terminalWidthProvider } from '../panel/public/terminal-unicode.js';
 import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, historyText, historyMatchRanges, historyHighlightRanges, wrapHistoryRows, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
 
 const text = value => value.runs.map(run => run.text).join('');
@@ -74,6 +75,14 @@ test('history searches and copies logical lines while displaying soft-wrapped ro
   assert.equal(text(parsed).slice(matches[0].start, matches[0].end), '文12\n3');
   assert.equal(historyText(parsed, matches[0].start, matches[0].end), '文123');
   assert.deepEqual(findHistoryMatches(historyText(parsed), 'HARDBREAK').matches, []);
+});
+
+test('joined history wraps complete modern tmux emoji cells, including a selector that widens its base', () => {
+  const unicode = terminalWidthProvider({ key: '1'.repeat(64), combine: 21, ranges: [[0x200d, 0x200d, 0], [0xfe0f, 0xfe0f, 0], [0x1f000, 0x1faff, 2]] });
+  for (const emoji of ['✈️', '👍🏻', '👩‍💻', '🇨🇳']) {
+    const original = 'ABC' + emoji + 'D', parsed = wrapHistoryRows(parseHistoryStyles(original), 4, unicode);
+    assert.equal(text(parsed), 'ABC\n' + emoji + 'D'); assert.equal(historyText(parsed), original);
+  }
 });
 
 test('partial matches highlight complete graphemes and shared emoji keep every navigation result', () => {

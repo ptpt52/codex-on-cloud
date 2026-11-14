@@ -209,7 +209,7 @@ test('real tmux shared with a narrower PTY fits without dot padding, follows pee
     expect(await readFile(proof, 'utf8')).toBe('once\n'); expect(app.managementStats.restarts).toBe(0);
     // A real backend's emoji width must place the following letter in the
     // same cell as tmux, including on hosts whose Unicode library is older.
-    await run(['send-keys', '-t', token.split(':')[0], '-l', "printf '\\033[2J\\033[H0123456789\\r\\nA📁B\\r\\nA👩‍💻B\\r\\nA🇨🇳B\\r\\nA👍🏻B'; read -r -n1 width_test_stop"]);
+    await run(['send-keys', '-t', token.split(':')[0], '-l', "printf '\\033[2J\\033[H0123456789\\r\\nA📁B\\r\\nA👩‍💻B\\r\\nA🇨🇳B\\r\\nA👍🏻B\\r\\nA✈️B\\r\\nA👩‍👩‍👧‍👦B'; read -r -n1 width_test_stop"]);
     await run(['send-keys', '-t', token.split(':')[0], 'Enter']);
     await expect(frame.locator('.xterm-rows')).toContainText('A📁B');
     const serverCursor = Number((await run(['display-message', '-p', '-t', 'codex', '#{cursor_x}'])).stdout.trim());
@@ -230,11 +230,27 @@ test('real tmux shared with a narrower PTY fits without dot padding, follows pee
           const offset = node.textContent.indexOf('B');
           if (offset >= 0) { range.setStart(node, offset); range.setEnd(node, offset + 1); break; }
         }
-        return [{ text: row.textContent, difference: range.getBoundingClientRect().left - row.getBoundingClientRect().left - col * cellWidth }];
+        return [{ text: row.textContent.trimEnd(), col, cellWidth, difference: range.getBoundingClientRect().left - row.getBoundingClientRect().left - col * cellWidth }];
       });
     });
-    expect(positions).toHaveLength(4);
+    expect(positions).toHaveLength(6);
     for (const position of positions) expect(Math.abs(position.difference), position.text).toBeLessThanOrEqual(1);
+    const toggle = page.locator('#history-tools-toggle');
+    await (await toggle.count() ? toggle : frame.locator('#history-tools-toggle')).click();
+    const query = page.locator('#history-query');
+    await (await query.count() ? query : frame.locator('#history-query')).fill('B');
+    await expect(frame.locator('#history-archive')).toBeVisible();
+    const saved = await frame.locator('#history-archive').evaluate((root, positions) => positions.map(({ text, col, cellWidth }) => {
+      const start = root.textContent.indexOf('\n' + text + '\n') + 1, target = start + text.lastIndexOf('B');
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), range = document.createRange();
+      let node, offset = 0;
+      while ((node = walker.nextNode())) {
+        if (target >= offset && target < offset + node.length) { range.setStart(node, target - offset); range.setEnd(node, target - offset + 1); break; }
+        offset += node.length;
+      }
+      return { text, found: start > 0, difference: range.getBoundingClientRect().left - root.getBoundingClientRect().left + root.scrollLeft - col * cellWidth };
+    }), positions);
+    for (const position of saved) { expect(position.found, position.text).toBe(true); expect(Math.abs(position.difference), position.text).toBeLessThanOrEqual(1); }
   } finally {
     await app?.close(); for (const child of clients) if (child.exitCode === null) child.kill('SIGTERM');
     await run(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true });

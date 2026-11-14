@@ -74,7 +74,7 @@ def terminal_widths(socket, pid, version):
     # Modern tmux also has explicit overrides. Bound this otherwise external
     # configuration before parsing it or including it in the cache identity.
     options = width_query(socket, ['show-options', '-sv', 'codepoint-widths'])
-    key = hashlib.sha256((pid + ':' + version + ':' + language + ':' + str(library)).encode() + options).hexdigest()
+    key = hashlib.sha256(('v2:' + pid + ':' + version + ':' + language + ':' + str(library)).encode() + options).hexdigest()
     cached = os.environ.get('CODEX_TERMINAL_WIDTHS', '')
     if cached and len(cached) <= 16384:
         try:
@@ -118,10 +118,20 @@ def terminal_widths(socket, pid, version):
             ranges[-1][1] = point
         else:
             ranges.append([point, point, width])
-    value = {'key': key, 'ranges': ranges}
+    value = {'key': key, 'ranges': ranges, 'combine': combining_limit(version)}
     if len(ranges) > 1024 or len(json.dumps(value, separators=(',', ':'))) > 16384:
         raise ValueError('width table limit')
     return value
+
+
+def combining_limit(version):
+    # tmux 3.4 added ZWJ, emoji modifier and flag-cell combining. Its UTF-8
+    # cell holds 21 bytes; 3.6 raised that bound to 32. Older servers keep
+    # separate cells even when the browser font draws a single emoji glyph.
+    match = re.fullmatch(r'(\d+)\.(\d+)[a-z]?', version)
+    if not match or tuple(map(int, match.groups())) < (3, 4):
+        return 0
+    return 21 if tuple(map(int, match.groups())) < (3, 6) else 32
 
 
 def column_alignment(version):

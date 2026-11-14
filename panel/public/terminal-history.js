@@ -268,7 +268,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       if (disposed || loading !== controller || controller.signal.aborted) return;
       clearCopy(); archiveStyled = value.styled === true; archiveLocal = false;
       let parsed = parseHistoryStyles(value.text || '', archiveStyled);
-      if (value.joined) parsed = wrapHistoryRows(parsed, value.cols, point => term._core.unicodeService.wcwidth(point));
+      if (value.joined) parsed = wrapHistoryRows(parsed, value.cols, term._core.unicodeService);
       view = { parsed, text: historyText(parsed) }; archiveSimplified = parsed.simplified; search();
       archiveAlternate = value.alternate; archiveTruncated = value.truncated;
       archiveOpen = true; archive.hidden = false; updateTools();
