@@ -38,7 +38,8 @@ project_function() { printf function-loaded; }
 bind 'set enable-bracketed-paste off'
 shell_test_probe() {
   printf '%s\\0' "$PS1" "$PATH" "$SHELL_TEST_CUSTOM" "$EDITOR" "$PWD" "$LANG" "$LC_ALL" "$TERM" "$DISPLAY" "$XAUTHORITY" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" \\
-    "$(alias project_alias)" "$(project_function)" "$(command -v selected-tool)" "$(bind -v)" > "$SHELL_TEST_RESULTS/$BASHPID"
+    "$(alias project_alias)" "$(project_function)" "$(command -v selected-tool)" "$(bind -v)" > "$SHELL_TEST_RESULTS/$BASHPID.tmp"
+  mv -- "$SHELL_TEST_RESULTS/$BASHPID.tmp" "$SHELL_TEST_RESULTS/$BASHPID"
 }
 printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
 `);
