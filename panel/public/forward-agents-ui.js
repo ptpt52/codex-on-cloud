@@ -186,8 +186,10 @@ export function createForwardAgentsUI({ api, allowed, canManage = () => true, vi
     $('forward-target-note').textContent = serial ? '在节点主机连接监听端口，访问该助手电脑上的串口；客户端接入后才打开串口。' : reverse ? '在节点主机连接监听端口，访问助手电脑可达的目标 IP。目标填写 127.0.0.1 时指助手电脑自身。' : '在助手电脑连接监听端口，访问节点主机可达的目标 IP。目标填写 127.0.0.1 时指节点主机自身。';
     $('forward-port-policy').textContent = policy?.allPorts ? 'TCP 目标端口：允许所有非管理端口。' : 'TCP 目标端口：' + (policy?.ports?.join('、') || '已禁用；串口不受此限制。');
     $('forward-port-policy').hidden = serial || !!policy?.allPorts;
-    const saveLabel = busy() ? '正在保存…' : !statusKnown || !selected()?.online || !$('forward-rule-enabled').checked ? '保存规则' : '保存并应用';
-    // WebKit cancels a pressed button's click if input blur replaces its text.
+    // Keep the action stable while helper status changes asynchronously.
+    // WebKit cancels a pressed button's click when its text node is replaced;
+    // application/online feedback belongs in the adjacent effect description.
+    const saveLabel = busy() ? '正在保存…' : '保存规则';
     if ($('forward-create').textContent !== saveLabel) $('forward-create').textContent = saveLabel;
     $('forward-rule-effect').textContent = !$('forward-rule-enabled').checked ? '保存为停用规则，暂不建立映射。' : !statusKnown ? '助手状态未确认。规则会保存，助手接入后自动应用。' : !selected()?.online ? '助手当前离线。规则会保存，接入后自动应用。' : edit?.rule ? '保存将重建这一条规则，关闭它的现有连接；其他规则继续运行。' : '保存后自动下发给' + (selected()?.name || '助手') + '。';
     const local = $('forward-local').value || '监听端口', host = $('forward-host').value.trim() || '目标 IP', target = $('forward-target').value || '目标端口';

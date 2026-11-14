@@ -3,6 +3,27 @@ import { fixture } from '../fixture.mjs';
 import { login, open, choose, helper, add, until } from './forward-support.mjs';
 test.use({ serviceWorkers: 'block' });
 
+test('a helper becoming online during a save press does not cancel the click or submit twice', async ({ page }) => {
+  const app = await fixture({ rfb: true, forwardPorts: '*' }); let peer, release;
+  let saved = 0;
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/forward/agents/rule') saved++; });
+  try {
+    await login(page, app); await open(page); const agent = await choose(page, 1);
+    await page.locator('#forward-rule-add').click(); await page.locator('#forward-rule-name').fill('上线时保存');
+    const gate = new Promise(resolve => { release = resolve; }); let started;
+    const waiting = new Promise(resolve => { started = resolve; });
+    await page.route('**/api/forward/agents', async route => { started(); await gate; await route.continue(); });
+    peer = await helper(app, agent.key);
+    await page.locator('#forward-refresh').dispatchEvent('click'); await waiting;
+    const button = page.locator('#forward-create'); await expect(button).toBeEnabled(); await button.scrollIntoViewIfNeeded();
+    const box = await button.boundingBox(); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+    release(); await expect(page.locator('#forward-agent-connection')).toHaveText('助手在线'); await page.mouse.up();
+    await expect(page.locator('#forward-rule-dialog')).toBeHidden();
+    await expect(page.locator('#forward-agent-rules')).toContainText('上线时保存'); expect(saved).toBe(1);
+    expect(app.inputCalls).toEqual([]);
+  } finally { release?.(); peer?.close(); await app.close(); }
+});
+
 test('eight fixed slots show stable keys and only the selected helper rules; modal edits and refresh isolate helpers', async ({ page }) => {
   const app = await fixture({ rfb: true, forwardPorts: '*' }), peers = [];
   try {
