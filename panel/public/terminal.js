@@ -106,7 +106,9 @@ function fitFont() {
   let height = probe.getBoundingClientRect().height;
   probe.style.fontWeight = 'bold'; height = Math.max(height, probe.getBoundingClientRect().height);
   probe.remove();
-  term.options.lineHeight = Math.max(1, Math.min(2, Math.ceil((height + 1) / base * 1000) / 1000));
+  // Leave room on both sides of the font box: fallback ink can extend above
+  // its normal ascent, and fractional device pixels can round a row down.
+  term.options.lineHeight = Math.max(1, Math.min(2, Math.ceil((height + 3) / base * 1000) / 1000));
 }
 function size() {
   cancelAnimationFrame(layout);

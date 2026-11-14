@@ -153,6 +153,8 @@ jobs:
         run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: npx playwright install --with-deps ${{ matrix.engine }}
         timeout-minutes: 20
+      - name: Install CJK fonts for actual mixed-script terminal metrics
+        run: sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Cross-browser compatibility
         # The serial WebKit tablet suite takes about 20 minutes on hosted
         # runners. Leave time for all cases and browser cleanup; individual
@@ -184,6 +186,8 @@ jobs:
         timeout-minutes: 3
         run: sudo --preserve-env=GITHUB_ACTIONS python3 .github/scripts/prepare-apt.py
       - run: npx playwright install --with-deps chromium
+      - name: Install CJK fonts for actual mixed-script terminal metrics
+        run: sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Full Chromium regression
         timeout-minutes: 35
         run: npm run test:browser -- --workers=2 --trace=retain-on-failure

@@ -1,7 +1,10 @@
 :root{color-scheme:dark}
 /* Keep DOM glyphs and xterm's measured grid at the same size. Mobile text
    inflation must not independently enlarge a row after widths were cached. */
-#terminal{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* Contextual CJK/Latin spacing changes text advances without changing xterm's
+   cell grid. Its glyph measurement repeats one character, so it cannot account
+   for extra spacing introduced only at mixed-script boundaries. */
+#terminal{-webkit-text-size-adjust:100%;text-size-adjust:100%;text-autospace:no-autospace;text-spacing-trim:space-all}
 .history-grid-run{display:inline-block;vertical-align:top;height:var(--terminal-line-height);line-height:var(--terminal-line-height);white-space:pre}
 /* Program mouse reporting still supports local text selection. */
 .xterm.enable-mouse-events:not(.xterm-cursor-pointer):not(.column-select){cursor:text}

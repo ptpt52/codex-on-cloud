@@ -4,15 +4,15 @@ import { openTools, closePanels } from './ui.mjs';
 
 test.use({ serviceWorkers: 'block' });
 
-async function fallbackTerminal(page, app) {
-  await page.addInitScript(() => {
+async function fallbackTerminal(page, app, family = 'monospace') {
+  await page.addInitScript(family => {
     if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal', terminalFontSize: 10, terminalWidthMode: 'viewport' }));
     if (!location.pathname.endsWith('/terminal/index.html')) return;
     let Terminal;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,
       // Model Android's separate Latin monospace and CJK fallback fonts.
-      set: Native => { Terminal = class extends Native { constructor(options) { super({ ...options, fontFamily: 'monospace' }); window.adjustTerminal = this; } }; } });
-  });
+      set: Native => { Terminal = class extends Native { constructor(options) { super({ ...options, fontFamily: family }); window.adjustTerminal = this; } }; } });
+  }, family);
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
@@ -47,6 +47,33 @@ test('CJK fallback ink fits inside each live row at small fonts, including wrapp
       expect(clipped).toEqual([]);
     }
     await page.screenshot({ path: info.outputPath('cjk-fallback-ink.png') });
+    expect(app.terminalConnections).toBe(connections); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('mixed CJK, Latin and numeric output occupies the same columns with browser contextual spacing enabled', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    const frame = await fallbackTerminal(page, app, '"Noto Sans Mono CJK SC", "WenQuanYi Zen Hei Mono", monospace');
+    const connections = app.terminalConnections;
+    // A TUI draws complete rows rather than relying on shell autowrap. Check
+    // its last glyph against the assigned cells, with no padding to hide loss.
+    for (let step = 0; step < 3; step++) {
+      if (step) { await openTools(page); await page.locator('#terminal-font-up').click(); await closePanels(page); }
+      const rows = await frame.evaluate(async () => {
+        document.documentElement.style.setProperty('text-autospace', 'normal');
+        const t = window.adjustTerminal, text = 'a中1文'.repeat(Math.floor(t.cols / 6)) + 'Z'.repeat(t.cols % 6);
+        await new Promise(resolve => t.write('\x1b[?7l\x1b[2J\x1b[H' + text + '\r\n\x1b[1m' + text + '\x1b[0m\x1b[?7h', resolve));
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const screen = document.querySelector('.xterm-screen').getBoundingClientRect();
+        return [...document.querySelectorAll('.xterm-rows > div')].filter(row => row.textContent).slice(0, 2).map(row => {
+          const range = document.createRange(); range.selectNodeContents(row);
+          return { text: row.textContent, expected: text, right: range.getBoundingClientRect().right - screen.left, width: screen.width };
+        });
+      });
+      expect(rows).toHaveLength(2);
+      for (const row of rows) { expect(row.text).toBe(row.expected); expect(Math.abs(row.right - row.width)).toBeLessThanOrEqual(1); }
+    }
     expect(app.terminalConnections).toBe(connections); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });
