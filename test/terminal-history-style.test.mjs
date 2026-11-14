@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, historyText, historyMatchRanges, wrapHistoryRows, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
+import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, historyText, historyMatchRanges, historyHighlightRanges, wrapHistoryRows, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
 
 const text = value => value.runs.map(run => run.text).join('');
 test('history styling preserves literal Unicode, spaces, indentation and line endings', () => {
@@ -74,6 +74,15 @@ test('history searches and copies logical lines while displaying soft-wrapped ro
   assert.equal(text(parsed).slice(matches[0].start, matches[0].end), '文12\n3');
   assert.equal(historyText(parsed, matches[0].start, matches[0].end), '文123');
   assert.deepEqual(findHistoryMatches(historyText(parsed), 'HARDBREAK').matches, []);
+});
+
+test('partial matches highlight complete graphemes and shared emoji keep every navigation result', () => {
+  for (const [text, query] of [['👩‍💻', '👩'], ['👩‍💻', '💻'], ['👍🏻', '🏻'], ['✈️', '\ufe0f'], ['🇨🇳', '🇨'], ['e\u0301', '\u0301']]) {
+    const ranges = historyHighlightRanges(text, findHistoryMatches(text, query).matches);
+    assert.deepEqual(ranges, [{ start: 0, end: text.length, indexes: [0] }]);
+  }
+  const family = '👩‍👩‍👧‍👦';
+  assert.deepEqual(historyHighlightRanges(family, findHistoryMatches(family, '👩').matches), [{ start: 0, end: family.length, indexes: [0, 1] }]);
 });
 
 test('local history capture retains the reading window, colors and byte bounds using public buffer cells', () => {

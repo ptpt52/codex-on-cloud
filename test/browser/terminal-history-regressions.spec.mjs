@@ -42,3 +42,44 @@ test('wrapped commands remain searchable and copyable intact without changing th
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });
+
+test('searching part of an emoji or combining character preserves its glyph and every following column', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    const frame = await terminal(page, app);
+    await frame.evaluate(async () => {
+      await new Promise(resolve => window.regressionTerminal.write('\x1bc👩‍💻 👩‍👩‍👧‍👦 👍🏻 ✈️ 🇨🇳 e\u0301 |END|', resolve));
+    });
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-query').fill('|END|');
+    await expect(frame.locator('#history-archive')).toBeVisible();
+    const positions = () => frame.locator('#history-archive').evaluate(root => {
+      const text = root.textContent, origin = root.getBoundingClientRect(), result = [];
+      for (const target of ['👩‍💻', '👩‍👩‍👧‍👦', '👍🏻', '✈️', '🇨🇳', 'e\u0301', '|END|']) {
+        const start = text.indexOf(target), end = start + target.length, walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), range = document.createRange();
+        let node, offset = 0;
+        while ((node = walker.nextNode())) {
+          if (start >= offset && start < offset + node.length) range.setStart(node, start - offset);
+          if (end > offset && end <= offset + node.length) { range.setEnd(node, end - offset); break; }
+          offset += node.length;
+        }
+        const box = range.getBoundingClientRect(); result.push({ target, x: box.left - origin.left + root.scrollLeft, width: box.width });
+      }
+      return result;
+    });
+    const before = await positions(), text = await frame.locator('#history-archive').textContent();
+    for (const query of ['👩', '💻', '🏻', '\ufe0f', '🇨', '\u0301']) {
+      await page.locator('#history-query').fill(query); await expect(page.locator('#history-find-state')).toContainText(/1\/[1-9]/);
+      const after = await positions();
+      expect(await frame.locator('#history-archive').textContent()).toBe(text);
+      for (let index = 0; index < before.length; index++) {
+        // WebKit rounds inline-block fragments independently, within one CSS
+        // pixel. Splitting a glyph used to move it by an entire terminal cell.
+        expect(Math.abs(after[index].x - before[index].x), `${query}: ${before[index].target} position`).toBeLessThanOrEqual(1);
+        expect(Math.abs(after[index].width - before[index].width), `${query}: ${before[index].target} width`).toBeLessThanOrEqual(1);
+      }
+      await page.locator('#history-find-next').click();
+      expect(await frame.locator('#history-archive mark[data-current="true"]').count()).toBeGreaterThan(0);
+    }
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});

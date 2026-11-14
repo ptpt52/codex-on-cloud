@@ -329,8 +329,32 @@ export function createHistoryGrid(term, host) {
   return { update, append, begin() { update(); nodes = measurements = 0; limited = false; host.appendChild(measure); },
     end() { measure.remove(); measure.textContent = ''; }, get limited() { return limited; } };
 }
+export function historyHighlightRanges(text, matches) {
+  if (!matches.length) return [];
+  const expanded = matches.map((match, index) => ({ ...match, indexes: [index] }));
+  const segments = graphemes.segment(text);
+  let first = 0;
+  for (const segment of segments) {
+    const start = segment.index, end = start + segment.segment.length;
+    while (first < matches.length && matches[first].end <= start) first++;
+    if (first === matches.length) break;
+    for (let index = first; index < matches.length && matches[index].start < end; index++) {
+      expanded[index].start = Math.min(expanded[index].start, start);
+      expanded[index].end = Math.max(expanded[index].end, end);
+    }
+  }
+  const ranges = [];
+  for (const match of expanded) {
+    const last = ranges.at(-1);
+    if (last && match.start < last.end) {
+      last.end = Math.max(last.end, match.end); last.indexes.push(...match.indexes);
+    } else ranges.push(match);
+  }
+  return ranges;
+}
 export function renderHistoryRuns(element, parsed, matches = [], grid) {
   const fragment = element.ownerDocument.createDocumentFragment(), groups = matches.map(() => []);
+  const highlights = historyHighlightRanges(parsed.runs.map(run => run.text).join(''), matches);
   grid?.begin();
   const append = (parent, text, style) => grid ? grid.append(parent, text, style) : parent.append(text);
   let offset = 0, matchIndex = 0;
@@ -340,12 +364,14 @@ export function renderHistoryRuns(element, parsed, matches = [], grid) {
       Object.assign(span.style, run.style);
       let cursor = 0;
       while (cursor < run.text.length) {
-        while (matchIndex < matches.length && matches[matchIndex].end <= offset + cursor) matchIndex++;
-        const match = matches[matchIndex], end = offset + run.text.length;
+        while (matchIndex < highlights.length && highlights[matchIndex].end <= offset + cursor) matchIndex++;
+        const match = highlights[matchIndex], end = offset + run.text.length;
         if (!match || match.start >= end) { append(span, run.text.slice(cursor), run.style); break; }
         if (offset + cursor < match.start) { append(span, run.text.slice(cursor, match.start - offset), run.style); cursor = match.start - offset; }
         const boundary = Math.min(end, match.end) - offset, mark = element.ownerDocument.createElement('mark');
-        append(mark, run.text.slice(cursor, boundary), run.style); mark.dataset.match = String(matchIndex); groups[matchIndex].push(mark); span.appendChild(mark); cursor = boundary;
+        append(mark, run.text.slice(cursor, boundary), run.style); mark.dataset.match = String(match.indexes[0]);
+        for (const index of match.indexes) groups[index].push(mark);
+        span.appendChild(mark); cursor = boundary;
       }
       offset += run.text.length; fragment.appendChild(span);
     }
