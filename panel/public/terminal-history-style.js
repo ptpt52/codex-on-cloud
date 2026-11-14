@@ -170,7 +170,12 @@ export function captureHistoryBuffer(term) {
         if (runKey !== 'default') { flush(); runKey = 'default'; runStyle = plainStyle; }
       } else {
         const flags = [cell.isBold(), cell.isDim(), cell.isItalic(), cell.isUnderline(), cell.isInverse(), cell.isInvisible(), cell.isStrikethrough(), cell.isOverline()].map(Boolean);
-        const key = [cell.getFgColorMode(), cell.getFgColor(), cell.getBgColorMode(), cell.getBgColor(), ...flags].join(':');
+        // The pinned xterm cell exposes extended underline attributes beyond
+        // the public boolean. Keep them in the key as well as the saved CSS.
+        const underlineStyle = cell.getUnderlineStyle?.() ?? (flags[3] ? 1 : 0);
+        const underlineColor = cell.isUnderlineColorRGB?.() ? '#' + cell.getUnderlineColor().toString(16).padStart(6, '0')
+          : cell.isUnderlineColorPalette?.() ? cell.getUnderlineColor() : null;
+        const key = [cell.getFgColorMode(), cell.getFgColor(), cell.getBgColorMode(), cell.getBgColor(), ...flags, underlineStyle, underlineColor].join(':');
         if (key !== runKey) {
           flush(); runKey = key;
           const value = (foreground) => {
@@ -178,8 +183,8 @@ export function captureHistoryBuffer(term) {
             const color = foreground ? cell.getFgColor() : cell.getBgColor();
             return mode ? '#' + color.toString(16).padStart(6, '0') : palette ? color : null;
           };
-          const [bold, dim, italic, underline, inverse, hidden, strike, overline] = flags;
-          runStyle = css({ ...defaults(), fg: value(true), bg: value(false), bold, dim, italic, underline: underline ? 1 : 0, inverse, hidden, strike, overline });
+          const [bold, dim, italic, , inverse, hidden, strike, overline] = flags;
+          runStyle = css({ ...defaults(), fg: value(true), bg: value(false), bold, dim, italic, underline: underlineStyle, underlineColor, inverse, hidden, strike, overline });
         }
       }
       runText += chars;

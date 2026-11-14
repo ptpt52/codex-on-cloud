@@ -83,3 +83,31 @@ test('searching part of an emoji or combining character preserves its glyph and 
     expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
+
+test('local snapshots preserve every underline style and adjacent underline colors through search', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    const frame = await terminal(page, app);
+    await frame.evaluate(async () => {
+      const source = Array.from({ length: 5 }, (_, index) => `\x1b[0;4:${index + 1};58:2::255:0:0mR${index + 1}\x1b[58:2::0:128:255mB${index + 1}\x1b[0m `).join('') + '\x1b[1;4;58;5;1mP\x1b[0m';
+      await new Promise(resolve => window.regressionTerminal.write('\x1bc' + source, resolve));
+    });
+    const styles = archive => frame.evaluate(archive => {
+      const root = document.querySelector(archive ? '#history-archive' : '.xterm-rows'), walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), result = [];
+      let node;
+      while ((node = walker.nextNode())) {
+        const css = getComputedStyle(node.parentElement);
+        for (const char of node.textContent) if (/[RB1-5P]/.test(char)) result.push({ char, line: css.textDecorationLine, style: css.textDecorationStyle, color: css.textDecorationColor });
+      }
+      return result;
+    }, archive);
+    await expect.poll(async () => (await styles(false)).length).toBe(21);
+    const live = await styles(false);
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-query').fill('R');
+    await expect(frame.locator('#history-archive')).toBeVisible(); await expect(page.locator('#history-find-state')).toContainText('1/5');
+    expect(await styles(true)).toEqual(live);
+    await page.locator('#history-query').fill('B'); await expect(page.locator('#history-find-state')).toContainText('1/5');
+    expect(await styles(true)).toEqual(live);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
