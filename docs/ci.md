@@ -41,6 +41,15 @@ npm run test:forward:entry
 
 `test:recovery` 和 `TERMINAL_TEST_SYSTEMD=1 npm run test:terminal-only` 还需要可用的 systemd 用户管理器，只操作唯一命名的临时服务。普通进程组检查不等同于 systemd cgroup 验收。
 
+`test:display` 还需要 Playwright 对应的 Chromium，可用 `CHROME_PATH` 指定现有 Chrome。它使用真实浏览器、隔离 Xterm／PTY 和 `setsid` 测试程序，连续往返网页与桌面五轮，逐次核对程序实际收到的尺寸、进程和输入字节；认证与桌面像素使用 fixture，不操作生产 Codex。有 systemd 用户管理器时，可按实际服务启动方式补测：
+
+```sh
+TERMINAL_REDRAW_SYSTEMD=1 npm run test:display
+TERMINAL_REDRAW_SYSTEMD=1 TERMINAL_ROUNDTRIP_DIRECT=1 npm run test:display
+```
+
+第二条通过 WebRTC 复测相同连续切换；默认使用中转。以上测试均不通过点击远端内容或发送翻页键触发重绘。
+
 真实浏览器引擎、真实内核／网络和模拟上游分别计入验证范围；跨平台构建不代表 Windows／Mac 或 USB 硬件真机验收。完整历史记录见[归档](archive/README.md)。
 
 ## 失败时如何定位

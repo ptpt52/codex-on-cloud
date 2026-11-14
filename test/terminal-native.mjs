@@ -10,10 +10,13 @@ import { once } from 'node:events';
 import { createDesktopControls, desktopEnvironment, RESUME_COMMAND } from '../native/desktop-controls.mjs';
 import { runInputCommand } from '../native/input.mjs';
 import { createDesktopActions } from '../native/desktop-actions.mjs';
+import { terminalModeRoundtrip } from './terminal-mode-roundtrip.mjs';
 
 const exec = promisify(execFile), source = resolve(import.meta.dirname, '..');
 const root = await mkdtemp(join(tmpdir(), 'codex-display-'));
 const children = [];
+const transientUnits = [];
+const detachedReceivers = [];
 const config = { root, runtime: join(root, 'runtime'), workspace: join(root, 'workspace'), transfer: join(root, 'workspace', 'transfer'),
   preferencesFile: join(root, 'data', 'desktop-settings.json'), defaultPreferences: { width: 1280, height: 1280, fontSize: 15 },
   env: { ...process.env, HOME: join(root, 'home'), PATH: `${join(root, 'bin')}:${join(source, 'data/host-tools/usr/bin')}:${process.env.PATH}` } };
@@ -219,6 +222,51 @@ try {
   assert.equal(await readFile(join(config.workspace, 'web-proof'), 'utf8'), '网页终端中文\n', 'attaching again cannot replay a command');
   const desktopClients = await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex', '-F', '#{client_pid}']);
   const desktopGeometry = await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}x#{pane_height}']);
+  // A real foreground TUI records resize notifications and every input byte.
+  // Re-delivery at the settled size must not require a click or synthetic key.
+  const redrawScript = join(root, 'redraw-receiver.py'), redrawProof = join(root, 'redraw-proof.json'), redrawStop = join(root, 'redraw-stop');
+  const mainDestination = { terminalId: mainTarget.id, terminalToken: mainTarget.token };
+  await writeFile(redrawScript, `import json, os, select, signal, sys, time, tty
+from pathlib import Path
+tty.setraw(0)
+proof, stop = map(Path, sys.argv[1:])
+events, data = [], b''
+def save():
+ temp = proof.with_suffix('.tmp')
+ temp.write_text(json.dumps({'pid': os.getpid(), 'events': events[-64:], 'hex': data.hex()}))
+ temp.replace(proof)
+def resized(*_):
+ size = os.get_terminal_size(0)
+ events.append([time.monotonic(), size.columns, size.lines])
+ os.write(1, ('\\x1b[HREDRAW %dx%d' % size).encode())
+ save()
+signal.signal(signal.SIGWINCH, resized)
+resized()
+deadline = time.monotonic() + 120
+while not stop.exists() and time.monotonic() < deadline:
+ if select.select([0], [], [], .05)[0]:
+  data = (data + os.read(0, 4096))[-4096:]
+  save()
+`);
+  await controls.input({ action: 'paste', target: 'terminal', text: `python3 '${redrawScript}' '${redrawProof}' '${redrawStop}'`, ...mainDestination });
+  await controls.input({ action: 'key', key: 'Enter', ...mainDestination });
+  await eventually(async () => !!await readFile(redrawProof, 'utf8'));
+  const redrawState = async () => JSON.parse(await readFile(redrawProof, 'utf8'));
+  async function finalRedraw(since) {
+    const [cols, rows] = desktopGeometry.split('x').map(Number);
+    try {
+      await eventually(async () => {
+        const events = (await redrawState()).events.filter(event => event[0] > since && event[1] === cols && event[2] === rows);
+        return events.length >= 2 && events.at(-1)[0] - events[0][0] >= 0.45;
+      });
+    } catch (error) {
+      console.error('Isolated redraw failure:', JSON.stringify({ expected: desktopGeometry, state: await redrawState(),
+        guardian: await run('tmux', ['-S', env.TMUX_SOCKET, 'capture-pane', '-p', '-t', 'codex-view-main']).catch(() => 'gone') }));
+      throw error;
+    }
+    assert.equal((await redrawState()).hex, '', 'desktop handoffs cannot inject input to force a redraw');
+    assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
+  }
   client = await webClient();
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}x#{pane_height}']), desktopGeometry, 'a prepared PTY must not shrink the desktop');
   client.child.stdin.write(JSON.stringify({ id: 1, action: 'resize', cols: 233, rows: 40, viewport: true }) + '\n');
@@ -226,10 +274,12 @@ try {
   await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}']) === '233');
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-view-main', '-F', '#{client_pid}']), desktopClients);
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
+  let redrawSince = (await redrawState()).events.at(-1)[0];
   client.child.stdin.write(JSON.stringify({ id: 2, action: 'view', standby: true }) + '\n');
   await eventually(() => client.records.some(item => item.id === 2 && item.ok));
   await eventually(async () => (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex', '-F', '#{client_pid}'])).split('\n').includes(desktopClients));
   await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}x#{pane_height}']) === desktopGeometry);
+  await finalRedraw(redrawSince);
   await new Promise(resolve => setTimeout(resolve, 2200));
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}x#{pane_height}']), desktopGeometry, 'standby must not reclaim or constrain the desktop');
   client.child.stdin.write(JSON.stringify({ id: 3, action: 'view', standby: false }) + '\n');
@@ -243,11 +293,87 @@ try {
   ended = once(client.child, 'close'); client.child.kill('SIGKILL'); await ended;
   await new Promise(resolve => setTimeout(resolve, 700));
   assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-view-main', '-F', '#{client_pid}']), desktopClients);
+  redrawSince = (await redrawState()).events.at(-1)[0];
   ended = once(overlapping.child, 'close'); overlapping.child.kill('SIGKILL'); await ended;
   await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex', '-F', '#{client_pid}']) === desktopClients);
   await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'has-session', '-t', '=codex-view-main']).then(() => false, () => true));
+  await finalRedraw(redrawSince);
   const viewerLock = await lstat(join(config.runtime, 'view-main.lock')); assert.equal(viewerLock.size, 0); assert.equal(viewerLock.mode & 0o777, 0o600);
   assert.equal(await readFile(join(config.workspace, 'web-proof'), 'utf8'), '网页终端中文\n');
+  // The selection API can win the race with the browser's standby message.
+  // Its switch-client must still be followed by the same single redraw owner.
+  client = await webClient();
+  client.child.stdin.write(JSON.stringify({ id: 1, action: 'resize', cols: 233, rows: 40, viewport: true }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 1 && item.ok));
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-view-main', '-F', '#{client_pid}']) === desktopClients);
+  redrawSince = (await redrawState()).events.at(-1)[0];
+  await recovered.manageTerminals({ action: 'open', ...mainDestination });
+  client.child.stdin.write(JSON.stringify({ id: 2, action: 'view', standby: true }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 2 && item.ok));
+  await finalRedraw(redrawSince);
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'has-session', '-t', '=codex-view-main']).then(() => false, () => true));
+  const eventCount = (await redrawState()).events.length;
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.equal((await redrawState()).events.length, eventCount, 'a settled handoff has no repeated redraw timer');
+  ended = once(client.child, 'close'); client.child.stdin.end(); await ended;
+  await writeFile(redrawStop, 'stop');
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_current_command}']) === 'bash');
+  console.log('✓ real foreground TUI: final SIGWINCH after settled desktop size, including standby, crashed clients and manager-first restoration; no repeated timer, input bytes or task restart');
+  // A service launched with --pipe inherits terminal fds but belongs to a
+  // different session, so signalling the pane's foreground group misses it.
+  // setsid reproduces that topology in CI; opt in to the real systemd launcher.
+  const detachedProof = join(root, 'detached-redraw-proof.json'), detachedStop = join(root, 'detached-redraw-stop');
+  const useSystemd = process.env.TERMINAL_REDRAW_SYSTEMD === '1';
+  const unit = 'codex-redraw-test-' + root.split('-').at(-1) + '.service';
+  const prefix = useSystemd ? `systemd-run --user --quiet --wait --pipe --collect --unit=${unit}` : 'setsid --wait';
+  if (useSystemd) transientUnits.push(unit);
+  client = await webClient();
+  client.child.stdin.write(JSON.stringify({ id: 1, action: 'resize', cols: 40, rows: 12, viewport: true }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 1 && item.ok));
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}x#{pane_height}']) === '40x11');
+  const detachedCommand = `\x1b[200~${prefix} /usr/bin/python3 '${redrawScript}' '${detachedProof}' '${detachedStop}'\x1b[201~`;
+  client.child.stdin.write(JSON.stringify({ id: 2, action: 'input', data: Buffer.from(detachedCommand).toString('base64') }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 2 && item.ok));
+  client.child.stdin.write(JSON.stringify({ id: 3, action: 'input', data: Buffer.from('\r').toString('base64') }) + '\n');
+  await eventually(async () => !!await readFile(detachedProof, 'utf8'));
+  const detachedState = async () => JSON.parse(await readFile(detachedProof, 'utf8'));
+  const detachedPid = (await detachedState()).pid;
+  const detachedStat = await readFile(`/proc/${detachedPid}/stat`, 'utf8');
+  detachedReceivers.push({ pid: detachedPid, birth: detachedStat.slice(detachedStat.lastIndexOf(')') + 2).split(' ')[19], stop: detachedStop });
+  assert.equal(Number(detachedStat.slice(detachedStat.lastIndexOf(')') + 2).split(' ')[4]), 0, 'service has no controlling terminal');
+  assert.deepEqual((await detachedState()).events[0].slice(1), [40, 11], 'the application starts at the small web terminal size');
+  let detachedSince = (await detachedState()).events.at(-1)[0];
+  client.child.stdin.write(JSON.stringify({ id: 4, action: 'view', standby: true }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 4 && item.ok));
+  const [desktopCols, desktopRows] = desktopGeometry.split('x').map(Number);
+  assert.ok(desktopCols > 40 && desktopRows > 11);
+  async function detachedRedraw(phase) {
+    try {
+      await eventually(async () => (await detachedState()).events.some(event => event[0] > detachedSince && event[1] === desktopCols && event[2] === desktopRows));
+    } catch (error) {
+      console.error('Isolated detached redraw failure:', JSON.stringify({ phase, state: await detachedState(),
+        geometry: await run('tmux', ['-S', env.TMUX_SOCKET, 'display-message', '-p', '-t', 'codex', '#{pane_width}x#{pane_height}']),
+        guardian: await run('tmux', ['-S', env.TMUX_SOCKET, 'capture-pane', '-p', '-t', 'codex-view-main']).catch(() => 'gone') }));
+      throw error;
+    }
+  }
+  await detachedRedraw('standby');
+  client.child.stdin.write(JSON.stringify({ id: 5, action: 'view', standby: false }) + '\n');
+  client.child.stdin.write(JSON.stringify({ id: 6, action: 'resize', cols: 40, rows: 12, viewport: true }) + '\n');
+  await eventually(() => client.records.some(item => item.id === 6 && item.ok));
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-t', '=codex-view-main', '-F', '#{client_pid}']) === desktopClients);
+  detachedSince = (await detachedState()).events.at(-1)[0];
+  ended = once(client.child, 'close'); client.child.kill('SIGKILL'); await ended;
+  await detachedRedraw('disconnect');
+  await terminalModeRoundtrip({ root, source, env, socket: env.TMUX_SOCKET, target: mainDestination, controls: recovered,
+    run, proof: detachedProof, desktopSize: [desktopCols, desktopRows] });
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'has-session', '-t', '=codex-view-main']).then(() => false, () => true));
+  assert.equal((await detachedState()).hex, '', 'the detached app receives no input to force layout');
+  assert.equal((await detachedState()).pid, detachedPid, 'the detached app is not restarted');
+  assert.equal(await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_pid}']), String(pid));
+  await writeFile(detachedStop, 'stop');
+  await eventually(async () => await run('tmux', ['-S', env.TMUX_SOCKET, 'list-panes', '-t', 'codex', '-F', '#{pane_current_command}']) === 'bash');
+  console.log(`✓ real ${useSystemd ? 'systemd-run --pipe' : 'setsid'} TUI: inherited terminal fds resize after standby and disconnect, without a controlling terminal or synthetic input`);
   client = await webClient();
   const webTTY = (await run('tmux', ['-S', env.TMUX_SOCKET, 'list-clients', '-F', '#{client_pid}\t#{client_tty}'])).split('\n');
   let targetTTY;
@@ -290,6 +416,16 @@ try {
   } finally { actions.close(); }
   console.log(`✓ isolated real X11 and PTY: new/reopened windows maximize, existing restored windows keep their geometry; browser-terminal resize, literal Chinese paste, separate Enter and reconnect preserve the original shell without replay; four terminals, target guards, ${keyCases.length} key encodings, font/clipboard, dummy resume and fixed transfer-folder open/reuse passed without starting Codex`);
 } finally {
+  for (const receiver of detachedReceivers) {
+    await writeFile(receiver.stop, 'stop').catch(() => {});
+    const alive = async () => {
+      try { const text = await readFile(`/proc/${receiver.pid}/stat`, 'utf8'); return text.slice(text.lastIndexOf(')') + 2).split(' ')[19] === receiver.birth; }
+      catch { return false; }
+    };
+    for (let number = 0; number < 20 && await alive(); number++) await new Promise(resolve => setTimeout(resolve, 50));
+    if (await alive()) { try { process.kill(receiver.pid, 'SIGTERM'); } catch {} }
+  }
+  for (const unit of transientUnits) await run('systemctl', ['--user', 'stop', unit]).catch(() => {});
   await run('tmux', ['-S', env.TMUX_SOCKET, 'kill-server']).catch(() => {});
   for (const child of children.reverse()) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
   await new Promise(resolve => setTimeout(resolve, 300));

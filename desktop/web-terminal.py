@@ -273,6 +273,158 @@ def restore_view(socket, slot):
         restore_view_unlocked(socket, slot)
 
 
+def pane_state(socket, slot):
+    rows = width_query(socket, ['list-panes', '-s', '-t', '=' + SESSIONS[slot], '-F',
+                                '#{pane_id}:#{pane_pid}\t#{pane_tty}\t#{pane_width}\t#{pane_height}\t#{window_index}:#{pane_index}']).decode().splitlines()
+    if len(rows) != 1:
+        raise ValueError('unsupported redraw layout')
+    token, tty, cols, rows, position = rows[0].split('\t')
+    if (not re.fullmatch(r'%[0-9]{1,10}:[1-9][0-9]{0,9}', token) or
+            not re.fullmatch(r'/dev/pts/[0-9]{1,10}', tty) or position != '0:0'):
+        raise ValueError('invalid redraw target')
+    size = (int(cols), int(rows))
+    if not all(1 <= value <= 4096 for value in size):
+        raise ValueError('invalid redraw geometry')
+    return token, tty, size
+
+
+def process_state(pid):
+    with open('/proc/' + str(pid) + '/stat', 'rb') as source:
+        data = source.read(8193)
+    if len(data) > 8192:
+        raise ValueError('process metadata limit')
+    # comm may itself contain spaces or parentheses.
+    fields = data[data.rindex(b')') + 2:].split()
+    return tuple(int(fields[index]) for index in (2, 3, 4, 5, 19))  # group, session, tty, foreground, birth
+
+
+def detached_reader(pid, tty):
+    """Identify a same-user service which inherited this pane's terminal fds.
+
+    systemd-run --pipe and setsid jobs can have no controlling terminal while
+    their stdin and TUI output still point to the pane. The kernel consequently
+    sends SIGWINCH to the outer launcher, not the actual application.
+    """
+    try:
+        path = '/proc/' + str(pid)
+        if os.stat(path).st_uid != os.getuid():
+            return None
+        state = process_state(pid)
+        if state[2] != 0 or os.readlink(path + '/fd/0') != tty:
+            return None
+        for fd in (1, 2):
+            try:
+                if os.readlink(path + '/fd/' + str(fd)) == tty:
+                    return state
+            except OSError:
+                pass
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def detached_readers(tty):
+    # One transient discovery per handoff: at most 8192 /proc entries, 16
+    # recipients and 250 ms. Retain no process list, command line or environment.
+    result = []
+    deadline = time.monotonic() + 0.25
+    with os.scandir('/proc') as entries:
+        for count, entry in enumerate(entries):
+            if count >= 8192 or len(result) >= 16 or time.monotonic() >= deadline:
+                break
+            if entry.name.isdecimal():
+                pid = int(entry.name)
+                if pid > 1:
+                    state = detached_reader(pid, tty)
+                    if state:
+                        result.append((pid, state))
+    return result
+
+
+class TerminalResizeNotice:
+    """One cancellable, size-only notification after a viewer resize settles.
+
+    Tmux resizing and a TUI's draw loop are asynchronous. A burst can leave an
+    inline TUI on its old viewport even though the kernel size is already right.
+    Do not inject keys, change sizes artificially, or retain a delayed input.
+    """
+    def __init__(self, socket, slot, token, client=None):
+        self.socket, self.slot, self.token = socket, slot, token
+        self.client = client  # A web PTY's own tty/pid, or the desktop Xterm.
+        self.delay = 0.1 if client else 0.5
+        self.pending = None
+
+    def cancel(self):
+        self.pending = None
+
+    def request(self):
+        now = time.monotonic()
+        if self.pending and now < self.pending[3]:
+            client, state, _, expires, readers = self.pending
+            self.pending = (client, state, now + self.delay, expires, readers)
+            return  # Coalesce resize bursts; discover at most 16 readers once.
+        self.cancel()
+        try:
+            client = next((item for item in client_list(self.socket, SESSIONS[self.slot])
+                           if (item[0], item[2]) == self.client), None) if self.client else desktop_client(self.socket, self.slot)
+            if not client:
+                return
+            state = self.snapshot()
+            readers = detached_readers(state[0])
+            now = time.monotonic()
+            self.pending = ((client[0], client[2]), state, now + self.delay, now + 2, readers)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass
+
+    def snapshot(self):
+        token, tty, size = pane_state(self.socket, self.slot)
+        if token != self.token:
+            raise ValueError('redraw target changed')
+        # TIOCGPGRP on a slave requires the caller's own controlling terminal.
+        # The guardian deliberately has a different PTY; /proc exposes the
+        # kernel's foreground group without taking control of the task's PTY.
+        pane = process_state(int(token.split(':')[1]))
+        group = pane[3]
+        if group <= 1:
+            raise ValueError('invalid foreground group')
+        foreground = process_state(group)
+        if foreground[0] != group or not pane[2] or foreground[1:4] != pane[1:4]:
+            raise ValueError('foreground does not belong to pane')
+        return tty, group, pane, foreground, size
+
+    def poll(self):
+        if not self.pending or time.monotonic() < self.pending[2]:
+            return
+        client, previous, _, expires, readers = self.pending
+        self.cancel()
+        try:
+            if time.monotonic() >= expires or client not in [(item[0], item[2]) for item in client_list(self.socket, SESSIONS[self.slot])]:
+                return
+            current = self.snapshot()
+            if current[:4] != previous[:4]:
+                return  # The task or its foreground application has changed.
+            if current[4] != previous[4]:
+                self.pending = (client, current, time.monotonic() + self.delay, expires, readers)
+                return
+            fd = os.open(current[0], os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                if (time.monotonic() < expires and os.get_terminal_size(fd) == current[4] and
+                        process_state(int(self.token.split(':')[1])) == current[2] and process_state(current[1]) == current[3]):
+                    os.killpg(current[1], signal.SIGWINCH)
+                    for pid, identity in readers:
+                        if time.monotonic() >= expires:
+                            break
+                        if detached_reader(pid, current[0]) == identity:
+                            try:
+                                os.kill(pid, signal.SIGWINCH)
+                            except OSError:
+                                pass  # One exited service cannot skip the others.
+            finally:
+                os.close(fd)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass  # A redraw is best effort, never a reason to reconnect a task.
+
+
 def standby_size(socket, slot, tty, master):
     # tmux 2.6 has no ignore-size client flag. A waiting PTY must be at least as
     # large as the other clients, including the restored desktop Xterm.
@@ -283,11 +435,9 @@ def standby_size(socket, slot, tty, master):
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
 
 
-def yield_desktop(socket, slot, own_tty):
+def desktop_client(socket, slot):
     if os.environ.get('DEPLOY_MODE') == 'terminal':
         return
-    # Move only this virtual desktop's Xterm viewer to a fixed waiting session.
-    # Its process stays alive; the original task and pane never move or restart.
     class_name = 'codex-on-cloud-terminal' + ('' if slot == 'main' else '-' + slot)
     found = subprocess.run(['xdotool', 'search', '--class', '^' + class_name + '$'],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1)
@@ -305,9 +455,8 @@ def yield_desktop(socket, slot, own_tty):
     window_pid = result.stdout.decode().strip()
     if not window_pid.isdecimal():
         raise ValueError('invalid viewer process')
-    for tty, _, pid, _ in client_list(socket, SESSIONS[slot]):
-        if tty == own_tty:
-            continue
+    for client in client_list(socket, SESSIONS[slot]):
+        _, _, pid, _ = client
         try:
             with open('/proc/' + str(pid) + '/status', 'rb') as source:
                 status = source.read(8193)
@@ -315,6 +464,15 @@ def yield_desktop(socket, slot, own_tty):
                 continue
         except OSError:
             continue
+        return client
+
+
+def yield_desktop(socket, slot, own_tty):
+    # Move only this virtual desktop's Xterm viewer to a fixed waiting session.
+    # Its process stays alive; the original task and pane never move or restart.
+    client = desktop_client(socket, slot)
+    if client and client[0] != own_tty:
+        tty = client[0]
         with viewer_lock(socket, slot):
             parked = view_session(slot)
             # Eight fixed sessions at most. Multiple argv items execute directly;
@@ -324,12 +482,21 @@ def yield_desktop(socket, slot, own_tty):
             if exists.returncode != 0:
                 tmux_action(socket, ['new-session', '-d', '-s', parked, 'python3',
                                      os.path.abspath(__file__), '--view', socket, slot])
+            # One boolean in each of the eight fixed waiting sessions. A rapid
+            # park/restore can occur entirely between guardian polls; retain
+            # that handoff even if the previous redraw has just completed.
+            tmux_action(socket, ['set-option', '-t', '=' + parked, '@codex_cloud_redraw', '1'])
             tmux_action(socket, ['switch-client', '-c', tty, '-t', '=' + parked])
 
 
 def waiting_view(socket, slot):
     sys.stdout.write('\x1b[2J\x1b[H网页终端正在使用。返回桌面后会恢复原终端，任务继续运行。\r\n')
     sys.stdout.flush()
+    try:
+        token = pane_state(socket, slot)[0]
+    except (ValueError, OSError, subprocess.SubprocessError):
+        token = None  # Metadata failure must not end the desktop's waiting viewer.
+    redraw = None
     while True:
         # Owned by the desktop's tmux server, not the panel. This also restores
         # the viewer after a helper SIGKILL or a panel crash.
@@ -338,10 +505,23 @@ def waiting_view(socket, slot):
                 if not client_list(socket, SESSIONS[slot]):
                     restore_view_unlocked(socket, slot)
                 if not client_list(socket, view_session(slot)):
-                    tmux_action(socket, ['kill-session', '-t', '=' + view_session(slot)])
+                    # The manager, browser PTY or this guardian may restore the
+                    # desktop first. This one guardian owns the final redraw in
+                    # all cases; neither the selection API nor input waits on it.
+                    requested = width_query(socket, ['show-options', '-qv', '-t', '=' + view_session(slot), '@codex_cloud_redraw']).strip() == b'1'
+                    if redraw is None or requested:
+                        tmux_action(socket, ['set-option', '-t', '=' + view_session(slot), '@codex_cloud_redraw', '0'])
+                        redraw = TerminalResizeNotice(socket, slot, token)
+                        redraw.request()
+                    if not redraw.pending:
+                        tmux_action(socket, ['kill-session', '-t', '=' + view_session(slot)])
+                else:
+                    redraw = None
+            if redraw:
+                redraw.poll()
         except (ValueError, OSError, subprocess.SubprocessError):
             pass
-        time.sleep(0.5)
+        time.sleep(0.1 if redraw and redraw.pending else 0.5)
 
 
 def main():
@@ -389,6 +569,7 @@ def main():
     history_cols = 80
     viewport_layout = False
     standby = False
+    resize_notice = TerminalResizeNotice(socket, slot, token, client=(tty, child.pid))
 
     def emit(value):
         sys.stdout.write(json.dumps(value, separators=(',', ':')) + '\n')
@@ -408,6 +589,7 @@ def main():
         last_width = None
         width_at = 0
         while child.poll() is None:
+            resize_notice.poll()
             if geometry_enabled and time.monotonic() >= width_at:
                 if not verify():
                     return
@@ -425,7 +607,7 @@ def main():
             if history and time.monotonic() - history_at > 15:
                 history = b''
                 history_offset = 0
-            readable, writable, _ = select.select([0, master], [master] if writes else [], [], 0.5)
+            readable, writable, _ = select.select([0, master], [master] if writes else [], [], 0.1 if resize_notice.pending else 0.5)
             if 0 in readable:
                 data = os.read(0, 8192)
                 if not data:
@@ -450,6 +632,7 @@ def main():
                         if type(value.get('standby')) is not bool:
                             raise ValueError('invalid view state')
                         standby = value['standby']
+                        resize_notice.cancel()
                         if standby:
                             viewport_layout = False
                             restore_view(socket, slot)
@@ -471,6 +654,9 @@ def main():
                             restore_view(socket, slot)
                         width_at = 0
                         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+                        # A --pipe/setsid application needs the web size too,
+                        # every time its retained viewer returns from standby.
+                        resize_notice.request()
                         emit({'type': 'result', 'id': ident, 'ok': True})
                     elif value['action'] == 'input':
                         content = base64.b64decode(value['data'], validate=True)
