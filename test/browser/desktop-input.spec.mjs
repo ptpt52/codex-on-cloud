@@ -23,14 +23,15 @@ async function compose(frame, text) {
   await frame.locator('#desktop-input').evaluate((el, text) => {
     el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Process', code: 'KeyN', keyCode: 229, isComposing: true, bubbles: true, cancelable: true }));
-    el.value = text; el.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: text, isComposing: true, bubbles: true }));
+    const committed = el.value + text;
+    el.value = committed; el.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: text, isComposing: true, bubbles: true }));
     el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
     el.dispatchEvent(new CompositionEvent('compositionend', { data: text, bubbles: true }));
     const echo = new InputEvent('input', { inputType: 'insertFromComposition', data: text, bubbles: true });
     // Chromium normalizes this Safari event type to an empty string in the
     // constructor; retain the actual Safari type for the cross-engine fixture.
     if (!echo.inputType) Object.defineProperty(echo, 'inputType', { value: 'insertFromComposition' });
-    el.value = text; el.dispatchEvent(echo);
+    el.value = committed; el.dispatchEvent(echo);
     el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
   }, text);
 }
@@ -112,8 +113,9 @@ test('identical committed text after composition is not mistaken for a compositi
       el.value = '。'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: '。', isComposing: true, bubbles: true }));
       el.dispatchEvent(new CompositionEvent('compositionend', { data: '。', bubbles: true }));
     });
+    await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['。']);
     await frame.locator('#desktop-input').evaluate(el => {
-      el.value = '。'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '。', bubbles: true }));
+      el.value += '。'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '。', bubbles: true }));
     });
     await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['。', '。']);
   } finally { await app.close(); }
@@ -129,7 +131,7 @@ test('beforeinput links a late insertText echo to its composition without suppre
       el.dispatchEvent(new CompositionEvent('compositionend', { data: '同', bubbles: true }));
       el.value = '同'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '同', bubbles: true }));
       el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '同', bubbles: true }));
-      el.value = '同'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '同', bubbles: true }));
+      el.value += '同'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '同', bubbles: true }));
     });
     await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['同', '同']);
   } finally { await app.close(); }
@@ -156,9 +158,9 @@ test('an unmarked first pinyin key, full-width punctuation and emoji stay with t
     await compose(frame, '你好');
     await frame.locator('#desktop-input').evaluate(el => {
       el.dispatchEvent(new KeyboardEvent('keydown', { key: ',', code: 'Comma', bubbles: true, cancelable: true }));
-      el.value = '，'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '，', bubbles: true }));
+      el.value += '，'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '，', bubbles: true }));
       el.dispatchEvent(new KeyboardEvent('keyup', { key: ',', code: 'Comma', bubbles: true, cancelable: true }));
-      el.value = '😀'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '😀', bubbles: true }));
+      el.value += '😀'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '😀', bubbles: true }));
     });
     await page.keyboard.type('123 '); await page.keyboard.press('Enter');
     await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['你好', '，', '😀']);

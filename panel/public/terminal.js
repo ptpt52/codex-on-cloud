@@ -12,6 +12,7 @@ import { createStreamClient } from '/desktop/stream-client.js';
 import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
 import { createRTCRecheck } from '/rtc-recheck.js';
+import { appleTouchInput, attachRetainedTerminal } from '/retained-input.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
@@ -30,6 +31,7 @@ let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, l
 let widthMode = 'viewport', columnLimit = 500, columnAlignment = 1, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let terminalSelection, mouseReporting = false;
+let retainedTerminal;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
 let historyRows = DEFAULT_HISTORY_ROWS;
@@ -39,7 +41,7 @@ const pressedKeys = new Set(), pressedPointers = new Set();
 const report = (state, extra = {}) => parent.postMessage({ type: 'codex-desktop', frame, state, transport: socket?.direct ? 'direct' : 'terminal', ...extra }, location.origin);
 const controlState = () => { parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin); panelBridge.report(); };
 const targetInputIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending;
-const targetIdle = () => targetInputIdle() && pendingWrites === 0;
+const targetIdle = () => targetInputIdle() && pendingWrites === 0 && !retainedTerminal?.active;
 const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped,
   canSwitch: () => ready && !blocked && !switching && !streamPaused && targetInputIdle() });
 const reportNetwork = () => {
@@ -260,6 +262,20 @@ function createTerminal() {
     cursorBlink: true, allowProposedApi: true, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine,
     theme: { ...TERMINAL_THEME, overviewRulerBorder: TERMINAL_THEME.background } });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
+  if (appleTouchInput()) retainedTerminal = attachRetainedTerminal({ field: term.textarea,
+    allowed: () => ready && !blocked && !busy && !standby && !switching && !streamPaused && !pending && !history?.reviewing && !document.hidden && navigator.onLine,
+    hasSelection: () => term.hasSelection(), clearSelection: () => term.clearSelection(), notice: message,
+    blurred: () => { composing = false; reportComposition(); },
+    apply: ({ erase, text, paste }) => {
+      const normalized = text.replace(/\r?\n/g, '\r');
+      // Keep typing/IME semantics; only a native paste gets paste markers.
+      const data = '\x7f'.repeat(erase) + (text && paste && term.modes.bracketedPasteMode ? '\x1b[200~' + normalized + '\x1b[201~' : normalized);
+      if (new TextEncoder().encode(data).length > 32768) { fieldReset(); message('一次输入不能超过 32 KiB，请使用输入助手。'); return false; }
+      lastInteraction = performance.now();
+      if (!send({ type: 'input', data })) { retire(socket, 0); return false; }
+      return true;
+    } });
+  function fieldReset() { term.textarea.value = ''; term.blur(); }
   // Reserve all server cells occupied by a combined emoji. Otherwise the DOM
   // may ligate separately measured cells and pull following text to the left.
   term.registerCharacterJoiner(terminalGraphemeRanges);
@@ -299,6 +315,7 @@ function inputState() {
   if (blocked || busy || switching || streamPaused || !ready || history?.reviewing || document.hidden || !navigator.onLine) terminalSelection?.cancel();
   if (term) { term.options.disableStdin = blocked || busy || switching || streamPaused || !ready || document.hidden || !navigator.onLine; if (term.textarea) term.textarea.readOnly = history?.reviewing === true; }
   history?.update();
+  retainedTerminal?.update();
 }
 function reconnectLater(delay) {
   clearTimeout(retry); retry = undefined;
@@ -371,7 +388,7 @@ function attachSocket(current) {
     terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; firstPainted = false; firstFrameAt = performance.now();
     health?.close(); health = undefined;
     ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; pendingOutputAck = 0;
-    finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; term?.dispose(); term = undefined;
+    finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = undefined;
     createTerminal(); message('正在附加所选终端…'); report('connecting'); controlState();
     clearTimeout(connectingTimer); connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
   });
@@ -441,7 +458,7 @@ function acknowledgeOutput(current, bytes) {
 }
 function needsProbe() { return !legacyRecheck.running && ready && socket && !socket.session && !socket.direct && !stopped && canTryDirect(); }
 function nativeIdle() { return !composing && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800; }
-function idleForSwitch() { return !blocked && !busy && !pending && !switching && !history?.reviewing && nativeIdle(); }
+function idleForSwitch() { return !blocked && !busy && !pending && !switching && !history?.reviewing && !retainedTerminal?.active && nativeIdle(); }
 function stopProbe() {
   clearTimeout(probeTimer); probeTimer = undefined;
   probeNetworkCheck = false;
@@ -586,7 +603,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => resume());
 window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session) retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
-window.addEventListener('pagehide', event => { stopped = true; legacyRecheck.cancel(); history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; term?.dispose(); term = fit = undefined; } });
+window.addEventListener('pagehide', event => { stopped = true; legacyRecheck.cancel(); history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });
 for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(name, event => {
   lastInteraction = performance.now();

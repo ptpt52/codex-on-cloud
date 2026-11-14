@@ -35,11 +35,11 @@ async function insert(frame, text) {
 async function compose(frame, text) {
   await frame.locator('#desktop-input').evaluate((field, text) => {
     field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-    field.value += text;
+    const committed = field.value + text; field.value = committed;
     field.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: text, isComposing: true, bubbles: true }));
     field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, keyCode: 229, bubbles: true, cancelable: true }));
     field.dispatchEvent(new CompositionEvent('compositionend', { data: text, bubbles: true }));
-    field.value += text;
+    field.value = committed;
     field.dispatchEvent(new InputEvent('input', { inputType: 'insertCompositionText', data: text, bubbles: true }));
     field.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
   }, text);
@@ -52,7 +52,9 @@ test('one tap enables touch IME and candidate confirmation never submits; explic
     await expect.poll(() => app.inputCalls).toEqual([{ action: 'paste', target: 'focused', text: '手机中文😀' }]);
     await insert(frame, 'abc 123');
     await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['手机中文😀', 'abc 123']);
-    expect(await frame.locator('#desktop-input').inputValue()).toHaveLength(1);
+    const retained = await frame.evaluate(() => /iPad|iPhone|iPod/.test(navigator.userAgent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (retained) expect(await frame.locator('#desktop-input').inputValue()).toContain('手机中文😀abc 123');
+    else expect(await frame.locator('#desktop-input').inputValue()).toHaveLength(1);
     expect(sent).toEqual([]);
     await frame.locator('[data-touch-key="Enter"]').click();
     await expect.poll(() => sent).toEqual([0xff0d]);
@@ -129,7 +131,7 @@ test('Chinese, digits, spaces, punctuation and emoji stay ordered while text is 
     await expect.poll(() => app.inputCalls.length).toBe(1);
     await page.keyboard.type('123 '); await insert(frame, '，'); await compose(frame, '世界'); await insert(frame, '😀');
     await frame.locator('[data-touch-key="Enter"]').click(); expect(sent).toEqual([]); release();
-    await expect.poll(() => app.inputCalls.map(value => value.text)).toEqual(['你好', '，', '世界', '😀']);
+    await expect.poll(() => app.inputCalls.map(value => value.text).join('')).toBe('你好，世界😀');
     await expect.poll(() => sent).toEqual([49, 50, 51, 32, 0xff0d]);
     await expect(frame.locator('#desktop-input')).toBeFocused();
   } finally { release(); await app.close(); }

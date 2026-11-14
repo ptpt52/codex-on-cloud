@@ -1,9 +1,12 @@
 // Local IME capture, with a single in-flight paste and a bounded ordering buffer.
 // Nothing survives a focus/connection change or gets retried after an unknown result.
+import { appleTouchInput, createRetainedInput, retainedEdit } from './retained-input.js';
+
 export function createDesktopInput({ screen, field, status, current, allowed, paste, changed }) {
   const MAX_EVENTS = 64, MAX_BYTES = 32768;
   const TOUCH_ANCHOR = '\u200b'; // Gives soft keyboards a local character to delete.
   let enabled = true, composing = false, touch = false, generation = 0, pending, queue = [], bytes = 0, sequence = 0, lastCommit = '', compositionInput = false, handledInput = '', reported = '', printable, blockedReason = '';
+  let retained, run = 0, lastRun = -1, lastFocus;
   const suppressed = new Set(), accepted = new Set(), delivered = new Map();
   const ready = () => enabled && allowed() && !!current() && !document.hidden && navigator.onLine;
   const show = text => { status.textContent = text; status.hidden = !text; };
@@ -20,9 +23,19 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     if (touch) field.setSelectionRange(field.value.length, field.value.length);
   };
   const fieldText = () => touch && field.value.startsWith(TOUCH_ANCHOR) ? field.value.slice(1) : field.value;
+  const restoreField = () => { field.value = (touch ? TOUCH_ANCHOR : '') + retained.value; field.setSelectionRange(field.value.length, field.value.length); };
+  if (appleTouchInput()) retained = createRetainedInput({ read: fieldText, apply: edit => {
+    const accepted = text(edit.text, edit.erase);
+    // A rejected DOM edit must not be picked up by a later composition after
+    // the old request finishes. It is discarded exactly like an abandoned key.
+    if (!accepted) boundary();
+    return accepted;
+  }, rejected: fail });
+  function boundary() { retained?.reset(); run++; clearField(); }
+  const validFocus = value => value && typeof value.window === 'string' && /^[1-9]\d{0,9}$/.test(value.window) && ['terminal', 'application'].includes(value.target);
   function cancel(message = '') {
     const dismiss = touch && document.activeElement === field;
-    generation++; queue = []; bytes = 0; composing = touch = false; lastCommit = ''; compositionInput = false; handledInput = ''; printable = undefined; suppressed.clear(); accepted.clear(); clearField(); release();
+    generation++; queue = []; bytes = 0; composing = touch = false; lastCommit = ''; compositionInput = false; handledInput = ''; printable = undefined; suppressed.clear(); accepted.clear(); retained?.reset(); run++; lastRun = -1; lastFocus = undefined; clearField(); release();
     if (dismiss) field.blur();
     blockedReason = message; report(); show(message);
   }
@@ -41,10 +54,16 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     if (!queue.length) { report(); return; }
     const entry = queue.shift();
     if (entry.canvas !== current() || entry.generation !== generation) return cancel();
+    let edit;
+    if (entry.retained && entry.run === lastRun) {
+      if (!validFocus(lastFocus)) return fail('后台未确认原输入窗口，连续输入已暂停，请更新后台后重试。');
+      edit = { erase: entry.erase, focus: lastFocus };
+    } else if (entry.erase) return fail('原输入上下文已变化，文字未改写，请先核对远端。');
     const request = pending = entry; show('正在输入文字…'); report();
-    void paste(entry.text, ++sequence).then(result => {
+    void paste(entry.text, ++sequence, edit).then(result => {
       if (request.generation !== generation || request.canvas !== current()) return;
       if (result?.outcome !== 'success') return fail(result?.outcome === 'rejected' ? '文字未发送，请重新输入。' : '文字输入结果未知，请先核对远端；不会自动重发。');
+      if (entry.retained) { lastRun = entry.run; lastFocus = result.focus; }
       show(document.activeElement === field ? '键盘控制远程桌面 · 支持本机输入法' : '');
     }, () => { if (request.generation === generation) fail('文字输入结果未知，请先核对远端；不会自动重发。'); }).finally(() => {
       if (pending !== request) return;
@@ -52,23 +71,39 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     });
   }
   function enqueue(entry) {
-    if (pending && pending.generation !== generation) return show(blockedReason || '上一次输入尚未结束，本次内容未发送，请稍后重试。');
-    if (!ready()) return show('输入暂不可用，请稍后重新输入。');
+    if (pending && pending.generation !== generation) { show(blockedReason || '上一次输入尚未结束，本次内容未发送，请稍后重试。'); return false; }
+    if (!ready()) { show('输入暂不可用，请稍后重新输入。'); return false; }
     if (blockedReason && !(entry.kind === 'key' && entry.type === 'keyup')) { blockedReason = ''; show('键盘控制远程桌面 · 支持本机输入法'); }
+    const last = queue.at(-1);
+    if (entry.retained && last?.retained && last.run === entry.run && last.generation === generation && last.canvas === current()) {
+      // Only replace an unstarted revision of this same editable document.
+      // Acknowledged/in-flight writes and intervening keys never get replayed.
+      let edit;
+      try { edit = retainedEdit(last.before, entry.next); } catch (error) { fail(error.message); return false; }
+      const size = new TextEncoder().encode(edit.text).length;
+      if (bytes - last.size + size > MAX_BYTES) { fail('输入超过缓冲上限，请核对远端。'); return false; }
+      bytes += size - last.size;
+      if (!edit.text && !edit.erase) queue.pop();
+      else Object.assign(last, edit, { size, next: entry.next });
+      report(); return true;
+    }
     if (queue.length + (pending ? 1 : 0) >= MAX_EVENTS || bytes + (entry.size || 0) > MAX_BYTES) return fail('输入超过缓冲上限，部分内容未发送，请核对远端。');
-    bytes += entry.size || 0; queue.push({ ...entry, canvas: current(), generation }); drain(); report();
+    const activeGeneration = generation;
+    bytes += entry.size || 0; queue.push({ ...entry, canvas: current(), generation }); drain(); report(); return generation === activeGeneration;
   }
-  function text(value) {
-    if (!value) return;
+  function text(value, erase = 0) {
+    if (!value && !erase) return true;
     if (sequence >= 2147483647) return fail('输入会话已达到上限，请刷新页面。');
     if (typeof value !== 'string' || /[\x00-\x08\x0b-\x1f\x7f]/.test(value)) return fail('文字包含不支持的控制字符，未发送。');
     const size = new TextEncoder().encode(value).length;
     if (size > MAX_BYTES) return fail('一次输入不能超过 32 KiB，请使用输入助手分段粘贴。');
-    enqueue({ kind: 'text', text: value, size });
+    return enqueue({ kind: 'text', text: value, size, erase, retained: !!retained, run,
+      ...(retained ? { before: retained.value, next: fieldText() } : {}) });
   }
   function press(name) {
     const code = ['Escape', 'Tab', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].includes(name) ? name : undefined;
     if (!code || !ready() || composing || document.activeElement !== field) return false;
+    if (retained) { if (!retained.flush()) return false; boundary(); }
     const value = { key: name, code, bubbles: true, cancelable: true };
     enqueue({ kind: 'key', type: 'keydown', value }); enqueue({ kind: 'key', type: 'keyup', value }); return true;
   }
@@ -77,7 +112,8 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     // Candidate confirmation is not a command submission. Soft-keyboard line
     // breaks use the explicit Enter button; hardware Enter keeps its key path.
     else show('请点快捷栏 Enter 提交；长文本可在输入助手中编辑。');
-    clearField();
+    if (!retained || type === 'deleteContentBackward') clearField();
+    else restoreField();
   }
   const softActionType = type => ['deleteContentBackward', 'insertLineBreak', 'insertParagraph'].includes(type);
   function key(event) {
@@ -95,6 +131,10 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
       return;
     }
     if (!releaseAccepted && suppressed.has(code)) { if (event.type === 'keyup') suppressed.delete(code); event.preventDefault(); return; }
+    if (retained && event.type === 'keydown' && !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) {
+      if (!retained.flush()) { event.preventDefault(); return; }
+      boundary();
+    }
     const value = { key: event.key, code: event.code, location: event.location, repeat: event.repeat, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
       modifierAltGraph: event.getModifierState('AltGraph'), modifierCapsLock: event.getModifierState('CapsLock'), modifierNumLock: event.getModifierState('NumLock'), bubbles: true, cancelable: true };
     lastCommit = '';
@@ -110,24 +150,28 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
   }
   field.addEventListener('keydown', key); field.addEventListener('keyup', key);
   field.addEventListener('compositionstart', () => {
+    if (retained && document.activeElement !== field) return;
     if (!ready()) return cancel();
+    if (retained && !retained.flush()) return;
     composing = true; lastCommit = ''; printable = undefined; release(); field.classList.add('composing'); show('正在使用本机输入法选字'); report();
   });
   field.addEventListener('compositionend', event => {
-    if (!composing) return clearField();
+    if (!composing) { if (!retained) clearField(); return; }
+    if (retained) { composing = false; field.classList.remove('composing'); report(); retained.finalize(); return; }
     composing = false; report(); lastCommit = event.data || ''; text(lastCommit); clearField(); report();
   });
   field.addEventListener('beforeinput', event => {
     compositionInput = composing || event.isComposing || /Composition/.test(event.inputType);
     handledInput = '';
-    if (touch && !compositionInput && softActionType(event.inputType) && event.cancelable) {
+    if (touch && !compositionInput && softActionType(event.inputType) && !(retained && event.inputType === 'deleteContentBackward' && retained.value) && event.cancelable) {
       event.preventDefault(); handledInput = event.inputType; softAction(event.inputType);
     }
   });
   field.addEventListener('input', event => {
+    if (retained && document.activeElement !== field) return;
     const echo = compositionInput || /Composition/.test(event.inputType); compositionInput = false;
     if (composing || event.isComposing) return;
-    if (touch && !echo && softActionType(event.inputType)) {
+    if (touch && !echo && softActionType(event.inputType) && !(retained && event.inputType === 'deleteContentBackward' && retained.value)) {
       if (handledInput !== event.inputType) softAction(event.inputType);
       handledInput = ''; clearField(); return;
     }
@@ -141,7 +185,8 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
     if (candidate && candidate.generation === generation && candidate.canvas === current() && value === candidate.value.key && /^[\x20-\x7e]$/.test(value)) {
       if (accepted.size < 64) accepted.add(candidate.code);
       enqueue({ kind: 'key', type: 'keydown', value: candidate.value });
-    } else if (value) { release(); text(value); }
+    } else if (retained) { release(); retained.flush(); if (touch && !field.value) restoreField(); return; }
+    else if (value) { release(); text(value); }
     clearField();
   });
   field.addEventListener('blur', () => cancel());

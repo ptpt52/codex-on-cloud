@@ -949,8 +949,8 @@ function resetDirectControl() {
   finishDirectControl(Object.assign(new Error('连接已变化，操作结果未知，请先查看桌面确认'), { outcome: 'unknown', code: 'input_connection_changed' }));
 }
 function assistantRequest(path, body, signal) {
-  const action = { '/api/paste': 'paste', '/api/key': 'key', '/api/clipboard/read': 'clipboard' }[path];
-  if (terminalMode() && ['paste', 'key'].includes(action) && !controlReady) return Promise.reject(Object.assign(new Error('网页终端未就绪，本次输入未发送'), { outcome: 'rejected' }));
+  const action = { '/api/paste': 'paste', '/api/edit': 'edit', '/api/key': 'key', '/api/clipboard/read': 'clipboard' }[path];
+  if (terminalMode() && ['paste', 'edit', 'key'].includes(action) && !controlReady) return Promise.reject(Object.assign(new Error('网页终端未就绪，本次输入未发送'), { outcome: 'rejected' }));
   if (!controlReady || !action || (terminalMode() && action === 'clipboard')) return api(path, { method: 'POST', body, signal });
   if (controlPending || signal?.aborted || controlSequence >= 2147483647) return Promise.reject(Object.assign(new Error('输入通道未就绪，本次操作未发送'), { outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
@@ -1331,14 +1331,14 @@ function inputMessage(outcome, message, notice) {
 async function inputAction(path, body, label, success, destination) {
   const focused = !terminalMode() && body?.target === 'focused';
   if (inputBusy || inputComposing || frameComposing || !canInput(focused)) return { outcome: 'rejected' };
-  if (['/api/key', '/api/paste'].includes(path)) {
+  if (['/api/key', '/api/paste', '/api/edit'].includes(path)) {
     try { body = { ...body, ...(destination || inputDestination()) }; }
     catch (error) { inputMessage('rejected', error.message); return { outcome: 'rejected' }; }
   }
   const controller = new AbortController(); inputController = controller;
   const notice = { key: `assistant:${++inputNoticeSequence}`, source: 'assistant', mode: displayPreferences.mode, target: focused ? '' : noticeTarget(),
-    action: path === '/api/paste' ? 'paste' : path === '/api/key' ? 'key' : 'terminal', keyName: body.key,
-    path: controlReady && ['/api/paste', '/api/key'].includes(path) ? frameTransport === 'direct' ? 'direct' : 'terminal' : 'https' };
+    action: ['/api/paste', '/api/edit'].includes(path) ? 'paste' : path === '/api/key' ? 'key' : 'terminal', keyName: body.key,
+    path: controlReady && ['/api/paste', '/api/edit', '/api/key'].includes(path) ? frameTransport === 'direct' ? 'direct' : 'terminal' : 'https' };
   const timeout = setTimeout(() => controller.abort(), 8000);
   inputBusy = true;
   inputMessage('pending', `正在${label}…`);
@@ -2159,10 +2159,11 @@ window.addEventListener('message', event => {
     if (desktopTextFrame !== sourceFrame) { desktopTextFrame = sourceFrame; desktopTextSequence = 0; }
     if (value.id <= desktopTextSequence) return;
     desktopTextSequence = value.id;
-    const respond = outcome => window.postMessage.call(destination, { type: 'codex-desktop-text-result', frame: sourceFrame, id: value.id, outcome }, location.origin);
-    if (!displayPreferences.desktopIme || desktopTextInput || inputBusy || !canInput(true) || typeof value.text !== 'string' || !value.text || /[\x00-\x08\x0b-\x1f\x7f]/.test(value.text) || new TextEncoder().encode(value.text).length > 32768) return respond('rejected');
+    const respond = result => window.postMessage.call(destination, { type: 'codex-desktop-text-result', frame: sourceFrame, id: value.id, outcome: result?.outcome || 'unknown', ...(result?.focus ? { focus: result.focus } : {}) }, location.origin);
+    const editing = value.focus !== undefined, erase = value.erase ?? 0;
+    if (!displayPreferences.desktopIme || desktopTextInput || inputBusy || !canInput(true) || typeof value.text !== 'string' || !value.text && !erase || !Number.isInteger(erase) || erase < 0 || erase > 512 || erase && !editing || /[\x00-\x08\x0b-\x1f\x7f]/.test(value.text) || new TextEncoder().encode(value.text).length > 32768) return respond({ outcome: 'rejected' });
     desktopTextInput = true;
-    void inputAction('/api/paste', { text: value.text, target: 'focused' }, '输入文字', '文字已输入，Enter 单独提交', {}).then(result => respond(result?.outcome || 'unknown')).finally(() => { desktopTextInput = false; sendDisplayPreferences(); });
+    void inputAction(editing ? '/api/edit' : '/api/paste', { text: value.text, target: 'focused', ...(editing ? { erase, focus: value.focus } : {}) }, '输入文字', '文字已输入，Enter 单独提交', {}).then(respond).finally(() => { desktopTextInput = false; sendDisplayPreferences(); });
     return;
   }
   if (event.data?.type === 'codex-pointer-options') {

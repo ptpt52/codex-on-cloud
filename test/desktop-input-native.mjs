@@ -39,6 +39,7 @@ async function compose(frame, value) {
 }
 let server, browser, app, switchedWindow, childWindow, forceFocusChange = false, forceChildFocus = false;
 const direct = process.env.DESKTOP_IME_TEST_DIRECT === '1';
+const ios = process.env.DESKTOP_IME_TEST_IOS === '1';
 try {
   for (let number = 94; number < 200; number++) {
     const occupied = await Promise.all([`/tmp/.X${number}-lock`, `/tmp/.X11-unix/X${number}`].map(path => lstat(path).then(() => true, () => false)));
@@ -85,6 +86,10 @@ while time.monotonic() < deadline:
   app.config.vncSocket = socketPath;
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  if (ios) await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 });
+  });
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('桌面在线'));
   if (direct) {
@@ -96,6 +101,18 @@ while time.monotonic() < deadline:
   await frame.locator('#screen canvas').click({ position: { x: 30, y: 30 } });
   await eventually(() => frame.locator('#desktop-input').evaluate(el => el === document.activeElement));
   const received = async () => Buffer.from(JSON.parse(await readFile(proof, 'utf8')).hex, 'hex').toString('utf8');
+  if (ios) {
+    const updates = [ ['这', '这'], ['这是', '这是'], ['这是语音输入', '这是语音输入'],
+      ['这是语音输出', '这是语音输入\x7f出'], ['这是语音输入。', '这是语音输入\x7f出\x7f入。'],
+      ['这是语音', '这是语音输入\x7f出\x7f入。\x7f\x7f\x7f'] ];
+    for (const [value, expected] of updates) {
+      await frame.locator('#desktop-input').evaluate((el, value) => { el.value = value; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: value, bubbles: true })); }, value);
+      await eventually(async () => await received() === expected);
+    }
+    await page.keyboard.press('Enter'); await eventually(async () => (await received()).endsWith('\r'));
+    assert.equal(vncConnections, 1);
+    console.log('PASS: isolated real xterm received exact incremental iPad text, atomic correction backspaces, deletion-only edits and a separate Enter without duplicate snapshots.');
+  } else {
   await compose(frame, '中文直输😀');
   try { await eventually(async () => await received() === '中文直输😀'); }
   catch (error) {
@@ -112,7 +129,8 @@ while time.monotonic() < deadline:
   await eventually(async () => await received() === '中文直输😀OK\r再来，123 下一句。\r');
   assert.equal(terminal.exitCode, null); assert.equal(vncConnections, 1);
   console.log(`PASS (${direct ? 'resumable WebRTC' : 'WebSocket relay'}): real Xvfb/x11vnc/noVNC/xterm received exact Chinese/emoji once, no candidate Enter, followed by native ASCII and an independent Enter.`);
-  if (process.env.DESKTOP_IME_TEST_TK_PYTHON) {
+  }
+  if (process.env.DESKTOP_IME_TEST_TK_PYTHON && !ios) {
     const gui = join(directory, 'application.py'), appProof = join(directory, 'application.txt'), childProof = join(directory, 'child.txt'), ids = join(directory, 'widgets.json');
     await writeFile(gui, `import tkinter as tk, sys, json
 from pathlib import Path

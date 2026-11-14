@@ -55,12 +55,12 @@ let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scro
 let desktopText, desktopFocusFrame = 0, touchControls;
 const desktopInput = createDesktopInput({ screen, field: document.getElementById('desktop-input'), status: document.getElementById('desktop-input-status'),
   current: () => canvas, allowed: () => viewing && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
-  paste: (text, id) => new Promise(resolve => {
+  paste: (text, id, edit) => new Promise(resolve => {
     desktopText = { id, resolve, timer: setTimeout(() => {
       if (desktopText?.id !== id) return;
       desktopText = undefined; resolve({ outcome: 'unknown' });
     }, 8500) };
-    parent.postMessage({ type: 'codex-desktop-text', frame, id, text }, location.origin);
+    parent.postMessage({ type: 'codex-desktop-text', frame, id, text, ...(edit || {}) }, location.origin);
   }), changed: value => { parent.postMessage({ type: 'codex-desktop-input-state', frame, ...value }, location.origin); touchControls?.update(); reportView(); } });
 touchControls = createDesktopTouchInput({ input: desktopInput, field: document.getElementById('desktop-input'), root: document.getElementById('desktop-touch-input'),
   allowed: () => !!canvas && viewing && preferences.desktopIme !== false && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
@@ -206,7 +206,7 @@ window.addEventListener('message', event => {
   }
   if (value.type === 'codex-desktop-text-result') {
     if (!desktopText || value.id !== desktopText.id || !['success', 'rejected', 'unknown'].includes(value.outcome)) return;
-    const request = desktopText; desktopText = undefined; clearTimeout(request.timer); request.resolve({ outcome: value.outcome }); return;
+    const request = desktopText; desktopText = undefined; clearTimeout(request.timer); request.resolve({ outcome: value.outcome, focus: value.focus }); return;
   }
   if (value.type === 'codex-direct-probe') { networkChanged(); return; }
   if (value.type === 'codex-direct-recheck' && Number.isSafeInteger(value.id) && value.id > 0) {

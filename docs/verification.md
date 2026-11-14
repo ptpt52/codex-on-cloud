@@ -28,8 +28,11 @@ npm run test:compat
 ```sh
 CHROME_PATH=/usr/bin/google-chrome npm run test:browser -- test/browser/desktop-input.spec.mjs
 npm run test:browser -- test/browser/desktop-touch-input.spec.mjs
+npm run test:browser -- test/browser/ios-dictation.spec.mjs
 npm run test:desktop-input
 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
+DESKTOP_IME_TEST_IOS=1 npm run test:desktop-input
+DESKTOP_IME_TEST_IOS=1 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 ```
 
 浏览器规格验证中文提交一次、选字 Enter 隔离、按键顺序、焦点恢复、偏好、缓冲上限和结果未知后不重发；输入回执必须来自父页面，子页面自发的成功消息不能释放等待队列。WebKit 需特别回归异步回执来源。面板规格也检查选字期间 Escape 保留草稿，以及普通 Escape 关闭后回到入口按钮。原生规格使用隔离 Xvfb、x11vnc、noVNC 和项目同款粘贴绑定的 xterm，检查实际收到的中文 / emoji 字节、英文按键及独立 Enter；桌面管理与认证使用 fixture，不操作生产任务。
@@ -38,9 +41,11 @@ DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 
 触屏规格覆盖一键聚焦、带输入锚点的中英文提交、无键盘事件时的软键盘退格、选字及软键盘回车隔离、快捷键与粘贴的顺序、长文本草稿、当前焦点 Ctrl+C 确认，以及 320–1024px 布局和模拟可见区域变化期间不改远程尺寸。浏览器模拟不能唤起真实系统键盘；Android 中文输入法、iPhone / iPad 软键盘、语音输入和实体键盘仍需真机核对。
 
+听写规格将完整 DOM 值作为原生编辑结果，覆盖累计识别、实际重复、长停顿后继续、改词、补回前面的逗号、纯删除，以及 `keyCode 229` 与组合事件的单次转发。还检查等待回执期间的连续更新合并和 WebRTC 控制通道不转 HTTP 重发。`DESKTOP_IME_TEST_IOS=1` 在隔离 X11 环境验证实际增量字节与退格；这些事件由测试注入，尚不能替代真实 iPad 系统听写的事件记录和验收。
+
 可将 `DESKTOP_IME_TEST_TK_PYTHON` 指向已安装 Tk 的 Python，再运行原生规格，验证真实普通应用的 Ctrl+V 及剪贴板准备期间换窗拒绝；未设置时会明确跳过此部分。所有组合事件由测试注入，不代表真实系统输入法候选窗、手机系统键盘或生产 Codex 已验收。
 
-中文与数字、空格的顺序、全角标点、输入框清理和点击位置附近的候选窗处理，参考了 [WechatOnCloud 的输入法实现](https://github.com/Gloridust/WechatOnCloud/blob/86d82519c5e6b28aae7ef3caa279086afa244d4d/panel/web/src/pages/Desktop.tsx#L27)。本项目的等待缓冲限制为 64 项、文字合计 32 KiB，结果未知时清理后续输入；原有远程剪贴板按键路径保留。
+中文与数字、空格的顺序、全角标点、输入框清理和点击位置附近的候选窗处理，参考了 [WechatOnCloud 的输入法实现](https://github.com/Gloridust/WechatOnCloud/blob/86d82519c5e6b28aae7ef3caa279086afa244d4d/panel/web/src/pages/Desktop.tsx#L27)。本项目的等待缓冲限制为 64 项、待发送文字合计 32 KiB；iOS 每段的前后编辑快照也各限 32 KiB，最多 64 项，快照文字合计不超过 4 MiB。结果未知时清理后续输入，原有远程剪贴板按键路径保留。改写动作独立于粘贴，旧后台不支持时会拒绝，不会忽略删除而直接追加；部署须更新面板和桌面管理进程，新模块须同时进入 UI 资源清单与离线壳。
 
 触屏功能也对照同一版本的功能键及输入条（`Desktop.tsx` 的 `FUNC_KEYS`、`sendImeText`）：采用明确的“退格”文字，输入助手粘贴后保留本地焦点，补测中文后连续数字、空格和全角标点的顺序。实现使用本项目独立输入框和有界队列，不依赖 KasmVNC 私有输入框；粘贴与 Enter 分开，未知结果不继续发送后续按键。
 

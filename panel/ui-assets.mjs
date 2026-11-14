@@ -20,6 +20,7 @@ export const ASSETS = new Map([
   ['/browser-preferences.js', ['browser-preferences.js', 'text/javascript; charset=utf-8']],
   ['/desktop-input.js', ['desktop-input.js', 'text/javascript; charset=utf-8']],
   ['/desktop-touch-input.js', ['desktop-touch-input.js', 'text/javascript; charset=utf-8']],
+  ['/retained-input.js', ['retained-input.js', 'text/javascript; charset=utf-8']],
   ['/rtc-address.js', ['rtc-address.js', 'text/javascript; charset=utf-8']],
   ['/rtc-recheck.js', ['rtc-recheck.js', 'text/javascript; charset=utf-8']],
   ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
