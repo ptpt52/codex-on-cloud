@@ -42,16 +42,50 @@ const mutations = h => h.state.calls.filter(args => args[0] !== 'show').map(args
 
 test('password reset ignores inherited deployment variables for credentials, port checks and recovery', async t => {
   const h = await harness(t), persisted = (await readFile(join(h.root, '.env'), 'utf8')).match(/PANEL_PORT=(\d+)/)[1];
-  const old = Object.fromEntries(['PUBLIC_ORIGIN', 'PORT', 'ADMIN_USER'].map(key => [key, process.env[key]]));
+  const old = Object.fromEntries(['PUBLIC_ORIGIN', 'PORT', 'ADMIN_USER', 'ENTRY_BASE_PATH'].map(key => [key, process.env[key]]));
   t.after(() => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
-  Object.assign(process.env, { PUBLIC_ORIGIN: 'https://old.example.test', PORT: '1', ADMIN_USER: 'stale-user' });
+  Object.assign(process.env, { PUBLIC_ORIGIN: 'https://old.example.test', PORT: '1', ADMIN_USER: 'stale-user', ENTRY_BASE_PATH: '/node/stale/' });
   const { env, ...context } = h.context;
   await resetPassword({ target: 'admin' }, { ...context,
     ensureStopped: async port => assert.equal(port, Number(persisted)),
-    checkHealth: async value => assert.deepEqual(value, { port: Number(persisted), origin: 'https://desktop.example.com' }),
+    checkHealth: async value => assert.deepEqual(value, { port: Number(persisted), origin: 'https://desktop.example.com', entryBasePath: '/' }),
   });
   const summary = await readFile(join(h.root, 'secrets/credentials.txt'), 'utf8');
   assert.match(summary, /https:\/\/desktop.example.com/); assert.match(summary, /用户名：operator/); assert.ok(!summary.includes('stale-user'));
+});
+
+for (const base of ['/', '/node/audit/']) for (const target of ['admin', 'screen', 'unlock']) test(`${target} reset probes the actual ${base === '/' ? 'root' : 'node-prefixed'} HTTP health endpoint`, async t => {
+  const h = await harness(t), env = await readFile(join(h.root, '.env'), 'utf8');
+  const port = Number(env.match(/PANEL_PORT=(\d+)/)[1]), requests = [];
+  await writeFile(join(h.root, '.env'), env + 'ENTRY_BASE_PATH=' + base + '\n', { mode: 0o600 });
+  const server = http.createServer((req, res) => {
+    requests.push({ path: req.url, host: req.headers.host });
+    res.writeHead(req.url === base.slice(0, -1) + '/healthz' ? 200 : 404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  server.listen(port, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  // Service transitions are simulated; HTTP and the reset's default health
+  // implementation are real. No installed systemd service is touched.
+  const { checkHealth, ...context } = h.context;
+  await resetPassword({ target }, context);
+  assert.deepEqual(requests, [{ path: base.slice(0, -1) + '/healthz', host: 'desktop.example.com' }]);
+  assert.deepEqual(mutations(h), ['stop', 'start']);
+  if (target === 'admin') {
+    const entry = 'https://desktop.example.com' + (base === '/' ? '' : base);
+    assert.ok((await readFile(join(h.root, 'secrets/credentials.txt'), 'utf8')).startsWith('工作台：' + entry + '\n'));
+    assert.equal(await h.password(), newPassword + '\n');
+  }
+});
+
+test('an invalid node entry is rejected before prompting, stopping services or changing a password', async t => {
+  const h = await harness(t), env = await readFile(join(h.root, '.env'), 'utf8'), before = await h.policy();
+  const prompt = () => { throw Error('Invalid entry must be rejected before prompting'); };
+  for (const base of ['/node/missing-slash', '/node/a/extra/', 'https://other.example.test/']) {
+    await writeFile(join(h.root, '.env'), env + 'ENTRY_BASE_PATH=' + base + '\n', { mode: 0o600 });
+    await assert.rejects(resetPassword({ target: 'admin' }, { ...h.context, prompt }), /ENTRY_BASE_PATH/);
+  }
+  assert.deepEqual(h.state.calls, []); assert.equal(await h.policy(), before); assert.equal(await h.password(), oldPassword + '\n');
 });
 
 test('reset options reject password arguments, mixed targets and unsupported generation', () => {
@@ -190,7 +224,7 @@ test('empty and partial crash locks recover without changing the panel lifetime'
 
 async function cli(t) {
   const h = await harness(t, { active: false });
-  for (const [folder, file] of [['scripts', 'reset-password.mjs'], ['native', 'password-reset.mjs'], ['native', 'file-lock.mjs'], ['native', 'file_lock.py'], ['panel', 'access-control.mjs']]) {
+  for (const [folder, file] of [['scripts', 'reset-password.mjs'], ['native', 'password-reset.mjs'], ['native', 'file-lock.mjs'], ['native', 'file_lock.py'], ['panel', 'access-control.mjs'], ['panel', 'entry-path.mjs']]) {
     await mkdir(join(h.root, folder), { recursive: true }); await copyFile(resolve(folder, file), join(h.root, folder, file));
   }
   const bin = join(h.root, 'bin'); await mkdir(bin);

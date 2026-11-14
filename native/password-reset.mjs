@@ -7,6 +7,7 @@ import { promisify, parseEnv } from 'node:util';
 import net from 'node:net';
 import http from 'node:http';
 import { createAccessControl } from '../panel/access-control.mjs';
+import { normalizeEntryBasePath } from '../panel/entry-path.mjs';
 import { acquireFileLock } from './file-lock.mjs';
 
 const exec = promisify(execFile), UNIT = 'codex-cloud-panel.service';
@@ -73,12 +74,13 @@ async function portFree(port) {
     socket.once('error', error => { socket.destroy(); error.code === 'ECONNREFUSED' ? resolve() : reject(Error('无法确认面板端口已空闲')); });
   });
 }
-async function health({ port, origin }) {
+async function health({ port, origin, entryBasePath = '/' }) {
+  const path = normalizeEntryBasePath(entryBasePath).slice(0, -1) + '/healthz';
   for (let attempt = 0; attempt < 12; attempt++) {
     const ready = await new Promise(resolve => {
       let timer;
       const finish = value => { clearTimeout(timer); resolve(value); };
-      const req = http.get({ host: '127.0.0.1', port, path: '/healthz', headers: { host: new URL(origin).host }, timeout: 500 }, res => {
+      const req = http.get({ host: '127.0.0.1', port, path, headers: { host: new URL(origin).host }, timeout: 500 }, res => {
         let size = 0; const chunks = [];
         res.on('data', bytes => { size += bytes.length; if (size > 4096) res.destroy(); else chunks.push(bytes); });
         res.on('end', () => { try { finish(res.statusCode === 200 && JSON.parse(Buffer.concat(chunks)).ok === true); } catch { finish(false); } });
@@ -104,6 +106,7 @@ export async function resetPassword(options, { root, platform = process.platform
   if (!['admin', 'screen', 'unlock'].includes(options.target) || options.generate && options.target !== 'admin') throw Error('重置目标无效；自动生成仅支持管理员密码');
   const file = await boundedFile(join(root, '.env'), 16384), config = parseEnv(file.text);
   const username = config.ADMIN_USER || 'admin', origin = new URL(config.PUBLIC_ORIGIN || 'http://localhost:36080'), port = Number(config.PORT ?? config.PANEL_PORT ?? 36080);
+  const entryBasePath = normalizeEntryBasePath(config.ENTRY_BASE_PATH);
   if (username.length > 100 || /[\r\n\0]/.test(username) || !['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || origin.origin.length > 2048 || !Number.isInteger(port) || port < 1024 || port > 65535) throw Error('部署配置无效，请先检查 .env 的账号、入口和端口');
   const initial = await serviceState(run, root);
   log('此操作只更新登录或屏幕锁。运行中的网页面板将短暂停止，现有端口映射需重新配对；桌面和 Codex 任务继续运行。');
@@ -133,7 +136,8 @@ export async function resetPassword(options, { root, platform = process.platform
     await ensureStopped(port); valid(); attempted = true;
     if (options.target === 'admin') {
       await atomicWrite(join(secrets, 'panel_password'), password + '\n', 2048, valid);
-      await atomicWrite(join(secrets, 'credentials.txt'), `工作台：${origin.origin}\n用户名：${username}\n密码：${password}\n\n实际入口以 .env 为准。请妥善保管，不要提交到 Git。\n`, 4096, valid);
+      const entry = origin.origin + (entryBasePath === '/' ? '' : entryBasePath);
+      await atomicWrite(join(secrets, 'credentials.txt'), `工作台：${entry}\n用户名：${username}\n密码：${password}\n\n实际入口以 .env 为准。请妥善保管，不要提交到 Git。\n`, 4096, valid);
     } else {
       const access = await createAccessControl({ dataDir, username });
       await access.saveScreen(options.target === 'unlock' ? { enabled: false } : { enabled: true, password }, valid);
@@ -145,7 +149,7 @@ export async function resetPassword(options, { root, platform = process.platform
       if (stopped) {
         lease.check();
         if ((await run(['start', UNIT])).status !== 0) throw Error('网页面板未能恢复，请运行 systemctl --user start codex-cloud-panel.service');
-        await checkHealth({ port, origin: origin.origin });
+        await checkHealth({ port, origin: origin.origin, entryBasePath });
       }
     } catch (error) { failure = Error(`${failure ? failure.message + '\n' : attempted ? '密码设置可能已更新；' : ''}${error.message}`, { cause: error }); }
     finally { await lease.release(); }
