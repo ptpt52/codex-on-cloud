@@ -175,8 +175,12 @@ test('long Chinese paragraphs retain every live line boundary and glyph position
   } finally { await app.close(); }
 });
 
-test('dense mixed-width history bounds its layout nodes while retaining all text', async ({ page }) => {
-  const text = 'a中'.repeat(50000), app = await fixture({ mode: 'terminal', terminalHistory: text });
+test('dense mixed-width history bounds layout and measurements while retaining all text', async ({ page }) => {
+  // Equal CJK/Latin spacing can coalesce "a中" into one node on Firefox.
+  // More than 2,048 distinct glyphs deterministically exceed the measurement
+  // budget, regardless of installed fonts or how many nodes get coalesced.
+  const text = Array.from({ length: 3000 }, (_, index) => 'a' + String.fromCharCode(0x4e00 + index)).join('').repeat(10);
+  const app = await fixture({ mode: 'terminal', terminalHistory: text });
   try {
     const frame = await fallbackTerminal(page, app);
     app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('\x1b[?1049h').toString('base64') }) + '\n');
