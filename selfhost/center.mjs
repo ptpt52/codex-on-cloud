@@ -157,7 +157,8 @@ export async function createSelfhostCenter({
     if (path === '/api/join' && req.method === 'POST') {
       const client = clientAddress(req); rate(joinRequests, client, 60, 60_000);
       const body = await jsonBody(req, 8192);
-      const joined = await registry.join({ ...body, source: client });
+      const valid = () => { if (closing || req.aborted || res.destroyed) throw selfhostError(409, '节点接入操作已取消'); };
+      const joined = await registry.join({ ...body, source: client }, { valid });
       return reply(res, 200, { ...joined, origin: parsed.origin, proxyHost: publicHost, turnEndpoint: turnSecret ? parsed.origin + '/api/turn-credentials' : null, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName, token: frpToken } });
     }
     if (path === '/api/turn-credentials' && req.method === 'POST') {
@@ -169,7 +170,9 @@ export async function createSelfhostCenter({
     }
     if (path === '/api/leave' && req.method === 'POST') {
       rate(joinRequests, clientAddress(req), 60, 60_000);
-      return reply(res, 200, await registry.leave(await jsonBody(req, 4096)));
+      const body = await jsonBody(req, 4096);
+      const valid = () => { if (closing || req.aborted || res.destroyed) throw selfhostError(409, '节点退出操作已取消'); };
+      return reply(res, 200, await registry.leave(body, { valid }));
     }
 
     if (path === '/api/public/nodes' && req.method === 'GET') {

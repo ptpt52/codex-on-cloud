@@ -29,7 +29,7 @@ export class SelfhostRegistry {
     if (!file) throw Error('中心状态文件未配置');
     this.file = file; this.host = host.toLowerCase(); this.now = now; this.onClose = onClose; this.random = random;
     this.value = { version: 1, revision: 1, keys: [], audit: [] };
-    this.text = null; this.sessions = new Map(); this.queue = Promise.resolve();
+    this.text = null; this.sessions = new Map(); this.queue = Promise.resolve(); this.mutations = 0;
   }
 
   async open() {
@@ -41,6 +41,13 @@ export class SelfhostRegistry {
   }
 
   mutate(action, { safety = false, valid = () => {} } = {}) {
+    try { valid(); } catch (error) { return Promise.reject(error); }
+    // Count the active writer and every retained waiter, including cancelled
+    // requests until their turn is skipped. Never append an unbounded chain by
+    // releasing cancelled slots before their promise/closure can be reclaimed.
+    const maximum = SELFHOST_LIMITS.mutations - (safety ? 0 : SELFHOST_LIMITS.mutationReserve);
+    if (this.mutations >= maximum) return Promise.reject(selfhostError(503, '中心配置操作繁忙，请稍后手动重试'));
+    this.mutations++;
     const operation = this.queue.then(async () => {
       valid();
       const value = structuredClone(this.value);
@@ -69,7 +76,7 @@ export class SelfhostRegistry {
       }
       if (failure) throw Object.assign(failure, { outcome: 'unknown' });
       return result?.value;
-    });
+    }).finally(() => { this.mutations--; });
     this.queue = operation.catch(() => {});
     return operation;
   }
@@ -185,22 +192,26 @@ export class SelfhostRegistry {
     return value.keys.find(item => item.credentialHash && equalHash(item.credentialHash, hash)) || null;
   }
 
-  joinPlan(input, draft, now, close) {
+  joinAuthorization(input, value, now) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || input.version !== 1) throw selfhostError(400, '接入请求无效');
     const nodeSlug = slug(input.slug), nodeId = nodeIdentity(input.node?.id);
     if (!['desktop', 'terminal'].includes(input.node?.mode)) throw selfhostError(400, '节点模式无效');
-    const key = draft.value.keys.find(item => item.slug === nodeSlug);
+    const key = value.keys.find(item => item.slug === nodeSlug);
     if (!key) throw selfhostError(401, '授权不存在');
     if (this.keyStatus(key, now) !== 'ready') throw selfhostError(401, this.keyStatus(key, now) === 'expired' ? '授权已过期' : '授权已撤销');
-    let credential = null;
     if (typeof input.key === 'string') {
       if (!KEY.test(input.key) || !equalHash(key.keyHash, tokenHash(input.key))) throw selfhostError(401, '授权 key 无效');
-      credential = this.random('cocn_'); key.credentialHash = tokenHash(credential);
     } else {
-      const owner = this.credentialOwner(draft.value, input.credential);
+      const owner = this.credentialOwner(value, input.credential);
       if (!owner || owner.id !== key.id) throw selfhostError(401, '节点接入凭据无效');
-      credential = input.credential;
     }
+    return { nodeSlug, nodeId, key };
+  }
+
+  joinPlan(input, draft, now, close) {
+    const { nodeSlug, nodeId, key } = this.joinAuthorization(input, draft.value, now);
+    const credential = typeof input.key === 'string' ? this.random('cocn_') : input.credential;
+    if (typeof input.key === 'string') key.credentialHash = tokenHash(credential);
     let current = draft.sessions.get(nodeSlug);
     if (current?.status === 'grace' && current.graceUntil <= now) { draft.sessions.delete(nodeSlug); current = undefined; }
     // HTTP configuration refresh does not create another live frp connection.
@@ -220,8 +231,11 @@ export class SelfhostRegistry {
     return { value: { version: 1, slug: nodeSlug, name: key.name, entryBasePath: entryBasePath(nodeSlug), credential, expiresAt: key.expiresAt, sessionId: key.id }, close };
   }
 
-  async join(input) {
-    return this.mutate(draft => this.joinPlan(input, draft, this.now(), []));
+  async join(input, options) {
+    // Reject anonymous invalid credentials against committed state before
+    // admission; queued work rechecks the current grant before making changes.
+    this.joinAuthorization(input, this.value, this.now());
+    return this.mutate(draft => this.joinPlan(input, draft, this.now(), []), options);
   }
 
   async revoke(keyId, input = {}, options) {
@@ -244,15 +258,21 @@ export class SelfhostRegistry {
     }, { ...options, safety: true });
   }
 
-  async leave(input = {}) {
+  leaveAuthorization(input, value, sessions) {
+    const nodeSlug = slug(input.slug), item = value.keys.find(key => key.slug === nodeSlug);
+    if (!item) throw selfhostError(401, '节点授权不存在');
+    const owner = this.credentialOwner(value, input.credential);
+    if (!owner || owner.id !== item.id || !sessions.has(nodeSlug)) throw selfhostError(401, '节点接入凭据无效或已经离线');
+    return { nodeSlug, item };
+  }
+
+  async leave(input = {}, options) {
+    this.leaveAuthorization(input, this.value, this.sessions);
     return this.mutate(({ value, sessions, now, close }) => {
-      const nodeSlug = slug(input.slug), item = value.keys.find(key => key.slug === nodeSlug);
-      if (!item) throw selfhostError(401, '节点授权不存在');
-      const owner = this.credentialOwner(value, input.credential);
-      if (!owner || owner.id !== item.id || !sessions.has(nodeSlug)) throw selfhostError(401, '节点接入凭据无效或已经离线');
+      const { nodeSlug, item } = this.leaveAuthorization(input, value, sessions);
       sessions.delete(nodeSlug); close.push({ slug: nodeSlug, reason: 'node_left' }); this.audit(value, 'node_left', item, now);
       return { value: { ok: true }, close };
-    }, { safety: true });
+    }, { ...options, safety: true });
   }
 
   loginMeta(metas) {

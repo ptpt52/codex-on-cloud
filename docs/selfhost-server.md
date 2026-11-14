@@ -210,6 +210,7 @@ sudo systemctl restart codex-selfhost-center.service
 - coturn：`MemoryMax=512M`、`TasksMax=2048`、`LimitNOFILE=65536`
 - Caddy：`MemoryMax=512M`、`TasksMax=1024`、`LimitNOFILE=65536`
 - 中心不设固定授权记录数量上限；单个状态文件最多 256 KiB。最多保留 512 条审计记录，容量紧张时优先裁剪旧审计并为撤销授权预留空间；不足时拒绝新增或扩展记录，不截断现有授权
+- 配置写入与等待合计最多 32 项，其中 4 项为撤销、断开和清理保留；超额返回 503，不自动重试。节点接入和退出先校验凭据，取消后尚未执行的请求跳过处理，落盘前再次校验。此边界不限制节点数量或业务连接数
 
 日志进入 journald。服务以非 root 用户运行；Caddy 仅因监听 80/443 由 systemd 启动。
 

@@ -19,6 +19,45 @@ async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
 
 const metadata = (credential, slug, nodeId) => ({ credential, slug, nodeId });
 
+test('registry admission bounds pending writes and reserves space for revocation', async t => {
+  const { registry } = await setup(t), key = await registry.createKey({ name: 'Revocable', slug: 'revocable' });
+  let release; registry.queue = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const ordinary = SELFHOST_LIMITS.mutations - SELFHOST_LIMITS.mutationReserve;
+  assert(ordinary > 0 && ordinary < 64);
+  const writes = Array.from({ length: ordinary }, (_, i) => registry.createKey({ name: 'Queued', slug: 'queued-' + i }));
+  const drained = Promise.allSettled(writes), tail = registry.queue;
+  await assert.rejects(registry.createKey({ name: 'Overflow', slug: 'overflow' }), { status: 503, outcome: 'rejected' });
+  assert.equal(registry.queue, tail, 'rejected writes must not extend the promise chain');
+  const cleanup = Array.from({ length: SELFHOST_LIMITS.mutationReserve }, () => registry.revoke(key.id));
+  const cleaned = Promise.allSettled(cleanup), full = registry.queue;
+  await assert.rejects(registry.revoke(key.id), { status: 503 });
+  assert.equal(registry.queue, full);
+  release();
+  assert((await drained).every(result => result.status === 'fulfilled'));
+  assert((await cleaned).every(result => result.status === 'fulfilled'));
+  assert.equal((await registry.list()).find(item => item.id === key.id).status, 'revoked');
+  await registry.createKey({ name: 'After drain', slug: 'after-drain' });
+});
+
+test('invalid machine credentials never join the registry queue, even while storage is blocked', async t => {
+  const { registry } = await setup(t), key = await registry.createKey({ name: 'Node', slug: 'node' });
+  let release; const gate = registry.queue = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const join = registry.join({ version: 1, slug: key.slug, key: 'coc_' + 'x'.repeat(43), node: { id: 'a'.repeat(32), mode: 'terminal' } }).catch(error => error);
+  const leave = registry.leave({ slug: key.slug, credential: 'cocn_' + 'x'.repeat(43) }).catch(error => error);
+  assert.equal(registry.queue, gate);
+  assert.equal((await join).status, 401); assert.equal((await leave).status, 401);
+});
+
+test('an admitted join revalidates its key after a queued revocation commits', async t => {
+  const { registry } = await setup(t), key = await registry.createKey({ name: 'Node', slug: 'node' });
+  let release; registry.queue = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const revoked = registry.revoke(key.id), joined = registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } });
+  const refused = assert.rejects(joined, { status: 401 });
+  release(); await revoked; await refused;
+  assert.equal(registry.sessions.size, 0);
+});
+
 test('a revoked key stays revoked in memory and closes its tunnel after a post-commit durability error', async t => {
   const { registry, directory, closed } = await setup(t), key = await registry.createKey({ name: 'Node', slug: 'node-a' });
   const joined = await registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } });

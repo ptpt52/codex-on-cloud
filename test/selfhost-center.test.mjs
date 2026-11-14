@@ -87,6 +87,27 @@ test('logout rejects a complete administrator write queued behind other registry
   assert.equal((await response).status, 401); assert.deepEqual(await h.center.registry.list(), []);
 });
 
+for (const action of ['join', 'leave']) test(`a cancelled machine ${action} never commits after waiting for storage`, async t => {
+  const h = await setup(t), registry = h.center.registry;
+  const key = await registry.createKey({ name: 'Node', slug: 'cancelled' }), node = { id: 'a'.repeat(32), mode: 'terminal' };
+  const original = action === 'leave' ? await registry.join({ version: 1, slug: key.slug, key: key.key, node }) : null;
+  const body = action === 'join' ? { version: 1, slug: key.slug, key: key.key, node } : { slug: key.slug, credential: original.credential };
+  const before = await readFile(join(h.directory, 'center/state.json'), 'utf8'), sessions = structuredClone(registry.sessions);
+  let release, entered, disconnected;
+  registry.queue = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const admitted = new Promise(resolve => { entered = resolve; }), closed = new Promise(resolve => { disconnected = resolve; });
+  const operation = registry[action].bind(registry);
+  t.mock.method(registry, action, (...args) => { const result = operation(...args); entered(); return result; });
+  h.center.server.once('request', (_req, res) => res.once('close', disconnected));
+  const request = http.request(h.origin + '/api/' + action, { method: 'POST', headers: { 'content-type': 'application/json' } });
+  request.on('error', () => {}); t.after(() => request.destroy()); request.end(JSON.stringify(body));
+  await admitted; request.destroy(); await closed; release(); await registry.queue;
+  assert.equal(await readFile(join(h.directory, 'center/state.json'), 'utf8'), before);
+  assert.deepEqual(registry.sessions, sessions);
+  const retry = await h.request('/api/' + action, { method: 'POST', body, authenticated: false });
+  assert.equal(retry.status, 200);
+});
+
 test('center bounds password verification concurrency and accepts login after busy requests drain', async t => {
   const h = await setup(t);
   const responses = await Promise.all(Array.from({ length: 8 }, () => h.request('/admin/api/login', { method: 'POST', authenticated: false, body: { username: 'admin', password: 'center_password_very_long_123' } })));
