@@ -39,6 +39,18 @@ test('terminal assets and WebSockets authenticate Host, Origin, viewer, target t
   assert.equal(app.terminalConnections, 1); assert.equal(app.inputCalls.length, 0); assert.equal(app.terminalInputs.length, 0);
 });
 
+test('terminal column alignment forwards supported capabilities and rejects malformed helper readiness', async t => {
+  for (const alignment of [undefined, 1, 2, 0, 3, '2', null]) await t.test(String(alignment), async t => {
+    const app = await fixture(); app.config.terminalColumnAlignment = alignment; t.after(() => app.close());
+    await app.login(); await app.claim(); const { ws, records } = await connected(app); t.after(() => ws.terminate());
+    if (alignment === undefined || [1, 2].includes(alignment)) {
+      await until(() => records.some(value => value.type === 'ready'));
+      assert.equal(records.find(value => value.type === 'ready').columnAlignment, alignment ?? 1);
+    } else { await once(ws, 'close'); assert.equal(records.some(value => value.type === 'ready'), false); }
+    assert.deepEqual(app.terminalInputs, []); assert.deepEqual(app.inputCalls, []);
+  });
+});
+
 test('terminal paste and fixed keys preserve separate Enter, protect multiline paste and read remote clipboard only explicitly', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
   const { ws, records } = await connected(app); t.after(() => ws.terminate()); await until(() => records.some(item => item.type === 'ready'));

@@ -251,7 +251,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
         }
       });
       setTimeout(() => {
-        const ready = () => { emit({ type: 'ready' }); emit({ type: 'geometry', maxCols: terminalMaxCols }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); };
+        const ready = () => { emit({ type: 'ready', columnAlignment: config.terminalColumnAlignment }); emit({ type: 'geometry', maxCols: terminalMaxCols }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); };
         if (terminalReadyHook) void Promise.resolve().then(() => terminalReadyHook(target)).then(ready, () => child.kill()); else ready();
       }, 10);
       return child;

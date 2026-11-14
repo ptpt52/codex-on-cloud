@@ -466,7 +466,8 @@ test('returning live cancels a snapshot without resending it and late replies ca
 test('real Bash long Chinese paragraphs have identical visible lines in live output and fetched history', async ({ page }, info) => {
   test.setTimeout(45000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-cjk-lines-')), socket = join(directory, 'tmux.sock'), clients = [];
-  const paragraph = '这是中文测试，用来检查长段中文文字在实时终端与历史记录中的每行字数和换行位置是否完全一致。'.repeat(12);
+  const paragraph = 'ptpt52@SC-GAME:/mnt/Data/Sources/codex-on-cloud$ echo ' +
+    '这是中文测试，用来检查长段中文文字在实时终端与历史记录中的每行字数和换行位置是否完全一致。'.repeat(12);
   const path = join(directory, 'paragraph.txt'), start = 'CJK-PARAGRAPH-START', end = 'CJK-PARAGRAPH-END';
   const env = { ...process.env, HOME: directory, HISTFILE: '/dev/null', TERM: 'xterm-256color', DEPLOY_MODE: 'terminal',
     PATH: `${resolve('data/host-tools/usr/bin')}:${process.env.PATH}`, CJK_TEST_FILE: path };
@@ -483,26 +484,63 @@ test('real Bash long Chinese paragraphs have identical visible lines in live out
       clients.push(child); return child;
     };
     await prepare(page); const frame = await login(page, app);
+    const fitColumns = async columns => {
+      // Crossing the compact-layout breakpoint also changes outer padding.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const delta = await frame.evaluate(columns => {
+          const t = window.historyTerminal, fit = new FitAddon.FitAddon(); fit.activate(t);
+          const available = fit.proposeDimensions().cols, cell = document.querySelector('.xterm-screen').getBoundingClientRect().width / t.cols;
+          return (columns - available + .25) * cell;
+        }, columns);
+        await page.setViewportSize({ width: Math.round(page.viewportSize().width + delta), height: page.viewportSize().height });
+        const available = await frame.evaluate(async () => {
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const fit = new FitAddon.FitAddon(); fit.activate(window.historyTerminal); return fit.proposeDimensions().cols;
+        });
+        if (available === columns) break;
+      }
+      await expect.poll(() => frame.evaluate(() => {
+        const fit = new FitAddon.FitAddon(); fit.activate(window.historyTerminal); return fit.proposeDimensions().cols;
+      })).toBe(columns);
+    };
+    await fitColumns(64);
     const cols = await frame.evaluate(() => window.historyTerminal.cols);
     await expect.poll(async () => Number((await run(['display-message', '-p', '-t', 'codex', '#{pane_width}'])).stdout.trim())).toBe(cols);
     await run(['send-keys', '-t', token.split(':')[0], '-l', 'printf "\\033[2J\\033[H"; cat "$CJK_TEST_FILE"']);
     await run(['send-keys', '-t', token.split(':')[0], 'Enter']);
     await expect(frame.locator('.xterm-rows')).toContainText(end);
+    // Resizing existing output to an odd width exposes tmux 2.6's wide-cell
+    // reflow bug; testing only fresh output at an even width misses it.
+    await fitColumns(63);
+    const version = (await run(['display-message', '-p', '-t', 'codex', '#{version}'])).stdout.trim();
+    const expectedCols = /^2[.]6[a-z]?$/.test(version) ? 62 : 63;
+    await expect.poll(() => frame.evaluate(() => window.historyTerminal.cols)).toBe(expectedCols);
+    await expect.poll(async () => Number((await run(['display-message', '-p', '-t', 'codex', '#{pane_width}'])).stdout.trim())).toBe(expectedCols);
     const capture = archive => frame.evaluate(({ archive, start, end }) => {
       const root = document.querySelector(archive ? '#history-archive' : '.xterm-rows'), origin = root.getBoundingClientRect();
-      const rows = archive ? root.textContent.split('\n') : [...root.children].map(row => row.textContent);
+      const t = window.historyTerminal, right = document.querySelector('.xterm-screen').getBoundingClientRect().right;
+      const rows = archive ? root.textContent.split('\n') : Array.from({ length: t.rows }, (_, index) =>
+        t.buffer.active.getLine(t.buffer.active.viewportY + index).translateToString(true, 0, t.cols));
       const first = rows.findIndex(row => row.trim() === start), last = rows.findIndex((row, index) => index > first && row.trim() === end);
       const lines = rows.slice(first + 1, last).map(row => row.trimEnd());
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), chars = []; let node;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), chars = []; let node, clipped = 0;
       while (node = walker.nextNode()) for (let index = 0; index < node.length; index++) {
         const char = node.textContent[index]; if (char.codePointAt(0) < 0x3000) continue;
         const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
-        const box = range.getBoundingClientRect(); chars.push({ char, x: box.left - origin.left + root.scrollLeft, y: box.top - origin.top + root.scrollTop });
+        const box = range.getBoundingClientRect();
+        // xterm retains off-screen cells while resizing its alternate buffer.
+        // Exclude wholly hidden tails, but reject a partially clipped glyph.
+        if (!archive && box.left >= right - .5) continue;
+        if (!archive && box.right > right + 1) clipped++;
+        chars.push({ char, x: box.left - origin.left + root.scrollLeft, y: box.top - origin.top + root.scrollTop });
       }
       const y = chars[0]?.y || 0;
-      return { first, last, lines, chars: chars.map(char => ({ ...char, y: char.y - y })) };
+      return { first, last, lines, clipped, chars: chars.map(char => ({ ...char, y: char.y - y })) };
     }, { archive, start, end });
-    const live = await capture(false); expect(live.first).toBeGreaterThanOrEqual(0); expect(live.last).toBeGreaterThan(live.first);
+    // The pane size changes before its redraw reaches and flushes xterm.
+    await expect.poll(async () => (await capture(false)).lines.join('')).toBe(paragraph);
+    const live = await capture(false); expect(live.last).toBeGreaterThan(live.first); expect(live.clipped).toBe(0);
+    expect(live.chars.map(value => value.char).join('')).toBe([...paragraph].filter(char => char.codePointAt(0) >= 0x3000).join(''));
     expect(live.lines.join('')).toBe(paragraph);
     await page.screenshot({ path: info.outputPath('bash-chinese-live.png') });
     await frame.evaluate(() => window.historyTerminal.scrollToTop()); await frame.locator('#history-up').click();

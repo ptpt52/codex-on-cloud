@@ -84,6 +84,27 @@ test('desktop scrollbar shares the outer gutter and the grid fills the available
   } finally { await app.close(); }
 });
 
+test('legacy column alignment survives resizing and is removed when reconnecting to a regular server', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); app.config.terminalColumnAlignment = 2;
+  try {
+    await prepare(page, 'viewport'); const frame = await login(page, app);
+    const aligned = alignment => frame.evaluate(alignment => {
+      const term = window.widthTerminal, fit = new FitAddon.FitAddon(); fit.activate(term);
+      const available = Math.min(500, fit.proposeDimensions().cols);
+      return term.cols === available - available % alignment;
+    }, alignment);
+    for (const width of [390, 407, 700, 1920]) {
+      await page.setViewportSize({ width, height: 1000 }); await expect.poll(() => aligned(2)).toBe(true);
+    }
+    app.config.terminalColumnAlignment = 1; app.disconnectTerminals();
+    await expect.poll(() => app.terminalConnections).toBe(2); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    for (const width of [390, 407, 700, 1920]) {
+      await page.setViewportSize({ width, height: 1000 }); await expect.poll(() => aligned(1)).toBe(true);
+    }
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('viewport layout keeps the chosen font and reflows columns from phone to wide screen without reconnect or input', async ({ page }) => {
   const app = await fixture({ webrtc: true, terminalMaxCols: 122 });
   try {

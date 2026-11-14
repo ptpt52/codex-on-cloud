@@ -61,7 +61,11 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       try { value = JSON.parse(line); } catch { return close(); }
       if (!value || typeof value !== 'object' || Array.isArray(value)) return close();
       if (!valid()) return close();
-      if (value.type === 'ready' && !ready) { ready = true; clearTimeout(startTimer); send({ type: 'ready', historyStyles: true }); }
+      if (value.type === 'ready' && !ready) {
+        const columnAlignment = value.columnAlignment === undefined ? 1 : value.columnAlignment;
+        if (![1, 2].includes(columnAlignment)) return close();
+        ready = true; clearTimeout(startTimer); send({ type: 'ready', historyStyles: true, columnAlignment });
+      }
       else if (value.type === 'geometry' && ready && Number.isInteger(value.maxCols) && value.maxCols >= 2 && value.maxCols <= 500) {
         geometryMaxCols = value.maxCols;
         if (geometryEnabled) send({ type: 'geometry', maxCols: geometryMaxCols });

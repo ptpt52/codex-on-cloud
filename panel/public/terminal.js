@@ -26,7 +26,7 @@ const touchPointer = matchMedia('(pointer: coarse)');
 const scrollbarWidth = () => touchPointer.matches ? 6 : 8;
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
-let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
+let widthMode = 'viewport', columnLimit = 500, columnAlignment = 1, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
 let terminalSelection, mouseReporting = false;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
@@ -119,7 +119,7 @@ function size() {
     if (stopped || !term || !fit || !host.clientWidth || !host.clientHeight) return;
     const gutter = scrollbarWidth();
     if (term.options.overviewRuler.width !== gutter) term.options.overviewRuler = { ...term.options.overviewRuler, width: gutter };
-    const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${devicePixelRatio}:${gutter}`;
+    const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${columnAlignment}:${devicePixelRatio}:${gutter}`;
     if (key !== layoutKey || !fittedSize) {
       term.options.fontSize = fontSize;
       fitFont();
@@ -131,7 +131,8 @@ function size() {
         fitFont();
         proposed = fit.proposeDimensions(); if (!proposed) return;
       }
-      fittedSize = { cols: Math.max(2, Math.min(widthMode === 'scale' ? columnLimit : 500, proposed.cols)), rows: Math.max(1, Math.min(200, proposed.rows)), fontSize: term.options.fontSize };
+      const cols = Math.max(2, Math.min(widthMode === 'scale' ? columnLimit : 500, proposed.cols));
+      fittedSize = { cols: Math.max(2, Math.floor(cols / columnAlignment) * columnAlignment), rows: Math.max(1, Math.min(200, proposed.rows)), fontSize: term.options.fontSize };
       layoutKey = key;
     }
     const { cols, rows } = fittedSize;
@@ -378,6 +379,8 @@ function attachSocket(current) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return retire(current);
     if (value.type === 'ready') {
       if (ready) return retire(current);
+      if (value.columnAlignment !== undefined && ![1, 2].includes(value.columnAlignment)) return retire(current);
+      columnAlignment = value.columnAlignment ?? 1;
       clearTimeout(connectingTimer); connectingTimer = undefined;
       ready = true; historyStyles = value.historyStyles === true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
       if (current.direct) directIssue = '';

@@ -23,6 +23,12 @@ HISTORY_ROWS = 10000
 HISTORY_SCAN_BYTES = 32 * 1024 * 1024
 
 
+def column_alignment(version):
+    # tmux 2.6 can keep half a wide cell when old output is narrowed to an odd
+    # width. Advertise an even grid without replacing the live task's server.
+    return 2 if re.fullmatch(r'2\.6[a-z]?', version) else 1
+
+
 def history_snapshot(socket, pane, styled=False, limit=HISTORY_BYTES):
     """Read only a fixed pane, retaining a bounded tail without a disk log."""
     alternate = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'],
@@ -238,11 +244,12 @@ def main():
     master, slave = os.openpty()
     tty = os.ttyname(slave)
     dimensions = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', session,
-                                 '#{pane_width} #{pane_height} #{status}'], stdout=subprocess.PIPE,
+                                 '#{pane_width} #{pane_height} #{status} #{version}'], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, check=True, timeout=1).stdout
     if len(dimensions) > 64:
         raise ValueError('invalid initial geometry')
-    cols_text, rows_text, status_lines = dimensions.decode().split()
+    cols_text, rows_text, status_lines, version = dimensions.decode().split()
+    alignment = column_alignment(version)
     cols, rows = int(cols_text), int(rows_text)
     rows += 1 if status_lines == 'on' else int(status_lines) if status_lines.isdecimal() else 0
     if not (2 <= cols <= 4096 and 1 <= rows <= 4096):
@@ -283,7 +290,7 @@ def main():
             if child.poll() is not None or time.monotonic() >= deadline:
                 raise ValueError('terminal target unavailable')
             time.sleep(0.03)
-        emit({'type': 'ready'})
+        emit({'type': 'ready', 'columnAlignment': alignment})
         last_id = 0
         last_width = None
         width_at = 0

@@ -17,6 +17,14 @@ terminal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(terminal)
 
 
+class TerminalCapabilitiesTests(unittest.TestCase):
+    def test_even_columns_are_only_requested_for_tmux_26(self):
+        for version in ['2.6', '2.6a']:
+            self.assertEqual(terminal.column_alignment(version), 2)
+        for version in ['2.5', '2.7', '3.4', '3.6a', '', 'invalid']:
+            self.assertEqual(terminal.column_alignment(version), 1)
+
+
 @unittest.skipUnless(shutil.which('tmux'), 'requires tmux')
 class TerminalHistoryTests(unittest.TestCase):
     @classmethod
