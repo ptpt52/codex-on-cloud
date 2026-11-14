@@ -93,6 +93,21 @@ async function readHistory(signal) {
   }
   throw new Error('历史超过 1 MiB 上限');
 }
+function fitFont() {
+  // xterm measures its base row from a Latin W. A CJK fallback font can have
+  // a taller line box, especially with small Android monospace fonts.
+  const screen = host.querySelector('.xterm-screen');
+  const base = screen?.getBoundingClientRect().height / term.rows / term.options.lineHeight;
+  if (!(base > 0)) return;
+  const probe = document.createElement('span');
+  Object.assign(probe.style, { position: 'absolute', top: '0', left: '0', visibility: 'hidden', pointerEvents: 'none', whiteSpace: 'pre',
+    fontFamily: term.options.fontFamily, fontSize: `${term.options.fontSize}px`, lineHeight: 'normal' });
+  probe.textContent = 'MWgj这是中文字符，全角标点。'; host.appendChild(probe);
+  let height = probe.getBoundingClientRect().height;
+  probe.style.fontWeight = 'bold'; height = Math.max(height, probe.getBoundingClientRect().height);
+  probe.remove();
+  term.options.lineHeight = Math.max(1, Math.min(2, Math.ceil((height + 1) / base * 1000) / 1000));
+}
 function size() {
   cancelAnimationFrame(layout);
   if (stopped) return;
@@ -106,11 +121,13 @@ function size() {
     const key = `${host.clientWidth}:${host.clientHeight}:${fontSize}:${widthMode}:${columnLimit}:${devicePixelRatio}:${gutter}`;
     if (key !== layoutKey || !fittedSize) {
       term.options.fontSize = fontSize;
+      fitFont();
       let proposed = fit.proposeDimensions(); if (!proposed) return;
       // Enlarge the actual font instead of stretching a canvas: selection,
       // pointer coordinates, IME and the equal-width grid keep working.
       if (widthMode === 'scale' && proposed.cols > columnLimit) {
         term.options.fontSize = Math.round(Math.min(fontSize * 4, fontSize * (proposed.cols + 1) / (columnLimit + 1)) * 10) / 10;
+        fitFont();
         proposed = fit.proposeDimensions(); if (!proposed) return;
       }
       fittedSize = { cols: Math.max(2, Math.min(widthMode === 'scale' ? columnLimit : 500, proposed.cols)), rows: Math.max(1, Math.min(200, proposed.rows)), fontSize: term.options.fontSize };
