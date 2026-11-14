@@ -143,12 +143,11 @@ async function installBinaries({ caddyFile, frpsFile } = {}) {
   for (const name of ['node', 'caddy', 'frps']) { await chown(join(ROOT, 'bin', name), 0, 0); await chmod(join(ROOT, 'bin', name), 0o755); }
 }
 
-async function copyApplication(beforeActivate = async () => {}) {
-  const app = join(ROOT, 'app'), previous = join(ROOT, 'app.previous'), next = join(ROOT, 'app.next-' + process.pid);
-  await rm(next, { recursive: true, force: true }); await mkdir(next, { recursive: true, mode: 0o755 });
+export async function copyApplicationFiles(next) {
   await cp(join(project, 'selfhost'), join(next, 'selfhost'), { recursive: true, force: true, dereference: false });
-  await mkdir(join(next, 'panel'), { recursive: true, mode: 0o755 });
+  await mkdir(join(next, 'panel', 'public'), { recursive: true, mode: 0o755 });
   for (const file of ['auth.mjs', 'login-identity.mjs', 'rtc-network.mjs']) await cp(join(project, 'panel', file), join(next, 'panel', file), { force: true });
+  await cp(join(project, 'panel', 'public', 'rtc-address.js'), join(next, 'panel', 'public', 'rtc-address.js'), { force: true });
   await mkdir(join(next, 'scripts'), { recursive: true, mode: 0o755 });
   await cp(join(project, 'scripts', 'state-files.mjs'), join(next, 'scripts', 'state-files.mjs'), { force: true });
   await mkdir(join(next, 'native'), { recursive: true, mode: 0o755 });
@@ -156,6 +155,12 @@ async function copyApplication(beforeActivate = async () => {}) {
   await cp(join(project, 'native', 'response-body.mjs'), join(next, 'native', 'response-body.mjs'), { force: true });
   await cp(join(project, 'native', 'file_lock.py'), join(next, 'native', 'file_lock.py'), { force: true });
   await cp(join(project, 'package.json'), join(next, 'package.json'), { force: true });
+}
+
+async function copyApplication(beforeActivate = async () => {}) {
+  const app = join(ROOT, 'app'), previous = join(ROOT, 'app.previous'), next = join(ROOT, 'app.next-' + process.pid);
+  await rm(next, { recursive: true, force: true }); await mkdir(next, { recursive: true, mode: 0o755 });
+  await copyApplicationFiles(next);
   await requiredCommand('chmod', ['-R', 'u=rwX,go=rX', next]); await requiredCommand('chown', ['-R', 'root:root', next]);
   let moved = false;
   try {
