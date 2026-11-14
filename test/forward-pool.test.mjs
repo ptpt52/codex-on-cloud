@@ -74,9 +74,13 @@ test('helper path preference uses repeated RTT samples, keeps its healthy peer d
     const mapping = await rule(app, helper, 22, 22001); clients.push(mapping.ws);
     const transport = await pool(app, helper); clients.push(transport.ws);
     const sdp = ['v=0', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 'a=fingerprint:sha-256 ' + Array(32).fill('AB').join(':'), 'a=candidate:1 1 udp 123 127.0.0.1 40048 typ host', ''].join('\r\n');
-    transport.ws.send(JSON.stringify({ type: 'rtc_offer', id: 1, sdp })); await until(() => !!options);
     await until(() => transport.packets.filter(value => value.type === 'pool-ping').length >= 2);
-    assert.equal(options.prefer(200), true); assert.equal(options.prefer(200), true); assert.equal(options.prefer(200), false);
+    // The offer follows pong 2 on the same ordered socket. Waiting for the
+    // server's offer handler then proves both RTT samples were processed.
+    transport.ws.send(JSON.stringify({ type: 'rtc_offer', id: 1, sdp })); await until(() => !!options);
+    // Keep the degraded path slower than the bounded loopback samples even
+    // when other integration tests briefly stall this process.
+    assert.equal(options.prefer(20000), true); assert.equal(options.prefer(20000), true); assert.equal(options.prefer(20000), false);
     for (let i = 0; i < 10; i++) assert.equal(options.prefer(0), false, 'cooldown prevents route oscillation');
     transport.ws.terminate(); await until(() => options.prefer(0));
     assert.equal(destroyed, 0); assert.equal(app.vncConnections, 0); assert.deepEqual(app.inputCalls, []);

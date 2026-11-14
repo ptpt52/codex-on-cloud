@@ -61,6 +61,9 @@ try {
   if (mode !== 'blocked') assert.equal(result.bytes, 262144);
   console.log(`✓ actual isolated Linux SNAT: ${mode === 'go' ? 'Go/Pion helper' : mode === 'browser' ? 'Chrome/werift' : 'UDP-blocked Chrome'}; ${result.bytes || 0} encrypted bytes; ${requests} STUN queries`);
 } finally {
+  // A final rtc_status can arrive after the Go worker has reported success.
+  // Stop relaying before ending stdin; cleanup must not write to ended pipes.
+  server?.listeners.clear(); client?.listeners.clear();
   for (const child of children) child.stdin.end();
   await Promise.all(children.map(child => new Promise(resolve => {
     if (child.exitCode !== null) return resolve();
