@@ -1,6 +1,6 @@
 // One in-memory xterm buffer: at most 20,000 history rows and 500 columns.
 // Local scrolling never sends input. Program paging is an explicit opt-in.
-import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
+import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, historyText, historyMatchRanges, wrapHistoryRows, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
 // Keep the fixed controls across reconnects even while their toolbar belongs
 // to the outer sidebar. Never adopt the terminal host or its text buffer.
@@ -107,7 +107,16 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function selectedText() {
     const selection = window.getSelection();
-    if (archiveOpen && selection?.rangeCount && selection.rangeCount <= 8 && archive.contains(selection.anchorNode) && archive.contains(selection.focusNode)) return selection.toString();
+    if (archiveOpen && selection?.rangeCount && selection.rangeCount <= 8 && archive.contains(selection.anchorNode) && archive.contains(selection.focusNode)) {
+      let text = '';
+      for (let index = 0; index < selection.rangeCount; index++) {
+        const range = selection.getRangeAt(index), prefix = range.cloneRange();
+        prefix.selectNodeContents(archive); prefix.setEnd(range.startContainer, range.startOffset);
+        const start = prefix.cloneContents().textContent.length, length = range.cloneContents().textContent.length;
+        text += historyText(view.parsed, start, start + length);
+      }
+      return text;
+    }
     return !archiveOpen && term.hasSelection() ? term.getSelection() : '';
   }
   function updateTools() {
@@ -158,7 +167,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     const found = findHistoryMatches(view?.text || '', query.value); matches = found.matches; limited = found.limited;
     if (view) {
       const top = archive.scrollTop, left = archive.scrollLeft;
-      groups = renderHistoryRuns(archive, view.parsed, matches, grid); archiveSimplified = view.parsed.simplified || grid.limited;
+      groups = renderHistoryRuns(archive, view.parsed, historyMatchRanges(view.parsed, matches), grid); archiveSimplified = view.parsed.simplified || grid.limited;
       archive.scrollTop = top; archive.scrollLeft = left;
       if (!view.parsed.runs.length) archive.textContent = '当前没有可回看的终端历史';
     } else groups = [];
@@ -170,7 +179,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function freezeLocal() {
     const parsed = captureHistoryBuffer(term);
-    view = { parsed, text: parsed.runs.map(run => run.text).join('') }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
+    view = { parsed, text: historyText(parsed) }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
     archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy(); search();
     const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; update();
   }
@@ -246,8 +255,9 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       const value = await read(controller.signal);
       if (disposed || loading !== controller || controller.signal.aborted) return;
       clearCopy(); archiveStyled = value.styled === true; archiveLocal = false;
-      const parsed = parseHistoryStyles(value.text || '', archiveStyled);
-      view = { parsed, text: parsed.runs.map(run => run.text).join('') }; archiveSimplified = parsed.simplified; search();
+      let parsed = parseHistoryStyles(value.text || '', archiveStyled);
+      if (value.joined) parsed = wrapHistoryRows(parsed, value.cols, point => term._core.unicodeService.wcwidth(point));
+      view = { parsed, text: historyText(parsed) }; archiveSimplified = parsed.simplified; search();
       archiveAlternate = value.alternate; archiveTruncated = value.truncated;
       archiveOpen = true; archive.hidden = false; updateTools();
       // Start a few rows above the latest view. A fixed two-screen jump used
@@ -345,6 +355,10 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(retryCopy, 'click', () => { void copyFromWindow(); });
   listen(manual, 'cancel', event => { event.preventDefault(); dismissCopy(); });
   listen(document, 'selectionchange', updateTools);
+  listen(archive, 'copy', event => {
+    const text = selectedText();
+    if (text && event.clipboardData) { event.preventDefault(); event.clipboardData.setData('text/plain', text); }
+  });
   listen(host, 'wheel', event => {
     if (event.ctrlKey || event.metaKey || !event.deltaY) return;
     if (archiveOpen) {

@@ -552,6 +552,12 @@ test('real Bash long Chinese paragraphs have identical visible lines in live out
       expect(Math.abs(saved.chars[index].y - live.chars[index].y)).toBeLessThanOrEqual(1);
     }
     await page.screenshot({ path: info.outputPath('bash-chinese-history.png') });
+    // Copy the real fetched snapshot across its physical CJK wraps.
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true,
+      value: { writeText: async text => { window.copiedJoinedHistory = text; } } }));
+    await frame.locator('#history-tools-toggle').click();
+    await page.locator('#history-copy-all').click();
+    expect(await frame.evaluate(() => window.copiedJoinedHistory)).toContain(paragraph);
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token);
   } finally {
     await app?.close(); for (const child of clients) child.kill('SIGTERM');

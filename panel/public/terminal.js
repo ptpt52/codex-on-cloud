@@ -89,7 +89,7 @@ async function readHistory(signal) {
     if (performance.now() >= deadline) throw new Error('历史读取超时，未自动重试');
     const value = await historyChunk(offset, signal, deadline - performance.now()); if (signal.aborted) throw new Error('历史读取已取消');
     text += decoder.decode(value.bytes, { stream: !value.done }); offset = value.next;
-    if (value.done) return { text, styled: value.styled === true, alternate: value.alternate, truncated: value.truncated };
+    if (value.done) return { text, styled: value.styled === true, alternate: value.alternate, truncated: value.truncated, joined: value.joined === true, cols: value.cols };
   }
   throw new Error('历史超过 1 MiB 上限');
 }
@@ -412,6 +412,7 @@ function attachSocket(current) {
       let bytes; try { bytes = Uint8Array.from(atob(value.data), char => char.charCodeAt(0)); } catch { return retire(current); }
       if (bytes.length > HISTORY_CHUNK || value.offset !== historyPending.offset || value.next !== value.offset + bytes.length || value.next > HISTORY_BYTES || typeof value.done !== 'boolean' || (!value.done && (bytes.length !== HISTORY_CHUNK || value.next === HISTORY_BYTES)) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return retire(current);
       if ((value.styled === true) !== historyPending.styled || (value.styled !== undefined && typeof value.styled !== 'boolean')) return retire(current);
+      if (value.joined !== undefined && (value.joined !== true || !Number.isInteger(value.cols) || value.cols < 2 || value.cols > 4096)) return retire(current);
       finishHistory(null, { ...value, bytes }); return;
     }
     if (value.type === 'output' && ready && typeof value.data === 'string' && value.data.length <= 11000) {

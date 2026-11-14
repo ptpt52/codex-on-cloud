@@ -79,3 +79,22 @@ class TerminalHistoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'scan limit'):
                 terminal.history_snapshot(self.socket, self.pane)
         self.assertEqual(self.run_tmux('display-message', '-p', '-t', self.pane, '#{pane_dead}').stdout.strip(), '0')
+
+    def test_joined_snapshot_keeps_wrapped_commands_and_real_newlines(self):
+        source = 'WRAPPED-' + 'ABC中文123' * 20
+        script = 'import time; print(' + repr(source + '\nHARD\nBREAK') + ', flush=True); time.sleep(30)'
+        self.run_tmux('new-session', '-d', '-s', 'wrapped', '-x', '20', '-y', '8', shlex.join([sys.executable, '-c', script]))
+        try:
+            deadline = time.monotonic() + 3
+            while 'BREAK' not in self.run_tmux('capture-pane', '-p', '-t', 'wrapped').stdout:
+                if time.monotonic() >= deadline:
+                    self.fail('wrapped output deadline')
+                time.sleep(0.01)
+            pane = self.run_tmux('display-message', '-p', '-t', 'wrapped', '#{pane_id}').stdout.strip()
+            physical, _, _ = terminal.history_snapshot(self.socket, pane)
+            logical, _, _ = terminal.history_snapshot(self.socket, pane, joined=True)
+            self.assertNotIn(source, physical.decode())
+            self.assertIn(source, logical.decode())
+            self.assertIn('\nHARD\nBREAK', '\n'.join(row.rstrip() for row in logical.decode().split('\n')))
+        finally:
+            self.run_tmux('kill-session', '-t', '=wrapped', check=False)

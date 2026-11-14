@@ -87,6 +87,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
         if (value.ok !== true) { send({ type: 'history', id, ok: false }); continue; }
         if (typeof value.data !== 'string' || value.data.length > 11000 || value.offset !== request.offset || !Number.isSafeInteger(value.next) || value.next < value.offset || value.next > request.limit || value.next - value.offset > HISTORY_CHUNK || Buffer.from(value.data, 'base64').length !== value.next - value.offset || typeof value.done !== 'boolean' || (!value.done && (value.next - value.offset !== HISTORY_CHUNK || value.next === request.limit)) || typeof value.alternate !== 'boolean' || typeof value.truncated !== 'boolean') return close();
         if ((value.styled === true) !== request.styled || (value.styled !== undefined && typeof value.styled !== 'boolean')) return close();
+        if (value.joined !== undefined && (value.joined !== true || !Number.isInteger(value.cols) || value.cols < 2 || value.cols > 4096)) return close();
         send({ ...value, id, styled: request.styled });
       } else if (value.type === 'result' && requests.has(value.id)) {
         const clientId = requests.get(value.id); requests.delete(value.id);

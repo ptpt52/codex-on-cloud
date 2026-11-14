@@ -130,11 +130,11 @@ def column_alignment(version):
     return 2 if re.fullmatch(r'2\.6[a-z]?', version) else 1
 
 
-def history_snapshot(socket, pane, styled=False, limit=HISTORY_BYTES):
+def history_snapshot(socket, pane, styled=False, limit=HISTORY_BYTES, joined=False):
     """Read only a fixed pane, retaining a bounded tail without a disk log."""
     alternate = subprocess.run(['tmux', '-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1).stdout.strip() == b'1'
-    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-' + str(HISTORY_ROWS)] + (['-e'] if styled else []),
+    child = subprocess.Popen(['tmux', '-S', socket, 'capture-pane', '-p', '-t', pane, '-S', '-' + str(HISTORY_ROWS)] + (['-e'] if styled else []) + (['-J'] if joined else []),
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     chunks = collections.deque()
     retained = 0
@@ -376,6 +376,7 @@ def main():
     history_truncated = False
     history_styled = False
     history_limit = HISTORY_BYTES
+    history_cols = 80
     viewport_layout = False
     standby = False
 
@@ -479,7 +480,10 @@ def main():
                             raise ValueError('invalid history format')
                         try:
                             if offset == 0:
-                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0], styled, limit)
+                                history_cols = int(width_query(socket, ['display-message', '-p', '-t', token.split(':', 1)[0], '#{pane_width}']).strip())
+                                if not 2 <= history_cols <= 4096:
+                                    raise ValueError('invalid history width')
+                                history, history_alternate, history_truncated = history_snapshot(socket, token.split(':', 1)[0], styled, limit, joined=True)
                                 history_styled = styled
                                 history_limit = limit
                                 history_offset = 0
@@ -492,7 +496,7 @@ def main():
                             history_at = time.monotonic()
                             emit({'type': 'history', 'id': ident, 'offset': offset, 'data': base64.b64encode(data).decode(),
                                   'next': history_offset, 'done': history_offset == len(history),
-                                  'alternate': history_alternate, 'truncated': history_truncated, 'styled': history_styled, 'ok': True})
+                                  'alternate': history_alternate, 'truncated': history_truncated, 'styled': history_styled, 'joined': True, 'cols': history_cols, 'ok': True})
                             if history_offset == len(history):
                                 history = b''
                         except (ValueError, OSError, subprocess.SubprocessError):

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
+import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, historyText, historyMatchRanges, wrapHistoryRows, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
 
 const text = value => value.runs.map(run => run.text).join('');
 test('history styling preserves literal Unicode, spaces, indentation and line endings', () => {
@@ -63,6 +63,17 @@ test('history find bounds query length and match count without regular expressio
   assert.equal(findHistoryMatches('a'.repeat(128), 'a'.repeat(10000)).matches.length, 1);
   assert.equal(findHistoryMatches('(a+)+$', '(a+)+$').matches.length, 1);
   assert.throws(() => findHistoryMatches('x'.repeat(HISTORY_TEXT_LIMIT + 1), 'x'), RangeError);
+});
+
+test('history searches and copies logical lines while displaying soft-wrapped rows', () => {
+  const original = 'ABC  中文123456\nHARD\nBREAK';
+  const parsed = wrapHistoryRows(parseHistoryStyles(original), 6, point => point >= 0x4e00 ? 2 : 1);
+  assert.equal(historyText(parsed), original);
+  assert.equal(text(parsed), 'ABC  \n中文12\n3456\nHARD\nBREAK');
+  const matches = historyMatchRanges(parsed, findHistoryMatches(historyText(parsed), '文123').matches);
+  assert.equal(text(parsed).slice(matches[0].start, matches[0].end), '文12\n3');
+  assert.equal(historyText(parsed, matches[0].start, matches[0].end), '文123');
+  assert.deepEqual(findHistoryMatches(historyText(parsed), 'HARDBREAK').matches, []);
 });
 
 test('local history capture retains the reading window, colors and byte bounds using public buffer cells', () => {

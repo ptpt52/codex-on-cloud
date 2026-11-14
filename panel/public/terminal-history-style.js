@@ -139,12 +139,17 @@ export function findHistoryMatches(text, query) {
   return { matches, limited: false };
 }
 export function captureHistoryBuffer(term) {
-  const buffer = term.buffer.active, encoder = new TextEncoder(), rows = [], older = [], parsed = { runs: [], simplified: false };
+  const buffer = term.buffer.active, encoder = new TextEncoder(), rows = [], older = [], parsed = { runs: [], simplified: false, softBreaks: [] };
   const plainStyle = css(defaults());
   let bytes = 0, truncated = false;
   const first = Math.min(buffer.viewportY, buffer.length - 1), last = Math.min(buffer.length - 1, first + MAX_HISTORY_ROWS + 199);
   function row(index, prepend = false) {
-    const line = buffer.getLine(index), text = line?.translateToString(true, 0, term.cols).slice(0, HISTORY_TEXT_LIMIT) || '';
+    const line = buffer.getLine(index), wraps = index + 1 < buffer.length && buffer.getLine(index + 1)?.isWrapped;
+    let end = Math.min(line?.length || 0, term.cols);
+    // Keep real spaces inside a wrapped command, excluding unused filler
+    // before a wide character which had to move to the next row.
+    if (wraps) while (end && line.getCell(end - 1)?.getWidth() && !line.getCell(end - 1)?.getChars()) end--;
+    const text = line?.translateToString(!wraps, 0, end).slice(0, HISTORY_TEXT_LIMIT) || '';
     const length = encoder.encode(text).length + 1;
     if (bytes + length > HISTORY_TEXT_LIMIT) { truncated = true; return false; }
     bytes += length; (prepend ? older : rows).push({ index, text }); return true;
@@ -153,6 +158,7 @@ export function captureHistoryBuffer(term) {
   for (let index = first - 1; index >= 0; index--) if (!row(index, true)) break;
   rows.unshift(...older.reverse());
   const cell = buffer.getNullCell();
+  let offset = 0;
   for (let index = 0; index < rows.length; index++) {
     const source = rows[index], line = buffer.getLine(source.index); let length = 0, runText = '', runKey, runStyle;
     const flush = () => { appendRun(parsed, runText, runStyle); runText = ''; };
@@ -179,10 +185,73 @@ export function captureHistoryBuffer(term) {
       runText += chars;
     }
     flush();
-    if (index < rows.length - 1) appendRun(parsed, '\n', plainStyle);
+    offset += source.text.length;
+    if (index < rows.length - 1) {
+      if (buffer.getLine(rows[index + 1].index)?.isWrapped) parsed.softBreaks.push(offset);
+      appendRun(parsed, '\n', plainStyle); offset++;
+    }
   }
   return { ...parsed, truncated: truncated || rows[0]?.index > 0 || rows.at(-1)?.index < buffer.length - 1,
     viewportRow: Math.max(0, first - (rows[0]?.index || 0)) };
+}
+// Physical row breaks are for display only. Search, clipboard and downloads
+// retain hard newlines while joining soft wraps, with no second text buffer.
+export function historyText(parsed, start = 0, end = Infinity) {
+  const text = parsed.runs.map(run => run.text).join(''); end = Math.min(end, text.length);
+  let cursor = start, result = '';
+  for (const point of parsed.softBreaks || []) {
+    if (point < start) continue;
+    if (point >= end) break;
+    result += text.slice(cursor, point); cursor = point + 1;
+  }
+  return result + text.slice(cursor, end);
+}
+export function historyMatchRanges(parsed, matches) {
+  const breaks = parsed.softBreaks || [];
+  const visual = (offset, inclusive) => {
+    let low = 0, high = breaks.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1, logical = breaks[middle] - middle;
+      if (logical < offset || (inclusive && logical === offset)) low = middle + 1; else high = middle;
+    }
+    return offset + low;
+  };
+  return matches.map(match => ({ start: visual(match.start, true), end: visual(match.end, false) }));
+}
+export function wrapHistoryRows(parsed, cols, wcwidth) {
+  const result = { runs: [], simplified: parsed.simplified, softBreaks: [] };
+  // capture-pane -J retains the last row's empty padding. Match ordinary
+  // capture-pane's trimmed line endings before placing the joined text.
+  const source = parsed.runs.map(run => run.text).join(''), padding = [], pattern = / +(?=\n|$)/g;
+  let found;
+  while ((found = pattern.exec(source))) {
+    if (padding.length >= MAX_HISTORY_ROWS + 200) { result.simplified = true; break; }
+    padding.push([found.index, found.index + found[0].length]);
+  }
+  let column = 0, offset = 0, sourceOffset = 0, paddingIndex = 0;
+  for (const run of parsed.runs) {
+    let text = '';
+    for (const char of run.text) {
+      while (paddingIndex < padding.length && padding[paddingIndex][1] <= sourceOffset) paddingIndex++;
+      const skip = paddingIndex < padding.length && sourceOffset >= padding[paddingIndex][0];
+      sourceOffset += char.length;
+      if (skip) continue;
+      const width = wcwidth(char.codePointAt(0));
+      if (char === '\n' || char === '\r') column = 0;
+      else if (width > 0) {
+        if (column + width > cols) {
+          if (result.softBreaks.length >= MAX_HISTORY_ROWS + 200) {
+            result.simplified = true;
+          } else { result.softBreaks.push(offset); text += '\n'; offset++; }
+          column = 0;
+        }
+        column += width;
+      }
+      text += char; offset += char.length;
+    }
+    appendRun(result, text, run.style);
+  }
+  return result;
 }
 // Match the pinned xterm 6 DOM renderer's column widths and font variants.
 // A proportional CJK fallback otherwise packs a pre more tightly than xterm.
