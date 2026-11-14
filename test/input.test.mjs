@@ -38,7 +38,7 @@ test('delayed paste, Enter and terminal requests are rejected after takeover, lo
   for (const scenario of ['takeover', 'logout', 'expiry', 'reclaim']) {
     const app = await fixture({ sessionMs: 60000 });
     try {
-      for (const [path, body] of [['/api/paste', { text: 'mock only', target: 'terminal' }], ['/api/key', { key: 'Enter' }], ['/api/terminal', {}]]) {
+      for (const [path, body] of [['/api/paste', { text: 'mock only', target: 'terminal' }], ['/api/edit', { text: 'never edited', erase: 1, target: 'focused', focus: { window: '123', target: 'terminal' } }], ['/api/key', { key: 'Enter' }], ['/api/terminal', {}]]) {
         await app.login(); assert.equal((await app.claim()).status, 200);
         const pending = await delayed(app, path, body);
         try {
@@ -91,7 +91,7 @@ test('desktop maintenance blocks HTTP input and VNC upgrades, then allows explic
   assert.equal((await app.request('/api/desktop/terminal-display', { method: 'POST', body: { action: 'font', revision: view.revision } })).status, 200);
   await started.promise;
   assert.equal((await (await app.request('/api/state')).json()).controls.maintenance, true);
-  for (const [path, body] of [['/api/paste', { text: 'never sent' }], ['/api/key', { key: 'Enter' }], ['/api/terminal', {}]]) {
+  for (const [path, body] of [['/api/paste', { text: 'never sent' }], ['/api/edit', { text: 'never edited', erase: 1, target: 'focused', focus: { window: '123', target: 'terminal' } }], ['/api/key', { key: 'Enter' }], ['/api/terminal', {}]]) {
     const response = await app.request(path, { method: 'POST', body });
     assert.equal(response.status, 409); assert.equal((await response.json()).outcome, 'rejected');
   }
@@ -222,4 +222,24 @@ test('shortcut catalog uses fixed argv, preserves newline versus Enter and refus
     assert.throws(() => validateInput({ action: 'key', key }));
     await assert.rejects(executeInput({ action: 'key', key }, {}, async () => assert.fail('invalid key executed')));
   }
+});
+
+test('desktop edits are bounded, require the prior focus receipt, and execute deletion plus paste as one fixed action', async () => {
+  const focus = { window: '123', target: 'terminal' };
+  const value = validateInput({ action: 'edit', text: '输入', erase: 2, target: 'focused', focus }), calls = [];
+  const receipt = await executeInput(value, {}, async (...args) => calls.push(args), async text => calls.push(['clipboard', text]), async () => focus);
+  assert.deepEqual(receipt, { focus });
+  assert.deepEqual(calls.map(value => value.slice(0, 2)), [['clipboard', '输入'], ['xdotool', ['key', '--clearmodifiers', '--delay', '0', 'BackSpace', 'BackSpace', 'ctrl+shift+v']]]);
+  const deleted = []; await executeInput({ ...value, text: '' }, {}, async (...args) => deleted.push(args), assert.fail, async () => focus);
+  assert.deepEqual(deleted[0][1], ['key', '--clearmodifiers', '--delay', '0', 'BackSpace', 'BackSpace']);
+  for (const change of [{ erase: 513 }, { erase: -1 }, { erase: 1.5 }, { focus: null }, { target: 'terminal' }, { terminalId: 'main' }]) assert.throws(() => validateInput({ ...value, ...change }));
+});
+
+test('focus changes reject a desktop edit before deletion, including a change while preparing the clipboard', async () => {
+  const focus = { window: '123', target: 'terminal' }, body = { action: 'edit', text: '修订', erase: 2, target: 'focused', focus };
+  const calls = []; let query = 0;
+  await assert.rejects(executeInput(body, {}, async () => calls.push('key'), async () => calls.push('clipboard'), async () => ({ ...focus, window: '456' })), error => error.outcome === 'rejected');
+  assert.deepEqual(calls, []);
+  await assert.rejects(executeInput(body, {}, async () => calls.push('key'), async () => calls.push('clipboard'), async () => query++ ? { ...focus, window: '456' } : focus), error => error.outcome === 'rejected');
+  assert.deepEqual(calls, ['clipboard']);
 });

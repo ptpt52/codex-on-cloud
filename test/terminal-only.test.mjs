@@ -8,7 +8,7 @@ test('terminal-only capabilities preserve auth, ownership and CSRF while refusin
   assert.equal((await app.request('/api/desktop/settings')).status,401);
   assert.equal((await app.request('/desktop/index.html')).status,401);
   await app.login();assert.equal((await(await app.request('/api/me')).json()).mode,'terminal');await app.claim();
-  for(const path of ['/api/desktop/viewport','/api/desktop/resolution','/api/desktop/apply','/api/desktop/rtc','/api/paste','/api/key','/api/clipboard/read']){
+  for(const path of ['/api/desktop/viewport','/api/desktop/resolution','/api/desktop/apply','/api/desktop/rtc','/api/paste','/api/edit','/api/key','/api/clipboard/read']){
     assert.equal((await app.request(path,{method:'POST',body:{},headers:{'x-csrf-token':''}})).status,403);
     assert.equal((await app.request(path,{method:'POST',body:{}})).status,501);
   }

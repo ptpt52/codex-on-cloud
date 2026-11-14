@@ -129,7 +129,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
       if (path !== '/transfer-directory' || Object.keys(body).length) throw Error('unsupported fixture action');
       managementStats.folderOpens++; return { ok: true };
     },
-    performInput: async value => { inputCalls.push(value); await inputHook?.(value); },
+    performInput: async value => { inputCalls.push(value); const receipt = await inputHook?.(value); return receipt || (value.target === 'focused' ? { focus: { window: '123', target: 'terminal' } } : undefined); },
     readClipboard: async source => {
       clipboardReads.push(source);
       await clipboardHook?.(source);

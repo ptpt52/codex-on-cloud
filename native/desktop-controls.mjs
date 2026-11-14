@@ -138,9 +138,9 @@ export function createDesktopControls(config, dependencies = {}) {
     lastInput = current;
     try {
       if (value.terminalId) await terminals.focus(value);
-      await performInput(value);
+      const receipt = await performInput(value);
       current.status = 'success';
-      return { ok: true, outcome: 'success', id: current.id };
+      return { ok: true, outcome: 'success', id: current.id, ...(receipt?.focus ? { focus: receipt.focus } : {}) };
     } catch (cause) {
       if (cause.outcome === 'rejected') { current.status = 'rejected'; throw cause; }
       current.status = 'unknown';

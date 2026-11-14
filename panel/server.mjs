@@ -414,7 +414,7 @@ export async function createPanel(config) {
       if (!access.screenEnabled) throw new HttpError(409, '请先开启屏幕锁');
       lockDesktop(); return reply(res, 200, { ok: true, access: accessState(req, requireSession(req)) });
     }
-    if (config.mode === 'terminal' && (path.startsWith('/api/desktop/') && path !== '/api/desktop/claim' || ['/api/paste', '/api/key', '/api/terminal', '/api/clipboard/read'].includes(path))) {
+    if (config.mode === 'terminal' && (path.startsWith('/api/desktop/') && path !== '/api/desktop/claim' || ['/api/paste', '/api/edit', '/api/key', '/api/terminal', '/api/clipboard/read'].includes(path))) {
       if (req.method === 'GET') requireSession(req); else requireOwner(req);
       throw new HttpError(501, '纯终端部署未启用桌面操作');
     }
@@ -599,7 +599,7 @@ export async function createPanel(config) {
               if (!valid()) throw new HttpError(409, '页面控制权已变化，请重新读取');
               return result;
             }
-            if (!['paste', 'key'].includes(action)) throw new HttpError(400, '不支持的直连动作');
+            if (!['paste', 'edit', 'key'].includes(action)) throw new HttpError(400, '不支持的直连动作');
             let input;
             try { input = validateInput({ ...body, action }); } catch (error) { throw new HttpError(400, error.message); }
             try { return await managerRequest(config, '/input', input); }
@@ -624,7 +624,7 @@ export async function createPanel(config) {
       }
       finally { rtcBusy = false; }
     }
-    if (['/api/paste', '/api/key', '/api/terminal'].includes(path) && req.method === 'POST') {
+    if (['/api/paste', '/api/edit', '/api/key', '/api/terminal'].includes(path) && req.method === 'POST') {
       const body = await ownedBody(req);
       if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，本次输入未发送');
       try { return reply(res, 200, await managerRequest(config, '/input', { ...body, action: path.slice('/api/'.length) })); }

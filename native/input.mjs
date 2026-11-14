@@ -18,6 +18,12 @@ const KEYS = Object.freeze({ Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Back
 export function validateInput(body) {
   if (body?.action === 'terminal') return { action: 'terminal' };
   if (body?.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) return { action: 'key', key: body.key, ...terminalTarget(body) };
+  if (body?.action === 'edit') {
+    if (typeof body.text !== 'string' || body.text.includes('\0') || Buffer.byteLength(body.text) > 32768 || !Number.isInteger(body.erase) || body.erase < 0 || body.erase > 512 || !body.erase && !body.text) throw Error('文字改写参数无效');
+    const focus = body.focus;
+    if (body.target !== 'focused' || body.terminalId !== undefined || body.terminalToken !== undefined || !focus || typeof focus.window !== 'string' || !/^[1-9]\d{0,9}$/.test(focus.window) || Number(focus.window) > 0xffffffff || !['terminal', 'application'].includes(focus.target)) throw Error('文字改写需要已确认的原输入窗口');
+    return { action: 'edit', text: body.text, erase: body.erase, target: 'focused', focus: { window: focus.window, target: focus.target } };
+  }
   if (body?.action === 'paste') {
     if (typeof body.text !== 'string' || !body.text || body.text.includes('\0') || Buffer.byteLength(body.text) > 32 * 1024) throw new Error('请输入不超过 32 KiB 的文字');
     const target = body.target ?? 'terminal';
@@ -67,15 +73,21 @@ export async function focusedInputTarget(run) {
   throw new Error('无法识别输入窗口');
 }
 export async function executeInput(body, env, run = runInputCommand, writeClipboard, focus) {
-  if (body.action === 'paste') {
+  if (body.action === 'paste' || body.action === 'edit') {
     const destination = body.target === 'focused' ? await focus() : null;
-    if (writeClipboard) await writeClipboard(body.text);
-    else await run('xclip', ['-selection', 'clipboard', '-i'], { env, input: body.text });
+    const changed = () => { throw Object.assign(new Error('桌面输入窗口已变化，文字未修改'), { status: 409, outcome: 'rejected' }); };
+    if (body.action === 'edit' && (!destination || destination.window !== body.focus.window || destination.target !== body.focus.target)) changed();
+    if (body.text) {
+      if (writeClipboard) await writeClipboard(body.text);
+      else await run('xclip', ['-selection', 'clipboard', '-i'], { env, input: body.text });
+    }
     if (destination) {
       const after = await focus();
-      if (after.window !== destination.window || after.target !== destination.target) throw Object.assign(new Error('桌面输入窗口已变化，文字未粘贴'), { status: 409, outcome: 'rejected' });
+      if (after.window !== destination.window || after.target !== destination.target) changed();
     }
-    await run('xdotool', ['key', '--clearmodifiers', (destination?.target || body.target) === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v'], { env });
+    const pasteKey = (destination?.target || body.target) === 'terminal' ? 'ctrl+shift+v' : 'ctrl+v';
+    await run('xdotool', ['key', '--clearmodifiers', ...(body.action === 'edit' ? ['--delay', '0', ...Array(body.erase).fill('BackSpace'), ...(body.text ? [pasteKey] : [])] : [pasteKey])], { env });
+    return destination ? { focus: destination } : undefined;
   } else if (body.action === 'key' && typeof body.key === 'string' && Object.hasOwn(KEYS, body.key)) {
     const keys = KEYS[body.key];
     await run('xdotool', ['key', '--clearmodifiers', ...(Array.isArray(keys) ? ['--delay', body.key === 'Escape Escape' ? '80' : '0', ...keys] : [keys])], { env });

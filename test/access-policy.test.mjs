@@ -102,7 +102,7 @@ test('locked sessions reject all terminal and desktop APIs and retain CSRF check
   const app=await fixture();t.after(()=>app.close());const admin=await client(app);await admin.claim();
   await admin.request('/api/security/screen-lock',{enabled:true,password:'test-screen-password'});
   for(const path of ['/api/terminals','/api/desktop/settings','/api/forward/agents','/api/security'])assert.equal((await admin.request(path)).status,423,path);
-  for(const path of ['/api/paste','/api/key','/api/terminal','/api/clipboard/read','/api/desktop/rtc','/api/terminal/rtc','/api/terminal/history','/api/desktop/settings','/api/desktop/resolution','/api/desktop/viewport','/api/forward/agents','/api/forward/agents/rule/remove','/api/security/screen-lock'])assert.equal((await admin.request(path,{})).status,423,path);
+  for(const path of ['/api/paste','/api/edit','/api/key','/api/terminal','/api/clipboard/read','/api/desktop/rtc','/api/terminal/rtc','/api/terminal/history','/api/desktop/settings','/api/desktop/resolution','/api/desktop/viewport','/api/forward/agents','/api/forward/agents/rule/remove','/api/security/screen-lock'])assert.equal((await admin.request(path,{})).status,423,path);
   const invalid=await fetch(app.config.origin+'/api/files/no.txt',{method:'PUT',headers:{origin:app.config.origin,cookie:admin.cookie,'content-type':'application/octet-stream'},body:'no'});assert.equal(invalid.status,403);
   assert.equal((await admin.request('/api/desktop/transfer-directory',{})).status,423);
   assert.equal(app.managementStats.folderOpens,0);
