@@ -51,6 +51,74 @@ test('CJK fallback ink fits inside each live row at small fonts, including wrapp
   } finally { await app.close(); }
 });
 
+test('history preserves live CJK column positions, styles and row spacing through font changes and search', async ({ page }, info) => {
+  const text = 'Aa0123 中文字符，fi |END|', source = `\x1b[1;31m${text}\x1b[0m\n\x1b[3;32m${text}\x1b[0m\n`;
+  const app = await fixture({ mode: 'terminal', terminalHistory: source });
+  try {
+    const frame = await fallbackTerminal(page, app), connections = app.terminalConnections;
+    app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('\x1b[?1049h\x1b[2J\x1b[H' + source.replaceAll('\n', '\r\n')).toString('base64') }) + '\n');
+    await expect(frame.locator('.xterm-rows')).toContainText('|END|');
+    // Read text-node ranges, not span borders: span borders can fit while
+    // font fallback glyphs still extend past their assigned cell positions.
+    const positions = async archive => frame.evaluate(({ archive, text }) => {
+      const root = document.querySelector(archive ? '#history-archive' : '.xterm-rows'), walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const targets = [0, text.indexOf('中'), text.indexOf('，'), text.indexOf('|END|')], result = [];
+      let node, offset = 0;
+      while ((node = walker.nextNode()) && offset < text.length) {
+        for (const target of targets) if (target >= offset && target < offset + node.length) {
+          const range = document.createRange(); range.setStart(node, target - offset); range.setEnd(node, target - offset + 1);
+          const box = range.getBoundingClientRect(), css = getComputedStyle(node.parentElement);
+          result.push({ target, x: box.left - root.getBoundingClientRect().left + root.scrollLeft, y: box.top - root.getBoundingClientRect().top + root.scrollTop,
+            color: css.color, weight: css.fontWeight, style: css.fontStyle });
+        }
+        offset += node.length;
+      }
+      return result;
+    }, { archive, text });
+    let live = await positions(false);
+    await frame.locator('#history-up').click(); await expect(frame.locator('#history-archive')).toBeVisible();
+    for (let step = 0; step < 2; step++) {
+      if (step) {
+        await openTools(page); await page.locator('#terminal-font-up').click(); await closePanels(page);
+        live = await positions(false);
+      }
+      const snapshot = await positions(true); expect(snapshot).toHaveLength(live.length);
+      for (let n = 0; n < live.length; n++) {
+        expect(Math.abs(snapshot[n].x - live[n].x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(snapshot[n].y - live[n].y)).toBeLessThanOrEqual(1);
+        expect([snapshot[n].color, snapshot[n].weight, snapshot[n].style]).toEqual([live[n].color, live[n].weight, live[n].style]);
+      }
+    }
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-query').fill('中文');
+    await expect(frame.locator('#history-archive mark')).toHaveCount(2);
+    await expect(frame.locator('#history-archive')).toHaveText(text + '\n' + text + '\n');
+    await page.screenshot({ path: info.outputPath('cjk-history-grid.png') });
+    expect(app.terminalConnections).toBe(connections); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('dense mixed-width history bounds its layout nodes while retaining all text', async ({ page }) => {
+  const text = 'a中'.repeat(50000), app = await fixture({ mode: 'terminal', terminalHistory: text });
+  try {
+    const frame = await fallbackTerminal(page, app);
+    app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('\x1b[?1049h').toString('base64') }) + '\n');
+    await frame.locator('#history-up').click(); await expect(frame.locator('#history-archive')).toBeVisible();
+    const result = await frame.locator('#history-archive').evaluate((element, expected) => ({
+      same: element.textContent === expected, nodes: element.querySelectorAll('.history-grid-run').length,
+    }), text);
+    expect(result.same).toBe(true); expect(result.nodes).toBeLessThanOrEqual(16384);
+    expect(result.nodes).toBeGreaterThan(0); await expect(frame.locator('#history-state')).toContainText('部分样式已简化');
+    const blank = await frame.evaluate(async () => {
+      const { createHistoryGrid, parseHistoryStyles, renderHistoryRuns } = await import('/terminal/terminal-history-style.js');
+      const pre = document.createElement('pre'), text = '\n'.repeat(100000);
+      renderHistoryRuns(pre, parseHistoryStyles(text), [], createHistoryGrid(window.adjustTerminal, document.getElementById('terminal')));
+      return { same: pre.textContent === text, nodes: pre.firstChild?.childNodes.length };
+    });
+    expect(blank.same).toBe(true); expect(blank.nodes).toBeLessThan(100);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('mobile text adjustment cannot grow terminal glyphs beyond their grid after font changes', async ({ page }, info) => {
   test.skip(!info.project.use.isMobile, 'Mobile browser text adjustment');
   const app = await fixture({ mode: 'terminal' });

@@ -560,7 +560,7 @@ test('real isolated tmux and Python PTY retain ordinary output across reconnect 
     await page.waitForTimeout(1100);
     await frame.evaluate(() => window.historyTerminal.scrollToTop()); await wheel(frame, -100);
     await expect(frame.locator('#history-archive')).toBeVisible(); await expect(frame.locator('#history-archive')).toContainText('LARGE-HISTORY-1000');
-    const clippedStyle = frame.locator('#history-archive span').filter({ hasText: 'LARGE-HISTORY-1000' });
+    const clippedStyle = frame.locator('#history-archive > span').filter({ hasText: 'LARGE-HISTORY-1000' });
     expect(await clippedStyle.evaluate(element => getComputedStyle(element).color)).toBe('rgb(239, 41, 41)');
     expect(await frame.locator('#history-archive').textContent()).not.toContain('\x1b');
     expect(Buffer.byteLength(await frame.locator('#history-archive').textContent())).toBeLessThanOrEqual(1048576);

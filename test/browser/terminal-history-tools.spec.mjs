@@ -217,7 +217,7 @@ test('opening local find freezes already received rows and styles without sendin
     await frame.evaluate(() => window.toolsTerminal.scrollLines(-10)); const dimensions = await size(frame);
     await frame.locator('#history-tools-toggle').click(); const archive = frame.locator('#history-archive');
     await expect(archive).toContainText('COLORED-LOCAL'); await expect(page.locator('#history-find-state')).toHaveAttribute('aria-label', /本地已加载内容/);
-    const colored = archive.locator('span').filter({ hasText: /^COLORED-LOCAL$/ });
+    const colored = archive.locator(':scope > span').filter({ hasText: /^COLORED-LOCAL$/ });
     expect(await colored.evaluate(element => getComputedStyle(element).color)).toBe('rgb(239, 41, 41)');
     await page.locator('#history-query').fill('LOCAL-12'); await expect(page.locator('#history-find-state')).toContainText('/11');
     const before = await archive.textContent(), position = await archive.evaluate(element => element.scrollTop);

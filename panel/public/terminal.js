@@ -139,6 +139,7 @@ function size() {
     host.style.setProperty('--terminal-font-family', term.options.fontFamily);
     const screenHeight = host.querySelector('.xterm-screen')?.getBoundingClientRect().height;
     if (screenHeight > 0) host.style.setProperty('--terminal-line-height', `${screenHeight / rows}px`);
+    history?.resize();
     const sizeKey = `${cols}:${rows}:${widthMode}`;
     if (ready && !standby && lastSize !== sizeKey && send({ type: 'resize', cols, rows, geometry: true, viewport: widthMode === 'viewport' })) lastSize = sizeKey;
     const reportKey = `${cols}:${rows}:${fittedSize.fontSize}`;

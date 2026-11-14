@@ -1,6 +1,6 @@
 // One in-memory xterm buffer: at most 20,000 history rows and 500 columns.
 // Local scrolling never sends input. Program paging is an explicit opt-in.
-import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
+import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
 // Keep the fixed controls across reconnects even while their toolbar belongs
 // to the outer sidebar. Never adopt the terminal host or its text buffer.
@@ -17,6 +17,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   const manual = historyControl('history-copy-manual'), copyText = historyControl('history-copy-text');
   const retryCopy = historyControl('history-copy-retry'), copyResult = historyControl('history-copy-result');
   const archive = document.createElement('pre'); archive.id = 'history-archive'; archive.hidden = true; archive.tabIndex = 0; archive.setAttribute('aria-label', '远端历史快照'); host.appendChild(archive);
+  const grid = createHistoryGrid(term, host);
   const newer = document.createElement('button'); newer.id = 'history-new-output'; newer.type = 'button'; newer.hidden = true;
   newer.textContent = '有新输出 · 回到实时'; host.appendChild(newer);
   let program = false, reviewing = false, inputPaused = false, disposed = false, pixels = 0, lastPage = -Infinity, gesture, loading, notice = '';
@@ -157,7 +158,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     const found = findHistoryMatches(view?.text || '', query.value); matches = found.matches; limited = found.limited;
     if (view) {
       const top = archive.scrollTop, left = archive.scrollLeft;
-      groups = renderHistoryRuns(archive, view.parsed, matches); archive.scrollTop = top; archive.scrollLeft = left;
+      groups = renderHistoryRuns(archive, view.parsed, matches, grid); archiveSimplified = view.parsed.simplified || grid.limited;
+      archive.scrollTop = top; archive.scrollLeft = left;
       if (!view.parsed.runs.length) archive.textContent = '当前没有可回看的终端历史';
     } else groups = [];
     current = -1; setCurrent(matches.length ? 0 : -1, navigate && !!query.value);
@@ -387,6 +389,6 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+  return { update, resize() { if (grid.update() && view) search(); }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }
