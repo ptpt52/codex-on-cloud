@@ -62,6 +62,24 @@ test.describe('touch terminal right edge', () => {
   });
 });
 
+test('desktop scrollbar shares the outer gutter and the grid fills the available width', async ({ page }, info) => {
+  test.skip(info.project.use.isMobile, 'Desktop mouse scrollbar');
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    await prepare(page, 'viewport'); const frame = await login(page, app);
+    for (const width of [1024, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect.poll(() => frame.evaluate(() => {
+        const screen = document.querySelector('.xterm-screen').getBoundingClientRect(), t = window.widthTerminal;
+        const bar = document.querySelector('.xterm-scrollable-element > .scrollbar.vertical').getBoundingClientRect();
+        const cell = screen.width / t.cols, right = innerWidth - screen.right;
+        return bar.width === 8 && bar.left >= screen.right - .5 && right >= 7.5 && right - screen.left <= cell + 1;
+      })).toBe(true);
+    }
+    expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('viewport layout keeps the chosen font and reflows columns from phone to wide screen without reconnect or input', async ({ page }) => {
   const app = await fixture({ webrtc: true, terminalMaxCols: 122 });
   try {

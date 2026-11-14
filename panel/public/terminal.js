@@ -21,10 +21,9 @@ let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
 let terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken'), rtcConfig;
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 const touchPointer = matchMedia('(pointer: coarse)');
-// On touch screens the six-pixel scrollbar lives in the eight-pixel right
-// gutter (terminal.css leaves two pixels outside it), rather than taking a
-// second, empty gutter out of the text grid.
-const scrollbarWidth = () => touchPointer.matches ? 6 : 14;
+// The scrollbar occupies the eight-pixel outer gutter instead of adding an
+// extra blank strip beside the text grid. Touch leaves two pixels outside it.
+const scrollbarWidth = () => touchPointer.matches ? 6 : 8;
 let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequence = 0, pending = null, layout = 0, retryDelay = 1000;
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, layoutKey = '', fittedSize;
