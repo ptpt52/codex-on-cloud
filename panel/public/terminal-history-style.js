@@ -189,31 +189,40 @@ export function captureHistoryBuffer(term) {
 // Unicode table. Browser coverage also checks this pinned internal adapter.
 export function createHistoryGrid(term, host) {
   const unicode = term._core?.unicodeService;
-  const context = host.ownerDocument.createElement('canvas').getContext('2d');
+  const measure = host.ownerDocument.createElement('span');
+  measure.setAttribute('aria-hidden', 'true');
+  Object.assign(measure.style, { position: 'absolute', left: '0', top: '0', visibility: 'hidden', pointerEvents: 'none',
+    whiteSpace: 'pre', fontKerning: 'none' });
   const cache = new Map();
   // Bound added DOM, glyph cache and synchronous measurements independently
-  // of the existing 1 MiB text / 4,096 style-run limits. Text is never dropped.
-  let key = '', cell = 0, family = '', size = 0, nodes = 0, measurements = 0, limited = false;
+  // of the existing 1 MiB text / 4,096 style-run limits. One temporary measure
+  // node is removed after every render, including errors. Text is never dropped.
+  let key = '', cell = 0, nodes = 0, measurements = 0, limited = false;
   function update() {
     const width = host.querySelector('.xterm-screen')?.getBoundingClientRect().width;
     const next = `${width / term.cols}:${term.options.fontSize}:${term.options.fontFamily}`;
     if (next === key) return false;
-    key = next; cell = width / term.cols; size = term.options.fontSize; family = term.options.fontFamily; cache.clear(); return true;
+    key = next; cell = width / term.cols;
+    measure.style.fontSize = `${term.options.fontSize}px`; measure.style.fontFamily = term.options.fontFamily;
+    cache.clear(); return true;
   }
   function spacing(text, columns, style) {
     const key = `${style.fontWeight}:${style.fontStyle}:${text}`;
     if (cache.has(key)) return cache.get(key);
     if (measurements >= 2048) { limited = true; return 0; }
     measurements++;
-    context.font = `${style.fontStyle} ${style.fontWeight} ${size}px ${family}`;
-    // xterm's DOM width cache measures 32 copies and rounds to CSS pixels.
-    const value = columns * cell - Math.round(context.measureText(text.repeat(32)).width) / 32;
+    measure.style.fontWeight = style.fontWeight; measure.style.fontStyle = style.fontStyle;
+    // Use the same DOM measurement as xterm's WidthCache, including inherited
+    // CJK punctuation spacing. Canvas can compress repeated fullwidth marks
+    // differently, adding half a cell after every comma in a long paragraph.
+    measure.textContent = text.repeat(32);
+    const value = columns * cell - measure.offsetWidth / 32;
     if (cache.size >= 512) cache.delete(cache.keys().next().value);
     cache.set(key, value); return value;
   }
   function append(parent, text, style) {
-    if (!(cell > 0) || !context || typeof unicode?.wcwidth !== 'function' || nodes >= 16384) {
-      limited ||= !context || typeof unicode?.wcwidth !== 'function' || nodes >= 16384; parent.append(text); return;
+    if (!(cell > 0) || typeof unicode?.wcwidth !== 'function' || nodes >= 16384) {
+      limited ||= typeof unicode?.wcwidth !== 'function' || nodes >= 16384; parent.append(text); return;
     }
     let cluster = '', columns = 0, group = '', controls = '', groupSpacing, consumed = 0;
     const flush = () => {
@@ -245,27 +254,30 @@ export function createHistoryGrid(term, host) {
     }
     emit(); flush(); if (controls) parent.append(controls);
   }
-  return { update, append, begin() { update(); nodes = measurements = 0; limited = false; }, get limited() { return limited; } };
+  return { update, append, begin() { update(); nodes = measurements = 0; limited = false; host.appendChild(measure); },
+    end() { measure.remove(); measure.textContent = ''; }, get limited() { return limited; } };
 }
 export function renderHistoryRuns(element, parsed, matches = [], grid) {
   const fragment = element.ownerDocument.createDocumentFragment(), groups = matches.map(() => []);
   grid?.begin();
   const append = (parent, text, style) => grid ? grid.append(parent, text, style) : parent.append(text);
   let offset = 0, matchIndex = 0;
-  for (const run of parsed.runs) {
-    const span = element.ownerDocument.createElement('span');
-    Object.assign(span.style, run.style);
-    let cursor = 0;
-    while (cursor < run.text.length) {
-      while (matchIndex < matches.length && matches[matchIndex].end <= offset + cursor) matchIndex++;
-      const match = matches[matchIndex], end = offset + run.text.length;
-      if (!match || match.start >= end) { append(span, run.text.slice(cursor), run.style); break; }
-      if (offset + cursor < match.start) { append(span, run.text.slice(cursor, match.start - offset), run.style); cursor = match.start - offset; }
-      const boundary = Math.min(end, match.end) - offset, mark = element.ownerDocument.createElement('mark');
-      append(mark, run.text.slice(cursor, boundary), run.style); mark.dataset.match = String(matchIndex); groups[matchIndex].push(mark); span.appendChild(mark); cursor = boundary;
+  try {
+    for (const run of parsed.runs) {
+      const span = element.ownerDocument.createElement('span');
+      Object.assign(span.style, run.style);
+      let cursor = 0;
+      while (cursor < run.text.length) {
+        while (matchIndex < matches.length && matches[matchIndex].end <= offset + cursor) matchIndex++;
+        const match = matches[matchIndex], end = offset + run.text.length;
+        if (!match || match.start >= end) { append(span, run.text.slice(cursor), run.style); break; }
+        if (offset + cursor < match.start) { append(span, run.text.slice(cursor, match.start - offset), run.style); cursor = match.start - offset; }
+        const boundary = Math.min(end, match.end) - offset, mark = element.ownerDocument.createElement('mark');
+        append(mark, run.text.slice(cursor, boundary), run.style); mark.dataset.match = String(matchIndex); groups[matchIndex].push(mark); span.appendChild(mark); cursor = boundary;
+      }
+      offset += run.text.length; fragment.appendChild(span);
     }
-    offset += run.text.length; fragment.appendChild(span);
-  }
+  } finally { grid?.end(); }
   element.replaceChildren(fragment);
   return groups;
 }

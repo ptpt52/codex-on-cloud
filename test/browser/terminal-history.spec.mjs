@@ -463,6 +463,64 @@ test('returning live cancels a snapshot without resending it and late replies ca
   } finally { release(); await app.close(); }
 });
 
+test('real Bash long Chinese paragraphs have identical visible lines in live output and fetched history', async ({ page }, info) => {
+  test.setTimeout(45000);
+  const directory = await mkdtemp(join(tmpdir(), 'codex-cjk-lines-')), socket = join(directory, 'tmux.sock'), clients = [];
+  const paragraph = '这是中文测试，用来检查长段中文文字在实时终端与历史记录中的每行字数和换行位置是否完全一致。'.repeat(12);
+  const path = join(directory, 'paragraph.txt'), start = 'CJK-PARAGRAPH-START', end = 'CJK-PARAGRAPH-END';
+  const env = { ...process.env, HOME: directory, HISTFILE: '/dev/null', TERM: 'xterm-256color', DEPLOY_MODE: 'terminal',
+    PATH: `${resolve('data/host-tools/usr/bin')}:${process.env.PATH}`, CJK_TEST_FILE: path };
+  delete env.TMUX; delete env.DISPLAY; delete env.XAUTHORITY;
+  const exec = promisify(execFile), run = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 65536 });
+  let app;
+  try {
+    await writeFile(path, `${start}\n${paragraph}\n${end}\n`);
+    await exec('tmux', ['-f', resolve('desktop/tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex', '-x', '80', '-y', '24', 'bash --noprofile --norc'], { env, timeout: 3000 });
+    const token = (await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim();
+    app = await fixture({ mode: 'terminal' });
+    app.config.terminalLaunch = () => {
+      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token, '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+      clients.push(child); return child;
+    };
+    await prepare(page); const frame = await login(page, app);
+    const cols = await frame.evaluate(() => window.historyTerminal.cols);
+    await expect.poll(async () => Number((await run(['display-message', '-p', '-t', 'codex', '#{pane_width}'])).stdout.trim())).toBe(cols);
+    await run(['send-keys', '-t', token.split(':')[0], '-l', 'printf "\\033[2J\\033[H"; cat "$CJK_TEST_FILE"']);
+    await run(['send-keys', '-t', token.split(':')[0], 'Enter']);
+    await expect(frame.locator('.xterm-rows')).toContainText(end);
+    const capture = archive => frame.evaluate(({ archive, start, end }) => {
+      const root = document.querySelector(archive ? '#history-archive' : '.xterm-rows'), origin = root.getBoundingClientRect();
+      const rows = archive ? root.textContent.split('\n') : [...root.children].map(row => row.textContent);
+      const first = rows.findIndex(row => row.trim() === start), last = rows.findIndex((row, index) => index > first && row.trim() === end);
+      const lines = rows.slice(first + 1, last).map(row => row.trimEnd());
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), chars = []; let node;
+      while (node = walker.nextNode()) for (let index = 0; index < node.length; index++) {
+        const char = node.textContent[index]; if (char.codePointAt(0) < 0x3000) continue;
+        const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
+        const box = range.getBoundingClientRect(); chars.push({ char, x: box.left - origin.left + root.scrollLeft, y: box.top - origin.top + root.scrollTop });
+      }
+      const y = chars[0]?.y || 0;
+      return { first, last, lines, chars: chars.map(char => ({ ...char, y: char.y - y })) };
+    }, { archive, start, end });
+    const live = await capture(false); expect(live.first).toBeGreaterThanOrEqual(0); expect(live.last).toBeGreaterThan(live.first);
+    expect(live.lines.join('')).toBe(paragraph);
+    await page.screenshot({ path: info.outputPath('bash-chinese-live.png') });
+    await frame.evaluate(() => window.historyTerminal.scrollToTop()); await frame.locator('#history-up').click();
+    await expect(frame.locator('#history-archive')).toBeVisible();
+    const saved = await capture(true); expect(saved.lines).toEqual(live.lines); expect(saved.chars).toHaveLength(live.chars.length);
+    for (let index = 0; index < saved.chars.length; index++) {
+      expect(saved.chars[index].char).toBe(live.chars[index].char);
+      expect(Math.abs(saved.chars[index].x - live.chars[index].x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(saved.chars[index].y - live.chars[index].y)).toBeLessThanOrEqual(1);
+    }
+    await page.screenshot({ path: info.outputPath('bash-chinese-history.png') });
+    expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token);
+  } finally {
+    await app?.close(); for (const child of clients) child.kill('SIGTERM');
+    await run(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('real isolated tmux and Python PTY retain ordinary output across reconnect and page a full-screen receiver without replay', async ({ page }, info) => {
   test.setTimeout(60000);
   const directory = await mkdtemp(join(tmpdir(), 'codex-browser-history-')), socket = join(directory, 'tmux.sock'), clients = [];

@@ -124,6 +124,57 @@ test('history preserves live CJK column positions, styles and row spacing throug
   } finally { await app.close(); }
 });
 
+test('long Chinese paragraphs retain every live line boundary and glyph position in local and remote history', async ({ page }) => {
+  const text = '这是中文测试，用来检查长段中文文字在实时终端与历史记录中的每行字数和换行位置是否完全一致。'.repeat(12);
+  let source = '';
+  const app = await fixture({ mode: 'terminal', terminalHistory: () => source });
+  try {
+    const frame = await fallbackTerminal(page, app, '"Noto Sans Mono CJK SC", "WenQuanYi Zen Hei Mono", monospace');
+    const live = await frame.evaluate(async text => {
+      const t = window.adjustTerminal;
+      await new Promise(resolve => t.write('\x1b[2J\x1b[H' + text, resolve));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const root = document.querySelector('.xterm-rows'), origin = root.getBoundingClientRect(), chars = [];
+      for (const row of root.children) {
+        const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT); let node;
+        while (node = walker.nextNode()) for (let index = 0; index < node.length; index++) {
+          const char = node.textContent[index]; if (/\s/.test(char)) continue;
+          const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
+          const box = range.getBoundingClientRect(); chars.push({ char, x: box.left - origin.left, y: box.top - origin.top });
+        }
+      }
+      return { chars, lines: Array.from({ length: t.rows }, (_, index) => t.buffer.active.getLine(t.buffer.active.baseY + index).translateToString(true)) };
+    }, text);
+    expect(live.chars.map(value => value.char).join('')).toBe(text);
+    source = live.lines.join('\n');
+    // Search freezes the actual local buffer; Up fetches the same wrapped
+    // rows through the remote-history protocol. Check both rendering paths.
+    await frame.locator('#history-tools-toggle').click(); await page.locator('#history-query').fill('中文');
+    const archive = frame.locator('#history-archive'); await expect(archive).toBeVisible();
+    const check = async () => {
+      const saved = await archive.evaluate(root => {
+        const origin = root.getBoundingClientRect(), walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), chars = [];
+        let node;
+        while (node = walker.nextNode()) for (let index = 0; index < node.length; index++) {
+          const char = node.textContent[index]; if (/\s/.test(char)) continue;
+          const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
+          const box = range.getBoundingClientRect(); chars.push({ char, x: box.left - origin.left + root.scrollLeft, y: box.top - origin.top + root.scrollTop });
+        }
+        return chars;
+      });
+      expect(saved).toHaveLength(live.chars.length);
+      for (let index = 0; index < saved.length; index++) {
+        expect(saved[index].char).toBe(live.chars[index].char);
+        expect(Math.abs(saved[index].x - live.chars[index].x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(saved[index].y - live.chars[index].y)).toBeLessThanOrEqual(1);
+      }
+    };
+    await check(); await frame.locator('#history-tools-toggle').click(); await frame.locator('#history-latest').click();
+    await frame.locator('#history-up').click(); await expect(archive).toBeVisible(); await check();
+    expect(app.terminalHistoryReads).toHaveLength(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('dense mixed-width history bounds its layout nodes while retaining all text', async ({ page }) => {
   const text = 'a中'.repeat(50000), app = await fixture({ mode: 'terminal', terminalHistory: text });
   try {
