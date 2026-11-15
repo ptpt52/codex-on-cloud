@@ -28,6 +28,30 @@ async function prepared(page, mode) {
   return { frame, source };
 }
 
+for (const direct of [false, true]) for (const mode of ['desktop', 'terminal']) test(`${mode} ${direct ? 'direct' : 'relay'}: changing standby preference preserves the active renderer and connection`, async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, seamless: true, webrtc: direct, fastConnect: direct });
+  let activeOffers = 0;
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/${mode}/rtc`) activeOffers++; });
+  try {
+    await login(page, app, { mode, modeStandby: false });
+    if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    const frame = page.frames().find(frame => frame.url().endsWith(source));
+    const renderer = frame.locator(mode === 'desktop' ? '#screen canvas' : '.xterm-screen');
+    await renderer.evaluate(element => { window.originalActiveRenderer = element; });
+    const count = mode === 'desktop' ? app.vncConnections : app.terminalConnections, offers = activeOffers;
+    await openTools(page);
+    for (let n = 0; n < 2; n++) {
+      await page.locator('#mode-standby').check(); await prepared(page, mode === 'desktop' ? 'terminal' : 'desktop');
+      await page.locator('#mode-standby').uncheck(); await expect(page.locator('#standby-frame')).toHaveCount(0);
+      expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+      expect(await renderer.evaluate(element => window.originalActiveRenderer === element)).toBe(true);
+      expect(mode === 'desktop' ? app.vncConnections : app.terminalConnections).toBe(count); expect(activeOffers).toBe(offers);
+    }
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 for (const direct of [false, true]) for (const [from, to] of [['main', 'aux1'], ['aux1', 'aux2']]) test(`${direct ? 'direct' : 'relay'}: ${from} to ${to} through desktop task tabs shares retained viewers and confirmed targets`, async ({ page }, info) => {
   test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
   test.setTimeout(45000);

@@ -1015,7 +1015,8 @@ function showLogin(message = '') {
   terminalActions.close();
   renderConnection();
 }
-function standbyEnabled() { return modeStandbyEnabled && displayPreferences.modeStandby && !terminalOnly; }
+function standbyCapable() { return modeStandbyEnabled && !terminalOnly; }
+function standbyEnabled() { return standbyCapable() && displayPreferences.modeStandby; }
 function discardStandby() {
   if (!standbyFrame) return;
   const previous = standbyFrame; standbyFrame = null;
@@ -1115,7 +1116,9 @@ function frameUrl(mode = displayPreferences.mode, epoch = frameEpoch, terminal =
   const ui = document.querySelector('meta[name="ui-revision"]')?.content; if (ui) query.set('ui', ui);
   if (fastConnectEnabled) query.set('fast', '1');
   if (streamProtocolEnabled) query.set('stream', '1');
-  if (standbyEnabled()) query.set('standby', '1');
+  // Negotiate the bounded two-mode capability once. The browser preference
+  // only controls whether the other viewer is retained, not this stream's ID.
+  if (standbyCapable()) query.set('standby', '1');
   if (mode === 'terminal') {
     query.set('terminalId', terminal.id); query.set('terminalToken', terminal.token);
     return entryPath(`/terminal/index.html?${query}`);
@@ -1285,7 +1288,7 @@ function requestConfirmation(kind, key, body) {
     'terminal-open': ['切换远程终端？', '将打开或切换到所选终端，并将输入助手的目标设为该终端。原有任务继续运行。', '确认切换'],
     'terminal-close': ['结束这个终端？', `将结束“${terminalCatalog.find(item => item.id === body?.terminalId)?.name || '所选终端'}”会话及其前台任务，无法恢复。其他终端继续运行。原位置可新开 shell，旧草稿会保留。`, '确认结束终端'],
     'drafts-clear': ['清理已结束终端的旧草稿？', '仅清理身份已失效且当前未在编辑的终端草稿。当前草稿和仍可用终端的草稿会保留。', '确认清理草稿'],
-    mode: [`切换到${body?.mode === 'terminal' ? '网页终端' : '桌面'}？`, '切换后会重新建立连接。当前任务继续运行，输入草稿会保留，已发送的输入不会重发。', '确认切换'],
+    mode: [`切换到${body?.mode === 'terminal' ? '网页终端' : '桌面'}？`, '切换显示视图，连接按需建立或复用。当前任务继续运行，输入草稿会保留，已发送的输入不会重发。', '确认切换'],
   }[kind];
   if (!copy) return;
   confirmation = pending;
@@ -1581,8 +1584,7 @@ function changeMode(mode) {
 $('mode-standby').addEventListener('change', () => {
   if (!modeStandbyEnabled || modeChangeBusy() || confirmation) { renderDisplayControls(); return; }
   const enabled = $('mode-standby').checked;
-  // Opt in on both network paths together; changing the preference never restarts a terminal.
-  stopFrame(); updateDisplayPreferences({ modeStandby: enabled }); openFrame(); renderConnection();
+  updateDisplayPreferences({ modeStandby: enabled }); renderConnection();
 });
 for (const mode of ['desktop', 'terminal']) $(`${mode}-mode`).addEventListener('click', () => {
   if (mode !== displayPreferences.mode) requestConfirmation('mode', null, { from: displayPreferences.mode, mode });
