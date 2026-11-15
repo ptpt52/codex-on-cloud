@@ -1,14 +1,18 @@
 const $ = id => document.getElementById(id), prefix = '/__nodes/';
-let state = null, csrf = '', offset = 0, generation = 0, busy = false, pending = null, loading = false;
+let state = null, csrf = '', offset = 0, generation = 0, busy = false, pending = null, loading = false, lifecycle = 0, suspended = false;
 const controllers = new Set();
+const current = epoch => epoch === lifecycle && !suspended;
 function update() { for (const id of ['refresh', 'previous', 'next', 'create-code']) $(id).disabled = busy || loading; for (const button of document.querySelectorAll('[data-action]')) button.disabled = busy || loading || button.dataset.current === 'true'; }
 function message(value, error = false) { $('status').textContent = value; $('status').classList.toggle('error', error); }
-function loggedOut(note = '') { generation++; for (const controller of controllers) controller.abort(); controllers.clear(); state = null; csrf = ''; busy = loading = false; closeConfirmation(); $('boot-status').hidden = true; $('workspace').hidden = $('logout').hidden = true; $('login').hidden = false; $('code-value').value = ''; $('new-code').hidden = true; $('login-error').textContent = note; }
+function loggedOut(note = '') { lifecycle++; generation++; for (const controller of controllers) controller.abort(); controllers.clear(); state = null; csrf = ''; busy = loading = false; closeConfirmation(); $('boot-status').hidden = true; $('workspace').hidden = $('logout').hidden = true; $('login').hidden = false; $('login-submit').disabled = false; $('code-value').value = ''; $('new-code').hidden = true; $('login-error').textContent = note; }
 async function api(path, { method = 'GET', body, signal } = {}) {
+  const epoch = lifecycle;
+  if (!current(epoch)) throw new DOMException('页面已离开', 'AbortError');
   const controller = new AbortController(); controllers.add(controller); const timer = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(prefix + 'api/' + path, { method, credentials: 'same-origin', redirect: 'error', headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(method === 'GET' ? {} : { 'x-csrf-token': csrf }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
     let value; try { value = await response.json(); } catch { throw Error('响应未确认，请刷新状态核对'); }
+    if (!current(epoch)) throw new DOMException('页面已离开', 'AbortError');
     if (response.status === 401 && path !== 'login') loggedOut('网关登录已过期');
     if (!response.ok) throw Object.assign(Error(value.error || '请求未完成'), { status: response.status });
     return value;
@@ -46,6 +50,7 @@ async function probes(epoch) {
   }));
 }
 async function load(probe = true) {
+  if (suspended) return;
   const epoch = ++generation; loading = true; update();
   try {
     const value = await api('nodes?offset=' + offset); if (epoch !== generation) return;
@@ -63,36 +68,68 @@ function confirm(kind, node) {
   $('confirmation-description').textContent = kind === 'switch' ? '检查就绪后更新默认入口并进入该节点。原机器上的任务继续运行，已发送操作不会重发。' : '只移除网关中的登记，机器上的任务、工作区和 Tunnel 继续保留。';
   $('accept').textContent = kind === 'switch' ? '确认切换' : '确认移除'; $('confirmation').showModal(); $('cancel').focus();
 }
-$('login-form').addEventListener('submit', async event => { event.preventDefault(); if (busy) return; busy = true; $('login-submit').disabled = true; $('login-error').textContent = ''; try { await api('login', { method: 'POST', body: { password: $('password').value } }); $('password').value = ''; offset = 0; await load(false); } catch (error) { $('login-error').textContent = error.message; } finally { busy = false; $('login-submit').disabled = false; update(); if (state) void probes(generation); } });
-$('logout').addEventListener('click', async () => { if (busy) return; busy = true; try { await api('logout', { method: 'POST', body: {} }); loggedOut(); } catch (error) { message(error.message, true); } finally { busy = false; update(); } });
-$('refresh').addEventListener('click', () => { message('正在刷新节点状态…'); void load().then(() => { if (state) message('列表已刷新；状态为最近一次检查结果。'); }); });
+$('login-form').addEventListener('submit', async event => {
+  event.preventDefault(); if (busy || suspended) return; const epoch = lifecycle;
+  busy = true; $('login-submit').disabled = true; $('login-error').textContent = '';
+  try { await api('login', { method: 'POST', body: { password: $('password').value } }); if (!current(epoch)) return; $('password').value = ''; offset = 0; await load(false); }
+  catch (error) { if (current(epoch)) $('login-error').textContent = error.message; }
+  finally { if (current(epoch)) { busy = false; $('login-submit').disabled = false; update(); if (state) void probes(generation); } }
+});
+$('logout').addEventListener('click', async () => {
+  if (busy || suspended) return; const epoch = lifecycle; busy = true;
+  try { await api('logout', { method: 'POST', body: {} }); if (current(epoch)) loggedOut(); }
+  catch (error) { if (current(epoch)) message(error.message, true); }
+  finally { if (current(epoch)) { busy = false; update(); } }
+});
+$('refresh').addEventListener('click', () => { const epoch = lifecycle; message('正在刷新节点状态…'); void load().then(() => { if (current(epoch) && state) message('列表已刷新；状态为最近一次检查结果。'); }); });
 $('previous').addEventListener('click', () => { if (!busy && offset) { offset = Math.max(0, offset - 16); void load(); } });
 $('next').addEventListener('click', () => { if (!busy && state?.next !== null) { offset = state.next; void load(); } });
 $('cancel').addEventListener('click', closeConfirmation); $('confirmation').addEventListener('cancel', event => { event.preventDefault(); closeConfirmation(); });
 $('confirmation').addEventListener('keydown', event => { if (event.key === 'Enter' && document.activeElement !== $('accept')) { event.preventDefault(); closeConfirmation(); } });
 $('accept').addEventListener('click', async () => {
-  const action = pending; if (!action || busy || !state) return; closeConfirmation(); busy = true; generation++; update();
+  const action = pending; if (!action || busy || !state || suspended) return; const epoch = lifecycle; closeConfirmation(); busy = true; generation++; update();
   const operation = [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   try {
-    if (action.kind === 'remove') { await api('nodes/' + action.node.id, { method: 'DELETE', body: { revision: action.revision } }); offset = 0; await load(); message('节点登记已移除，原机器和任务保持。'); }
+    if (action.kind === 'remove') { await api('nodes/' + action.node.id, { method: 'DELETE', body: { revision: action.revision } }); if (!current(epoch)) return; offset = 0; await load(); if (current(epoch)) message('节点登记已移除，原机器和任务保持。'); }
     else {
       message('正在检查目标节点并切换…'); const value = await api('switch', { method: 'POST', body: { nodeId: action.node.id, revision: action.revision, operation } });
+      if (!current(epoch)) return;
       if (value.ok !== true || value.activeId !== action.node.id || value.operation !== operation) throw Error('切换响应未确认');
       location.assign('/');
     }
-  } catch (error) { await load(false); if (state?.lastSwitch?.id === operation && state.activeId === action.node.id) message(`已核对入口是“${action.node.name}”，可点击“进入当前节点”。`); else message(error.status ? error.message : '切换或移除结果未知，请刷新状态核对；不会自动重试。', true); }
-  finally { busy = false; update(); }
+  } catch (error) { if (!current(epoch)) return; await load(false); if (!current(epoch)) return; if (state?.lastSwitch?.id === operation && state.activeId === action.node.id) message(`已核对入口是“${action.node.name}”，可点击“进入当前节点”。`); else message(error.status ? error.message : '切换或移除结果未知，请刷新状态核对；不会自动重试。', true); }
+  finally { if (current(epoch)) { busy = false; update(); } }
 });
 async function loadCodes() {
-  const value = await api('codes'); $('codes').replaceChildren();
+  const epoch = lifecycle, value = await api('codes'); if (!current(epoch)) return; $('codes').replaceChildren();
   for (const code of (value.codes || []).slice(0, 16)) {
     const row = document.createElement('li'), name = document.createElement('span'), button = document.createElement('button'); name.textContent = code.name; button.className = 'secondary'; button.textContent = '撤销'; button.type = 'button';
-    button.addEventListener('click', async () => { button.disabled = true; try { await api('codes/' + code.id, { method: 'DELETE', body: {} }); await loadCodes(); } catch (error) { message(error.message, true); button.disabled = false; } }); row.append(name, button); $('codes').append(row);
+    button.addEventListener('click', async () => { if (!current(epoch)) return; button.disabled = true; try { await api('codes/' + code.id, { method: 'DELETE', body: {} }); if (current(epoch)) await loadCodes(); } catch (error) { if (current(epoch)) { message(error.message, true); button.disabled = false; } } }); row.append(name, button); $('codes').append(row);
   }
 }
-$('enrollment').addEventListener('toggle', () => { if ($('enrollment').open && state) void loadCodes().catch(error => message(error.message, true)); else { $('code-value').value = ''; $('new-code').hidden = true; } });
-$('code-form').addEventListener('submit', async event => { event.preventDefault(); if (busy) return; busy = true; update(); try { const value = await api('codes', { method: 'POST', body: { name: $('code-name').value } }); $('code-value').value = value.code; $('new-code').hidden = false; await loadCodes(); } catch (error) { message(error.message, true); } finally { busy = false; update(); } });
-$('copy-code').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('code-value').value); message('接入码已复制，请仅提供给自己的节点。'); } catch { $('code-value').focus(); $('code-value').select(); message('请手动复制已选中的接入码。'); } });
-window.addEventListener('pagehide', () => { generation++; for (const controller of controllers) controller.abort(); $('code-value').value = ''; $('password').value = ''; });
+$('enrollment').addEventListener('toggle', () => { const epoch = lifecycle; if ($('enrollment').open && state && current(epoch)) void loadCodes().catch(error => { if (current(epoch)) message(error.message, true); }); else { $('code-value').value = ''; $('new-code').hidden = true; } });
+$('code-form').addEventListener('submit', async event => {
+  event.preventDefault(); if (busy || loading || suspended) return; const epoch = lifecycle; busy = true; update();
+  try { const value = await api('codes', { method: 'POST', body: { name: $('code-name').value } }); if (!current(epoch)) return; $('code-value').value = value.code; $('new-code').hidden = false; await loadCodes(); }
+  catch (error) { if (current(epoch)) message(error.message, true); }
+  finally { if (current(epoch)) { busy = false; update(); } }
+});
+$('copy-code').addEventListener('click', async () => { const epoch = lifecycle; try { await navigator.clipboard.writeText($('code-value').value); if (current(epoch)) message('接入码已复制，请仅提供给自己的节点。'); } catch { if (current(epoch)) { $('code-value').focus(); $('code-value').select(); message('请手动复制已选中的接入码。'); } } });
+window.addEventListener('pagehide', () => {
+  suspended = true; lifecycle++; generation++;
+  for (const controller of controllers) controller.abort(); controllers.clear();
+  state = null; csrf = ''; busy = false; loading = true; closeConfirmation();
+  $('login-submit').disabled = false; $('code-value').value = ''; $('password').value = ''; $('new-code').hidden = true;
+  $('enrollment').open = false; $('codes').replaceChildren();
+  $('workspace').hidden = $('logout').hidden = $('login').hidden = true; $('boot-status').hidden = false; update();
+});
+window.addEventListener('pageshow', event => {
+  if (!event.persisted) return;
+  const epoch = lifecycle;
+  suspended = false; message('正在重新核对网关登录与节点状态…');
+  // Restore with reads only. Interrupted switches, removals, logins and
+  // enrollment mutations may already have committed and must never be replayed.
+  void load(false).then(() => { if (current(epoch) && state) message('网关登录与节点状态已重新核对；未重发离开前的操作。'); });
+});
 if (new URLSearchParams(location.search).has('unavailable')) message('当前节点暂不可用，可选择其他已接入机器。', true);
 void load();
