@@ -22,6 +22,7 @@ const tmux = args => exec('tmux', ['-S', join(runtime, 'tmux.sock'), ...args], {
 try {
   for (const path of [bin, home, join(root, 'panel/public')]) await mkdir(path, {recursive:true,mode:0o700});
   for (const folder of ['native', 'desktop']) await cp(resolve(folder), join(root, folder), {recursive:true,filter:path=>!path.includes('__pycache__')});
+  for (const file of ['package.json', 'package-lock.json']) await cp(resolve(file), join(root, file));
   await cp(resolve('panel/public/terminal-slots.js'), join(root, 'panel/public/terminal-slots.js'));
   // A broken interpreter on PATH can fall through to the installed binary.
   // Use a bounded isolated PATH with real dependencies and no x11vnc at all.

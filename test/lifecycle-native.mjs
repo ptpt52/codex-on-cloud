@@ -33,6 +33,7 @@ const clientConfig = { managerSocket: join(runtime, 'manager.sock'), agentSecret
 try {
   for (const part of ['run', 'secrets', 'workspace', 'data/desktop']) await mkdir(join(root, part), { recursive: true });
   for (const part of ['native', 'desktop']) await cp(join(source, part), join(root, part), { recursive: true });
+  for (const part of ['package.json', 'package-lock.json']) await cp(join(source, part), join(root, part));
   // Keep the worker's child alive briefly after its X window closes, as can
   // happen while a loaded CI host reaps xterm. Only the isolated copy is used.
   const terminalHelper = join(root, 'desktop/open-codex-terminal');
