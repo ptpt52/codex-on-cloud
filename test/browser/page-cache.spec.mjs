@@ -123,6 +123,41 @@ test('a late blank navigation from the retired desktop cannot replace its restor
   } finally { await app.close(); }
 });
 
+test('a cached return during an unconfirmed terminal switch replaces only its retired viewer', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true });
+  try {
+    await app.controls.manageTerminals({ action: 'create', name: '缓存切换检查', view: 'terminal' });
+    await page.addInitScript(() => {
+      if (!location.pathname.endsWith('/terminal/index.html')) return;
+      addEventListener('message', event => {
+        if (event.source === parent && event.data?.type === 'codex-panel-request' && event.data.action === 'switch-terminal') {
+          event.stopImmediatePropagation(); window.heldCacheTarget = true;
+        }
+      }, true);
+    });
+    const frame = await setup(page, app, 'terminal');
+    await openInput(page); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await page.locator('#input-terminal').selectOption('aux1');
+    await expect.poll(() => frame.evaluate(() => window.heldCacheTarget)).toBe(true);
+    // Freeze the parent before retiring its child, preserving evidence that
+    // the target switch was pending when the document entered the cache.
+    await page.evaluate(() => {
+      window.retiredCacheFrame = document.querySelector('#desktop-frame');
+      dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      window.retiredCacheFrame.contentWindow.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(await page.locator('#desktop-frame').evaluate(element => element === window.retiredCacheFrame)).toBe(false);
+    await page.evaluate(() => { window.retiredCacheFrame.src = 'about:blank'; });
+    await expect(page.locator('#desktop-frame')).toHaveAttribute('src', /\/terminal\/index\.html/);
+    await expect(page.locator('#paste-button')).toBeEnabled();
+    await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
+    expect((await app.controls.listTerminals()).terminals).toHaveLength(2);
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 for (const mode of ['desktop', 'terminal']) test(`${mode}: cached return cancels unfinished assistant composition without sending or blocking its draft`, async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true, rfbSize: { width: 640, height: 480 } });
   try {

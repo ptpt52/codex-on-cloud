@@ -1989,10 +1989,10 @@ createWorkspaceLifetime(window, { features: [fileWorkbench, clipboardUI], onHide
   pageLeaving = false; draftUnloadApproved = false;
   if (event.persisted && loggedIn) {
     cachedResumePending = true; workspaceInitialized = false;
-    // The old desktop can still commit its queued about:blank navigation in
-    // WebKit. Give the replacement its own browsing context, source and epoch.
-    // xterm retains its element and uses its own persisted-return recovery.
-    if (cachedViewReset || !terminalMode()) stopFrame({ replaceElement: !terminalMode() });
+    // A retired viewer can still commit its queued about:blank navigation in
+    // WebKit. Every required replacement gets a new context, source and epoch.
+    // An uninterrupted xterm retains its own persisted-return recovery.
+    if (cachedViewReset || !terminalMode()) stopFrame({ replaceElement: true });
     cachedViewReset = false; stopPolling(); void poll();
   } else if (loggedIn) workspaceInitialized = true;
   syncScreenLock(); renderConnection(); renderDraftSafety();
