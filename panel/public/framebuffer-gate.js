@@ -20,7 +20,7 @@ export function createFramebufferGate(rfb, messages, { changed = () => {}, faile
   const originals = { rect: rfb._handleRect, update: rfb._framebufferUpdate, continuous: rfb._updateContinuousUpdates, normal: rfb._normalMsg };
   if (Object.values(originals).some(value => typeof value !== 'function') || typeof messages.enableContinuousUpdates !== 'function') throw Error('Unsupported noVNC frame decoder');
   const installation = requests(messages), socket = rfb._sock;
-  let closed = false, initialized = false, standby = false, waiting = false, busy = false, refreshSent = false;
+  let closed = false, initialized = false, painted = false, standby = false, waiting = false, busy = false, refreshSent = false;
   let generation = 0, frameGeneration = 0, frameOpen = false, pixels = false, timer, coverage, painting = false;
   const suppressed = () => initialized && (standby || waiting);
   installation.gates.set(socket, { suppressed });
@@ -34,7 +34,7 @@ export function createFramebufferGate(rfb, messages, { changed = () => {}, faile
     else installation.original.call(messages, socket, true, 0, 0, rfb._fbWidth, rfb._fbHeight);
   }
   function refresh() {
-    if (closed || !waiting || busy || !initialized || refreshSent) return;
+    if (closed || !waiting || busy || !painted || refreshSent) return;
     clearTimeout(timer); timer = setTimeout(fail, FRAME_RESUME_TIMEOUT);
     stopContinuous(); refreshSent = true; coverage = null; painting = false;
     installation.original.call(messages, socket, false, 0, 0, rfb._fbWidth, rfb._fbHeight);
@@ -69,7 +69,13 @@ export function createFramebufferGate(rfb, messages, { changed = () => {}, faile
     const complete = originals.update.call(this);
     if (!complete) return complete;
     frameOpen = false;
-    if (!initialized && pixels) { initialized = true; if (standby || waiting) stopContinuous(); changed(); refresh(); }
+    if (!initialized && pixels) {
+      initialized = true; if (standby || waiting) stopContinuous();
+      void this._display.flush().then(() => {
+        if (closed) return;
+        painted = true; changed(); refresh();
+      }, fail);
+    }
     if (waiting && refreshSent && !busy && !painting && coverage && coverage.count === coverage.width * coverage.height) {
       const version = generation; painting = true;
       void this._display.flush().then(() => {
@@ -94,9 +100,9 @@ export function createFramebufferGate(rfb, messages, { changed = () => {}, faile
     closed = true; generation++; clearTimeout(timer); coverage = null; installation.gates.delete(socket);
     rfb._handleRect = originals.rect; rfb._framebufferUpdate = originals.update; rfb._updateContinuousUpdates = originals.continuous; rfb._normalMsg = originals.normal;
   }
-  function fail() { close(); failed(); }
+  function fail() { if (closed) return; close(); failed(); }
   return {
-    get blocked() { return closed || !initialized || standby || waiting; },
+    get blocked() { return closed || !painted || standby || waiting; },
     setStandby(value, options = {}) {
       if (closed) return;
       const nextBusy = options.busy === true;

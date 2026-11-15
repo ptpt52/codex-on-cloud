@@ -126,7 +126,7 @@ let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalFocusBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false;
-let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
+let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false, cachedResumePending = false, cachedViewReset = false;
 const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $('shortcuts-menu'), list: $('shortcuts-list'),
   available: key => !terminalOnly || key !== 'Ctrl+Shift+V',
   canSend: () => !confirmation && canInput() && !inputBusy && !inputCollapsed(),
@@ -499,7 +499,7 @@ $('tools-fullscreen-button').addEventListener('click', () => { closeWorkspacePan
 for (const id of ['input-keyboard-button', 'assistant-send-button']) $(id).addEventListener('click', () => setInputDirection('send', true));
 renderDisplayControls();
 
-function inputPaused() { return viewportResizing || controlsState.viewportBusy || views.active.paused || maintenancePending || controlsState.maintenance || !controlsState.available; }
+function inputPaused() { return pageLeaving || cachedResumePending || viewportResizing || controlsState.viewportBusy || views.active.paused || maintenancePending || controlsState.maintenance || !controlsState.available; }
 function scheduleViewport(delay = 500) {
   clearTimeout(viewportTimer);
   if (!loggedIn || !owned || !views.active.loaded || !views.active.resizeReady || views.active.state !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
@@ -558,10 +558,10 @@ function canInput(focused = false) {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && views.inputReady() && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !views.active.reviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function canManageTerminals(allowPaused = false) {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && (allowPaused === true || !inputPaused()) && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+  return loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && (allowPaused === true || !inputPaused()) && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function renderInputControls() {
-  $('desktop-frame').inert = terminalFocusBusy;
+  $('desktop-frame').inert = terminalFocusBusy || pageLeaving || cachedResumePending;
   $('gateway-switch-button').hidden = !document.querySelector('meta[name="gateway-entry"]') || permissions.role === 'temporary';
   const disabled = inputBusy || inputComposing || views.active.composing || !canInput();
   for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
@@ -630,7 +630,7 @@ function renderConnection() {
   fileListReader?.revalidate();
   uploadPrompt?.revalidate();
   if (!loggedIn || accessExpired || !navigator.onLine) fileTransferController?.abort();
-  if (workspaceInitialized && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
+  if (workspaceInitialized && !pageLeaving && !cachedResumePending && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
   syncRelayLatency();
   forwardingUI?.update();
   accessUI?.update();
@@ -640,6 +640,7 @@ function renderConnection() {
   if (nodeMismatch) label = '入口已切换';
   else if (accessExpired) label = '访问验证已过期';
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
+  else if (pageLeaving || cachedResumePending) label = '正在核对会话';
   else if (!owned) label = permissions.role === 'temporary' ? '临时访问' : permissions.requiresUnlock ? '屏幕已锁定' : '等待接管';
   else if (desktopReady === false) label = terminalOnly ? '终端后台未就绪' : '桌面未就绪';
   else if (views.active.paused) label = '正在优化连接';
@@ -790,6 +791,7 @@ function toast(message, failure = false) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
 async function api(path, { method = 'GET', body, raw, signal, upload, progress, downloadSize, transferId } = {}) {
+  if (method !== 'GET' && (pageLeaving || cachedResumePending)) throw Object.assign(Error('正在核对返回页面的会话，本次操作未发送'), { outcome: 'rejected' });
   if (path === '/api/terminals' && method === 'POST' && body?.action === 'create' && terminalMode() && views.active.terminalCreateReady && owned && views.active.state === 'connected') {
     return framePanelRequest('create-terminal', { name: body.name, ...(body.terminalId === undefined ? {} : { terminalId: body.terminalId }) }, signal);
   }
@@ -797,11 +799,11 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
     return framePanelRequest('open-terminal', { terminalId: body.terminalId, terminalToken: body.terminalToken }, signal);
   }
   const service = serviceAction(path, method);
-  if (service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
+  if (!cachedResumePending && service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
     try { const value = await serviceLink.request(service, body || {}, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
-  if (method === 'GET' && views.active.panelReady && owned && views.active.state === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {
+  if (!cachedResumePending && method === 'GET' && views.active.panelReady && owned && views.active.state === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {
     const generation = uiGeneration, route = views.active.transport;
     try {
       const value = await framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
@@ -970,6 +972,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  cachedResumePending = cachedViewReset = false;
   finishHintProbe();
   clearConnectionTrace();
   clearInputNotices();
@@ -1026,7 +1029,7 @@ function sendStandbyPreferences() {
     terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting }, location.origin);
 }
 function syncModeStandby() {
-  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || !views.active.loaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
+  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || cachedResumePending || !views.active.loaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
   const mode = terminalMode() ? 'desktop' : 'terminal', target = mode === 'terminal' ? standbyTarget() : null;
   const key = target ? `${target.id}:${target.token}` : '';
   // A parked terminal can attach the next target on its retained stream when
@@ -1093,7 +1096,7 @@ function frameUrl(mode = displayPreferences.mode, epoch = views.active.epoch, te
   return entryPath(`/desktop/index.html?${query}`);
 }
 function openFrame() {
-  if (views.active.loaded || !owned) return;
+  if (views.active.loaded || !owned || pageLeaving || cachedResumePending) return;
   if (terminalMode()) {
     if (terminalSelectionState !== 'ready') return;
     const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
@@ -1106,7 +1109,7 @@ function openFrame() {
   renderConnection();
 }
 async function poll() {
-  if (!loggedIn || accessExpired || pollController || terminalSwitching) return;
+  if (!loggedIn || accessExpired || pageLeaving || pollController || terminalSwitching) return;
   const controller = new AbortController();
   pollController = controller;
   const timeout = setTimeout(() => controller.abort(new Error('网络响应超时，请稍后重试')), 8000);
@@ -1114,6 +1117,12 @@ async function poll() {
   try {
     const state = await api('/api/state', { signal: controller.signal });
     if (!loggedIn || pollController !== controller) return;
+    // Cached returns use HTTPS until authentication, node scope and ownership
+    // have been checked. No viewer or service capability can bypass this gate.
+    if (cachedResumePending) {
+      if (typeof state.mine !== 'boolean' || typeof state.desktop?.ready !== 'boolean' || typeof state.controls?.available !== 'boolean') throw Error('会话状态响应不完整，输入继续暂停');
+      cachedResumePending = false; workspaceInitialized = true;
+    }
     let mine = state.mine;
     if (state.access) permissions = { ...permissions, ...state.access };
     if (!mine && owned && state.claimable === true && !permissions.requiresUnlock && permissions.canClaim) {
@@ -1157,17 +1166,18 @@ async function poll() {
     clearTimeout(timeout);
     if (pollController === controller) {
       pollController = null;
-      if (loggedIn && !accessExpired) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || controlsState.clipboardBusy || controlsState.viewportBusy || maintenancePending ? 800 : 4000);
+      if (loggedIn && !accessExpired && !pageLeaving) pollTimer = setTimeout(poll, controlsState.maintenance || controlsState.inputBusy || controlsState.clipboardBusy || controlsState.viewportBusy || maintenancePending ? 800 : 4000);
     }
   }
 }
 async function claim(lockPassword, signal) {
+  const generation = uiGeneration;
   if (!permissions.canClaim) return;
   if (permissions.requiresUnlock && !lockPassword) { accessUI?.unlock(); return; }
   const restore = !owned;
   const result = await api('/api/desktop/claim', { method: 'POST', body: { viewer, ...(lockPassword ? { lockPassword } : {}) }, signal });
+  if (!loggedIn || generation !== uiGeneration || pageLeaving) return;
   if (result.access) permissions = { ...permissions, ...result.access };
-  if (!loggedIn) return;
   // A successful claim invalidates every state snapshot fetched before it.
   stopPolling();
   owned = true;
@@ -1180,6 +1190,7 @@ async function claim(lockPassword, signal) {
   await poll();
 }
 async function showWorkspace(user) {
+  cachedResumePending = cachedViewReset = false;
   clearConnectionTrace();
   clearInputNotices();
   workspaceInitialized = false; serviceProtocol = user.serviceProtocol === 1 ? 1 : 0;
@@ -1520,7 +1531,7 @@ function syncTerminalView() {
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
-  return !owned || inputBusy || inputComposing || views.active.composing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || views.active.paused || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
+  return pageLeaving || cachedResumePending || !owned || inputBusy || inputComposing || views.active.composing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || views.active.paused || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
 }
 function changeMode(mode) {
   if (terminalOnly && mode !== 'terminal') return;
@@ -1973,7 +1984,7 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && !views.active.paused && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && !views.active.paused && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
   const live = desktopSettings?.canResize === true;
   for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !writable || !!adaptive;
@@ -2103,7 +2114,7 @@ for (const [id, action] of [['maximize-terminal', 'maximize'], ['restore-termina
   if (!$(id).disabled) void settingsAction('/api/desktop/terminal-display', { action, revision: desktopSettings.revision });
 });
 window.addEventListener('message', event => {
-  if (event.origin !== location.origin || !owned) return;
+  if (event.origin !== location.origin || !owned || pageLeaving) return;
   const entry = views.match(event.source, event.data?.frame);
   if (!entry) return;
   if (entry === views.standby) { receiveStandby(event.data); return; }
@@ -2112,7 +2123,7 @@ window.addEventListener('message', event => {
   if (event.data.type === 'codex-direct-recheck-state') { hintProbeReport(event.data.id, 'workspace', event.data); return; }
   if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
   if (event.data?.type === 'codex-panel-state') {
-    if (views.active.panelReady && !wasReady) { stopPolling(); void poll(); }
+    if (views.active.panelReady && !wasReady && !cachedResumePending) { stopPolling(); void poll(); }
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-panel-result') {
@@ -2195,8 +2206,31 @@ window.addEventListener('message', event => {
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
 document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { discardStandby(); views.active.latency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
-window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); syncRelayLatency(); views.active.latency.clear(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; discardStandby(); shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
-window.addEventListener('pageshow', () => { pageLeaving = false; draftUnloadApproved = false; if (loggedIn) workspaceInitialized = true; syncScreenLock(); renderConnection(); renderDraftSafety(); });
+window.addEventListener('pagehide', event => {
+  pageLeaving = true; workspaceInitialized = false; cachedResumePending = event.persisted === true;
+  cachedViewReset = !terminalMode() || terminalSwitching;
+  if (loggedIn) rememberDraft();
+  if (terminalFocusBusy) desktopFocusFailureKey = `${selectedTerminal}:${selectedTerminalToken}`;
+  if (terminalSwitching) terminalSelectionState = 'error';
+  uiGeneration++; stopPolling(); serviceLink.stop(); stopDiagnostics(); stopSettingsPolling();
+  inputController?.abort(); terminalController?.abort(); clipboardController?.abort(); viewportController?.abort();
+  resetDirectControl(); resetPanelRequests();
+  terminalController = null; terminalBusy = terminalFocusBusy = terminalSwitching = false;
+  clearTimeout(viewportTimer); viewportController = null; viewportResizing = false;
+  views.suspend(); syncRelayLatency(); historyToolsPortal.reset(); discardStandby();
+  shortcutMenu.close(); closeConfirmation(); syncScreenLock(); renderInputControls();
+});
+window.addEventListener('pageshow', event => {
+  pageLeaving = false; draftUnloadApproved = false;
+  if (event.persisted && loggedIn) {
+    cachedResumePending = true; workspaceInitialized = false;
+    // noVNC and its touch/resize observers were destroyed on pagehide. Only
+    // replace that viewer; xterm has its own persisted-return recovery.
+    if (cachedViewReset || !terminalMode()) stopFrame();
+    cachedViewReset = false; stopPolling(); void poll();
+  } else if (loggedIn) workspaceInitialized = true;
+  syncScreenLock(); renderConnection(); renderDraftSafety();
+});
 
 accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,
   canUnlock: () => loggedIn && permissions.canClaim && !accessExpired, needsUnlock: () => permissions.requiresUnlock,

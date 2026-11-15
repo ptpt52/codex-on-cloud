@@ -5,7 +5,7 @@ function view(element, epoch, mode = 'desktop', key = '', noticeTarget = '') {
   return { element, epoch, mode, key, desiredKey: key, noticeTarget, loaded: false, state: 'idle', transport: '', paused: false,
     panelReady: false, panelCapabilitiesKnown: false, terminalSwitchReady: false, terminalCreateReady: false, terminalOpenReady: false,
     dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false, composing: false, touchInput: false,
-    nativeIdle: false, resizeReady: false, frameReady: true, activationPending: false, inputNoticeKey: '', network: null, issue: '', latency: createRoundTrip() };
+    nativeIdle: false, resizeReady: false, frameReady: mode !== 'desktop', activationPending: false, inputNoticeKey: '', network: null, issue: '', latency: createRoundTrip() };
 }
 function invalidate(entry) {
   entry.panelReady = entry.panelCapabilitiesKnown = entry.terminalSwitchReady = entry.terminalCreateReady = entry.terminalOpenReady = false;
@@ -35,7 +35,7 @@ export function createViewLifecycle(element) {
       active = view(active.element, ++serial, mode); active.dimensions = dimensions;
     },
     begin(mode, key = '') {
-      active.mode = mode; active.key = active.desiredKey = key; active.loaded = true; active.state = 'connecting';
+      active.mode = mode; active.frameReady = mode !== 'desktop'; active.key = active.desiredKey = key; active.loaded = true; active.state = 'connecting';
       return active;
     },
     prepare(element, mode, key = '', noticeTarget = '') {
@@ -44,6 +44,12 @@ export function createViewLifecycle(element) {
     },
     discard() { const previous = standby; standby = null; return previous; },
     invalidate(entry = active) { if (live(entry)) invalidate(entry); },
+    suspend() {
+      invalidate(active); active.state = 'reconnecting'; active.paused = false;
+      active.nativeIdle = active.resizeReady = active.composing = active.touchInput = active.activationPending = false;
+      if (active.mode === 'desktop') active.frameReady = false;
+      active.latency.clear();
+    },
     canSwap,
     swap(mode, key, noticeTarget = '') {
       if (!canSwap(mode, key)) return false;

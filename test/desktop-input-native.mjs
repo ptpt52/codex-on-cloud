@@ -41,6 +41,7 @@ let server, browser, app, switchedWindow, childWindow, forceFocusChange = false,
 const direct = process.env.DESKTOP_IME_TEST_DIRECT === '1';
 const ios = process.env.DESKTOP_IME_TEST_IOS === '1';
 const standby = process.env.DESKTOP_IME_TEST_STANDBY === '1';
+const cachedReturn = process.env.DESKTOP_IME_TEST_CACHE === '1';
 try {
   for (let number = 94; number < 200; number++) {
     const occupied = await Promise.all([`/tmp/.X${number}-lock`, `/tmp/.X11-unix/X${number}`].map(path => lstat(path).then(() => true, () => false)));
@@ -87,11 +88,11 @@ while time.monotonic() < deadline:
   app.config.vncSocket = socketPath;
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  if (standby) await page.addInitScript(() => {
+  if (standby || cachedReturn) await page.addInitScript(standby => {
     if (window !== parent) return;
-    localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', modeStandby: true }));
+    localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', modeStandby: standby }));
     window.addEventListener('message', event => { if (event.origin === location.origin && event.source === document.querySelector('#desktop-frame')?.contentWindow && event.data.type === 'codex-desktop-view') window.testFrameReady = event.data.frameReady; });
-  });
+  }, standby);
   if (ios) await page.addInitScript(() => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
     Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 });
@@ -118,6 +119,18 @@ while time.monotonic() < deadline:
     assert.equal(terminal.exitCode, null); assert.equal(JSON.parse(await readFile(proof, 'utf8')).hex, '');
     console.log('PASS: real x11vnc/noVNC refreshes the same parked viewer on repeated returns, without reconnecting VNC, restarting the xterm or injecting input.');
   }
+  if (cachedReturn) {
+    await eventually(() => page.evaluate(() => window.testFrameReady === true));
+    const previous = page.frames().find(value => value.url().includes('/desktop/index.html'));
+    const source = previous.url();
+    await previous.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    await page.evaluate(() => { window.testFrameReady = false; window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+    await eventually(() => page.evaluate(() => window.testFrameReady === true && document.querySelector('#connection-status').textContent.includes('桌面在线')));
+    assert.notEqual(page.frames().find(value => value.url().includes('/desktop/index.html')).url(), source);
+    assert.equal(vncConnections, 2); assert.equal(terminal.exitCode, null); assert.equal(JSON.parse(await readFile(proof, 'utf8')).hex, '');
+    console.log('PASS: persisted desktop return replaces only the real noVNC viewer, with the same live xterm and no injected input.');
+  }
+  const expectedVncConnections = cachedReturn ? 2 : 1;
   const frame = page.frames().find(value => value.url().includes('/desktop/index.html'));
   await frame.locator('#screen canvas').click({ position: { x: 30, y: 30 } });
   await eventually(() => frame.locator('#desktop-input').evaluate(el => el === document.activeElement));
@@ -131,7 +144,7 @@ while time.monotonic() < deadline:
       await eventually(async () => await received() === expected);
     }
     await page.keyboard.press('Enter'); await eventually(async () => (await received()).endsWith('\r'));
-    assert.equal(vncConnections, 1);
+    assert.equal(vncConnections, expectedVncConnections);
     console.log('PASS: isolated real xterm received exact incremental iPad text, atomic correction backspaces, deletion-only edits and a separate Enter without duplicate snapshots.');
   } else {
   await compose(frame, '中文直输😀');
@@ -148,7 +161,7 @@ while time.monotonic() < deadline:
   await frame.locator('#desktop-input').evaluate(el => { el.value = '。'; el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: '。', bubbles: true })); });
   await page.keyboard.press('Enter');
   await eventually(async () => await received() === '中文直输😀OK\r再来，123 下一句。\r');
-  assert.equal(terminal.exitCode, null); assert.equal(vncConnections, 1);
+  assert.equal(terminal.exitCode, null); assert.equal(vncConnections, expectedVncConnections);
   console.log(`PASS (${direct ? 'resumable WebRTC' : 'WebSocket relay'}): real Xvfb/x11vnc/noVNC/xterm received exact Chinese/emoji once, no candidate Enter, followed by native ASCII and an independent Enter.`);
   }
   if (process.env.DESKTOP_IME_TEST_TK_PYTHON && !ios) {

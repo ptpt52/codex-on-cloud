@@ -31,6 +31,8 @@ npm run test:browser -- test/browser/desktop-touch-input.spec.mjs
 npm run test:browser -- test/browser/ios-dictation.spec.mjs
 npm run test:desktop-input
 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
+DESKTOP_IME_TEST_STANDBY=1 npm run test:desktop-input
+DESKTOP_IME_TEST_CACHE=1 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 DESKTOP_IME_TEST_IOS=1 npm run test:desktop-input
 DESKTOP_IME_TEST_IOS=1 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 ```
@@ -42,6 +44,8 @@ DESKTOP_IME_TEST_IOS=1 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 触屏规格覆盖一键聚焦、带输入锚点的中英文提交、无键盘事件时的软键盘退格、选字及软键盘回车隔离、快捷键与粘贴的顺序、长文本草稿、当前焦点 Ctrl+C 确认，以及 320–1024px 布局和模拟可见区域变化期间不改远程尺寸。浏览器模拟不能唤起真实系统键盘；Android 中文输入法、iPhone / iPad 软键盘、语音输入和实体键盘仍需真机核对。
 
 听写规格将完整 DOM 值作为原生编辑结果，覆盖累计识别、实际重复、长停顿后继续、改词、补回前面的逗号、纯删除，以及 `keyCode 229` 与组合事件的单次转发。还检查等待回执期间的连续更新合并和 WebRTC 控制通道不转 HTTP 重发。`DESKTOP_IME_TEST_IOS=1` 在隔离 X11 环境验证实际增量字节与退格；这些事件由测试注入，尚不能替代真实 iPad 系统听写的事件记录和验收。
+
+待命规格验证增量请求和 ContinuousUpdates 两种协议在隐藏时停止画面更新、恢复完整绘制前禁止输入、连续切换不增加连接。原生 `STANDBY` 选项使用隔离 Xvfb/x11vnc/noVNC 验证同一查看连接；`CACHE` 选项向真实查看器注入缓存生命周期事件，验证只重建查看器、Xterm 不重启、输入不重发。浏览器规格另测实际后退导航；浏览器是否真的使用 BFCache 取决于其缓存策略，注入事件测试不能代替真实缓存命中的设备验收。
 
 可将 `DESKTOP_IME_TEST_TK_PYTHON` 指向已安装 Tk 的 Python，再运行原生规格，验证真实普通应用的 Ctrl+V 及剪贴板准备期间换窗拒绝；未设置时会明确跳过此部分。所有组合事件由测试注入，不代表真实系统输入法候选窗、手机系统键盘或生产 Codex 已验收。
 

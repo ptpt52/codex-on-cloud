@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { createViewLifecycle } from '../panel/public/view-lifecycle.js';
 const element = () => ({ contentWindow: {} });
 const main = 'main:%0:4000', other = 'aux1:%1:4001';
-const connected = (views, entry, transport = 'direct') => views.update(entry, { type: 'codex-desktop', state: 'connected', transport });
+const connected = (views, entry, transport = 'direct') => {
+  const live = views.update(entry, { type: 'codex-desktop', state: 'connected', transport });
+  if (live && entry.mode === 'desktop') views.update(entry, { type: 'codex-desktop-view', revision: 0, frameReady: true }, { revision: 0 });
+  return live;
+};
 const capabilities = (views, entry) => views.update(entry, { type: 'codex-panel-state', ready: true, terminalSwitch: true, terminalCreate: true, terminalOpen: true });
 
 test('view swaps retain records, geometry and capabilities while input remains exclusive to the active view', () => {
@@ -80,4 +84,18 @@ test('desktop activation keeps input blocked until matching frame and target con
   views.update(desktop, { type: 'codex-desktop-view', revision: 3, frameReady: true }, { revision: 2 }); assert.equal(desktop.frameReady, false);
   views.update(desktop, { type: 'codex-desktop-view', revision: 3, frameReady: true }, { revision: 3 }); assert.equal(views.inputReady(), false);
   desktop.activationPending = false; assert.equal(views.inputReady(), true);
+});
+
+test('suspended views lose all input and control readiness but retain terminal identity and geometry', () => {
+  const views = createViewLifecycle(element()); views.begin('terminal', main); connected(views, views.active); capabilities(views, views.active);
+  views.update(views.active, { type: 'codex-terminal-size', cols: 80, rows: 24 });
+  views.suspend(); assert.equal(views.inputReady(), false); assert.equal(views.active.panelReady, false); assert.equal(views.active.terminalSwitchReady, false);
+  assert.equal(views.active.key, main); assert.equal(views.active.geometry.cols, 80); assert.equal(views.active.composing, false);
+});
+
+
+test('a new desktop viewer cannot accept input on connect before its first painted frame', () => {
+  const views = createViewLifecycle(element()); views.begin('desktop');
+  views.update(views.active, { type: 'codex-desktop', state: 'connected' }); assert.equal(views.inputReady(), false);
+  views.update(views.active, { type: 'codex-desktop-view', revision: 0, frameReady: true }, { revision: 0 }); assert.equal(views.inputReady(), true);
 });
