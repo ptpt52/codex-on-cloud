@@ -84,12 +84,16 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (candidate) candidate.promoteRequired = promoteRequired;
       return candidate;
     },
-    replace: async candidate => {
-      if (busy || files?.busy || checking || !canReplace()) return;
+    replace: async (candidate, signal) => {
+      const version = epoch;
+      const eligible = () => running && epoch === version && !signal.aborted && !busy && !files?.busy && !checking && canReplace();
+      if (!eligible()) return;
       replacing = true;
       try {
         const route = await candidate.stats();
+        if (!eligible()) return;
         if (candidate.promoteRequired) await candidate.control.request('promote', {});
+        if (!eligible()) return;
         clearTimeout(timer); const old = current, oldFiles = files;
         current = candidate; files = undefined; state.ready = true; state.issue = ''; state.route = route;
         oldFiles?.close(); old?.close(); healthMisses = 0; publish();

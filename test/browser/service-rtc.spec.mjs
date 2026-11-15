@@ -1,6 +1,38 @@
 import { test,expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
+for (const cause of ['stop', 'busy']) test(`mocked delayed service stats cannot enable a recheck after ${cause}`, async ({ page }) => {
+ const app = await fixture();
+ try {
+  // Only the transport is mocked: exercise the published lifecycle controller
+  // with a stats Promise that still resolves after its native peer is closed.
+  await page.route('**/rtc-transport.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'export async function desktopTransport(...args) { return window.nextServiceTransport(...args); }' }));
+  await page.goto(app.config.origin);
+  await page.evaluate(async () => {
+   const { createServiceLink } = await import('/service-link.js');
+   let probes = 0, stats = 0;
+   window.serviceReplaceAllowed = true;
+   window.nextServiceTransport = async (viewer, changed, options) => {
+    if (++probes === 1) return null;
+    const candidate = { features: {}, health: { rttMs: 10, async ping() {} }, async start() {}, close() { window.serviceCandidateClosed = true; },
+     stats() { if (++stats === 2) return new Promise(resolve => { window.releaseServiceStats = () => resolve(null); }); return Promise.resolve(null); } };
+    options.signal.addEventListener('abort', () => candidate.close(), { once: true }); return candidate;
+   };
+   window.auditService = createServiceLink({ viewer: 'isolated-audit-viewer', options: () => ({}), changed() {}, canReplace: () => window.serviceReplaceAllowed });
+   window.auditService.start(); await new Promise(resolve => setTimeout(resolve, 0));
+   window.serviceRecheck = window.auditService.recheck();
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.releaseServiceStats)).toBe('function');
+  const result = await page.evaluate(async cause => {
+   if (cause === 'stop') window.auditService.stop(); else window.serviceReplaceAllowed = false;
+   window.releaseServiceStats(); await window.serviceRecheck;
+   const result = { ready: window.auditService.ready, transport: !!window.auditService.transport, stateReady: window.auditService.state.ready, closed: window.serviceCandidateClosed };
+   window.auditService.stop(); return result;
+  }, cause);
+  expect(result).toEqual({ ready: false, transport: false, stateReady: false, closed: true });
+  expect(app.vncConnections).toBe(0); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+ } finally { await app.close(); }
+});
 async function setup(app,page){
  await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});
  await page.goto(app.config.origin);await page.locator('#username').fill('visitor');await page.locator('#password').fill('temporary-test-password');await page.locator('#login-button').click();await expect(page.locator('#user-label')).toContainText('临时访问');
