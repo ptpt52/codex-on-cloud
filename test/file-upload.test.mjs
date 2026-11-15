@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { fixture } from './fixture.mjs';
-import { uploadOptions, uploadHeaders, readUploadHeaders, uploadResult, transferFilePath, quoteFilePath } from '../panel/public/file-upload.js';
+import { uploadOptions, uploadHeaders, readUploadHeaders, uploadResult, validTransferName, transferFilePath, quoteFilePath } from '../panel/public/file-upload.js';
 import { settings } from '../native/config.mjs';
 
 test('transfer paths are absolute, bounded and quoted as literal shell arguments', () => {
@@ -12,7 +12,28 @@ test('transfer paths are absolute, bounded and quoted as literal shell arguments
   assert.equal(quoteFilePath(path), "'/work dir/transfer/中 文'\\''$(never)`echo no`.txt'");
   assert.equal(transferFilePath('/', 'root.txt'), '/root.txt');
   for (const directory of ['', 'relative/path', '/path\nsecret', '/' + '中'.repeat(1400)]) assert.throws(() => transferFilePath(directory, 'ok.txt'));
-  for (const invalid of ['../escape', '.', '..', 'back\\slash', 'newline\n', '中'.repeat(81)]) assert.throws(() => transferFilePath('/safe', invalid));
+  for (const invalid of ['../escape', '.', '..', 'newline\n', '中'.repeat(86)]) assert.throws(() => transferFilePath('/safe', invalid));
+});
+
+test('existing filename validation accepts Unix names while uploads retain portable bounds', () => {
+  for (const name of ['中'.repeat(81) + '.txt', 'x'.repeat(255), 'literal\\backslash']) {
+    assert.equal(validTransferName(name), true);
+    assert.equal(validTransferName(name, true), false);
+    assert.equal(transferFilePath('/safe', name), '/safe/' + name);
+  }
+  assert.equal(validTransferName('\ufeffbom'), true);
+  for (const name of ['x'.repeat(256), 'bad\nname', 'bad\udcff', '../outside', '.upload-private']) assert.equal(validTransferName(name), false);
+});
+
+test('HTTP downloads accept existing long and backslash names but uploads remain restricted', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  for (const name of ['中'.repeat(81) + '.txt', 'literal\\backslash']) {
+    app.files.set(name, Buffer.from('kept'));
+    const path = '/api/files/' + encodeURIComponent(name), response = await app.request(path);
+    assert.equal(response.status, 200); assert.equal(await response.text(), 'kept');
+    assert.equal((await app.request(path, { method: 'PUT', raw: 'changed' })).status, 400);
+    assert.equal(app.files.get(name).toString(), 'kept');
+  }
 });
 
 test('independent file helper port defaults to the desktop helper and rejects invalid ports', () => {

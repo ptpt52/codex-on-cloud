@@ -12,7 +12,7 @@ import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints, hintIP } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { FILE_MAX } from './file-wire.js';
-import { createUploadPrompt, uploadHeaders, uploadResult, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL } from './file-upload.js';
+import { createUploadPrompt, uploadHeaders, uploadResult, validTransferName, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL } from './file-upload.js';
 import { createFileListReader } from './file-list.js';
 import { createFileProgress, observeUploadProgress, readFileDownload } from './file-transfer.js';
 import { createRoundTrip } from './health.js';
@@ -1633,11 +1633,14 @@ function renderFiles(files) {
   }
   for (const file of files) {
     const row = document.createElement('div'); row.className = 'file-row';
+    const available = validTransferName(file.name); row.dataset.unavailable = String(!available);
     const detail = document.createElement('span'); detail.textContent = file.name;
-    const info = document.createElement('small'); info.textContent = sizeLabel(file.size); detail.append(info);
-    const link = document.createElement('a'); link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.textContent = '下载'; link.download = file.name;
+    const info = document.createElement('small'); info.textContent = sizeLabel(file.size) + (available ? '' : ' · 文件名无法在网页使用，请在节点主机改名'); detail.append(info);
+    const link = document.createElement('a'); if (available) link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.textContent = '下载'; link.download = file.name;
+    if (!available) link.tabIndex = -1;
     link.addEventListener('click', event => {
       event.preventDefault();
+      if (!available) return toast('此文件名无法在网页使用，请先在节点主机改名', true);
       if (!loggedIn || accessExpired || !navigator.onLine) return toast('文件传输暂不可用，请恢复连接后重试。', true);
       if (file.size > FILE_MAX) {
         if (fileTransferController) return toast('请先完成当前文件传输。');
@@ -1666,13 +1669,13 @@ function canOpenTransferDirectory() {
 function renderFileControls() {
   const readable = loggedIn && !accessExpired && navigator.onLine && !!transferDirectory;
   const insertable = readable && canInsertFilePath();
-  for (const button of $('file-list').querySelectorAll('[data-file-copy]')) button.disabled = !readable || filePathCopyBusy;
-  for (const button of $('file-list').querySelectorAll('[data-file-insert]')) { button.hidden = permissions.role === 'temporary'; button.disabled = !insertable; }
+  for (const button of $('file-list').querySelectorAll('[data-file-copy]')) button.disabled = !readable || filePathCopyBusy || button.closest('.file-row').dataset.unavailable === 'true';
+  for (const button of $('file-list').querySelectorAll('[data-file-insert]')) { button.hidden = permissions.role === 'temporary'; button.disabled = !insertable || button.closest('.file-row').dataset.unavailable === 'true'; }
   $('open-transfer-directory').hidden = terminalOnly || terminalMode() || permissions.role === 'temporary';
   $('open-transfer-directory').disabled = !readable || !canOpenTransferDirectory();
   $('upload-zone').disabled = !loggedIn || accessExpired || !navigator.onLine || !!fileTransferController;
   $('files-button').setAttribute('aria-busy', String(!!fileTransferController));
-  for (const link of $('file-list').querySelectorAll('a')) link.setAttribute('aria-disabled', String(!!fileTransferController));
+  for (const link of $('file-list').querySelectorAll('a')) link.setAttribute('aria-disabled', String(!readable || !!fileTransferController || link.closest('.file-row').dataset.unavailable === 'true'));
 }
 async function copyFilePath(name) {
   if (filePathCopyBusy || !loggedIn || accessExpired || !$('files-dialog').open) return;
@@ -1732,7 +1735,7 @@ async function uploadFile(file) {
   if (fileTransferController) return toast('请先完成当前文件传输。');
   if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
   if (!file || !loggedIn || accessExpired || !navigator.onLine || !$('files-dialog').open) return;
-  if (!file.name || file.name === '.' || file.name === '..' || file.name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(file.name) || new TextEncoder().encode(file.name).length > 240) { toast('文件名无效或超过 240 字节，请改名后上传。', true); $('upload-input').value = ''; return; }
+  if (!validTransferName(file.name, true)) { toast('文件名无效或超过 240 字节，请改名后上传。', true); $('upload-input').value = ''; return; }
   if (file.size > 50 * 1024 * 1024) { toast('文件不能超过 50 MiB', true); $('upload-input').value = ''; return; }
   const generation = uiGeneration, controller = fileTransferController = new AbortController();
   const progress = fileProgress.start({ name: file.name, size: file.size, direction: 'upload', cancel: () => controller.abort('user') });

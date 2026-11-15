@@ -169,7 +169,9 @@ class Handler(BaseHTTPRequestHandler):
         pass  # Do not log input text, filenames or Authorization headers.
 
     def json(self, status, data):
-        payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        # Escape undecodable Unix filename bytes instead of failing the whole
+        # listing. The browser can display them and disable unsupported actions.
+        payload = json.dumps(data, ensure_ascii=False).encode('utf-8', errors='backslashreplace')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(payload)))
@@ -187,9 +189,11 @@ class Handler(BaseHTTPRequestHandler):
     def filename(self, path):
         try:
             name = unquote(path[len('/files/'):], errors='strict')
+            size = len(name.encode('utf-8'))
         except (ValueError, UnicodeError):
             raise AgentError(400, '文件名无效')
-        if not name or name in ('.', '..') or name.startswith('.upload-') or any(c in name for c in '/\\') or any(ord(c) < 32 or ord(c) == 127 for c in name) or len(name.encode()) > 240:
+        uploading = self.command == 'PUT'
+        if not name or name in ('.', '..') or name.startswith('.upload-') or '/' in name or uploading and '\\' in name or any(ord(c) < 32 or ord(c) == 127 for c in name) or size > (240 if uploading else 255):
             raise AgentError(400, '文件名无效')
         return name
 

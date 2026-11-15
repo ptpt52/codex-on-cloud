@@ -129,3 +129,12 @@ test('real Python file helper preserves disk bytes and atomic replacement when d
  for(let n=0;n<100&&(await readdir(directory)).some(f=>f.startsWith('.upload-'));n++)await new Promise(r=>setTimeout(r,10));
  assert.equal((await readFile(directory+'/keep')).toString(),'original');assert.ok(!(await readdir(directory)).some(f=>f.startsWith('.upload-')));
 });
+
+test('encrypted file downloads accept existing Unix names without widening upload rules', async t => {
+ const {app,c}=await setup(t),files=await fileClient(c);
+ for(const name of ['中'.repeat(81)+'.txt','literal\\backslash']){
+  app.files.set(name,Buffer.from('existing'));
+  const blob=await files.download(name,8);assert.equal(await blob.text(),'existing');
+ }
+ assert.equal((await c.rpc('ping')).ok,true);assert.deepEqual(app.inputCalls,[]);
+});

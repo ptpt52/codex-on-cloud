@@ -1,13 +1,20 @@
 export const UPLOAD_PROTOCOL = 1;
 export const UPLOAD_CONFIRM_MS = 120000;
+// Existing Unix files may use the full NAME_MAX and literal backslashes.
+// New uploads keep space for a rename suffix and portable names.
+export function validTransferName(name, upload = false) {
+  if (typeof name !== 'string' || !name || name.length > 255 || name === '.' || name === '..' || name.startsWith('.upload-') || /[/\x00-\x1f\x7f]/.test(name) || upload && name.includes('\\')) return false;
+  const bytes = new TextEncoder().encode(name);
+  return bytes.length <= (upload ? 240 : 255) && new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) === name;
+}
 export function transferFilePath(directory, name) {
   if (typeof directory !== 'string' || !directory.startsWith('/') || /[\x00-\x1f\x7f]/.test(directory) || new TextEncoder().encode(directory).length > 4096) throw Error('服务器共享目录尚未就绪，请刷新后重试');
-  uploadResult({ ok: true, name });
+  if (!validTransferName(name)) throw Error('此文件名无法在网页使用，请先在节点主机改名');
   return directory.replace(/\/+$/, '') + '/' + name;
 }
 export const quoteFilePath = path => "'" + path.replaceAll("'", "'\\''") + "'";
 export function uploadResult(value) {
-  if (!value || value.ok !== true || typeof value.name !== 'string' || !value.name || value.name === '.' || value.name === '..' || value.name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(value.name) || new TextEncoder().encode(value.name).length > 240) {
+  if (!value || value.ok !== true || !validTransferName(value.name, true)) {
     throw Object.assign(Error('上传完成信息不完整，结果未知；请刷新文件列表确认'), { status: 502, outcome: 'unknown' });
   }
   return value;

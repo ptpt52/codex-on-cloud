@@ -27,3 +27,24 @@ test('closing the directory cancels its read and allows immediate reopening', as
     stall = false; await page.locator('#files-button').click(); await expect(page.locator('#file-list')).toContainText('kept.txt');
   } finally { release(); await app.close(); }
 });
+
+test('existing long names work while unsupported names visibly disable their actions', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }), name = '中'.repeat(81) + '.txt';
+  try {
+    await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.filePathCopied = text; } } }));
+    app.files.set(name, Buffer.from('kept')); app.files.set('bad-\nname', Buffer.from('unsafe')); app.files.set('undecodable-\udcff', Buffer.from('unsafe'));
+    await login(page, app); await page.locator('#files-button').click();
+    const normal = page.locator('.file-row').filter({ hasText: name });
+    await expect(normal.locator('[data-file-copy]')).toBeEnabled(); await normal.locator('[data-file-copy]').click();
+    await expect.poll(() => page.evaluate(() => window.filePathCopied)).toContain('/' + name);
+    for (const prefix of ['bad-', 'undecodable-']) {
+      const row = page.locator('.file-row').filter({ hasText: prefix });
+      await expect(row).toContainText('请在节点主机改名');
+      await expect(row.locator('a')).toHaveAttribute('aria-disabled', 'true');
+      await expect(row.locator('a')).not.toHaveAttribute('href');
+      await expect(row.locator('[data-file-copy]')).toBeDisabled();
+      await expect(row.locator('[data-file-insert]')).toBeDisabled();
+    }
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});

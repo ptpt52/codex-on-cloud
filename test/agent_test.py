@@ -130,6 +130,27 @@ class AgentTests(unittest.TestCase):
         data = json.loads(self.request('GET', '/files')[1])
         self.assertEqual(data['files'][0]['name'], '资料.txt')
 
+    def test_existing_unix_names_download_without_relaxing_upload_names(self):
+        for name in ['中' * 81 + '.txt', 'x' * 255, 'literal\\backslash']:
+            with self.subTest(name=name):
+                (self.desktop.transfer_dir / name).write_bytes(b'kept')
+                path = '/files/' + quote(name, safe='')
+                self.assertEqual(self.request('GET', path), (200, b'kept'))
+                self.assertEqual(self.request('PUT', path, b'changed')[0], 400)
+                self.assertEqual((self.desktop.transfer_dir / name).read_bytes(), b'kept')
+        self.assertEqual(len(json.loads(self.request('GET', '/files')[1])['files']), 3)
+
+    def test_undecodable_names_do_not_break_the_directory_listing(self):
+        directory = self.desktop.directory()
+        try:
+            fd = os.open(b'bad-\xff', os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=directory)
+            os.close(fd)
+        finally:
+            os.close(directory)
+        status, body = self.request('GET', '/files')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['files'][0]['name'], 'bad-\udcff')
+
     def test_upload_is_atomic_and_does_not_follow_destination_symlink(self):
         external = Path(self.temp.name) / 'outside'
         external.write_text('do not change')

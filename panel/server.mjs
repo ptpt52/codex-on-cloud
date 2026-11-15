@@ -21,7 +21,7 @@ import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
 import { createForwardAgents } from './forward-agents.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
-import { readUploadHeaders, uploadHeaders, UPLOAD_PROTOCOL } from './public/file-upload.js';
+import { readUploadHeaders, uploadHeaders, validTransferName, UPLOAD_PROTOCOL } from './public/file-upload.js';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
 import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
@@ -656,7 +656,7 @@ export async function createPanel(config) {
       const encoded = path.slice('/api/files/'.length);
       let name;
       try { name = decodeURIComponent(encoded); } catch { throw new HttpError(400, '文件名无效'); }
-      if (!name || name === '.' || name === '..' || name.startsWith('.upload-') || /[/\\\x00-\x1f\x7f]/.test(name) || Buffer.byteLength(name) > 240) throw new HttpError(400, '文件名无效');
+      if (!validTransferName(name, req.method === 'PUT')) throw new HttpError(400, '文件名无效');
       const token = cookieToken(req.headers.cookie), progressId = req.headers['x-codex-transfer-id'];
       if (progressId !== undefined && (req.method !== 'PUT' || typeof progressId !== 'string' || !/^[a-f0-9]{32}$/.test(progressId))) throw new HttpError(400, '上传进度标识无效');
       const transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT', progressId ? { id: progressId, owner: token, size: Number(req.headers['content-length']) } : undefined);

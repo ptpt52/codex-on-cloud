@@ -1,11 +1,10 @@
 import http from 'node:http';
 import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js';
-import { uploadOptions, uploadHeaders, uploadResult } from './public/file-upload.js';
+import { uploadOptions, uploadHeaders, uploadResult, validTransferName } from './public/file-upload.js';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 import { FORWARD_FILES, ARTIFACT_LIMITS } from '../native/forward-artifacts.mjs';
 import { validTransferWindow } from './public/transfer-window.js';
 const fault=(status,message)=>Object.assign(Error(message),{status});
-function fileName(name){return typeof name==='string'&&!!name&&name!=='.'&&name!=='..'&&!name.startsWith('.upload-')&&!/[/\\\x00-\x1f\x7f]/.test(name)&&Buffer.byteLength(name)<=240;}
 // Fixed authenticated APIs on loopback only: shared files keep their four-stream
 // and guest-upload quotas; published helpers keep the two-download limit.
 export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entryBasePath='/'}){
@@ -31,7 +30,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
    const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload'),hasHelper=Object.hasOwn(value,'helper');
    const hasWindow=Object.hasOwn(value,'window');
    const expected=(hasHelper?['direction','helper','id','name','size','type']:hasUpload?['direction','id','name','size','type','upload']:['direction','id','name','size','type']).concat(hasWindow?['window']:[]).sort().join(',');
-   if(active||fields!==expected||hasUpload&&value.direction!=='upload'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!fileName(value.name)||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
+   if(active||fields!==expected||hasUpload&&value.direction!=='upload'||!Number.isInteger(value.id)||value.id<=lastId||value.id>2147483647||!validTransferName(value.name,value.direction==='upload')||!['upload','download'].includes(value.direction)||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX)throw fault(400,'文件传输参数无效');
    if(hasWindow&&!validTransferWindow(value.window))throw fault(400,'文件窗口协商无效');
    const window=value.window??4;wire.setWindow(window);
    let path=prefix+'/api/files/'+encodeURIComponent(value.name);
