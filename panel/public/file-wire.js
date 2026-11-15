@@ -70,7 +70,12 @@ export function createFileWire(channel, { control, chunk, failed }) {
       if (!bytes || bytes.length < 5 || bytes.length > FILE_CHUNK + 4 || queued >= window) throw failure('文件分块大小或窗口无效');
       const seq = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(0);
       if (seq !== received + 1 || seq > 2147483647) throw failure('文件分块序号无效'); received = seq; queued++;
-      chain = chain.then(async () => { if (ended) return; await chunk(bytes.subarray(4)); if (!ended) send({type:'ack',seq}); }).catch(close).finally(() => { queued--; });
+      chain = chain.then(async () => {
+        // ACK grants the sender a fresh slot. Release it before publishing
+        // that credit, including when the peer can replenish immediately.
+        try { if (!ended) await chunk(bytes.subarray(4)); } finally { queued--; }
+        if (!ended) send({type:'ack',seq});
+      }).catch(close);
     } catch (err) { close(err); }
   });
   channel.addEventListener('close', () => close()); channel.addEventListener('error', () => close());

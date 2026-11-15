@@ -2,6 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFileWire,sendFileChunks,FILE_CHUNK } from '../panel/public/file-wire.js';
 class Wire extends EventTarget{readyState='open';bufferedAmount=0;send(data){queueMicrotask(()=>{if(this.peer.readyState==='open')this.peer.dispatchEvent(new MessageEvent('message',{data:typeof data==='string'?data:data.slice().buffer}));});}close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}}
+test('each file ACK releases receive credit before an immediate peer replenishes the full window', async () => {
+  const channel = new Wire(), acknowledgements = [], failures = [];
+  let sent = 0, chunks = 0;
+  const deliver = () => {
+    const bytes = new Uint8Array(5); new DataView(bytes.buffer).setUint32(0, ++sent);
+    channel.dispatchEvent(new MessageEvent('message', { data: bytes.buffer }));
+  };
+  channel.send = data => {
+    const ack = JSON.parse(data); acknowledgements.push(ack.seq);
+    if (sent < 64) deliver();
+  };
+  const receiver = createFileWire(channel, { control() {}, chunk() { chunks++; }, failed(reason) { failures.push(reason.message); } });
+  receiver.setWindow(16);
+  try {
+    for (let i = 0; i < 16; i++) deliver();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(failures, []); assert.equal(receiver.ready, true); assert.equal(chunks, 64);
+    assert.deepEqual(acknowledgements, Array.from({ length: 64 }, (_, i) => i + 1));
+  } finally { receiver.close(); }
+});
 test('file streaming waits for native buffers after application ACKs without exceeding its byte bound', async () => {
   const a = new Wire(), b = new Wire(); a.peer = b; b.peer = a;
   let peak = 0, drains = 0, received = 0, sent = 0;
