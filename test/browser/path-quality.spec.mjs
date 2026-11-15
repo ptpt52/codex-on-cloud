@@ -4,14 +4,21 @@ test.use({ serviceWorkers: 'block' });
 
 async function setup(page, profile) {
   await page.addInitScript(profile => {
-    if (window === parent) { window.pathProfile = profile; localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal' })); }
+    if (window === parent) {
+      window.pathProfile = profile; window.pathEvents = [];
+      addEventListener('message', event => { if (event.origin === location.origin && event.data?.type === 'codex-network-event' && window.pathEvents.length < 200) window.pathEvents.push(event.data.event); });
+      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', networkDebug: true }));
+    }
     window.pathPeers = []; window.pathSockets = [];
     const Native = WebSocket;
     window.WebSocket = class extends Native {
       constructor(...args) {
-        super(...args); if (new URL(this.url).pathname !== '/session/connect') return; window.pathSockets.push(this);
+        super(...args); if (new URL(this.url).pathname !== '/session/connect') return; window.pathSockets.push(this); this.heldAcks = [];
         this.addEventListener('message', event => {
-          if (!event.isTrusted || JSON.parse(event.data).type !== 'pong') return;
+          if (!event.isTrusted) return;
+          const value = JSON.parse(event.data);
+          if (value.type === 'input-ack' && parent.pathProfile.holdAcks && this.heldAcks.length < 64) { event.stopImmediatePropagation(); this.heldAcks.push(event.data); return; }
+          if (value.type !== 'pong') return;
           event.stopImmediatePropagation(); setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: event.data })), parent.pathProfile.relay);
         });
       }
@@ -47,14 +54,39 @@ async function login(page, app) {
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
 
-test('unresolved RTC statistics cannot indefinitely block a healthy direct candidate', async ({ page }) => {
+test('unresolved RTC statistics cannot indefinitely block a healthy direct candidate or service link', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
   try {
     await setup(page, { relay: 350, direct: 1, turn: false, stallStats: true }); const frame = await login(page, app);
     await expect.poll(() => frame.evaluate(() => window.pathPeers.some(peer => peer.connectionState === 'connected'))).toBe(true);
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 10000 });
+    await page.locator('#files-button').click(); await page.locator('#close-files').click();
+    await page.locator('#connection-button').click();
+    await expect(page.locator('#connection-trace-current')).toContainText('文件与映射服务：已连接 · WebRTC');
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
+});
+
+test('an unconfirmed input explains the blocked promotion, then acknowledgment releases it without replaying input', async ({ page }, testInfo) => {
+  test.setTimeout(45000);
+  const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
+  try {
+    await setup(page, { relay: 20, direct: 250, turn: false }); const frame = await login(page, app);
+    await expect(page.locator('#diag-direct-status')).toContainText('保留当前延迟更低');
+    await page.evaluate(() => { window.pathProfile.holdAcks = true; });
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.map(value => value.text).join('')).toBe('x');
+    await page.evaluate(() => { window.pathProfile.direct = 1; });
+    await expect.poll(() => page.evaluate(() => window.pathEvents.some(event => event.type === 'probe-waiting' && event.reason === 'input-unconfirmed' && event.pendingInputs > 0)), { timeout: 20000 }).toBe(true);
+    await expect(page.locator('#diag-transport')).toContainText('WebSocket');
+    await page.evaluate(() => { window.pathProfile.holdAcks = false; });
+    await frame.evaluate(() => { for (const socket of window.pathSockets) for (const data of socket.heldAcks.splice(0)) socket.dispatchEvent(new MessageEvent('message', { data })); });
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 10000 });
+    expect(app.terminalInputs.map(value => value.text).join('')).toBe('x'); expect(app.terminalConnections).toBe(1);
+  } finally {
+    if (testInfo.status !== testInfo.expectedStatus) await testInfo.attach('network-events', { body: JSON.stringify(await page.evaluate(() => window.pathEvents)), contentType: 'application/json' });
+    await app.close();
+  }
 });
 
 for (const turn of [false, true, 'unknown']) test(`${turn === 'unknown' ? 'unknown-route' : turn ? 'TURN' : 'direct'} candidate keeps faster WSS, then reuses the same peer when quality improves`, async ({ page }) => {
@@ -80,6 +112,9 @@ test('a persistently slower active RTC returns to retained WSS after cooldown wi
   try {
     await setup(page, { relay: 20, direct: 1, turn: false }); const frame = await login(page, app);
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 12000 });
+    // With a healthy active direct path, quality comparisons concern the
+    // standby relay. They must not label that slower candidate as direct.
+    await expect.poll(() => page.evaluate(() => window.pathEvents.some(event => event.type === 'probe-waiting' && event.reason === 'quality' && event.path === 'relay'))).toBe(true);
     await page.evaluate(() => { window.pathProfile.direct = 300; });
     // Advance the route cooldown only; real timers, ICE and streams keep running.
     await frame.evaluate(() => { const now = performance.now.bind(performance); performance.now = () => now() + 31000; });
@@ -99,6 +134,7 @@ test('a sustained stream send queue can prefer healthy WSS despite fast independ
     await page.evaluate(() => { window.pathProfile.directBuffered = 32768; });
     await expect(page.locator('#diag-transport')).toContainText('WebSocket', { timeout: 42000 });
     await page.locator('#connection-button').click();
+    await page.locator('#connection-trace > summary').click();
     await expect(page.locator('#connection-trace-list')).toContainText('通道排队或确认变慢');
     expect(await frame.evaluate(() => window.pathSockets.length)).toBe(1);
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);

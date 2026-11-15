@@ -13,13 +13,20 @@ const decode = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
 
 // One browser-visible channel. Network paths may change; the consumer and its
 // parser stay attached. Only downstream bytes can be replayed, never inputs.
-export function createStreamClient({ viewer, csrf, terminal, standby = false, bootstrap, idle = () => true, settled = idle, targetIdle = settled, canSwitchTarget = targetIdle, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {}, trace = () => {} }) {
+export function createStreamClient({ viewer, csrf, terminal, standby = false, bootstrap, idle = () => true, waitReason = () => 'input-active', settled = idle, targetIdle = settled, canSwitchTarget = targetIdle, prepare = async () => true, paused = () => {}, changed = () => {}, measured = () => {}, issue = () => {}, trace = () => {} }) {
   const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
   let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
   let relayTimer, directTimer, directDue = 0, promotionTimer, recoveryTimer, directController, relayDelay = 250, probeDelay = 15000, terminalText = '';
   let heldOutput = [], heldBytes = 0, draining = false;
   let directExpedited = false, directHalted = false, directAttempts = 0, pauseTerminal = false;
+  let directStopReason = '', lastWaitReason = '', lastWaitAt = -Infinity;
+  const inputProgress = () => ({ pendingInputs: inputSizes.size, queuedBytes: inputBytes,
+    inputAgeMs: Math.max(0, Math.round(performance.now() - (inputSizes.values().next().value?.at ?? performance.now()))) });
+  function waiting(reason, detail = {}) {
+    const now = performance.now(), key = `${detail.path || 'direct'}:${reason}`;
+    if (key !== lastWaitReason || now - lastWaitAt >= 15000) { lastWaitReason = key; lastWaitAt = now; trace('probe-waiting', { path: 'direct', reason, ...detail }); }
+  }
   let lastPath = '';
   let attachmentState = 'attaching';
   let textDecoder = new TextDecoder('utf-8', { fatal: true }), panelSequence = 0, targetSequence = 0, targetPending;
@@ -206,6 +213,9 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         const wasHeartbeatPaused = peer.heartbeatPaused; peer.heartbeatPaused = false;
         peer.latency.set(performance.now() - peer.sentAt); peer.health.sample(performance.now() - peer.sentAt);
         peer.quality.sample(performance.now() - peer.sentAt);
+        if (!peer.loggedHeartbeatAt || performance.now() - peer.loggedHeartbeatAt >= 15000) {
+          peer.loggedHeartbeatAt = performance.now(); trace('heartbeat-ok', { path: peer.kind, rttMs: Math.round(performance.now() - peer.sentAt), ...inputProgress() });
+        }
         peer.healthyAt = performance.now();
         clearTimeout(peer.deadline); peer.ping = 0; heartbeat(peer, peer.quality.warming ? 250 : 3000);
         if (peer.networkProbePending) { peer.networkProbePending = false; peer.networkProbe = true; directExpedited = false; if (active !== peer) void promote(peer); }
@@ -299,14 +309,18 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     } catch { lost(peer); }
   }
   async function activate(peer, planned = false) {
-    if (ended || targetPending || claiming || transitioning || creating() || peer.gone || peer.syncing || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
+    if (ended || peer.gone || !peer.ready || active === peer || document.hidden || !navigator.onLine) return false;
+    if (targetPending || claiming || transitioning || creating() || peer.syncing || peer.health.suspect) {
+      waiting(targetPending || peer.syncing ? 'target-switch' : peer.health.suspect ? 'heartbeat-suspect' : 'handoff-busy', { path: peer.kind, ...inputProgress() }); return false;
+    }
     transitioning = true;
     let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
     try {
       if (planned) {
-        if (!idle() || peer.networkProbePending || routes.remaining() && !peer.networkProbe) return false;
+        if (!idle()) { waiting(waitReason(), { path: peer.kind }); return false; }
+        if (peer.networkProbePending || routes.remaining() && !peer.networkProbe) return false;
         const controller = new AbortController();
-        approved = await prepare(controller.signal); if (!approved || ended || peer.gone || document.hidden || !navigator.onLine) return false;
+        approved = await prepare(controller.signal); if (!approved || ended || peer.gone || document.hidden || !navigator.onLine) { waiting('handoff-refused', { path: peer.kind }); return false; }
       }
       // A busy output stream keeps producing consumption ACKs. Admit an idle
       // user's switch before waiting for zero in-flight records, then hold
@@ -317,9 +331,12 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       // can then fence the old writer without waiting for the old network.
       const budget = planned ? Math.max(3000, Math.min(8000, (active?.latency.value || 0) * 2 + 1000)) : 1500;
       const deadline = performance.now() + budget;
+      if (planned && inputAck !== sent) waiting('input-unconfirmed', { path: peer.kind, budgetMs: Math.round(budget), ...inputProgress() });
       while (active && (inputAck !== sent || (planned && !settled())) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
       draining = false;
-      if (planned && (inputAck !== sent || !settled())) return false;
+      if (planned && (inputAck !== sent || !settled())) {
+        waiting(inputAck !== sent ? 'input-unconfirmed' : 'output-draining', { path: peer.kind, ...inputProgress() }); return false;
+      }
       claiming = true;
       if (planned && active) {
         if (peer.handoff) {
@@ -411,6 +428,10 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         const preferred = healthy(peer) && pathPreferred({ candidateMs: peer.quality.scoreMs, currentMs: previous.quality.scoreMs, candidate: peer.kind, turn: direct.routeKind !== 'direct' });
         if (peer.qualityVote !== peer.quality.version) { peer.qualityVote = peer.quality.version; peer.qualityWins = preferred ? Math.min(2, peer.qualityWins + 1) : 0; }
         if (!preferred || peer.qualityWins < 2) {
+          waiting(peer.quality.rttMs === null || previous.quality.rttMs === null || preferred ? 'quality-warming' : 'quality', {
+            path: peer.kind,
+            ...(peer.quality.scoreMs === null ? {} : { candidateMs: Math.round(peer.quality.scoreMs) }), ...(previous.quality.scoreMs === null ? {} : { currentMs: Math.round(previous.quality.scoreMs) }),
+          });
           if (!preferred && peer.kind === 'direct' && peer.quality.rttMs !== null && previous.quality.rttMs !== null && !peer.qualityReported) { peer.qualityReported = true; issue('quality'); }
           return;
         }
@@ -421,7 +442,9 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
           peer.qualityWins = 0;
           if (peer.kind === 'relay') issue('quality');
         }
-      }
+      } else if (!idle()) waiting(waitReason(), { path: peer.kind });
+      else if (peer.networkProbePending) waiting('quality-warming', { path: peer.kind });
+      else waiting('cooldown', { path: peer.kind, waitMs: Math.ceil(routes.remaining()) });
     } catch {} finally {
       peer.promoting = false;
       if (!ended && !peer.gone && active !== peer) { clearTimeout(promotionTimer); promotionTimer = setTimeout(() => void promote(peer), Math.max(1000, peer.networkProbe ? 0 : routes.remaining())); }
@@ -429,7 +452,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   }
   async function connectDirect(prepared) {
     if (ended || directHalted || targetPending || directController || peers.has('direct') || document.hidden || !navigator.onLine || !canTryDirect()) return;
-    trace('direct-start', { path: 'direct' });
+    lastWaitReason = ''; trace('direct-start', { path: 'direct', attempt: directAttempts + 1 });
     const expedited = directExpedited; directExpedited = false;
     if (expedited) routes.networkProbeStarted();
     const controller = directController = new AbortController(); let transport, peer, failureReason = 'negotiation';
@@ -455,6 +478,8 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (!controller.signal.aborted) {
         const retry = directRetry(error?.reason || failureReason, directAttempts++);
         directHalted = retry.stop; probeDelay = retry.delay;
+        directStopReason = retry.stop ? error?.reason || failureReason : '';
+        if (retry.stop) trace('probe-stopped', { path: 'direct', reason: directStopReason, attempt: directAttempts });
       }
     }
     finally { if (directController === controller) directController = undefined; scheduleDirect(); }
@@ -499,6 +524,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       return;
     }
     for (const peer of peers.values()) if (peer.ready && !peer.ping) heartbeat(peer, 250);
+    if (directHalted) trace('probe-stopped', { path: 'direct', reason: directStopReason });
     if (active?.kind !== 'direct') {
       directExpedited = true;
       const candidate = peers.get('direct'); if (candidate?.ready) candidate.networkProbePending = true;

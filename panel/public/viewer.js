@@ -18,7 +18,8 @@ import { createDesktopTouchInput } from '/desktop-touch-input.js';
 const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
 const frame = new URLSearchParams(location.search).get('frame');
-const trace = createTraceReporter(frame);
+let networkDebug = new URLSearchParams(location.search).get('networkDebug') === '1';
+const trace = createTraceReporter(frame, { enabled: () => networkDebug });
 const viewport = document.getElementById('viewport');
 const frameHold = createFrameHold(viewport), fastConnect = new URLSearchParams(location.search).get('fast') === '1', routes = routePolicy();
 const streamEnabled = new URLSearchParams(location.search).get('stream') === '1';
@@ -191,6 +192,7 @@ viewportObserver.observe(viewport);
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame) return;
+  if (value.type === 'codex-network-debug') { networkDebug = value.enabled === true; return; }
   if (value.type === 'codex-desktop-focus') {
     if (document.hidden || parent.document.activeElement !== window.frameElement) return;
     if (!desktopInput.focus() && viewing && !preferences.blocked && !preferences.pan && !preferences.busy) {
@@ -217,6 +219,7 @@ window.addEventListener('message', event => {
     return;
   }
   if (value.type !== 'codex-desktop-options') return;
+  networkDebug = value.networkDebug === true;
   if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
     try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, rtcIceServers: rtcIceServers(value.rtc), rtcIceExpiresAt: value.rtc.rtcIceExpiresAt, hints: rtcHints(value.rtc.hints) }; } catch {}
   }
@@ -511,6 +514,7 @@ async function connect() {
   if (streamEnabled) {
     streamClient?.close();
     streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
+      waitReason: () => preferences.standby ? 'standby' : desktopInput.touch ? 'keyboard-open' : frameGate?.blocked ? 'frame-loading' : desktopInput.composing ? 'composition' : pressedKeys.size || pressedPointers.size ? 'keys-held' : preferences.blocked || preferences.busy ? 'ui-busy' : 'input-active',
       settled: () => !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800,
       prepare: prepareSwitch,
       paused: value => {

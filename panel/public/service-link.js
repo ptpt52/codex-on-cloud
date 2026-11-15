@@ -9,10 +9,10 @@ export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' 
 export function createServiceLink({ viewer, options, changed, canReplace = () => true, trace = () => {} }) {
   let running = false, epoch = 0, current, files, pending, retry, timer, delay = 15000, busy = false, checking = false;
   let attempts = 0, halted = false, healthMisses = 0, retryDue = 0, probeAt = -Infinity;
-  let replacing = false;
+  let replacing = false, heartbeatLoggedAt = -Infinity;
   const state = { ready: false, issue: '', route: null };
   const publish = () => changed({ ...state });
-  function retire(issue = '') { clearTimeout(timer); healthMisses = 0; const old = current, oldFiles = files; current = files = undefined; state.ready = false; state.route = null; state.issue = issue; oldFiles?.close(); old?.close(); publish(); }
+  function retire(issue = '') { clearTimeout(timer); healthMisses = 0; const old = current, oldFiles = files; current = files = undefined; state.ready = false; state.route = null; state.issue = issue; if (old) trace('path-lost', { path: 'direct', reason: issue || 'closed' }); oldFiles?.close(); old?.close(); publish(); }
   function schedule(ms = delay) {
     if (!running || halted || document.hidden || !navigator.onLine) return;
     const due = performance.now() + ms; if (retry && retryDue <= due) return;
@@ -36,7 +36,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     if (!running || epoch !== version || current !== peer || checking) return;
     if (!document.hidden) {
       checking = true;
-      try { await peer.health.ping({ confirmation: healthMisses > 0 }); const route = await peer.stats(); if (current === peer && epoch === version) { healthMisses = 0; state.issue = ''; state.route = route; publish(); } }
+      try { await peer.health.ping({ confirmation: healthMisses > 0 }); const route = await peer.stats(); if (current === peer && epoch === version) { healthMisses = 0; state.issue = ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
       catch (error) {
         if (current === peer) {
           if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 0); }
@@ -61,14 +61,16 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
       const route = await candidate.stats();
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
-      current = candidate; state.ready = true; state.issue = ''; state.route = route; delay = 15000; attempts = healthMisses = 0; publish();
+      current = candidate; state.ready = true; state.issue = ''; state.route = route; delay = 15000; attempts = healthMisses = 0; trace('path-active', { path: 'direct' }); publish();
       if (candidate.features?.filesProtocol === 1) {
         openFiles(candidate);
       }
       timer = setTimeout(() => void monitor(version, candidate), 3000);
     } catch {
       candidate?.close(); if (epoch === version && !controller.signal.aborted) {
-        const decision = directRetry(state.issue, attempts++); halted = decision.stop; delay = decision.delay; state.ready = false; publish(); schedule();
+        const decision = directRetry(state.issue, attempts++); halted = decision.stop; delay = decision.delay;
+        if (halted) trace('probe-stopped', { path: 'direct', reason: state.issue, attempt: attempts });
+        state.ready = false; publish(); schedule();
       }
     } finally { if (pending === controller) pending = undefined; }
   }
@@ -95,7 +97,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
         if (candidate.promoteRequired) await candidate.control.request('promote', {});
         if (!eligible()) return;
         clearTimeout(timer); const old = current, oldFiles = files;
-        current = candidate; files = undefined; state.ready = true; state.issue = ''; state.route = route;
+        current = candidate; files = undefined; state.ready = true; state.issue = ''; state.route = route; trace('path-active', { path: 'direct' });
         oldFiles?.close(); old?.close(); healthMisses = 0; publish();
         if (candidate.features?.filesProtocol === 1) openFiles(candidate);
         timer = setTimeout(() => void monitor(epoch, candidate), 3000);

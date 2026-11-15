@@ -109,6 +109,7 @@
             <label class="workspace-layout-option" for="workspace-layout">界面布局<select id="workspace-layout" aria-describedby="workspace-layout-note"><option value="sidebar">侧边工具栏（宽屏）</option><option value="top">顶部工具栏</option></select><span id="workspace-layout-note" class="tools-help">窄屏自动使用顶部布局。</span></label>
             <div class="view-actions tools-inline-option"><button id="awake-button" class="view-button" type="button" aria-pressed="false" aria-describedby="awake-description">保持亮屏</button><span id="awake-description" class="tools-help">后台或省电时可能暂停</span></div>
             <label id="mode-standby-option" class="viewport-option tools-check-option"><input id="mode-standby" type="checkbox" aria-labelledby="mode-standby-label" aria-describedby="mode-standby-note"><span><strong id="mode-standby-label">快速切换待命</strong><span id="mode-standby-note" class="tools-help">同时保持桌面与终端连接，切换更快，会增加内存和网络用量。</span></span></label>
+            <label class="tools-check-option"><input id="network-debug" type="checkbox" aria-labelledby="network-debug-label" aria-describedby="network-debug-note"><span><strong id="network-debug-label">网络调试日志</strong><span id="network-debug-note" class="tools-help">默认关闭。排查连接问题时开启，在“连接状态”复制或导出；关闭清空本页当前节点记录。</span></span></label>
           </section>
           <section id="access-actions" class="tools-group" aria-labelledby="tools-access-title">
             <h3 id="tools-access-title">服务器与访问</h3>
@@ -323,10 +324,12 @@
       <ol id="input-notice-list" class="input-notice-list" aria-label="操作与通道提示记录"></ol>
     </details>
     <details id="connection-trace" class="connection-trace">
-      <summary>连接时间线</summary>
-      <p class="muted">仅本页最近 50 条，不保存 IP、凭据或终端内容；退出后清空。耗时包含网络和服务端处理。</p>
+      <summary>网络日志与当前进度</summary>
+      <label class="tools-check-option"><input id="connection-debug-toggle" type="checkbox" aria-describedby="connection-trace-retention"><span>开启网络调试日志</span></label>
+      <p id="connection-trace-current" class="connection-trace-current" role="status"></p>
+      <p id="connection-trace-retention" class="muted">调试日志默认关闭；开启后立即记录后续过程，关闭清空本页当前节点的记录。</p>
       <ol id="connection-trace-list" class="connection-trace-list" aria-label="连接过程记录"></ol>
-      <div class="confirmation-actions"><button id="copy-connection-trace" class="secondary" type="button">复制诊断</button><button id="clear-connection-trace" class="secondary" type="button">清空记录</button></div>
+      <div class="confirmation-actions"><button id="copy-connection-trace" class="secondary" type="button">一键复制网络日志</button><button id="download-connection-trace" class="secondary" type="button">导出日志</button><button id="clear-connection-trace" class="secondary" type="button">清空记录</button></div>
       <textarea id="connection-trace-copy" rows="8" readonly aria-label="手动复制连接诊断" hidden></textarea>
     </details>
     <details class="direct-hints">

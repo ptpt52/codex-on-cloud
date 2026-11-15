@@ -16,7 +16,8 @@ import { appleTouchInput, attachRetainedTerminal } from '/retained-input.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
-const trace = createTraceReporter(frame);
+let networkDebug = query.get('networkDebug') === '1';
+const trace = createTraceReporter(frame, { enabled: () => networkDebug });
 let probed = false;
 const streamEnabled = query.get('stream') === '1';
 let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0, outputAckTimer;
@@ -346,6 +347,7 @@ async function connect() {
   if (streamEnabled) {
     streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
       canSwitchTarget: () => (ready || sessionConnected()) && !blocked && !switching && targetInputIdle(), idle: idleForSwitch,
+      waitReason: () => standby ? 'standby' : history?.reviewing ? 'history' : composing ? 'composition' : pressedKeys.size || pressedPointers.size ? 'keys-held' : switching ? 'target-switch' : retainedTerminal?.active ? 'keyboard-open' : blocked || busy ? 'ui-busy' : 'input-active',
       settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
       prepare: prepareSwitch,
       paused: (value, { terminalSwitch = false } = {}) => {
@@ -571,6 +573,7 @@ const legacyRecheck = createRTCRecheck({
 window.addEventListener('message', event => {
   const value = event.data;
   if (event.origin !== location.origin || event.source !== parent) return;
+  if (value?.type === 'codex-network-debug' && value.frame === frame) { networkDebug = value.enabled === true; return; }
   if (value?.type === 'codex-direct-recheck' && value.frame === frame && Number.isSafeInteger(value.id) && value.id > 0) {
     const report = state => parent.postMessage({ type: 'codex-direct-recheck-state', frame, id: value.id, ...state }, location.origin);
     if (standby || blocked || !ready) report({ state: 'unavailable' });
@@ -581,6 +584,7 @@ window.addEventListener('message', event => {
   if (value?.type === 'codex-direct-approved' && value.frame === frame && switchApproval?.id === value.id) { switchApproval.finish(value.allowed === true); return; }
   if (value?.type === 'codex-desktop-options') {
     if (value.frame !== frame) return;
+    networkDebug = value.networkDebug === true;
     if (value.rtc && typeof value.rtc.webrtc === 'boolean' && typeof value.rtc.rtcStunUrl === 'string' && value.rtc.rtcStunUrl.length <= 256) {
       try { rtcConfig = { webrtc: value.rtc.webrtc, rtcStunUrl: value.rtc.rtcStunUrl, rtcIceServers: rtcIceServers(value.rtc), rtcIceExpiresAt: value.rtc.rtcIceExpiresAt, hints: rtcHints(value.rtc.hints) }; } catch {}
     }
