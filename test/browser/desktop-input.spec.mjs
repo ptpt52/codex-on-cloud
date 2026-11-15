@@ -235,6 +235,22 @@ test('returning before an abandoned paste finishes explicitly rejects new text i
 test('direct desktop text follows focus even when the input assistant remembers a closed terminal', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
+    await page.addInitScript(() => {
+      if (window === parent) {
+        window.desktopFrameReady = false;
+        addEventListener('message', event => {
+          if (event.origin === location.origin && event.source === document.querySelector('#desktop-frame')?.contentWindow && event.data?.type === 'codex-desktop-view') window.desktopFrameReady = event.data.frameReady === true;
+        });
+      } else {
+        window.desktopInputAllowed = false;
+        addEventListener('message', event => {
+          if (event.origin === location.origin && event.source === parent && event.data?.type === 'codex-desktop-options') {
+            const value = event.data;
+            window.desktopInputAllowed = !value.blocked && !value.busy && !value.pan && !value.standby && value.desktopIme !== false;
+          }
+        });
+      }
+    });
     const catalog = await app.controls.manageTerminals({ action: 'create', name: '旧目标' });
     const terminal = catalog.terminals.find(value => value.id === 'aux1');
     await login(page, app); await openInput(page); await page.locator('#input-terminal').selectOption('aux1');
@@ -242,6 +258,11 @@ test('direct desktop text follows focus even when the input assistant remembers 
     await page.reload(); await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await expect(page.locator('#terminal-target-note')).toContainText('终端已关闭'); await closePanels(page);
     const frame = page.frames().find(value => value.url().includes('/desktop/index.html'));
+    // The closed assistant target deliberately keeps its paste button disabled.
+    // Wait for decoded pixels and the viewer's input options after this reload,
+    // just as login() waits for input admission on a valid assistant target.
+    await expect.poll(() => page.evaluate(() => window.desktopFrameReady)).toBe(true);
+    await expect.poll(() => frame.evaluate(() => window.desktopInputAllowed)).toBe(true);
     await frame.locator('#desktop-input').focus(); await compose(frame, '跟随当前窗口');
     await expect.poll(() => app.inputCalls).toEqual([{ action: 'paste', text: '跟随当前窗口', target: 'focused' }]);
   } finally { await app.close(); }
