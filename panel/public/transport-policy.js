@@ -9,14 +9,43 @@ export function heartbeatProgress(sentAt, progressAt, now = performance.now()) {
   return progressAt >= sentAt && now >= progressAt && now - progressAt <= 1500;
 }
 
-// Two fresh observations before comparing paths. No sample history or queue.
+// Fixed-size observations only. Quiet applications and pending helper actions
+// are not congestion: observe only transport buffers and transport-level ACKs.
 export function createPathQuality(now = () => performance.now()) {
-  let mean = null, count = 0, at = -Infinity, version = 0;
+  let mean = null, variation = 0, count = 0, at = -Infinity, version = 0;
+  let queued = 0, queuedAt = null, queueSeen = -Infinity, ack = 0, ackAt = -Infinity;
+  const fresh = () => count >= 2 && now() >= at && now() - at <= 10000;
+  const pressure = () => {
+    const time = now();
+    const buffered = time >= queueSeen && time - queueSeen <= 10000 && queuedAt !== null && time - queuedAt >= 1000
+      ? Math.min(800, 100 + queued / 256 + (time - queuedAt - 1000) / 10) : 0;
+    const age = time - ackAt;
+    const delayed = age >= 0 && age < 10000 ? Math.min(800, Math.max(0, ack - Math.max(250, (mean || 0) * 4))) * (1 - age / 10000) : 0;
+    return Math.max(buffered, delayed);
+  };
   return {
-    sample(ms) { if (!Number.isFinite(ms) || ms < 0 || ms > 600000) return; mean = mean === null ? ms : (mean + ms) / 2; count = Math.min(3, count + 1); at = now(); version++; },
-    get rttMs() { return count >= 2 && now() >= at && now() - at <= 10000 ? mean : null; },
+    sample(ms) {
+      if (!Number.isFinite(ms) || ms < 0 || ms > 600000) return;
+      variation = mean === null ? 0 : .75 * variation + .25 * Math.abs(ms - mean);
+      mean = mean === null ? ms : (mean + ms) / 2; count = Math.min(3, count + 1); at = now(); version++;
+    },
+    buffered(bytes) {
+      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > 2 ** 40) return;
+      const time = now();
+      if (bytes < 16384) queuedAt = null;
+      else if (queuedAt === null || time < queueSeen || time - queueSeen > 10000) queuedAt = time;
+      queued = bytes; queueSeen = time;
+    },
+    acknowledge(ms) {
+      if (!Number.isFinite(ms) || ms < 0 || ms > 600000) return;
+      ack = now() - ackAt > 10000 ? ms : Math.max(ms, ack * .75); ackAt = now();
+    },
+    get rttMs() { return fresh() ? mean : null; },
+    get scoreMs() { return fresh() ? mean + Math.min(100, variation / 2) + pressure() : null; },
+    get metrics() { return { rttMs: fresh() ? Math.round(mean) : null, jitterMs: Math.round(variation), queuedBytes: queued,
+      ackMs: now() - ackAt >= 0 && now() - ackAt <= 10000 ? Math.round(ack) : 0, penaltyMs: Math.round(pressure()) }; },
     get warming() { return count < 3; }, get version() { return version; },
-    clear() { mean = null; count = 0; at = -Infinity; version++; },
+    clear() { mean = null; variation = count = queued = ack = 0; at = queueSeen = ackAt = -Infinity; queuedAt = null; version++; },
   };
 }
 export function pathPreferred({ candidateMs, currentMs, candidate = 'direct', turn = false }) {

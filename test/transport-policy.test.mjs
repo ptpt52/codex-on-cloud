@@ -10,6 +10,25 @@ test('path quality uses fresh repeated samples, favors comparable direct paths a
     assert.equal(pathPreferred({ candidateMs, currentMs, candidate, turn }), expected);
   }
 });
+test('path cost distinguishes quiet applications from sustained transport queues and delayed transport ACKs', () => {
+  let time = 1000; const direct = createPathQuality(() => time), relay = createPathQuality(() => time);
+  for (let n = 0; n < 3; n++) { direct.sample(10); relay.sample(30); }
+  time += 3000; assert.equal(direct.scoreMs, 10, 'no traffic does not mean a stalled connection');
+  direct.buffered(32768); time += 500; direct.buffered(32768); assert.equal(direct.metrics.penaltyMs, 0);
+  time += 600; direct.buffered(32768); assert.ok(direct.scoreMs > 200);
+  assert.equal(pathPreferred({ candidateMs: relay.scoreMs, currentMs: direct.scoreMs, candidate: 'relay' }), true);
+  direct.buffered(0); assert.equal(direct.scoreMs, 10);
+  direct.acknowledge(1200); assert.ok(direct.metrics.penaltyMs > 500);
+  time += 10001; direct.sample(10); assert.equal(direct.scoreMs, 10, 'old congestion cannot permanently penalize a path');
+  direct.buffered(-1); direct.acknowledge(NaN); assert.equal(direct.scoreMs, 10);
+  direct.clear(); assert.equal(direct.scoreMs, null); assert.equal(direct.metrics.queuedBytes, 0);
+});
+test('fresh RTT variation increases path cost while retaining the measured mean', () => {
+  const steady = createPathQuality(), jittery = createPathQuality();
+  for (const sample of [50, 50, 50]) steady.sample(sample);
+  for (const sample of [10, 90, 50]) jittery.sample(sample);
+  assert.equal(jittery.rttMs, steady.rttMs); assert.ok(jittery.scoreMs > steady.scoreMs);
+});
 test('a transient disconnect recovers without retirement; hard failure cancels the one deadline', () => {
   let expire, failed = 0, cancelled = 0;
   const grace = disconnectGrace(() => failed++, { schedule: fn => { expire = fn; return 1; }, cancel: () => cancelled++ });

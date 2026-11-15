@@ -22,6 +22,10 @@ async function setup(page, profile) {
       async getStats(...args) { const stats = await super.getStats(...args); return parent.pathProfile.turn ? new Map([...stats].map(([id, row]) => [id, /^(?:local|remote)-candidate$/.test(row.type) ? { ...row, candidateType: 'relay' } : row])) : stats; }
       createDataChannel(label, options) {
         const channel = super.createDataChannel(label, options);
+        if (label === 'codex-stream') {
+          const buffered = Object.getOwnPropertyDescriptor(RTCDataChannel.prototype, 'bufferedAmount').get;
+          Object.defineProperty(channel, 'bufferedAmount', { get: () => parent.pathProfile.directBuffered ?? buffered.call(channel) });
+        }
         if (['codex-stream', 'codex-health'].includes(label)) channel.addEventListener('message', event => {
           if (!event.isTrusted || !(event.data instanceof ArrayBuffer)) return;
           let pong = label === 'codex-health';
@@ -69,6 +73,21 @@ test('a persistently slower active RTC returns to retained WSS after cooldown wi
     await expect(page.locator('#diag-transport')).toContainText('WebSocket', { timeout: 18000 });
     expect(await frame.evaluate(() => window.pathSockets.length)).toBe(1);
     expect(await frame.evaluate(() => window.pathPeers.filter(peer => peer.connectionState === 'connected').length)).toBe(1);
+    expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('a sustained stream send queue can prefer healthy WSS despite fast independent RTC heartbeats', async ({ page }) => {
+  test.setTimeout(60000);
+  const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
+  try {
+    await setup(page, { relay: 30, direct: 1, turn: false }); const frame = await login(page, app);
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 12000 });
+    await page.evaluate(() => { window.pathProfile.directBuffered = 32768; });
+    await expect(page.locator('#diag-transport')).toContainText('WebSocket', { timeout: 42000 });
+    await page.locator('#connection-button').click();
+    await expect(page.locator('#connection-trace-list')).toContainText('通道排队或确认变慢');
+    expect(await frame.evaluate(() => window.pathSockets.length)).toBe(1);
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });

@@ -41,7 +41,7 @@ export function createForwardPeer({ address, ipv6Address, remoteHints = [], stun
     const endpoint = candidate => ({ address: candidate?.host, type: candidate?.type });
     const mapped = pair && connection.reflexiveBySocket.get(pair.protocol);
     const local = mapped && (mapped.host !== pair.localCandidate.host || mapped.port !== pair.localCandidate.port) ? mapped : pair?.localCandidate;
-    const preferred = prefer(rttMs);
+    const preferred = prefer(rttMs, writer.bufferedAmount);
     current = { id, available: available && preferred, healthy: successes >= 2, reason: available && !preferred ? 'rtc_path_slower' : reason, rttMs, family, window,
       route: available ? rtcDirectKind({ family, local: endpoint(local), remote: endpoint(pair.remoteCandidate) }) : 'unknown' };
     status(current);

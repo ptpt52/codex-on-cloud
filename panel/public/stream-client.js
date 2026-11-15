@@ -234,7 +234,9 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (value.type === 'input-ack') {
         if (peer !== active || value.epoch !== epoch || !integer(value.id) || value.id > sent) return;
         if (value.id > inputAck) peer.progressAt = performance.now(); inputAck = Math.max(inputAck, value.id);
-        for (const [n, size] of inputSizes) if (n <= inputAck) { inputBytes -= size; inputSizes.delete(n); }
+        for (const [n, record] of inputSizes) if (n <= inputAck) {
+          peer.quality.acknowledge(performance.now() - record.at); inputBytes -= record.size; inputSizes.delete(n);
+        }
         return;
       }
       if (value.type !== 'chunk' || peer !== active || value.epoch !== epoch) return;
@@ -349,12 +351,18 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     try {
       const previous = active;
       if (previous) {
+        peer.quality.buffered(peer.buffered()); previous.quality.buffered(previous.buffered());
+        for (const path of [peer, previous]) {
+          const metrics = path.quality.metrics;
+          if (metrics.penaltyMs >= 50 && !path.pressureReported) { path.pressureReported = true; trace('path-quality', { path: path.kind, ...metrics }); }
+          else if (metrics.penaltyMs < 25) path.pressureReported = false;
+        }
         const direct = peer.kind === 'direct' ? peer : previous;
         if (direct.transport && (!direct.routeAt || performance.now() - direct.routeAt > 3000)) {
           direct.routeKind = rtcRouteKind(await direct.transport.stats()); direct.routeAt = performance.now();
         }
         if (active !== previous || ended || targetPending || creating() || peer.gone) return;
-        const preferred = healthy(peer) && pathPreferred({ candidateMs: peer.quality.rttMs, currentMs: previous.quality.rttMs, candidate: peer.kind, turn: direct.routeKind === 'relay' });
+        const preferred = healthy(peer) && pathPreferred({ candidateMs: peer.quality.scoreMs, currentMs: previous.quality.scoreMs, candidate: peer.kind, turn: direct.routeKind === 'relay' });
         if (peer.qualityVote !== peer.quality.version) { peer.qualityVote = peer.quality.version; peer.qualityWins = preferred ? Math.min(2, peer.qualityWins + 1) : 0; }
         if (!preferred || peer.qualityWins < 2) {
           if (!preferred && peer.kind === 'direct' && peer.quality.rttMs !== null && previous.quality.rttMs !== null && !peer.qualityReported) { peer.qualityReported = true; issue('quality'); }
@@ -498,7 +506,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (!peer.writable()) { lost(peer); throw failure('连接正在关闭，本次操作未发送'); }
       const bytes = terminal ? new TextEncoder().encode(data + '\n') : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength);
       if (!bytes.length || bytes.length > 128 * 1024 || inputSizes.size >= 64 || inputBytes + bytes.length > 128 * 1024) { close('input-pressure'); throw new Error('input pressure'); }
-      const id = ++sent, parts = Math.ceil(bytes.length / CHUNK); inputSizes.set(id, bytes.length); inputBytes += bytes.length;
+      const id = ++sent, parts = Math.ceil(bytes.length / CHUNK); inputSizes.set(id, { size: bytes.length, at: performance.now() }); inputBytes += bytes.length;
       try { for (let part = 0; part < parts; part++) send(peer, { type: 'input', epoch, id, part, parts, data: encode(bytes.subarray(part * CHUNK, (part + 1) * CHUNK)) }); }
       catch { lost(peer); }
     },

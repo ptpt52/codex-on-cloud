@@ -57,14 +57,16 @@ export function createForwardPool({ config, scope, valid, configuration, connect
       peerId = value.id;
       let candidate;
       const directQuality = createPathQuality(); let preferred = 'direct', wins = 0, changedAt = -Infinity;
-      const prefer = rttMs => {
+      const prefer = (rttMs, bufferedBytes = 0) => {
         if (!Number.isFinite(rttMs) || rttMs < 0) return preferred === 'direct';
+        directQuality.buffered(bufferedBytes);
+        relayQuality.buffered((mux?.bufferedAmount || 0) + (ws?.bufferedAmount || 0));
         directQuality.sample(rttMs);
         // An unavailable WSS can never prevent a healthy direct open.
         if (!relayHealthy()) { wins = 0; return true; }
         const candidatePath = preferred === 'direct' ? 'relay' : 'direct';
-        const candidateMs = candidatePath === 'direct' ? directQuality.rttMs : relayQuality.rttMs;
-        const currentMs = preferred === 'direct' ? directQuality.rttMs : relayQuality.rttMs;
+        const candidateMs = candidatePath === 'direct' ? directQuality.scoreMs : relayQuality.scoreMs;
+        const currentMs = preferred === 'direct' ? directQuality.scoreMs : relayQuality.scoreMs;
         wins = pathPreferred({ candidateMs, currentMs, candidate: candidatePath }) ? Math.min(2, wins + 1) : 0;
         if (wins >= 2 && performance.now() - changedAt >= ROUTE_COOLDOWN) { preferred = candidatePath; changedAt = performance.now(); wins = 0; }
         return preferred === 'direct';

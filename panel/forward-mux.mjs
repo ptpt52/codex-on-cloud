@@ -87,5 +87,5 @@ export function createForwardMux(ws, { valid, healthy, connect }) {
     if (op === 3) return channel.close(false);
     channel.onMessage.emit(op === 1 ? bytes.toString('utf8') : bytes);
   }
-  return { receive, close, get streams() { return channels.size; } };
+  return { receive, close, get streams() { return channels.size; }, get bufferedAmount() { return queued + (writing?.bytes || 0); } };
 }

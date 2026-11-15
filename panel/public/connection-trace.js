@@ -5,6 +5,7 @@ export const TRACE_LABELS = Object.freeze({
   'first-frame': '首屏准备完成', 'path-active': '数据通道已启用', 'path-lost': '通道已断开', 'retry': '等待重试',
   'heartbeat-timeout': '心跳未及时回复', 'heartbeat-delayed': '数据仍有进展，等待拥塞中的心跳', 'network-change': '网络或前后台状态变化',
   'session-ended': '观看连接已结束', 'input-pressure': '输入队列达到上限',
+  'path-quality': '通道排队或确认变慢',
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', signaling: '交换连接信息', connecting: '建立加密通道' });
 const reasons = ['unsupported', 'disabled', 'signaling', 'negotiation', 'timeout', 'signaling-timeout', 'gathering-timeout', 'ice-timeout', 'channel-timeout',
@@ -16,7 +17,7 @@ function clean(value) {
   if (['relay', 'direct'].includes(value.path)) result.path = value.path;
   if (Object.hasOwn(TRACE_STAGES, value.stage)) result.stage = value.stage;
   if (reasons.includes(value.reason)) result.reason = value.reason;
-  for (const key of ['durationMs', 'waitMs', 'queuedBytes']) if (number(value[key])) result[key] = value[key];
+  for (const key of ['durationMs', 'waitMs', 'queuedBytes', 'rttMs', 'jitterMs', 'ackMs', 'penaltyMs']) if (number(value[key])) result[key] = value[key];
   return result;
 }
 // No text, addresses, IDs, SDP or credentials cross this diagnostic interface.
