@@ -78,11 +78,21 @@ async function closeCurrent(page) {
 const paths = page => page.evaluate(() => ({ ...window.attachmentPaths }));
 const output = (app, text) => app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from(text).toString('base64') }) + '\n');
 for (const direct of [false, true]) {
-  test(`${direct ? 'direct' : 'relay'}: closing the active terminal selects its neighbor on the retained connection`, async ({ page }) => {
+  test(`${direct ? 'direct' : 'relay'}: the closed terminal screen can directly create on the retained connection`, async ({ page }) => {
     const app = await setup(page, { direct, count: 3 });
     try {
       const before = await paths(page), src = await page.locator('#desktop-frame').getAttribute('src');
-      await closeCurrent(page); await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线');
+      output(app, 'CLOSED-CURRENT-SCREEN\r\n');
+      await expect(page.frameLocator('#desktop-frame').locator('.xterm-rows')).toContainText('CLOSED-CURRENT-SCREEN');
+      await closeCurrent(page); await expect(page.locator('#input-terminal')).toHaveValue('new'); await expect(page.locator('#connection-status')).toContainText('终端已关闭');
+      await expect(page.locator('#desktop-overlay')).toBeVisible(); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
+      await expect(page.locator('#choose-terminal-button')).toBeVisible(); await expect(page.locator('#choose-terminal-button')).toBeEnabled();
+      await expect(page.locator('#paste-button')).toBeDisabled();
+      await expect(page.frameLocator('#desktop-frame').locator('.xterm-rows')).toContainText('CLOSED-CURRENT-SCREEN');
+      expect(app.terminalConnections).toBe(1); expect(await paths(page)).toEqual(before);
+      await page.locator('#choose-terminal-button').click(); await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#input-terminal')).toHaveValue('main');
+      await expect(page.frameLocator('#desktop-frame').locator('.xterm-rows')).not.toContainText('CLOSED-CURRENT-SCREEN');
+      expect(app.terminalConnections).toBe(2); expect(await paths(page)).toEqual(before);
       await choose(page, 'aux2'); await expect(page.locator('#input-terminal')).toHaveValue('aux2'); await expect(page.locator('#paste-button')).toBeEnabled();
       expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(src); const after = await paths(page);
       expect(direct ? after.peers : after.sockets).toBe(direct ? before.peers : before.sockets); expect(app.terminalInputs).toEqual([]);
@@ -95,7 +105,7 @@ for (const direct of [false, true]) {
       await expect(frame.locator('.xterm-rows')).toContainText('FINAL-ATTACHMENT-SCREEN');
       const before = await paths(page), src = await page.locator('#desktop-frame').getAttribute('src'), old = (await app.controls.listTerminals()).terminals[0];
       await closeCurrent(page); await expect(page.locator('#connection-status')).toContainText('终端已关闭'); await expect(frame.locator('#terminal-status')).toContainText('终端已结束');
-      await expect(page.locator('#desktop-overlay')).toBeHidden(); await expect(frame.locator('.xterm-rows')).toContainText('FINAL-ATTACHMENT-SCREEN');
+      await expect(page.locator('#desktop-overlay')).toBeVisible(); await expect(page.locator('#choose-terminal-button')).toBeVisible(); await expect(frame.locator('.xterm-rows')).toContainText('FINAL-ATTACHMENT-SCREEN');
       await frame.locator('.xterm-helper-textarea').dispatchEvent('input', { data: 'must not send' }); expect(app.terminalInputs).toEqual([]);
       await choose(page, 'new'); await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#input-terminal')).toHaveValue('main');
       expect((await app.controls.listTerminals()).terminals[0].token).not.toBe(old.token); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(src);
@@ -158,7 +168,9 @@ for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: both e
       expect(records.findIndex(e => e.type === 'target-sync')).toBeLessThan(records.findIndex(e => e.type === 'switched'));
     }
     expect(await paths(page)).toEqual(before);
-    await closeCurrent(page); await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#paste-button')).toBeEnabled();
+    await closeCurrent(page); await expect(page.locator('#input-terminal')).toHaveValue('new'); await expect(page.locator('#paste-button')).toBeDisabled();
+    expect(app.terminalConnections).toBe(4); expect(await paths(page)).toEqual(before);
+    await choose(page, 'aux1'); await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#paste-button')).toBeEnabled();
     expect(await paths(page)).toEqual(before);
     await frame.evaluate(direct => { if (direct) window.attachmentPeer.close(); else window.attachmentSocket.close(); }, direct);
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#paste-button')).toBeEnabled();

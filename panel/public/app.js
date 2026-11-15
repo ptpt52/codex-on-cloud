@@ -714,13 +714,13 @@ function renderConnection() {
   } else if (!owned && permissions.role === 'temporary') overlay('临时访问', '此账号仅可查看连接状态、配置服务器访问本地设备的映射，以及上传和下载共享中转文件。');
   else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '既有双向端口映射仍可连接；新增或管理本机 → 服务器映射需先解锁。连接状态、本地设备映射和文件中转仍可用。', true);
   else if (!owned) overlay('在这里继续工作', terminalOnly ? '终端已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启任务。' : '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
-  else if (terminalMode() && views.active.loaded && views.active.terminalAttachment && ['idle', 'exited', 'failed', 'expired'].includes(views.active.attachmentState)) $('desktop-overlay').hidden = true;
   else if (terminalMode() && terminalSelectionState === 'closed') {
     overlay('已关闭', '点击下方入口新开终端，或切换到其他终端。');
     $('choose-terminal-button').textContent = '新开终端';
     $('choose-terminal-button').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals || !!confirmation;
     $('choose-terminal-button').hidden = false;
   }
+  else if (terminalMode() && views.active.loaded && views.active.terminalAttachment && ['idle', 'exited', 'failed', 'expired'].includes(views.active.attachmentState)) $('desktop-overlay').hidden = true;
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) {
     overlay('请选择终端', '原终端未通过身份校验，草稿仍保留。请刷新列表或手动选择目标。');
     $('choose-terminal-button').textContent = '选择终端'; $('choose-terminal-button').disabled = false;
@@ -1439,7 +1439,6 @@ async function terminalRequest(body, { waitForView = false } = {}) {
   if (body?.action === 'close' && !rememberDraft()) return;
   const closingCurrent = body?.action === 'close' && body.terminalId === selectedTerminal && body.terminalToken === selectedTerminalToken;
   const retainClosing = closingCurrent && terminalMode() && views.active.loaded && views.active.terminalAttachment;
-  const neighbors = closingCurrent ? [...terminalCatalog.slice(terminalCatalog.findIndex(item => item.id === selectedTerminal) + 1), ...terminalCatalog.slice(0, terminalCatalog.findIndex(item => item.id === selectedTerminal)).reverse()] : [];
   if (closingCurrent) {
     if (terminalMode() && !retainClosing) stopFrame();
     terminalSelectionState = 'loading';
@@ -1466,17 +1465,16 @@ async function terminalRequest(body, { waitForView = false } = {}) {
     const retainConnection = body?.action === 'create' && terminalMode() && views.active.loaded && views.active.terminalSwitchReady;
     if (body?.action === 'create' && (result.created !== result.opened || body.terminalId !== undefined && result.created !== body.terminalId || !result.terminals?.some(item => item.id === result.created && item.supported))) throw new Error('创建结果未确认，请刷新列表核对，不要重复新建。');
     updateTerminalCatalog(result, retainConnection ? undefined : body ? result.opened : undefined);
-    const fallback = retainClosing ? neighbors.find(previous => terminalCatalog.some(item => item.id === previous.id && item.token === previous.token && item.supported)) : undefined;
     if (body?.action === 'open') desktopFocusFailureKey = '';
     clearTimeout(timeout);
     if (body?.action === 'create') $('new-terminal-name').value = '';
     $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
     renderTerminalList();
-    if (retainConnection || fallback) {
-      const created = fallback || terminalCatalog.find(item => item.id === result.created);
+    if (retainConnection) {
+      const created = terminalCatalog.find(item => item.id === result.created);
       if (views.active.loaded && views.active.terminalSwitchReady) {
         const attached = await switchTerminalStream({ id: created.id, token: created.token });
-        if (!attached && terminalController === controller && generation === uiGeneration) $('terminals-status').textContent = fallback ? '终端已关闭，查看切换未完成；请手动选择其他终端。' : '终端已创建，查看切换未完成；请选择已有终端，不要重复新建。';
+        if (!attached && terminalController === controller && generation === uiGeneration) $('terminals-status').textContent = '终端已创建，查看切换未完成；请选择已有终端，不要重复新建。';
       } else activateTerminal({ id: created.id, token: created.token });
     }
     return { ok: true };
