@@ -11,6 +11,54 @@ import { createSelfhostCenter } from '../../selfhost/center.mjs';
 
 test.use({ serviceWorkers: 'block' });
 
+test('a stalled startup session read reveals login after its deadline and never submits credentials', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); let release, reads = 0, logins = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    page.on('request', request => { if (request.url().endsWith('/api/login')) logins++; });
+    await page.route('**/api/me', async route => { reads++; await gate; await route.fulfill({ status: 401, json: { error: 'isolated delayed response' } }).catch(() => {}); });
+    await page.goto(app.config.origin, { waitUntil: 'commit' });
+    await expect(page.locator('#login-view')).toBeVisible({ timeout: 12000 });
+    await expect(page.locator('#login-error')).toContainText('读取登录状态超时');
+    await expect(page.locator('#login-button')).toBeEnabled();
+    release(); await page.waitForTimeout(200);
+    expect(reads).toBe(1); expect(logins).toBe(0); expect(app.terminalConnections).toBe(0);
+  } finally { release(); await app.close(); }
+});
+
+test('a lost accepted login response releases the button and never repeats login or claims a desktop', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); let release, logins = 0, accepted = false, claims = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    page.on('request', request => { if (request.url().endsWith('/api/desktop/claim')) claims++; });
+    await page.goto(app.config.origin); await expect(page.locator('#login-view')).toBeVisible();
+    await page.route('**/api/login', async route => {
+      logins++; const response = await route.fetch(); accepted = response.ok();
+      await gate; await route.fulfill({ response }).catch(() => {});
+    });
+    await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect.poll(() => accepted).toBe(true);
+    await expect(page.locator('#login-error')).toContainText('结果尚未确认', { timeout: 12000 });
+    await expect(page.locator('#login-button')).toBeEnabled();
+    release(); await page.waitForTimeout(200);
+    await expect(page.locator('#login-view')).toBeVisible();
+    expect(logins).toBe(1); expect(claims).toBe(0); expect(app.terminalInputs).toEqual([]);
+  } finally { release(); await app.close(); }
+});
+
+test('a stalled automatic claim is bounded without repeating the claim or sending input', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); let release, claims = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    await page.route('**/api/desktop/claim', async route => { claims++; await gate; await route.fulfill({ status: 503, json: { error: 'isolated claim stall' } }).catch(() => {}); });
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#workspace-view')).toBeVisible();
+    await expect(page.locator('#login-button')).toBeEnabled({ timeout: 12000 });
+    release(); await page.waitForTimeout(200);
+    expect(claims).toBe(1); expect(app.terminalConnections).toBe(0); expect(app.terminalInputs).toEqual([]);
+  } finally { release(); await app.close(); }
+});
+
 test('shared-root login shows the node name and short ID, keeps full autofill scope and accepts old saved names', async ({ page }, testInfo) => {
   const nodeId = 'a1b2c3d4' + 'a'.repeat(24), app = await fixture({ mode: 'terminal', nodeId, sharedEntry: true, gatewayNode: { name: 'home' } });
   try {

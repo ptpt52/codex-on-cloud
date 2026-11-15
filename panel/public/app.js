@@ -1260,7 +1260,7 @@ async function poll() {
     }
   }
 }
-async function claim(lockPassword, signal) {
+async function claim(lockPassword, signal = AbortSignal.timeout(8000)) {
   const generation = uiGeneration;
   if (!permissions.canClaim) return;
   if (permissions.requiresUnlock && !lockPassword) { accessUI?.unlock(); return; }
@@ -1672,8 +1672,9 @@ $('login-form').addEventListener('submit', event => {
   event.preventDefault();
   void action($('login-button'), async () => {
     $('login-error').textContent = '';
-    try { await showWorkspace(await api('/api/login', { method: 'POST', body: { username: $('username').value, password: $('password').value } })); }
-    catch (error) { $('login-error').textContent = error.message; }
+    const signal = AbortSignal.timeout(8000);
+    try { await showWorkspace(await api('/api/login', { method: 'POST', body: { username: $('username').value, password: $('password').value }, signal })); }
+    catch (error) { $('login-error').textContent = signal.aborted ? '登录验证超时，结果尚未确认；请检查网络后手动重试，不会自动重发。' : error.message; }
   });
 });
 $('logout-button').addEventListener('click', () => { rememberDraft(); if (draftsAtRisk()) leaveWorkspace('logout'); else requestConfirmation('logout'); });
@@ -2145,7 +2146,11 @@ function exportDrafts() {
 }
 for (const id of ['copy-draft', 'copy-leave-draft']) $(id).addEventListener('click', () => void copyCurrentDraft());
 for (const id of ['export-drafts', 'export-leave-drafts']) $(id).addEventListener('click', exportDrafts);
-try { await showWorkspace(await api('/api/me')); } catch (error) { showLogin(accessExpired ? error.message : ''); }
+{
+  const signal = AbortSignal.timeout(8000);
+  try { await showWorkspace(await api('/api/me', { signal })); }
+  catch (error) { showLogin(signal.aborted ? '读取登录状态超时，请检查网络后手动连接。' : accessExpired ? error.message : ''); }
+}
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register(entryPath('/sw.js')).catch(() => {});
 
 // Only announce updates; active input and streams stay on their loaded version.
