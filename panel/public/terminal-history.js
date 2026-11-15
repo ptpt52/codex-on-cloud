@@ -1,6 +1,6 @@
 // One in-memory xterm buffer: at most 20,000 history rows and 500 columns.
 // Local scrolling never sends input. Program paging is an explicit opt-in.
-import { parseHistoryStyles, renderHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, historyText, historyMatchRanges, wrapHistoryRows, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
+import { parseHistoryStyles, renderHistoryRuns, renderHistoryRunsAsync, highlightHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, historyText, historyMatchRanges, wrapHistoryRows, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
 // Keep the fixed controls across reconnects even while their toolbar belongs
 // to the outer sidebar. Never adopt the terminal host or its text buffer.
@@ -28,6 +28,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   let unseen = false, archiveStyled = false, archiveSimplified = false;
   let view, archiveLocal = false, toolsOpen = false, searchTimer, queryComposing = false, appliedQuery = '', matches = [], groups = [], current = -1, limited = false;
   let copying = false, copyGeneration = 0;
+  let renderController, renderedView, renderReady, renderNavigate = false;
   let downloadURL, downloadTimer;
   const listeners = [], subscriptions = [];
   const listen = (target, name, handler, options) => { target.addEventListener(name, handler, options); listeners.push(() => target.removeEventListener(name, handler, options)); };
@@ -65,6 +66,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
     if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
+    if (renderController) label += ' · 正在排版，可返回实时';
     if (program && reviewing) label += ' · 程序翻页已暂停，点上翻/下翻继续，保留查找工具';
     if (toolsOpen && !reviewing) label += ' · 查找复制已展开，终端仍可输入';
     if (reviewing && unseen) label += ' · 有新输出';
@@ -106,6 +108,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     } finally { copying = false; updateTools(); }
   }
   function selectedText() {
+    if (renderController) return '';
     const selection = window.getSelection();
     if (archiveOpen && selection?.rangeCount && selection.rangeCount <= 8 && archive.contains(selection.anchorNode) && archive.contains(selection.focusNode)) {
       const visible = selection.toString();
@@ -145,13 +148,13 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       tools.style.maxHeight = height; tools.style.setProperty('--history-panel-height', height);
     }
     query.disabled = !view && !!loading;
-    previousMatch.disabled = nextMatch.disabled = !matches.length && (!!view || !!loading || !query.value);
+    previousMatch.disabled = nextMatch.disabled = !!renderController || !matches.length && (!!view || !!loading || !query.value);
     const contentAvailable = view ? !!view.text.length : !loading;
     copyAll.disabled = copying || !contentAvailable; copySelection.disabled = copying || !selectedText();
     download.disabled = !contentAvailable;
     retryCopy.disabled = copying || !manual.open || !copyText.value;
     retryCopy.textContent = copying && manual.open ? '复制中…' : '复制到本机';
-    const result = queryComposing ? '输入中…' : searchTimer !== undefined ? '查找中…' : !view && !loading ? query.value ? '回车查找当前画面' : '输入关键词查找当前画面' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
+    const result = queryComposing ? '输入中…' : renderController ? '正在排版…' : searchTimer !== undefined ? '查找中…' : !view && !loading ? query.value ? '回车查找当前画面' : '输入关键词查找当前画面' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
     const description = !view ? loading ? '等待历史读取完成' : `实时画面 · ${result}` : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
     const feedback = !manual.hidden ? '手动复制窗口已打开' : copying ? '复制中…' : copyState.textContent;
     findState.textContent = floating() ? feedback || result : description;
@@ -161,6 +164,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     archive.style.top = floating() ? '' : `${Math.max(0, Math.min(host.clientHeight - 44, tools.getBoundingClientRect().bottom - host.getBoundingClientRect().top + 6))}px`;
   }
   function setCurrent(index, navigate = false) {
+    if (renderController) renderNavigate ||= navigate;
     for (const mark of groups[current] || []) delete mark.dataset.current;
     current = index;
     for (const mark of groups[current] || []) mark.dataset.current = 'true';
@@ -172,16 +176,44 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       if (rect.left < box.left || rect.right > box.right) archive.scrollLeft += rect.left - box.left - 8;
     }
   }
-  function search(navigate = false) {
+  function cancelRender() {
+    const controller = renderController; renderController = undefined; controller?.abort();
+    renderedView = undefined; renderReady = undefined; renderNavigate = false; archive.removeAttribute('aria-busy');
+  }
+  function applySearch(navigate = false) {
+    const top = archive.scrollTop, left = archive.scrollLeft;
+    groups = highlightHistoryRuns(archive, view.parsed, historyMatchRanges(view.parsed, matches));
+    archive.scrollTop = top; archive.scrollLeft = left;
+    current = -1; setCurrent(matches.length ? 0 : -1, navigate && !!query.value);
+  }
+  function search(navigate = false, ready) {
     clearTimeout(searchTimer); searchTimer = undefined;
     query.value = query.value.slice(0, 128).replace(/[\uD800-\uDBFF]$/, '');
     appliedQuery = query.value;
     const found = findHistoryMatches(view?.text || '', query.value); matches = found.matches; limited = found.limited;
     if (view) {
-      const top = archive.scrollTop, left = archive.scrollLeft;
-      groups = renderHistoryRuns(archive, view.parsed, historyMatchRanges(view.parsed, matches), grid); archiveSimplified = view.parsed.simplified || grid.limited;
-      archive.scrollTop = top; archive.scrollLeft = left;
-      if (!view.parsed.runs.length) archive.textContent = '当前没有可回看的终端历史';
+      if (renderedView === view) { applySearch(navigate); ready?.(); return; }
+      if (renderController) { renderNavigate ||= navigate; if (ready) renderReady = ready; updateTools(); return; }
+      const snapshot = view, top = archive.scrollTop, left = archive.scrollLeft;
+      const done = () => {
+        renderedView = snapshot; archiveSimplified = snapshot.parsed.simplified || grid.limited;
+        if (!snapshot.parsed.runs.length) archive.textContent = '当前没有可回看的终端历史';
+        archive.scrollTop = top; archive.scrollLeft = left;
+      };
+      if (view.text.length < 32768) { renderHistoryRuns(archive, snapshot.parsed, [], grid); done(); applySearch(navigate); ready?.(); return; }
+      const controller = renderController = new AbortController(); renderReady = ready; renderNavigate = navigate;
+      archive.textContent = '正在排版历史…'; archive.setAttribute('aria-busy', 'true'); groups = []; current = -1; update();
+      void renderHistoryRunsAsync(archive, snapshot.parsed, grid, { signal: controller.signal }).then(() => {
+        if (disposed || renderController !== controller || view !== snapshot) return;
+        renderController = undefined; archive.removeAttribute('aria-busy'); done();
+        const ready = renderReady, navigate = renderNavigate; renderReady = undefined; renderNavigate = false;
+        applySearch(navigate); ready?.(); update();
+      }).catch(error => {
+        if (disposed || renderController !== controller) return;
+        renderController = undefined; renderReady = undefined; renderNavigate = false; archive.removeAttribute('aria-busy');
+        archive.textContent = '历史排版失败，可重试查找或复制全部'; notice = error.message; update();
+      });
+      return;
     } else groups = [];
     current = -1; setCurrent(matches.length ? 0 : -1, navigate && !!query.value);
   }
@@ -191,9 +223,9 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function freezeLocal() {
     const parsed = captureHistoryBuffer(term);
-    view = { parsed, text: historyText(parsed) }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
-    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy(); search();
-    const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; update();
+    cancelRender(); view = { parsed, text: historyText(parsed) }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
+    archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy();
+    search(false, () => { const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; }); update();
   }
   function openTools(focus = false) {
     // A live terminal keeps accepting input while this auxiliary panel is
@@ -209,7 +241,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   function resetLocalView() {
     // The drawer and program preference are independent of the displayed view.
     // Returning to the program must not dismiss tools or discard the query.
-    cancelRead(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
+    cancelRead(); cancelRender(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; current = -1; archive.replaceChildren();
     archiveOpen = false; archive.hidden = true; unseen = false; notice = '';
     pixels = 0; gesture = undefined; search(); term.scrollToBottom(); update();
   }
@@ -269,12 +301,12 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       clearCopy(); archiveStyled = value.styled === true; archiveLocal = false;
       let parsed = parseHistoryStyles(value.text || '', archiveStyled);
       if (value.joined) parsed = wrapHistoryRows(parsed, value.cols, term._core.unicodeService);
-      view = { parsed, text: historyText(parsed) }; archiveSimplified = parsed.simplified; search();
+      cancelRender(); view = { parsed, text: historyText(parsed) }; archiveSimplified = parsed.simplified;
       archiveAlternate = value.alternate; archiveTruncated = value.truncated;
       archiveOpen = true; archive.hidden = false; updateTools();
       // Start a few rows above the latest view. A fixed two-screen jump used
       // to land at the very top whenever the snapshot was shorter than that.
-      archive.scrollTop = Math.max(0, archive.scrollHeight - archive.clientHeight - back);
+      search(false, () => { archive.scrollTop = Math.max(0, archive.scrollHeight - archive.clientHeight - back); });
     } catch (error) { if (!disposed && loading === controller && !controller.signal.aborted) notice = error.message; }
     finally { if (loading === controller) { loading = undefined; update(); } }
   }
@@ -415,6 +447,6 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, resize() { if (grid.update() && view) search(); }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
-    dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
+  return { update, resize() { if (grid.update() && view) { cancelRender(); search(); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+    dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); cancelRender(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

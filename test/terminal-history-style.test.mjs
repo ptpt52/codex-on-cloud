@@ -1,7 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { terminalWidthProvider } from '../panel/public/terminal-unicode.js';
-import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, historyText, historyMatchRanges, historyHighlightRanges, wrapHistoryRows, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
+import { parseHistoryStyles, findHistoryMatches, captureHistoryBuffer, historyText, historyMatchRanges, historyHighlightRanges, historyGraphemes, wrapHistoryRows, TERMINAL_THEME, HISTORY_STYLE_LIMIT, HISTORY_TEXT_LIMIT } from '../panel/public/terminal-history-style.js';
+
+test('bounded segmentation preserves native grapheme boundaries and offsets across long transcripts', () => {
+  const native = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  for (const prefix of [2043, 2047, 2048, 4095]) {
+    for (const cluster of ['👩‍👩‍👧‍👦', '🇨🇳🇺🇸🇫', 'e\u0301', '\r\n', '\ud83d', 'क्‍ष', 'a' + '\u0301'.repeat(5000)]) {
+      const source = 'x'.repeat(prefix) + cluster + '中文🙂结尾';
+      assert.deepEqual([...historyGraphemes(source)], [...native.segment(source)].map(({ segment, index }) => ({ segment, index })));
+    }
+  }
+});
 
 const text = value => value.runs.map(run => run.text).join('');
 test('history styling preserves literal Unicode, spaces, indentation and line endings', () => {

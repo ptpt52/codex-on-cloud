@@ -184,7 +184,7 @@ test('dense mixed-width history bounds layout and measurements while retaining a
   try {
     const frame = await fallbackTerminal(page, app);
     app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('\x1b[?1049h').toString('base64') }) + '\n');
-    await frame.locator('#history-up').click(); await expect(frame.locator('#history-archive')).toBeVisible();
+    await frame.locator('#history-up').click(); await expect(frame.locator('#history-archive')).toHaveText(text);
     const result = await frame.locator('#history-archive').evaluate((element, expected) => ({
       same: element.textContent === expected, nodes: element.querySelectorAll('.history-grid-run').length,
     }), text);

@@ -114,3 +114,30 @@ test('local snapshots preserve every underline style and adjacent underline colo
     expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
+
+test('large history yields to browser events, cancels cleanly and reuses the grid for searches', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    const frame = await terminal(page, app);
+    const result = await frame.evaluate(async () => {
+      const { parseHistoryStyles, createHistoryGrid, renderHistoryRunsAsync, highlightHistoryRuns, findHistoryMatches } = await import('/terminal/terminal-history-style.js');
+      const host = document.getElementById('terminal'), pre = document.createElement('pre'); host.append(pre);
+      const source = ('中文 ABC123 👩‍💻 e\u0301\n').repeat(6000), parsed = parseHistoryStyles(source), grid = createHistoryGrid(window.regressionTerminal, host);
+      pre.textContent = 'ORIGINAL';
+      const controller = new AbortController(), cancelled = renderHistoryRunsAsync(pre, parsed, grid, { signal: controller.signal });
+      controller.abort();
+      const aborted = await cancelled.then(() => false, error => error.name === 'AbortError'), untouched = pre.textContent === 'ORIGINAL';
+      let turns = 0; const timer = setInterval(() => turns++, 0);
+      await renderHistoryRunsAsync(pre, parsed, grid); clearInterval(timer);
+      const first = pre.firstChild, same = pre.textContent === source;
+      const a = highlightHistoryRuns(pre, parsed, findHistoryMatches(source, '💻').matches);
+      const emojiWhole = a.every(group => group.every(mark => mark.textContent === '👩‍💻'));
+      const b = highlightHistoryRuns(pre, parsed, findHistoryMatches(source, 'ABC').matches);
+      const reused = first === pre.firstChild && pre.textContent === source && b.length === 1000;
+      highlightHistoryRuns(pre, parsed); const cleared = !pre.querySelector('mark') && pre.textContent === source;
+      pre.remove(); return { aborted, untouched, turns, same, emojiWhole, reused, cleared };
+    });
+    expect(result).toMatchObject({ aborted: true, untouched: true, same: true, emojiWhole: true, reused: true, cleared: true });
+    expect(result.turns).toBeGreaterThan(0); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});

@@ -11,6 +11,23 @@ export const HISTORY_STYLE_LIMIT = 4096;
 export const HISTORY_TEXT_LIMIT = HISTORY_BYTES, HISTORY_SEARCH_LIMIT = 1000, HISTORY_QUERY_LIMIT = 128;
 const defaults = () => ({ fg: null, bg: null, underlineColor: null, bold: false, dim: false, italic: false, underline: 0, inverse: false, hidden: false, strike: false, overline: false });
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+// Keep segmentation inputs small while building bounded render batches.
+// Withhold the final cluster: a following combining mark/ZWJ may extend it.
+// Grow only for a single unusually long cluster; never split that cluster.
+export function* historyGraphemes(text) {
+  let start = 0, size = 2048;
+  while (start < text.length) {
+    const end = Math.min(text.length, start + size);
+    let last;
+    for (const value of graphemes.segment(text.slice(start, end))) {
+      if (last) yield { segment: last.segment, index: start + last.index };
+      last = value;
+    }
+    if (end === text.length) { if (last) yield { segment: last.segment, index: start + last.index }; return; }
+    if (last.index) { start += last.index; size = 2048; }
+    else size *= 2;
+  }
+}
 const byte = value => Number.isInteger(value) && value >= 0 && value <= 255;
 const rgb = values => '#' + values.map(value => value.toString(16).padStart(2, '0')).join('');
 function color(index) {
@@ -347,7 +364,7 @@ export function createHistoryGrid(term, host) {
       if (group && value !== groupSpacing) flush();
       groupSpacing = value; group += cluster; cluster = '';
     };
-    for (const { segment: char } of graphemes.segment(text)) {
+    for (const { segment: char } of historyGraphemes(text)) {
       if (nodes >= 16384) {
         limited = true; parent.append(group + cluster + controls + text.slice(consumed)); return;
       }
@@ -366,12 +383,12 @@ export function createHistoryGrid(term, host) {
     emit(); flush(); if (controls) parent.append(controls);
   }
   return { update, append, begin() { update(); nodes = measurements = 0; limited = false; host.appendChild(measure); },
-    end() { measure.remove(); measure.textContent = ''; }, get limited() { return limited; } };
+    end() { measure.remove(); measure.textContent = ''; }, get limited() { return limited; }, get exhausted() { return nodes >= 16384; } };
 }
 export function historyHighlightRanges(text, matches) {
   if (!matches.length) return [];
   const expanded = matches.map((match, index) => ({ ...match, indexes: [index] }));
-  const segments = graphemes.segment(text);
+  const segments = historyGraphemes(text);
   let first = 0;
   for (const segment of segments) {
     const start = segment.index, end = start + segment.segment.length;
@@ -417,6 +434,78 @@ export function renderHistoryRuns(element, parsed, matches = [], grid) {
   } finally { grid?.end(); }
   element.replaceChildren(fragment);
   return groups;
+}
+// Keep the rendered grid between searches. Changing a query only splits text
+// nodes for at most 1,000 highlights; it never measures/rebuilds the transcript.
+export function highlightHistoryRuns(element, parsed, matches = []) {
+  const parents = new Set();
+  for (const mark of element.querySelectorAll('mark')) { parents.add(mark.parentNode); mark.replaceWith(...mark.childNodes); }
+  for (const parent of parents) parent.normalize();
+  const groups = matches.map(() => []), ranges = historyHighlightRanges(parsed.runs.map(run => run.text).join(''), matches);
+  if (!ranges.length) return groups;
+  const walker = element.ownerDocument.createTreeWalker(element, 4), pieces = [];
+  let node, offset = 0, index = 0;
+  while ((node = walker.nextNode())) {
+    const end = offset + node.length;
+    while (index < ranges.length && ranges[index].end <= offset) index++;
+    for (let next = index; next < ranges.length && ranges[next].start < end; next++) {
+      const range = ranges[next];
+      pieces.push({ node, start: Math.max(0, range.start - offset), end: Math.min(node.length, range.end - offset), indexes: range.indexes });
+    }
+    offset = end;
+  }
+  // Split from the end so offsets into each original text node stay valid.
+  for (const piece of pieces.reverse()) {
+    const selected = piece.node.splitText(piece.start); selected.splitText(piece.end - piece.start);
+    const mark = element.ownerDocument.createElement('mark'); mark.dataset.match = String(piece.indexes[0]);
+    selected.replaceWith(mark); mark.append(selected);
+    for (const index of piece.indexes) groups[index].unshift(mark);
+  }
+  return groups;
+}
+
+// One cancellable task at a time, with bounded work between browser events.
+// Commit the complete snapshot atomically so native selection never spans a
+// partially rendered/virtualized transcript. Copy/export use the original text.
+export function renderHistoryRunsAsync(element, parsed, grid, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const fragment = element.ownerDocument.createDocumentFragment(), channel = new MessageChannel();
+    let ended = false;
+    function finish(error) {
+      if (ended) return;
+      ended = true; channel.port1.close(); channel.port2.close(); signal?.removeEventListener('abort', abort); grid?.end();
+      if (error) reject(error); else { element.replaceChildren(fragment); resolve(); }
+    }
+    const abort = () => finish(new DOMException('History rendering cancelled', 'AbortError'));
+    function* build() {
+      for (const run of parsed.runs) {
+        const span = element.ownerDocument.createElement('span'); Object.assign(span.style, run.style); fragment.append(span);
+        let chunk = '';
+        for (const part of historyGraphemes(run.text)) {
+          chunk += part.segment;
+          if (chunk.length >= 512) {
+            if (grid) grid.append(span, chunk, run.style); else span.append(chunk);
+            chunk = ''; yield;
+            if (grid?.exhausted) { span.append(run.text.slice(part.index + part.segment.length)); break; }
+          }
+        }
+        if (chunk) { if (grid) grid.append(span, chunk, run.style); else span.append(chunk); }
+        yield;
+      }
+    }
+    const work = build();
+    channel.port1.onmessage = () => {
+      if (ended) return;
+      try {
+        const deadline = performance.now() + 6;
+        do { if (work.next().done) { finish(); return; } } while (performance.now() < deadline);
+        channel.port2.postMessage(null);
+      } catch (error) { finish(error); }
+    };
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener('abort', abort, { once: true });
+    try { grid?.begin(); channel.port2.postMessage(null); } catch (error) { finish(error); }
+  });
 }
 export function renderHistoryStyles(element, text, styled) {
   const parsed = parseHistoryStyles(text, styled);
