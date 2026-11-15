@@ -14,6 +14,8 @@ import { fixture } from './fixture.mjs';
 import { FORWARD_FILES } from '../native/forward-artifacts.mjs';
 import { createSelfhostCenter } from '../selfhost/center.mjs';
 
+const backendRevision = 'd'.repeat(64);
+const runtimeVersions = names => ({ protocol: 1, components: Object.fromEntries(names.map(component => [component, { protocol: 1, component, revision: backendRevision, startedAt: 1, pid: 1 }])) });
 const id = 'abcdef0123456789abcdef0123456789', revision = 'a'.repeat(24), csrf = 'b'.repeat(48), secret = 'DO_NOT_PRINT_password_or_cookie_123';
 const goodRun = async (file, args) => ({ ok: true, stdout: args.includes('rev-parse') ? 'c'.repeat(40) : file === 'systemctl' ? 'active' : '' });
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -33,11 +35,12 @@ function requestFor(c, calls, overrides = {}) {
     if (path.endsWith('/readyz')) return json({ ok: true, host: true, files: true, nodeId: c.nodeId });
     if (path.endsWith('/ui-version')) return json({ revision });
     if (path.endsWith('/api/login')) return json({ mode: c.mode, csrf }, 200, { 'set-cookie': 'coc_session_' + id + '=' + secret + '; Path=/' });
+    if (path.endsWith('/api/backend-version')) return json(runtimeVersions(c.role === 'center' ? ['center'] : ['panel', 'manager', 'files', 'actions']));
     if (path.endsWith('/api/logout')) return json({ ok: true });
     throw Error('unexpected request');
   };
 }
-function dependencies(c, calls = [], overrides) { return { loadConfig: async () => c, run: goodRun, expectedUI: async () => revision, request: requestFor(c, calls, overrides), readPassword: async () => secret }; }
+function dependencies(c, calls = [], overrides) { return { loadConfig: async () => c, run: goodRun, expectedUI: async () => revision, expectedBackend: async () => Object.fromEntries(['panel', 'manager', 'files', 'actions', 'center'].map(name => [name, backendRevision])), request: requestFor(c, calls, overrides), readPassword: async () => secret }; }
 const status = (report, key) => report.checks.find(check => check.id === key)?.status;
 
 test('verification options are explicit and reject credentials, invalid roles and incompatible feature selections', () => {
@@ -178,7 +181,7 @@ test('center role checks homepage, admin subpath and public nodes without requir
   const entry = 'http://127.0.0.1:' + center.server.address().port + '/';
   // Host checks expect the configured origin, so route through its declared host.
   const request = (url, options) => verificationRequest(url, { ...options, headers: { ...options.headers, host: '127.0.0.1', origin: 'http://127.0.0.1' } });
-  const c = config(directory, { role: 'center', mode: undefined, nodeId: undefined, kind: 'selfhost-center', entry, services: ['codex-selfhost-center.service'] });
+  const c = config(resolve('.'), { role: 'center', mode: undefined, nodeId: undefined, kind: 'selfhost-center', entry, services: ['codex-selfhost-center.service'] });
   const report = await verifyDeployment({ login: true }, { loadConfig: async () => c, run: goodRun, request, readPassword: async () => secret });
   assert(report.summary.automatedOk, JSON.stringify(report)); assert.equal(status(report, 'admin-page'), 'pass'); assert.equal(status(report, 'logout'), 'pass');
   assert(!report.checks.some(check => check.id === 'prerequisites' || check.id === 'forward-artifacts'));
@@ -219,4 +222,18 @@ test('JSON CLI errors are structured and do not echo malformed configuration or 
   await assert.rejects(promisify(execFile)(process.execPath, ['scripts/verify-deployment.mjs', '--password', secret, '--json']), error => {
     assert.equal(error.code, 2); assert.equal(JSON.parse(error.stdout).checks[0].id, 'arguments'); assert(!error.stdout.includes(secret)); return true;
   });
+});
+
+test('authenticated verification reports stale or missing backend components without restarting or leaking responses', async t => {
+  const c = config(await temporary(t));
+  for (const missing of [false, true]) {
+    const versions = runtimeVersions(['panel', 'manager', 'files']);
+    if (missing) versions.components.manager = { available: false, error: secret };
+    else versions.components.manager.revision = 'f'.repeat(64);
+    const calls = [], report = await verifyDeployment({ login: true }, dependencies(c, calls, { '/api/backend-version': json(versions) }));
+    assert.equal(status(report, 'backend-code'), 'fail'); assert.equal(status(report, 'logout'), 'pass');
+    assert.equal(report.deployment.backend.manager, missing ? 'unavailable' : 'mismatch');
+    assert.equal(report.deployment.backend.panel, 'match'); assert(!JSON.stringify(report).includes(secret));
+    assert(!calls.some(call => /claim|restart|unlock/.test(call.url)));
+  }
 });

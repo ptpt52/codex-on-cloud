@@ -11,9 +11,13 @@ import { readUploadHeaders } from '../panel/public/file-upload.js';
 import { createPanel } from '../panel/server.mjs';
 import { createDesktopControls } from '../native/desktop-controls.mjs';
 import { createManagerServer } from '../native/manager-server.mjs';
+import { createDesktopActionServer } from '../native/desktop-actions.mjs';
+import { readBackendRevisions } from '../native/backend-version.mjs';
 import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
+
+const sourceVersions = await readBackendRevisions(), fileVersionStartedAt = Date.now();
 
 export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, username = 'admin', password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, rfbResumeHook, rfbUpdates = false, rfbContinuous = false, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalViewHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, selfhostNode = null, publicOrigin = '', entryBasePath = '/' } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
@@ -38,6 +42,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     const body = Buffer.concat(chunks);
     if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
     if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试', uploadProtocol: 1, quotaProtocol: 1 })); }
+    if (req.url === '/backend-version') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ protocol: 1, component: 'files', revision: sourceVersions.files, startedAt: fileVersionStartedAt, pid: process.pid })); }
     if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, quotaProtocol: 1, truncated: files.size > 1000, files: [...files].slice(0, 1000).map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
     if (req.url.startsWith('/files/')) {
       const name = decodeURIComponent(req.url.slice('/files/'.length));
@@ -235,6 +240,9 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     save(body) { const result = controls.save(body); managementStats.saves++; return result; } });
   const managerSocket = join(directory, 'manager.sock');
   manager.listen(managerSocket); await once(manager, 'listening');
+  const desktopActionsSocket = join(directory, 'actions.sock');
+  const actions = mode === 'desktop' ? createDesktopActionServer('agent_secret_for_test_123', { perform() { throw Error('unexpected fixture desktop action'); } }) : null;
+  if (actions) { actions.listen(desktopActionsSocket); await once(actions, 'listening'); }
   const config = {
     uiRoot, uiValidate: false, mode, nodeId, sharedEntry, gatewayNode, selfhostNode, entryBasePath, host: '127.0.0.1', port, origin: '', secureCookies: false, hosts: new Set(),
     forwardPorts, forwardDownloadDir, forwardPeerFactory, agentPort: upstream.address().port,
@@ -242,7 +250,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     agentSecret: 'agent_secret_for_test_123', vncSocket, agentUrl: upstreamUrl,
     tunnelDiagnosticsUrl: tunnelDiagnosticsUrl ?? `${upstreamUrl}/diag/tunnel`,
     serviceDiagnostics: serviceDiagnostics || (async () => ({ available: true, panel: { state: 'active', restarts: 0, limited: false }, manager: { state: 'active', restarts: 0, limited: false }, actions: { state: 'active', restarts: 0, limited: false }, terminal: { state: 'active', restarts: 0, limited: false }, files: { state: 'active', restarts: 0, limited: false } })),
-    managerSocket,
+    managerSocket, desktopActionsSocket,
     transferDir: '/test-workspace/transfer', sessionMs: sessionMs || 604800000,
     webrtc, webrtcAddress: '127.0.0.1', fastConnect, streamProtocol: seamless ? 1 : 0,
     webrtcIPv6, webrtcIPv6Address, webrtcStunUrl,
@@ -328,6 +336,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     async close({ preserve = false } = {}) {
       await panel.close();
       await new Promise(resolve => { manager.close(resolve); manager.closeAllConnections(); });
+      if (actions) await new Promise(resolve => { actions.close(resolve); actions.closeAllConnections(); });
       for (const client of clients) client.destroy();
       await new Promise(resolve => vnc.close(resolve));
       await new Promise(resolve => { upstream.close(resolve); upstream.closeAllConnections(); });

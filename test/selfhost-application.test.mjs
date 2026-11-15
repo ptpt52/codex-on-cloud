@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { copyApplicationFiles } from '../scripts/selfhost-server.mjs';
+import { readBackendRevisions } from '../native/backend-version.mjs';
 
 test('installed center boots with its packaged dependencies outside the repository', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-application-'));
@@ -14,6 +15,7 @@ test('installed center boots with its packaged dependencies outside the reposito
   const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
     import http from 'node:http';
     import { createSelfhostCenter } from './selfhost/center.mjs';
+    import { loadedBackendVersion } from './native/backend-version.mjs';
     const center = await createSelfhostCenter({
       origin: 'https://desk.example.test', dataDir: './state',
       password: 'packaged_center_test_password', frpToken: 'packaged_frp_test_token_long',
@@ -34,7 +36,9 @@ test('installed center boots with its packaged dependencies outside the reposito
       });
       if (!ready) throw Error('Packaged center is not ready');
       console.log('packaged center ready');
+      console.log('backend ' + (await loadedBackendVersion('center')).revision);
     } finally { await center.close(); }
   `], { cwd: directory, timeout: 15000, maxBuffer: 8192 });
   assert.match(stdout, /packaged center ready/);
+  assert(stdout.includes('backend ' + (await readBackendRevisions(undefined, ['center'])).center));
 });

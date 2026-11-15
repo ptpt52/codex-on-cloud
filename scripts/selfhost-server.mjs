@@ -153,8 +153,10 @@ export async function copyApplicationFiles(next) {
   await mkdir(join(next, 'native'), { recursive: true, mode: 0o755 });
   await cp(join(project, 'native', 'file-lock.mjs'), join(next, 'native', 'file-lock.mjs'), { force: true });
   await cp(join(project, 'native', 'response-body.mjs'), join(next, 'native', 'response-body.mjs'), { force: true });
+  await cp(join(project, 'native', 'backend-version.mjs'), join(next, 'native', 'backend-version.mjs'), { force: true });
   await cp(join(project, 'native', 'file_lock.py'), join(next, 'native', 'file_lock.py'), { force: true });
   await cp(join(project, 'package.json'), join(next, 'package.json'), { force: true });
+  await cp(join(project, 'package-lock.json'), join(next, 'package-lock.json'), { force: true });
 }
 
 async function copyApplication(beforeActivate = async () => {}) {

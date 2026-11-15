@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
@@ -24,6 +25,7 @@ MAX_RENAME = 100
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_SHARED_FILES = 1000
 MAX_SHARED_BYTES = 1024 * 1024 * 1024
+BACKEND_VERSION = {'protocol': 1, 'component': 'files', 'revision': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'startedAt': int(time.time() * 1000), 'pid': os.getpid()}
 
 
 def scan_files(directory):
@@ -202,6 +204,8 @@ class Handler(BaseHTTPRequestHandler):
             raise AgentError(401, '内部接口认证失败')
         path = urlsplit(self.path).path
         desktop = self.server.desktop
+        if self.command == 'GET' and path == '/backend-version':
+            return self.json(200, BACKEND_VERSION)
         if self.command == 'GET' and path == '/health':
             if desktop.files_only:
                 return self.json(200, {'ready': True, 'uploadProtocol': UPLOAD_PROTOCOL, 'quotaProtocol': 1})

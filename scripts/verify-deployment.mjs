@@ -7,12 +7,14 @@ import { fileURLToPath } from 'node:url';
 import * as util from 'node:util';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readBackendRevisions } from '../native/backend-version.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 export const VERIFY_LIMITS = Object.freeze({ config: 65536, response: 512 * 1024, requestMs: 6000, commandMs: 12000, commandBytes: 16384, checks: 64 });
 const FAILURE_REASONS = Object.freeze({
   http_status: '接口返回非 200 状态。', response_format: '接口响应格式无效。', node_identity: '实际入口返回了不同的节点身份。',
   not_ready: '入口、任务宿主或文件服务尚未就绪。', ui_mismatch: '实际入口界面与当前仓库版本不一致。',
+  backend_mismatch: '后台组件未加载当前源码，或运行版本无法核验。',
   helper_manifest: '助手清单不完整、构建混用或最终入口不匹配。', helper_hash: '助手文件大小或 SHA256 不匹配。', helper_build: '助手构建不是指定版本。',
 });
 const NETWORK_REASONS = Object.freeze({ ABORT_ERR: '请求达到 6 秒期限或已中止。', ETIMEDOUT: '网络请求超时。', ECONNREFUSED: '目标拒绝连接。', ECONNRESET: '连接被重置。', ENOTFOUND: '域名解析失败。', EAI_AGAIN: '域名解析暂时不可用。', CERT_HAS_EXPIRED: 'HTTPS 证书已过期。', DEPTH_ZERO_SELF_SIGNED_CERT: 'HTTPS 自签名证书未被信任。', UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'HTTPS 证书链无法验证。', SELF_SIGNED_CERT_IN_CHAIN: 'HTTPS 证书链包含未信任的证书。', ERR_TLS_CERT_ALTNAME_INVALID: 'HTTPS 证书主机名不匹配。' });
@@ -259,6 +261,19 @@ export async function verifyDeployment(options = {}, dependencies = {}) {
       return true;
     }, '实际入口账号登录成功；没有接管或解锁桌面。', '核对本机密码文件、实际入口和账号；不自动重试登录。');
     try {
+      if (loggedIn) await attempt('backend-code', async () => {
+        const expected = await (dependencies.expectedBackend || (config => readBackendRevisions(config.root, config.role === 'center' ? ['center'] : ['panel', 'manager', 'files', ...(config.mode === 'desktop' ? ['actions'] : [])])))(config);
+        const value = await json(await fetch(prefix + 'api/backend-version', { headers: { cookie } }));
+        const required = config.role === 'center' ? ['center'] : ['panel', 'manager', 'files', ...(config.mode === 'desktop' ? ['actions'] : [])];
+        const components = report.deployment.backend = {};
+        for (const name of required) {
+          const item = value?.components?.[name];
+          const available = value?.protocol === 1 && item?.protocol === 1 && item.component === name && /^[a-f0-9]{64}$/.test(item.revision) && Number.isSafeInteger(item.startedAt) && item.startedAt > 0 && Number.isSafeInteger(item.pid) && item.pid > 0;
+          components[name] = !available ? 'unavailable' : item.revision === expected[name] ? 'match' : 'mismatch';
+        }
+        if (Object.values(components).some(status => status !== 'match')) throw failure('backend_mismatch');
+        return true;
+      }, '实际入口后台组件的启动版本与本机源码包一致。', '按 deployment.backend 的组件结果更新面板、管理、文件或桌面执行服务；中心更新中心服务。不会自动重启任务。');
       if (loggedIn && helpers) await attempt('forward-publication', async () => {
         const value = await json(await fetch('api/forward', { headers: { cookie } }));
         if (!Array.isArray(value.downloads) || value.downloads.length !== 4) throw Error('downloads');
@@ -282,13 +297,13 @@ export async function verifyDeployment(options = {}, dependencies = {}) {
   if (config.role === 'node') {
     add('interaction', 'manual', '在浏览器核对终端或桌面、输入目标、中文/听写、粘贴与独立 Enter，以及文件上传下载。');
     add('reconnect', 'manual', '核对重连、锁屏和接管后原任务保留，未确认的输入没有补发。');
-    add('backend-code', 'manual', '界面匹配和服务 active 不证明后台已加载当前源码；升级后按维护指南核对所需进程更新。');
     add('network', config.webrtc ? 'manual' : 'skip', config.webrtc ? '在实际设备与网络验证直连/中转；未实测的拓扑不能由健康检查代替。' : '未启用 WebRTC。');
     if (config.gateway) add('gateway-switch', 'manual', '在 /__nodes/ 验证所需节点的登记、切换及原任务保留。');
   } else {
     add('center-routing', 'manual', '在一个真实节点路径验证登录、终端/桌面及文件；中心健康不代表节点已部署。');
     add('center-network', 'manual', '在目标网络验证 frpc 接入、TURN 中继和所选证书续期方式。');
   }
+  if (!report.checks.some(check => check.id === 'backend-code')) add('backend-code', 'manual', '尚未核验后台启动版本；可增加 --login。界面匹配和服务 active 不能替代后台版本核验。');
   return finish();
 }
 

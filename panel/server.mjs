@@ -11,6 +11,7 @@ import { canonicalLoginUsername, createLoginIdentity, nodeLoginScope } from './l
 import { createTunnelDiagnostics } from './diagnostics.mjs';
 import { createServiceDiagnostics } from './service-diagnostics.mjs';
 import { managerRequest } from './manager-client.mjs';
+import { loadedBackendVersion } from '../native/backend-version.mjs';
 import { createRTCBridge, rtcOffer, rtcBindAddresses } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { validateInput } from '../native/input.mjs';
@@ -34,6 +35,8 @@ import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
 import { requestTurnCredentials, createTurnCache } from './turn-client.mjs';
+
+const backendVersion = await loadedBackendVersion('panel');
 
 const NOVNC = resolve(fileURLToPath(new URL('../node_modules/@novnc/novnc/', import.meta.url)));
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -106,6 +109,7 @@ export async function createPanel(config) {
   let loginBusy = 0;
   let healthCache = null;
   let fileHealthCache = null;
+  let backendVersionCache;
   let maintenancePending = false;
   let closing = false;
   let rtcBusy = false;
@@ -377,6 +381,30 @@ export async function createPanel(config) {
       const [tunnel, services, filesReady] = await Promise.all([tunnelDiagnostics(), serviceDiagnostics(), fileHealth()]);
       requireSession(req);
       return reply(res, 200, { tunnel, services, files: { ready: filesReady } });
+    }
+    if (path === '/api/backend-version' && req.method === 'GET') {
+      if (requireSession(req).role === 'temporary') throw new HttpError(403, '此操作需要管理员账号');
+      if (!backendVersionCache || backendVersionCache.at < Date.now() - 3000) {
+        const readFileVersion = async () => {
+          const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/backend-version`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
+          const chunks = []; let size = 0;
+          for await (const chunk of response.body) { size += chunk.length; if (size > 4096) throw Error('version response too large'); chunks.push(chunk); }
+          if (!response.ok) throw Error('version unavailable');
+          return JSON.parse(Buffer.concat(chunks).toString());
+        };
+        const reads = { panel: Promise.resolve(backendVersion), manager: managerRequest(config, '/backend-version', undefined, 1500), files: readFileVersion() };
+        if (config.mode !== 'terminal') reads.actions = managerRequest({ ...config, managerSocket: config.desktopActionsSocket }, '/backend-version', undefined, 1500);
+        const promise = Promise.all(Object.entries(reads).map(async ([name, promise]) => {
+          try {
+            const value = await promise;
+            if (value.protocol !== 1 || value.component !== name || !/^[a-f0-9]{64}$/.test(value.revision) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0 || !Number.isSafeInteger(value.pid) || value.pid <= 0) throw Error('invalid version');
+            return [name, { protocol: 1, component: name, revision: value.revision, startedAt: value.startedAt, pid: value.pid }];
+          } catch { return [name, { available: false }]; }
+        })).then(entries => ({ protocol: 1, components: Object.fromEntries(entries) }));
+        backendVersionCache = { at: Date.now(), promise };
+      }
+      const result = await backendVersionCache.promise; requireSession(req);
+      return reply(res, 200, result);
     }
     if (path === '/api/service/rtc' && req.method === 'POST') {
       requireWrite(req);

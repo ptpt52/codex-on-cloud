@@ -4,6 +4,9 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { TERMINALS } from './terminals.mjs';
+import { loadedBackendVersion } from './backend-version.mjs';
+
+const backendVersion = await loadedBackendVersion('actions');
 
 const exec = promisify(execFile);
 const reject = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -97,9 +100,10 @@ export function createDesktopActions(config, env, { spawnProcess = spawn, run = 
 export function createDesktopActionServer(secret, actions) {
   const expected = Buffer.from('Bearer ' + secret); let active = false;
   const server = http.createServer(async (req, res) => {
-    const reply = (status, body) => { if (!res.destroyed) { res.writeHead(status, { 'content-type': 'application/json', connection: 'close' }); res.end(JSON.stringify(body)); } };
+    const reply = (status, body) => { if (!res.destroyed) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', connection: 'close' }); res.end(JSON.stringify(body)); } };
     const actual = Buffer.from(req.headers.authorization || '');
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return reply(401, { error: '桌面执行接口认证失败', outcome: 'rejected' });
+    if (req.method === 'GET' && req.url === '/backend-version') return reply(200, backendVersion);
     if (req.method !== 'POST' || !['/terminal', '/clipboard', '/transfer-directory'].includes(req.url)) return reply(404, { error: '动作不存在', outcome: 'rejected' });
     if (active) return reply(409, { error: '桌面执行服务繁忙，本次操作未发送', outcome: 'rejected' });
     active = true; req.setTimeout(3000, () => req.destroy());

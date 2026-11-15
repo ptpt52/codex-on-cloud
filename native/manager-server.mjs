@@ -1,5 +1,8 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { loadedBackendVersion } from './backend-version.mjs';
+
+const backendVersion = await loadedBackendVersion('manager');
 
 export function createManagerServer(secret, controls, { health } = {}) {
   let active = 0;
@@ -12,6 +15,7 @@ export function createManagerServer(secret, controls, { health } = {}) {
     active++;
     req.setTimeout(req.url === '/resolution' ? 8000 : 5000, () => req.destroy());
     try {
+      if (req.method === 'GET' && req.url === '/backend-version') return reply(200, backendVersion);
       if (health && req.method === 'GET' && req.url === '/health') return reply(200, await health());
       if (req.method === 'GET' && req.url === '/settings') return reply(200, await controls.get());
       if (req.method === 'GET' && req.url === '/status') return reply(200, controls.status());

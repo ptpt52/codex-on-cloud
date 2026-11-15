@@ -11,6 +11,9 @@ import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
 import { clientAddress, loopbackAddress } from './client-address.mjs';
 import { frpsProxyProbe } from './frps-admin.mjs';
 import { HELP_PAGE_CSP, readHelpPage } from './help-page.mjs';
+import { loadedBackendVersion } from '../native/backend-version.mjs';
+
+const backendVersion = await loadedBackendVersion('center');
 
 const PUBLIC = fileURLToPath(new URL('./public/', import.meta.url));
 const ASSETS = new Map([
@@ -204,6 +207,7 @@ export async function createSelfhostCenter({
       if (closing || res.destroyed) throw selfhostError(409, '管理操作已取消');
     };
     const adminReply = (status, value) => { requireSession(req); return reply(res, status, value); };
+    if (path === '/api/backend-version' && req.method === 'GET') return adminReply(200, { protocol: 1, components: { center: backendVersion } });
     const mutate = async (limit, action) => {
       requireWrite(req, current); const body = await jsonBody(req, limit); valid();
       return adminReply(200, await action(body, { valid }));
