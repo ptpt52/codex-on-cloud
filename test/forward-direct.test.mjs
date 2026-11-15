@@ -43,7 +43,7 @@ test('forged, repeated and oversized direct records fail without releasing unack
 });
 
 test('SCTP fragment bytes, stream metadata and sparse packet tracking are bounded before reassembly',()=>{
-  for(const mutate of [s=>{s.advertisedRwnd=1;},s=>{s.inboundStreams={a:{reassembly:Array(1024)}};},s=>{s.inboundStreams=Object.fromEntries(Array.from({length:32},(_,i)=>[i+1,{reassembly:[]} ]));},s=>{s.sackMisOrdered=new Set(Array.from({length:2048},(_,i)=>i));},s=>{s.sackDuplicates=Array(1024);}]){
+  for(const mutate of [s=>{s.advertisedRwnd=1;},s=>{s.inboundStreams={a:{reassembly:Array(4096)}};},s=>{s.inboundStreams=Object.fromEntries(Array.from({length:32},(_,i)=>[i+1,{reassembly:[]} ]));},s=>{s.sackMisOrdered=new Set(Array.from({length:2048},(_,i)=>i));},s=>{s.sackDuplicates=Array(1024);}]){
     let receives=0,failures=0;const sctp={inboundStreams:{},advertisedRwnd:1024*1024,sackMisOrdered:new Set(),sackDuplicates:[],receiveDataChunk(){receives++;}};
     guardForwardSCTP(sctp,()=>true,()=>failures++);sctp.receiveDataChunk({streamId:0,userData:Buffer.alloc(2)});assert.equal(receives,1);
     mutate(sctp);sctp.receiveDataChunk({streamId:0,userData:Buffer.alloc(2)});assert.equal(receives,1);assert.equal(failures,1);
@@ -62,4 +62,21 @@ test('a full sparse SCTP tracker withholds later DATA but admits the missing TSN
     sctp.receiveDataChunk({tsn:next,streamId:0,userData:Buffer.from('repair')});assert.equal(received,2);assert.equal(sctp.sackMisOrdered.size,0);assert.equal(failed,0);
     sctp.receiveDataChunk({tsn:(last+2050)>>>0,streamId:0,userData:Buffer.from('retransmission')});assert.equal(received,3);
   }
+});
+
+test('SCTP admits small DATA fragments and repairs a gap while most of its byte window is free', () => {
+  // Captured during a 16-chunk Chromium file upload: only ~170 KiB are
+  // buffered, but a missing DATA packet holds 1024 small fragments behind it.
+  const received = [], failures = [], last = 570478824;
+  const stream = { reassembly: Array.from({ length: 1024 }, (_, i) => ({ tsn: last + i + 2 })) };
+  const sctp = { inboundStreams: { 5: stream }, advertisedRwnd: 874296, lastReceivedTsn: last,
+    sackMisOrdered: new Set(stream.reassembly.map(chunk => chunk.tsn)), sackDuplicates: [],
+    receiveDataChunk(chunk) { received.push(chunk.tsn); if (chunk.tsn === last + 1) { stream.reassembly.length = 0; this.sackMisOrdered.clear(); } },
+  };
+  guardForwardSCTP(sctp, () => true, () => failures.push('closed'));
+  sctp.receiveDataChunk({ tsn: last + 1026, streamId: 5, userData: Buffer.alloc(240) });
+  sctp.receiveDataChunk({ tsn: last + 1, streamId: 5, userData: Buffer.alloc(240) });
+  assert.deepEqual(failures, []);
+  assert.deepEqual(received, [last + 1026, last + 1]);
+  assert.equal(stream.reassembly.length, 0);
 });
