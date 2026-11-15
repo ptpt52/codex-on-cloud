@@ -19,12 +19,20 @@ test('focus layout preserves a tall desktop and one-step panel access across vie
     await expect(page.locator('#input-dock')).toBeHidden();
     for (const size of [{ width: 320, height: 844 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
       await page.setViewportSize(size);
-      const stage = await page.locator('#desktop-stage').boundingBox();
-      const card = await page.locator('#desktop-card').boundingBox();
-      // A short landscape viewport still reserves two accessible 44px rows.
-      expect(stage.height).toBeGreaterThanOrEqual(size.height * (size.height < 540 ? 0.7 : 0.75));
-      expect(stage.y + stage.height).toBeLessThanOrEqual(card.y + card.height + 1);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
+      await expect(page.locator('#workspace-view')).toHaveAttribute('data-workspace-layout', size.width >= 1200 ? 'sidebar' : 'top');
+      // Resize, media-query control moves and visualViewport updates settle
+      // asynchronously. Compare all rectangles from the same layout snapshot.
+      await expect(async () => {
+        const { stage, card, fits } = await page.evaluate(() => ({
+          stage: document.getElementById('desktop-stage').getBoundingClientRect().toJSON(),
+          card: document.getElementById('desktop-card').getBoundingClientRect().toJSON(),
+          fits: document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight,
+        }));
+        // A short landscape viewport still reserves two accessible 44px rows.
+        expect(stage.height).toBeGreaterThanOrEqual(size.height * (size.height < 540 ? 0.7 : 0.75));
+        expect(stage.bottom).toBeLessThanOrEqual(card.bottom + 1);
+        expect(fits).toBe(true);
+      }).toPass({ timeout: 5000 });
       await page.locator('#toggle-controls-button').click();
       await expect(page.locator('#workspace-tools')).toBeVisible();
       await expect(page.locator('#workspace-tools')).toBeFocused();
