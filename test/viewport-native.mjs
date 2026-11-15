@@ -70,10 +70,10 @@ try {
   }
   let originalComponents;
   await eventually(async () => { originalComponents = await components(); return Object.keys(originalComponents).length === 3; });
-  const terminal = start('xterm', ['-class', 'codex-viewport-test', '-e', 'tmux', ...tmux, 'attach-session', '-t', 'viewport']);
+  const terminal = start('xterm', ['-maximized', '-class', 'codex-viewport-test', '-e', 'tmux', ...tmux, 'attach-session', '-t', 'viewport']);
   let window;
   await eventually(async () => { window = await run('xdotool', ['search', '--class', '^codex-viewport-test$']); return /^\d+$/.test(window); });
-  await run('python3', [resolve('desktop/terminal-display.py'), 'maximize', window]);
+  await eventually(async () => { const state = await run('xprop', ['-id', window, '_NET_WM_STATE']); return state.includes('_NET_WM_STATE_MAXIMIZED_VERT') && state.includes('_NET_WM_STATE_MAXIMIZED_HORZ'); });
   const path = join(directory, 'vnc.sock');
   server = net.createServer(client => {
     client.pause();

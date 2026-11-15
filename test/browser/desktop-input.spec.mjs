@@ -5,6 +5,8 @@ import { openTools, openInput, closePanels } from './ui.mjs';
 async function login(page, app) {
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线'); await closePanels(page);
+  // ServerInit/connected precedes the first decoded frame and input admission.
+  await expect(page.locator('#paste-button')).toBeEnabled();
   const frame = page.frames().find(value => value.url().includes('/desktop/index.html'));
   await frame.locator('#screen canvas').click({ position: { x: 30, y: 30 } });
   // Coarse pointer devices retain the input assistant. Programmatic focus here
