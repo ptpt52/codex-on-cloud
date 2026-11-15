@@ -42,6 +42,7 @@ npm run verify:deployment
 | 自建中心应用 | [重复中心安装命令](selfhost-server.md#中心安装)，沿用原域名、证书模式和参数；失败按恢复记录处理 |
 | 仅既有 HTML / CSS / 浏览器脚本内容 | `npm run reload-ui`，然后保存草稿并手动刷新；新增后端资源注册项时需更新 panel，见[前端更新](ui-updates.md) |
 | 桌面 actions 服务代码 | 单独安排 `systemctl --user restart codex-cloud-actions.service`；其持有的窗口与剪贴板会受影响，tmux 任务保留，不重启 desktop |
+| 终端初始化／用户开发环境 | 按[共享 Bash 配置](shell-environment.md)更新；新建终端读取，已有任务保持，无需为此重启宿主或服务 |
 | 仅仓库文档 | 无需部署服务；自行提供的中心 HTML 帮助页另按[帮助页更新](selfhost-server.md#自定义帮助页)加载 |
 
 前端更新要求后台能力配套，不能让旧后端获得新协议，见[版本配套](ui-updates.md)。

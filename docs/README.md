@@ -43,6 +43,7 @@
 | [文件中转](files.md) | 上传下载、同名替换、临时配额、HTTPS / 直连 |
 | [屏幕锁与临时访问](access.md) | 权限、密码保存提示、映射保留和后台重置 |
 | [终端快捷键](shortcuts.md) | 输入助手的固定按键与程序翻页 |
+| [共享 Bash 开发环境](shell-environment.md) | 系统／网页终端的工具、PATH、语言、用户设置与生效范围 |
 | [TCP 端口映射](forward.md) | 双向映射、AI 提示词、Windows / Mac 助手与构建发布 |
 | [串口接入](serial.md) | 助手授权、通信参数、设备权限与硬件边界 |
 | [直连与中转](lan.md) | IPv4 / IPv6、TURN、端口和网络诊断 |

@@ -57,6 +57,12 @@ systemctl --user restart codex-cloud-manager.service codex-cloud-panel.service
 
 `PORT` 是面板底层兼容覆盖项，优先于 `PANEL_PORT`；普通部署统一使用 `PANEL_PORT`，避免同时配置。`PATH`、`HOME`、`XDG_RUNTIME_DIR` 等属于宿主运行环境，systemd unit 安装时会固定可执行路径；更换 Node 安装位置后需重新生成 unit。Node、Codex、cloudflared、前端库及端口映射助手版本分别由宿主工具、安装脚本和锁文件管理；旧 `.env` 的 `CODEX_VERSION` 不控制原生部署升级。
 
+## 用户开发环境
+
+系统与网页 Bash 可通过显式 `npm run shell:setup` 共用 `~/.config/shell/dev-env.sh`。命令保留现有共享文件、备份启动文件，并添加有界加载块；需要将旧位置的开发环境声明整理到共享文件。完整加载顺序、PATH／语言规则与回退方法见[共享 Bash 配置](shell-environment.md)。真实用户配置不放入项目 `.env` 或 Git。
+
+网页终端以用户配置选择工具，不再把后台捕获的完整 PATH 放到最前面；项目辅助工具目录只追加为后备。后台固定运行时和虚拟桌面身份继续独立。修改共享配置或终端初始化脚本后只对新建 shell 生效，已有任务保持；无需重启任务宿主，重连也不会重新加载环境。部署及恢复不会执行 `shell:setup` 或修改用户 shell 配置。
+
 ## 接入命令管理的入口配置
 
 以下字段由 `gateway:join`、`server:join` 及对应恢复流程维护。它们必须与私有节点配置一致；不能只手动改一个字段来切换中心、域名或节点身份。

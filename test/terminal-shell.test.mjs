@@ -53,6 +53,7 @@ printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
   async function probe(terminal) {
     const pid = terminal.token.split(':')[1], ready = join(results, `ready-${pid}`), file = join(results, pid);
     await eventually(() => access(ready).then(() => true, () => false), `${terminal.id} did not load the user bashrc`);
+    await rm(file, { force: true });
     await tmux(['send-keys', '-t', terminal.token.split(':')[0], '-l', 'shell_test_probe']);
     await tmux(['send-keys', '-t', terminal.token.split(':')[0], 'Enter']);
     await eventually(() => access(file).then(() => true, () => false), `${terminal.id} did not run the shell probe`);
@@ -63,11 +64,11 @@ printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
     await run('tmux', ['-f', join(root, 'desktop', 'tmux.conf'), '-S', join(directory, 'tmux.sock'), 'new-session', '-d', '-s', 'codex', '-c', config.workspace, 'bash', join(root, 'desktop', 'codex-session')]);
     const controls = manager(), main = (await controls.list()).terminals[0], expected = await probe(main);
     assert.equal(await tmux(['display-message', '-p', '-t', main.token.split(':')[0], '#{history_limit}']), '2000');
-    assert.equal(expected[0], '[项目 shell] \\w\\$ '); assert.equal(expected[1], `${env.PATH}:${userBin}:/usr/bin:/bin`);
+    assert.equal(expected[0], '[项目 shell] \\w\\$ '); assert.equal(expected[1], `${userBin}:/usr/bin:/bin`);
     assert.equal(expected[2], 'from-user-bashrc'); assert.equal(expected[3], 'test-editor'); assert.equal(expected[4], config.workspace);
-    assert.deepEqual(expected.slice(5, 7), ['C.UTF-8', 'C.UTF-8']); assert.equal(expected[8], config.display);
+    assert.deepEqual(expected.slice(5, 7), ['C.UTF-8', '']); assert.equal(expected[8], config.display);
     assert.equal(expected[9], env.XAUTHORITY); assert.deepEqual(expected.slice(10, 13), [env.XDG_CONFIG_HOME, env.XDG_CACHE_HOME, env.XDG_DATA_HOME]);
-    assert.equal(expected[14], 'function-loaded'); assert.equal(expected[15], join(selectedBin, 'selected-tool')); assert.match(expected[16], /set enable-bracketed-paste on/);
+    assert.equal(expected[14], 'function-loaded'); assert.equal(expected[15], join(userBin, 'selected-tool')); assert.match(expected[16], /set enable-bracketed-paste on/);
     // Changes made inside the primary shell stay local to that shell.
     await tmux(['send-keys', '-t', 'codex:0.0', '-l', 'export SHELL_TEST_CUSTOM=main-only']); await tmux(['send-keys', '-t', 'codex:0.0', 'Enter']);
     for (let index = 1; index <= 7; index++) {
@@ -78,6 +79,16 @@ printf 'loaded\\n' >> "$SHELL_TEST_RESULTS/ready-$BASHPID"
       await manager().manage({ action: 'open', terminalId: terminal.id, terminalToken: terminal.token, view: 'terminal' });
       assert.equal(await readFile(join(results, `ready-${terminal.token.split(':')[1]}`), 'utf8'), 'loaded\n', 'reopening must not rerun shell initialization');
     }
+    // New shells pick up edited settings even on an old private tmux server;
+    // existing tasks and changes made in those tasks retain their environment.
+    const previous = (await controls.list()).terminals.find(item => item.id === 'aux7');
+    await controls.manage({ action: 'close', terminalId: previous.id, terminalToken: previous.token, confirm: true, view: 'terminal' });
+    await writeFile(join(home, '.bashrc'), (await readFile(join(home, '.bashrc'), 'utf8')).replace("SHELL_TEST_CUSTOM='from-user-bashrc'", "SHELL_TEST_CUSTOM='updated-user-bashrc'"));
+    const updated = await controls.manage({ action: 'create', name: '新配置', view: 'terminal' });
+    const replacement = updated.terminals.find(item => item.id === updated.created);
+    assert.equal((await probe(replacement))[2], 'updated-user-bashrc');
+    assert.notEqual(replacement.token, previous.token);
+    assert.equal((await probe(main))[2], 'main-only');
     assert.equal((await controls.list()).terminals[0].token, main.token);
     assert.equal(await tmux(['display-message', '-p', '-t', main.token.split(':')[0], '#{history_limit}']), '2000');
     assert.equal(await readFile(join(results, `ready-${main.token.split(':')[1]}`), 'utf8'), 'loaded\n');
