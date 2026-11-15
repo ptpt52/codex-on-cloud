@@ -3,6 +3,7 @@ import { SHORTCUT_BY_KEY } from './shortcuts.js';
 import { createForwardUI } from './forward-ui.js';
 import { createWorkspaceLayout, createWorkspacePanels, createHistoryToolsPortal } from './workspace-panels.js';
 import { createTerminalState, validTerminalIdentity, STATE_LIMIT } from './terminal-state.js';
+import { createViewLifecycle } from './view-lifecycle.js';
 import { TERMINAL_IDS, TERMINAL_CAPACITY, DEFAULT_TERMINAL_LIMIT } from './terminal-slots.js';
 import { createTerminalTabs, createTerminalActions } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
@@ -23,14 +24,15 @@ import { rtcIceServers } from './rtc-ice.js';
 import { rtcRouteKind, rtcRouteLabel } from './rtc-stats.js';
 
 const $ = id => document.getElementById(id);
-let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, frameLoaded = false, owned = false, loggedIn = false, pollController = null;
+const views = createViewLifecycle($('desktop-frame'));
+let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
 let accessUI;
 let uploadPrompt, fileTransferController, fileListReader, inputDirection = 'send';
 let transferDirectory = '', filePathCopyBusy = false, filePathGeneration = 0;
 let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canManageHelpers: false, canViewHelperKeys: false };
 let fastConnectEnabled = false;
-let streamProtocolEnabled = false, modeStandbyEnabled = false, standbyFrame = null, frameSerial = 0;
+let streamProtocolEnabled = false, modeStandbyEnabled = false;
 let draftStorage;
 try { draftStorage = sessionStorage; } catch {}
 const terminalState = createTerminalState(draftStorage, nodeIdentity());
@@ -41,14 +43,12 @@ let inputComposing = false;
 let inputController = null, inputFeedback = false, maintenancePending = false;
 let controlsState = { available: false, maintenance: false, inputBusy: false };
 let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = false, clipboardText = '';
-let panelState = 'connecting', desktopReady = null, frameState = 'idle', frameEpoch = 0, frameDimensions = null, accessExpired = false, nodeMismatch = false;
+let panelState = 'connecting', desktopReady = null, accessExpired = false, nodeMismatch = false;
 let diagnosticsController = null, diagnosticsTimer;
-let frameTransport = '';
-let frameNetwork = null, directIssue = '';
-const frameLatency = createRoundTrip(), relayLatency = createRoundTrip();
+const relayLatency = createRoundTrip();
 const connectionTrace = createConnectionTrace();
 const inputNotices = createInputNotices();
-let inputNoticeSequence = 0, frameInputNoticeKey = '', statusNoticeCode = '', statusNoticeDismissed = false, inputHistoryChecked = false;
+let inputNoticeSequence = 0, statusNoticeCode = '', statusNoticeDismissed = false, inputHistoryChecked = false;
 function renderInputNoticeHistory() {
   const list = $('input-notice-list'); list.replaceChildren();
   for (const record of inputNotices.snapshot().reverse()) {
@@ -61,12 +61,12 @@ function addInputNotice(value, options) {
   const record = inputNotices.add(value, options); renderInputNoticeHistory(); return record;
 }
 function clearInputNotices() {
-  inputNotices.clear(); frameInputNoticeKey = ''; statusNoticeCode = ''; statusNoticeDismissed = false; inputHistoryChecked = false; renderInputNoticeHistory();
+  inputNotices.clear(); views.active.inputNoticeKey = ''; statusNoticeCode = ''; statusNoticeDismissed = false; inputHistoryChecked = false; renderInputNoticeHistory();
 }
 function noticeTarget(id = selectedTerminal, token = selectedTerminalToken) {
   return terminalCatalog.find(item => item.id === id && item.token === token)?.name || (id === 'main' ? '主终端' : id || '当前窗口');
 }
-function streamInputNotice(value, { mode = displayPreferences.mode, epoch = frameEpoch, standby = false, target = mode === 'terminal' ? noticeTarget() : '' } = {}) {
+function streamInputNotice(value, { mode = displayPreferences.mode, epoch = views.active.epoch, standby = false, target = mode === 'terminal' ? noticeTarget() : '' } = {}) {
   const eventId = typeof value.eventId === 'string' && /^[a-f0-9]{32}$/.test(value.eventId) ? value.eventId : `legacy${++inputNoticeSequence}`;
   return addInputNotice({ key: `stream:${epoch}:${eventId}`, source: 'stream', mode, standby, target, reason: value.reason, path: value.path }, { activate: !standby });
 }
@@ -117,16 +117,15 @@ const directIssues = { quality: '保留当前延迟更低的连接，备用通�
   'channel-timeout': 'WebRTC 路径已接通，加密数据通道建立超时',
   connection: '原 WebRTC 通道已断开，正在恢复', heartbeat: 'WebRTC 心跳无回复，已开始回退 HTTPS / WebSocket' };
 let controlReady = false, controlPending = null, controlSequence = 0, desktopTextInput = false, desktopTextFrame = '', desktopTextSequence = 0;
-let panelReady = false, panelCapabilitiesKnown = false, terminalSwitchReady = false, terminalCreateReady = false, terminalOpenReady = false, panelSequence = 0, panelRoute = 'https', rtcConfig;
+let panelSequence = 0, panelRoute = 'https', rtcConfig;
 const panelRequests = new Map();
-let transportSwitching = false, switchTimer;
+let switchTimer;
 let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
-let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false, nativeIdle = false, frameResizeReady = false;
+let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalFocusBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
-let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false, frameComposing = false, frameTouchInput = false;
-let frameTerminalKey = '', terminalGeometry = null, terminalReviewing = false;
+let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false;
 const shortcutMenu = createShortcutMenu({ button: $('shortcuts-button'), menu: $('shortcuts-menu'), list: $('shortcuts-list'),
   available: key => !terminalOnly || key !== 'Ctrl+Shift+V',
@@ -153,14 +152,14 @@ const terminalMode = () => displayPreferences.mode === 'terminal';
 function inputCollapsed() { return terminalMode() ? displayPreferences.terminalInputCollapsed : displayPreferences.collapsed; }
 const followsViewport = () => displayPreferences.autoResolution;
 const fixedSize = () => controlsState.viewport?.fixed || { width: 1600, height: 3200 };
-let displayScale = 0, displayRevision = 0, scaleRevision = -1;
+let displayRevision = 0;
 const workspacePanels = createWorkspacePanels({ tools: $('workspace-tools'), input: $('input-dock'),
   toolsButton: $('toggle-controls-button'), inputButton: $('toggle-input-button'), composing: () => inputComposing,
   close: name => closeWorkspacePanel(name, false) });
 const historyToolsPortal = createHistoryToolsPortal({ frame: $('desktop-frame'), container: $('desktop-card'),
-  valid: frame => loggedIn && owned && !accessExpired && frameLoaded && terminalMode() && frame === String(frameEpoch),
+  valid: frame => loggedIn && owned && !accessExpired && views.active.loaded && terminalMode() && frame === String(views.active.epoch),
   opened: () => { shortcutMenu.close(); hideWorkspacePanels(); },
-  composing: value => { if (frameComposing !== value) { frameComposing = value; renderInputControls(); } },
+  composing: value => { if (views.active.composing !== value) { views.active.composing = value; renderInputControls(); } },
 });
 const terminalActions = createTerminalActions({ closeTerminal: requestCloseTerminal, changed: () => { sendDisplayPreferences(); scheduleViewport(); },
   renameTerminal: (terminal, name) => manageTerminals({ action: 'rename', terminalId: terminal.id, terminalToken: terminal.token, name }) });
@@ -258,7 +257,7 @@ function reconcileTerminalSelection(opened) {
     else terminalSelectionState = terminal?.supported && terminal.token === selectedTerminalToken ? 'ready' : !terminal && terminalSlots.some(item => item.id === selectedTerminal) ? 'closed' : 'invalid';
   }
   adoptWindowDraft = false;
-  if (terminalMode() && ['invalid', 'closed'].includes(terminalSelectionState) && frameLoaded) stopFrame();
+  if (terminalMode() && ['invalid', 'closed'].includes(terminalSelectionState) && views.active.loaded) stopFrame();
 }
 function terminalEntries() {
   const entries = TERMINAL_IDS.map(id => terminalCatalog.find(item => item.id === id)).filter(Boolean);
@@ -268,7 +267,7 @@ function terminalEntries() {
 }
 function selectTerminal(id) {
   if (confirmation) { closeConfirmation(); renderTerminalList(); return false; }
-  if (!canManageTerminals() || inputComposing || frameComposing) { renderTerminalList(); return false; }
+  if (!canManageTerminals() || inputComposing || views.active.composing) { renderTerminalList(); return false; }
   if (id === 'new') {
     const slot = terminalSlots.find(item => !terminalCatalog.some(terminal => terminal.id === item.id));
     if (!slot || terminalCatalog.length >= maxTerminals) return false;
@@ -278,7 +277,7 @@ function selectTerminal(id) {
   const terminal = terminalCatalog.find(item => item.id === id && item.supported);
   if (id && !terminal || !id && terminalMode()) return false;
   const identity = id ? { id: terminal.id, token: terminal.token } : { id: '', token: '' };
-  if (terminalMode() && frameLoaded && terminalSwitchReady && frameTerminalKey !== `${identity.id}:${identity.token}`) {
+  if (terminalMode() && views.active.loaded && views.active.terminalSwitchReady && views.active.key !== `${identity.id}:${identity.token}`) {
     if (!rememberDraft()) return false;
     void switchTerminalStream(identity); return true;
   }
@@ -287,13 +286,13 @@ function selectTerminal(id) {
   return true;
 }
 function requestCloseTerminal(terminal) {
-  if (!canManageTerminals() || inputComposing || frameComposing || confirmation || !terminalCatalog.some(item => item.id === terminal.id && item.token === terminal.token && item.supported)) return;
+  if (!canManageTerminals() || inputComposing || views.active.composing || confirmation || !terminalCatalog.some(item => item.id === terminal.id && item.token === terminal.token && item.supported)) return;
   $('terminal-switch-dialog').close();
   requestConfirmation('terminal-close', null, { action: 'close', terminalId: terminal.id, terminalToken: terminal.token });
 }
 function selectDesktopTerminal(id) {
   const terminal = terminalCatalog.find(item => item.id === id && item.supported);
-  if (!terminal || !canManageTerminals() || inputComposing || frameComposing || confirmation || !rememberDraft()) return false;
+  if (!terminal || !canManageTerminals() || inputComposing || views.active.composing || confirmation || !rememberDraft()) return false;
   const generation = uiGeneration;
   void manageTerminals({ action: 'open', terminalId: terminal.id, terminalToken: terminal.token }).then(result => {
     if (generation !== uiGeneration || !owned) return;
@@ -309,7 +308,7 @@ function openTerminalManager() {
 }
 function renderTerminalSelection() {
   const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error' || desktopFocusUnconfirmed();
-  const disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
+  const disabled = !canManageTerminals() || inputComposing || views.active.composing || !!confirmation;
   const entries = terminalMode() ? terminalEntries() : terminalEntries().filter(item => !item.available);
   terminalTabs.render(entries, terminalSelectionState === 'closed' ? 'new' : selectedTerminal, { visible: owned && entries.length > 0, disabled, invalid, loading: terminalSelectionState === 'loading', desktop: !terminalMode() });
   terminalActions.render(entries, { visible: owned, disabled });
@@ -333,7 +332,7 @@ function closeWorkspacePanel(name = workspacePanels.active, desktopFocus = true)
 function restoreDesktopFocus() {
   if (!terminalMode() && !workspacePanels.active && canInput(true) && !inputBusy && !confirmation && !document.querySelector('dialog[open]')) {
     const frame = $('desktop-frame'); frame.focus({ preventScroll: true });
-    frame.contentWindow.postMessage({ type: 'codex-desktop-focus', frame: String(frameEpoch) }, location.origin);
+    frame.contentWindow.postMessage({ type: 'codex-desktop-focus', frame: String(views.active.epoch) }, location.origin);
   }
 }
 function hideWorkspacePanels() {
@@ -349,15 +348,15 @@ function toggleWorkspacePanel(name) {
   else restoreDesktopFocus();
 }
 function sendDisplayPreferences() {
-  if (standbyFrame) sendStandbyPreferences();
-  if (!frameLoaded || !owned) return;
-  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(frameEpoch), standby: false, rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
+  if (views.standby) sendStandbyPreferences();
+  if (!views.active.loaded || !owned) return;
+  $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(views.active.epoch), standby: false, rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
-    handoff: (transportSwitching || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
+    handoff: (views.active.paused || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, desktopIme: displayPreferences.desktopIme, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
     busy: (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardController || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
-function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : scaleRevision === displayRevision ? displayScale : 0; }
+function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : views.active.scaleRevision === displayRevision ? views.active.scale : 0; }
 function renderDisplayControls() {
   workspaceLayout.render();
   $('workspace-layout').value = displayPreferences.workspaceLayout;
@@ -389,7 +388,7 @@ function renderDisplayControls() {
   $('view-title').textContent = terminalMode() ? '网页终端' : '开发桌面';
   $('fullscreen-button').setAttribute('aria-label', terminalMode() ? '全屏终端' : '全屏桌面');
   $('terminal-font-label').textContent = String(displayPreferences.terminalFontSize);
-  const fittedFont = terminalGeometry?.fontSize;
+  const fittedFont = views.active.geometry?.fontSize;
   $('terminal-font-label').title = displayPreferences.terminalWidthMode === 'scale' && fittedFont > displayPreferences.terminalFontSize
     ? `基础字号 ${displayPreferences.terminalFontSize}，适应宽度后为 ${fittedFont}` : `字号 ${displayPreferences.terminalFontSize}`;
   $('terminal-width-mode').value = displayPreferences.terminalWidthMode;
@@ -417,7 +416,7 @@ function renderDisplayControls() {
   renderClipboard();
   $('tools-title').textContent = terminalMode() ? '终端工具' : '桌面工具';
   $('desktop-card').classList.toggle('controls-collapsed', displayPreferences.controlsCollapsed);
-  const base = zoomBase(), ready = frameLoaded && frameState === 'connected';
+  const base = zoomBase(), ready = views.active.loaded && views.active.state === 'connected';
   $('zoom-label').textContent = base ? `${Math.round(base * 100)}%` : '—';
   $('zoom-out-button').disabled = !ready || !base || base <= 0.1;
   $('zoom-in-button').disabled = !ready || !base || base >= 2;
@@ -500,10 +499,10 @@ $('tools-fullscreen-button').addEventListener('click', () => { closeWorkspacePan
 for (const id of ['input-keyboard-button', 'assistant-send-button']) $(id).addEventListener('click', () => setInputDirection('send', true));
 renderDisplayControls();
 
-function inputPaused() { return viewportResizing || controlsState.viewportBusy || transportSwitching || maintenancePending || controlsState.maintenance || !controlsState.available; }
+function inputPaused() { return viewportResizing || controlsState.viewportBusy || views.active.paused || maintenancePending || controlsState.maintenance || !controlsState.available; }
 function scheduleViewport(delay = 500) {
   clearTimeout(viewportTimer);
-  if (!loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  if (!loggedIn || !owned || !views.active.loaded || !views.active.resizeReady || views.active.state !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
   viewportTimer = setTimeout(resizeViewport, delay);
 }
 function waitForViewport(actual, signal) {
@@ -515,7 +514,7 @@ function waitForViewport(actual, signal) {
       error ? reject(error) : resolve();
     };
     const abort = () => finish(new Error('窗口适配已取消'));
-    const check = () => { if (frameDimensions?.width === actual.width && frameDimensions?.height === actual.height) finish(); };
+    const check = () => { if (views.active.dimensions?.width === actual.width && views.active.dimensions?.height === actual.height) finish(); };
     const timer = setTimeout(() => finish(new Error('等待画面尺寸更新超时')), 3000);
     viewportWaiter = check; signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort(); else check();
@@ -523,22 +522,22 @@ function waitForViewport(actual, signal) {
 }
 async function resizeViewport() {
   viewportTimer = null;
-  if (terminalMode() || !loggedIn || !owned || !frameLoaded || !frameResizeReady || frameState !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
-  if (!nativeIdle || frameTouchInput || document.documentElement.classList.contains('workspace-keyboard-open') || inputPaused() || inputBusy || terminalBusy || terminalActions.busy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
+  if (terminalMode() || !loggedIn || !owned || !views.active.loaded || !views.active.resizeReady || views.active.state !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
+  if (!views.active.nativeIdle || views.active.touchInput || document.documentElement.classList.contains('workspace-keyboard-open') || inputPaused() || inputBusy || terminalBusy || terminalActions.busy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
   if (!followsViewport() && (controlsState.viewport.maximum.width < size.width || controlsState.viewport.maximum.height < size.height)) return;
-  const signature = `${frameEpoch}:${size.width}x${size.height}`;
+  const signature = `${views.active.epoch}:${size.width}x${size.height}`;
   if (signature === viewportApplied) return;
-  if (frameDimensions?.width === size.width && frameDimensions?.height === size.height) { viewportApplied = signature; return; }
-  const controller = viewportController = new AbortController(), epoch = frameEpoch;
+  if (views.active.dimensions?.width === size.width && views.active.dimensions?.height === size.height) { viewportApplied = signature; return; }
+  const controller = viewportController = new AbortController(), epoch = views.active.epoch;
   const timer = setTimeout(() => controller.abort(), 7000);
   viewportResizing = true; renderInputControls(); sendDisplayPreferences();
   try {
     const result = await api('/api/desktop/viewport', { method: 'POST', body: size, signal: controller.signal });
     clearTimeout(timer);
     await waitForViewport(result.actual, controller.signal);
-    if (viewportController === controller && frameEpoch === epoch) viewportApplied = signature;
+    if (viewportController === controller && views.active.epoch === epoch) viewportApplied = signature;
   } catch (error) {
     if (viewportController === controller && !controller.signal.aborted && error.status !== 409) $('viewport-note').textContent = '本次窗口适配未完成，当前任务继续运行；稍后会重新检查。';
   } finally {
@@ -556,7 +555,7 @@ $('auto-resolution').addEventListener('change', () => {
   renderDesktopSettings(); scheduleViewport();
 });
 function canInput(focused = false) {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && frameState === 'connected' && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !terminalReviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && views.inputReady() && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !views.active.reviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
 }
 function canManageTerminals(allowPaused = false) {
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && (allowPaused === true || !inputPaused()) && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
@@ -564,17 +563,17 @@ function canManageTerminals(allowPaused = false) {
 function renderInputControls() {
   $('desktop-frame').inert = terminalFocusBusy;
   $('gateway-switch-button').hidden = !document.querySelector('meta[name="gateway-entry"]') || permissions.role === 'temporary';
-  const disabled = inputBusy || inputComposing || frameComposing || !canInput();
+  const disabled = inputBusy || inputComposing || views.active.composing || !canInput();
   for (const control of [$('paste-button'), $('terminal-button'), $('shortcuts-button'), ...document.querySelectorAll('[data-key], [data-shortcut]')]) control.disabled = disabled;
   if (disabled) shortcutMenu.close();
   for (const control of [$('terminals-button'), $('create-terminal'), ...$('terminal-list').querySelectorAll('button, input')]) control.disabled = !canManageTerminals() || control.closest('.terminal-row')?.dataset.supported === 'false';
-  $('input-terminal').disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
+  $('input-terminal').disabled = !canManageTerminals() || inputComposing || views.active.composing || !!confirmation;
   $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
   $('new-terminal-name').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
   $('refresh-terminals').disabled = !loggedIn || terminalBusy;
   $('paste-target').disabled = !!selectedTerminal;
   $('desktop-mode').disabled = $('terminal-mode').disabled = modeChangeBusy() || !!confirmation;
-  $('terminal-view-select').disabled = !canManageTerminals() || inputComposing || frameComposing || !!confirmation;
+  $('terminal-view-select').disabled = !canManageTerminals() || inputComposing || views.active.composing || !!confirmation;
   $('terminal-view-manage').disabled = !canManageTerminals();
   renderTerminalSelection();
   renderFileControls();
@@ -582,7 +581,7 @@ function renderInputControls() {
 }
 function needsRelayProbe() {
   return workspaceInitialized && loggedIn && !accessExpired && !pageLeaving && !document.hidden && navigator.onLine &&
-    (!owned ? !serviceLink.ready : frameState === 'connected' && frameTransport !== 'direct' && !streamProtocolEnabled && !terminalMode());
+    (!owned ? !serviceLink.ready : views.active.state === 'connected' && views.active.transport !== 'direct' && !streamProtocolEnabled && !terminalMode());
 }
 function syncRelayLatency() {
   if (!needsRelayProbe()) {
@@ -613,11 +612,11 @@ function renderConnectionNotice() {
     else if (!navigator.onLine) { code = 'offline'; message = '网络已断开，输入已暂停；恢复后继续原会话，不会补发输入。'; }
     else if (panelState === 'offline') { code = 'service'; message = '服务连接中断，输入已暂停；正在恢复，不会补发输入。'; }
     else if ((record = inputNotices.current)) message = record.message;
-    else if (transportSwitching) { code = 'switch'; message = '正在复核或切换连接，输入暂时暂停；已发送内容不会重发。'; }
+    else if (views.active.paused) { code = 'switch'; message = '正在复核或切换连接，输入暂时暂停；已发送内容不会重发。'; }
     else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) { code = 'target'; message = '终端目标待确认，输入已暂停；请选择有效终端。'; }
     else if (maintenancePending || controlsState.maintenance) { code = 'maintenance'; message = '桌面操作进行中，输入已暂停；请等待操作完成。'; }
     else if (!controlsState.available) { code = 'input-service'; message = '输入服务暂不可用，输入已暂停；当前任务继续运行。'; }
-    else if (frameState !== 'connected' && !(terminalMode() && terminalSelectionState === 'closed')) { code = 'reconnect'; message = '正在恢复连接，输入已暂停；原任务继续运行。'; }
+    else if (views.active.state !== 'connected' && !(terminalMode() && terminalSelectionState === 'closed')) { code = 'reconnect'; message = '正在恢复连接，输入已暂停；原任务继续运行。'; }
   }
   if (statusNoticeCode !== code) { statusNoticeCode = code; statusNoticeDismissed = false; }
   // Dismissing a network episode must not also silence a new input event.
@@ -643,23 +642,23 @@ function renderConnection() {
   else if (!navigator.onLine || panelState === 'offline') label = '等待网络';
   else if (!owned) label = permissions.role === 'temporary' ? '临时访问' : permissions.requiresUnlock ? '屏幕已锁定' : '等待接管';
   else if (desktopReady === false) label = terminalOnly ? '终端后台未就绪' : '桌面未就绪';
-  else if (transportSwitching) label = '正在优化连接';
+  else if (views.active.paused) label = '正在优化连接';
   else if (maintenancePending || controlsState.maintenance) label = '桌面操作进行中';
   else if (!controlsState.available) label = '输入服务未就绪';
   else if (terminalSwitching) label = '正在切换终端…';
   else if (terminalMode() && terminalSelectionState === 'closed') label = '终端已关闭';
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) label = '终端目标待确认';
-  else if (frameState === 'connected') label = terminalMode() ? '终端在线' : '桌面在线';
-  else label = frameState === 'reconnecting' ? '画面重连中' : '画面连接中';
+  else if (views.active.state === 'connected') label = terminalMode() ? '终端在线' : '桌面在线';
+  else label = views.active.state === 'reconnecting' ? '画面重连中' : '画面连接中';
   $('connection-status').classList.toggle('offline', !['桌面在线', '终端在线', '正在切换终端…', '终端已关闭'].includes(label));
   $('connection-status').lastChild.textContent = label;
   const overviewState = ['桌面在线', '终端在线'].includes(label) ? 'healthy' : nodeMismatch || accessExpired || !navigator.onLine || panelState === 'offline' ? 'offline' : !owned ? 'limited' : 'pending';
   $('connection-overview').dataset.state = overviewState;
   if ($('connection-summary').textContent !== label) $('connection-summary').textContent = label;
-  const overviewNote = nodeMismatch ? '入口节点已切换，请刷新页面连接新节点。' : accessExpired ? '请重新验证访问，服务器上的既有任务继续运行。' : !navigator.onLine || panelState === 'offline' ? '正在等待网络恢复，服务器上的既有任务继续运行。' : !owned ? '画面访问与文件、映射服务分别授权，已有映射不受影响。' : overviewState === 'healthy' ? '当前会话可用。画面、输入和文件分别显示各自使用的通道。' : frameState === 'reconnecting' ? '正在恢复画面连接，状态恢复前请勿重复提交操作。' : '请查看下方会话信息；后台服务详情可展开查看。';
+  const overviewNote = nodeMismatch ? '入口节点已切换，请刷新页面连接新节点。' : accessExpired ? '请重新验证访问，服务器上的既有任务继续运行。' : !navigator.onLine || panelState === 'offline' ? '正在等待网络恢复，服务器上的既有任务继续运行。' : !owned ? '画面访问与文件、映射服务分别授权，已有映射不受影响。' : overviewState === 'healthy' ? '当前会话可用。画面、输入和文件分别显示各自使用的通道。' : views.active.state === 'reconnecting' ? '正在恢复画面连接，状态恢复前请勿重复提交操作。' : '请查看下方会话信息；后台服务详情可展开查看。';
   if ($('connection-summary-note').textContent !== overviewNote) $('connection-summary-note').textContent = overviewNote;
   renderConnectionNotice();
-  const route = frameState === 'connected' && frameTransport === 'direct' ? frameNetwork : null;
+  const route = views.active.state === 'connected' && views.active.transport === 'direct' ? views.active.network : null;
   const selected = route || serviceLink.state.route, hints = directHints.value;
   $('direct-hints-active').textContent = !selected ? '当前未确认 WebRTC 端点，保存的提示尚不能证明已生效。' :
     (route ? '工作区当前路径：' : '文件与服务当前路径：') + rtcRouteLabel(selected) + '。' + [['server', 'remote', '节点'], ['browser', 'local', '浏览器']].filter(([key]) => hints[key]).map(([key, side, label]) =>
@@ -668,15 +667,15 @@ function renderConnection() {
   const routeStatus = value => ({ direct: '已建立加密直连', relay: '已建立 TURN 中继（端到端加密）', unknown: '已建立 WebRTC 加密通道，路径待确认' })[rtcRouteKind(value)];
   $('diag-panel').textContent = accessExpired ? '访问验证已过期' : panelState === 'online' ? `可访问（${panelPath}）` : panelState === 'offline' ? '连接中断' : '等待检测';
   $('diag-desktop').textContent = desktopReady === null ? '等待检测' : desktopReady ? '已就绪' : '未就绪';
-  $('diag-frame').textContent = !owned ? '等待接管' : frameState === 'connected' ? '已连接' : frameState === 'reconnecting' ? '重连中' : '等待连接';
-  $('diag-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : frameTransport === 'direct' ? rtcRouteLabel(route) + (terminalMode() ? ' · 文字终端' : '') : 'HTTPS / WebSocket 中转';
-  $('diag-input-transport').textContent = frameState !== 'connected' ? '等待连接' : frameTransport === 'terminal' ? '网页终端加密通道' : controlReady ? rtcRouteLabel(route) : 'HTTPS';
+  $('diag-frame').textContent = !owned ? '等待接管' : views.active.state === 'connected' ? '已连接' : views.active.state === 'reconnecting' ? '重连中' : '等待连接';
+  $('diag-transport').textContent = views.active.state !== 'connected' ? '等待连接' : views.active.transport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : views.active.transport === 'direct' ? rtcRouteLabel(route) + (terminalMode() ? ' · 文字终端' : '') : 'HTTPS / WebSocket 中转';
+  $('diag-input-transport').textContent = views.active.state !== 'connected' ? '等待连接' : views.active.transport === 'terminal' ? '网页终端加密通道' : controlReady ? rtcRouteLabel(route) : 'HTTPS';
   $('file-transport').textContent = serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（最多 50 MiB）` : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测 WebRTC' : '文件内容：HTTPS';
   $('diag-file-transport').textContent = $('file-transport').textContent.replace(/^文件内容：/, '');
   const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}（${({ host: '主机地址', srflx: 'NAT 映射地址', prflx: '对端发现地址', relay: 'TURN 中继地址' })[value.type] || '类型未知'}）`;
-  $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : frameTransport === 'direct' && frameState === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用 WebRTC';
+  $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : views.active.transport === 'direct' && views.active.state === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用 WebRTC';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
-  $('diag-direct-status').textContent = frameTransport === 'direct' && frameState === 'connected' ? routeStatus(route) : directIssues[directIssue] || '尚未检测';
+  $('diag-direct-status').textContent = views.active.transport === 'direct' && views.active.state === 'connected' ? routeStatus(route) : directIssues[views.active.issue] || '尚未检测';
   if (!owned && loggedIn && serviceProtocol === 1) {
     const service = serviceLink.state;
     $('diag-panel').textContent = service.ready ? `可访问（${rtcRouteLabel(service.route)}）` : panelState === 'online' ? '可访问（HTTPS）' : '连接中断';
@@ -686,12 +685,12 @@ function renderConnection() {
     $('diag-peer').textContent = service.route ? `${endpoint(service.route.local)} ↔ ${endpoint(service.route.remote)}` : '—';
     $('diag-input-transport').textContent = '当前账号无桌面输入权限';
   }
-  const latencyActive = loggedIn && !accessExpired && !document.hidden && navigator.onLine && (!owned || frameState === 'connected');
+  const latencyActive = loggedIn && !accessExpired && !document.hidden && navigator.onLine && (!owned || views.active.state === 'connected');
   const httpsLatency = needsRelayProbe();
-  const rttMs = !latencyActive ? null : !owned && serviceLink.ready ? serviceLink.rttMs : httpsLatency ? relayLatency.value : owned ? frameLatency.value : null;
+  const rttMs = !latencyActive ? null : !owned && serviceLink.ready ? serviceLink.rttMs : httpsLatency ? relayLatency.value : owned ? views.active.latency.value : null;
   $('diag-latency').textContent = rttMs !== null ? `${rttMs} ms` : latencyActive ? '检测中…' : '—';
   $('diag-latency').title = httpsLatency ? '浏览器与服务器之间的 HTTPS 请求往返时间，前台约每 4 秒检测。' : '浏览器与服务器之间当前数据通道的心跳往返时间，前台约每 3 秒更新。';
-  $('diag-resolution').textContent = terminalMode() ? terminalGeometry ? `${terminalGeometry.cols} 列 × ${terminalGeometry.rows} 行` : '等待终端尺寸' : frameDimensions ? `${frameDimensions.width} × ${frameDimensions.height}${frameState === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
+  $('diag-resolution').textContent = terminalMode() ? views.active.geometry ? `${views.active.geometry.cols} 列 × ${views.active.geometry.rows} 行` : '等待终端尺寸' : views.active.dimensions ? `${views.active.dimensions.width} × ${views.active.dimensions.height}${views.active.state === 'connected' ? '' : '（上次连接）'}` : '等待画面连接';
   renderInputControls();
   renderDisplayControls();
   renderDesktopSettings();
@@ -706,7 +705,7 @@ function renderConnection() {
     overlay('访问验证已过期', '刷新页面完成外层访问验证，然后返回原来的工作会话。');
     $('access-refresh-button').hidden = false;
   } else if (!navigator.onLine || panelState === 'offline') {
-    if (frameState !== 'connected') overlay('等待网络恢复', '连接恢复后会继续原来的会话。未确认成功的输入不会自动重发。');
+    if (views.active.state !== 'connected') overlay('等待网络恢复', '连接恢复后会继续原来的会话。未确认成功的输入不会自动重发。');
     else $('desktop-overlay').hidden = true;
   } else if (!owned && permissions.role === 'temporary') overlay('临时访问', '此账号仅可查看连接状态、配置服务器访问本地设备的映射，以及上传和下载共享中转文件。');
   else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '既有双向端口映射仍可连接；新增或管理本机 → 服务器映射需先解锁。连接状态、本地设备映射和文件中转仍可用。', true);
@@ -722,10 +721,10 @@ function renderConnection() {
     $('choose-terminal-button').textContent = '选择终端'; $('choose-terminal-button').disabled = false;
     $('choose-terminal-button').hidden = false;
   }
-  else if (desktopReady === false && frameState !== 'connected') overlay(terminalOnly ? '终端后台未就绪' : '桌面未就绪', terminalOnly ? '正在等待终端后台。网页不会自动重启后台或重新执行任务。' : '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
-  else if ((viewportResizing || controlsState.viewportBusy || transportSwitching) && frameState === 'connected') $('desktop-overlay').hidden = true;
+  else if (desktopReady === false && views.active.state !== 'connected') overlay(terminalOnly ? '终端后台未就绪' : '桌面未就绪', terminalOnly ? '正在等待终端后台。网页不会自动重启后台或重新执行任务。' : '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
+  else if ((viewportResizing || controlsState.viewportBusy || views.active.paused) && views.active.state === 'connected') $('desktop-overlay').hidden = true;
   else if (inputPaused()) overlay(label, '输入暂时暂停。当前操作完成后恢复，不会自动重发输入。');
-  else if (frameState === 'connected') $('desktop-overlay').hidden = true;
+  else if (views.active.state === 'connected') $('desktop-overlay').hidden = true;
   else overlay(label, terminalMode() ? '正在连接终端，原任务继续运行。' : '正在连接画面，桌面任务继续运行。');
 }
 function stopDiagnostics() {
@@ -791,10 +790,10 @@ function toast(message, failure = false) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
 async function api(path, { method = 'GET', body, raw, signal, upload, progress, downloadSize, transferId } = {}) {
-  if (path === '/api/terminals' && method === 'POST' && body?.action === 'create' && terminalMode() && terminalCreateReady && owned && frameState === 'connected') {
+  if (path === '/api/terminals' && method === 'POST' && body?.action === 'create' && terminalMode() && views.active.terminalCreateReady && owned && views.active.state === 'connected') {
     return framePanelRequest('create-terminal', { name: body.name, ...(body.terminalId === undefined ? {} : { terminalId: body.terminalId }) }, signal);
   }
-  if (path === '/api/terminals' && method === 'POST' && body?.action === 'open' && !terminalMode() && terminalOpenReady && owned && frameState === 'connected') {
+  if (path === '/api/terminals' && method === 'POST' && body?.action === 'open' && !terminalMode() && views.active.terminalOpenReady && owned && views.active.state === 'connected') {
     return framePanelRequest('open-terminal', { terminalId: body.terminalId, terminalToken: body.terminalToken }, signal);
   }
   const service = serviceAction(path, method);
@@ -802,8 +801,8 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
     try { const value = await serviceLink.request(service, body || {}, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
-  if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {
-    const generation = uiGeneration, route = frameTransport;
+  if (method === 'GET' && views.active.panelReady && owned && views.active.state === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {
+    const generation = uiGeneration, route = views.active.transport;
     try {
       const value = await framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
       if (path === '/api/state') panelRoute = route;
@@ -855,48 +854,49 @@ function finishPanelRequest(id, error, value) {
   error ? pending.reject(error) : pending.resolve(value);
 }
 function framePanelRequest(action, body = {}, signal) {
-  const capable = action === 'switch-terminal' ? terminalSwitchReady : action === 'create-terminal' ? terminalCreateReady : action === 'open-terminal' ? terminalOpenReady : panelReady;
-  if (!['state', 'terminals', 'switch-terminal', 'create-terminal', 'open-terminal'].includes(action) || !capable || !owned || !frameLoaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('连接操作未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
+  const capable = action === 'switch-terminal' ? views.active.terminalSwitchReady : action === 'create-terminal' ? views.active.terminalCreateReady : action === 'open-terminal' ? views.active.terminalOpenReady : views.active.panelReady;
+  if (!['state', 'terminals', 'switch-terminal', 'create-terminal', 'open-terminal'].includes(action) || !capable || !owned || !views.active.loaded || signal?.aborted || [...panelRequests.values()].some(p => p.action === action) || panelSequence >= 2147483647) return Promise.reject(Object.assign(new Error('连接操作未就绪或仍在处理'), { status: 409, outcome: 'rejected' }));
   return new Promise((resolve, reject) => {
     const id = ++panelSequence, abort = () => {
-      $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-cancel', frame: String(frameEpoch), id }, location.origin);
+      $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-cancel', frame: String(views.active.epoch), id }, location.origin);
       finishPanelRequest(id, signal?.reason || Object.assign(new Error('连接操作已取消或结果未知'), { status: 409, outcome: ['switch-terminal', 'create-terminal', 'open-terminal'].includes(action) ? 'unknown' : 'rejected' }));
     };
     panelRequests.set(id, { action, resolve, reject, signal, abort, timer: setTimeout(abort, action === 'switch-terminal' ? 11000 : ['create-terminal', 'open-terminal'].includes(action) ? 6500 : 6000) });
     signal?.addEventListener('abort', abort, { once: true });
-    $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-request', frame: String(frameEpoch), id, action, body }, location.origin);
+    $('desktop-frame').contentWindow.postMessage({ type: 'codex-panel-request', frame: String(views.active.epoch), id, action, body }, location.origin);
   });
 }
-function resetPanelRequests() {
-  panelReady = panelCapabilitiesKnown = terminalSwitchReady = terminalCreateReady = terminalOpenReady = false;
+function resetPanelRequests({ preserveView = false } = {}) {
+  if (!preserveView) views.invalidate();
   for (const id of [...panelRequests.keys()]) finishPanelRequest(id, Object.assign(new Error('查看连接已变化'), { status: 409, outcome: 'unknown' }));
 }
 async function switchTerminalStream(identity) {
-  const expectedFrame = frameEpoch, generation = uiGeneration;
+  const entry = views.active, expectedFrame = entry.epoch, generation = uiGeneration, key = `${identity.id}:${identity.token}`;
+  if (!views.requestTarget(entry, key)) return false;
   // Attaching temporarily hides the retained route's read capability. Do not
   // introduce an HTTPS dependency while that same connection is still alive.
   stopPolling();
   historyToolsPortal.reset(); terminalBusy = terminalSwitching = true; shortcutMenu.close(); renderConnection();
   try {
     const target = await framePanelRequest('switch-terminal', { terminalId: identity.id, terminalToken: identity.token });
-    if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
+    if (views.active.epoch !== expectedFrame || generation !== uiGeneration || !owned) return;
     if (target?.terminalId !== identity.id || target?.terminalToken !== identity.token || !activateTerminal(identity)) throw Object.assign(new Error('切换后目标未确认，请重新选择终端；草稿已保留'), { outcome: 'unknown' });
-    frameTerminalKey = `${identity.id}:${identity.token}`; terminalGeometry = null; terminalReviewing = false;
+    if (!views.confirmTarget(entry, key)) throw Object.assign(new Error('终端目标已变化，切换结果待确认'), { outcome: 'unknown' });
     renderTerminalList();
     const deadline = performance.now() + 8000;
-    while (frameEpoch === expectedFrame && owned && (frameState !== 'connected' || !terminalSwitchReady) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-    if (frameEpoch === expectedFrame && owned && (frameState !== 'connected' || !terminalSwitchReady)) throw Object.assign(new Error('终端附加未完成，请重新选择目标'), { outcome: 'unknown' });
+    while (views.active.epoch === expectedFrame && owned && (views.active.state !== 'connected' || !views.active.terminalSwitchReady) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    if (views.active.epoch === expectedFrame && owned && (views.active.state !== 'connected' || !views.active.terminalSwitchReady)) throw Object.assign(new Error('终端附加未完成，请重新选择目标'), { outcome: 'unknown' });
     return true;
   } catch (error) {
-    if (frameEpoch !== expectedFrame || generation !== uiGeneration || !owned) return;
-    if (error.outcome === 'rejected' && frameTerminalKey !== `${selectedTerminal}:${selectedTerminalToken}`) {
-      const previous = terminalCatalog.find(item => item.supported && `${item.id}:${item.token}` === frameTerminalKey);
+    if (views.active.epoch !== expectedFrame || generation !== uiGeneration || !owned) return;
+    if (error.outcome === 'rejected' && views.active.key !== `${selectedTerminal}:${selectedTerminalToken}`) {
+      const previous = terminalCatalog.find(item => item.supported && `${item.id}:${item.token}` === views.active.key);
       if (!previous || !activateTerminal({ id: previous.id, token: previous.token })) { terminalSelectionState = 'error'; stopFrame(); }
       renderTerminalList();
     } else if (error.outcome !== 'rejected') { terminalSelectionState = 'error'; stopFrame(); }
     toast(error.message, error.code !== 'terminal_switch_busy' || error.outcome !== 'rejected');
     return false;
-  } finally { if (generation === uiGeneration) { terminalBusy = !!terminalController; terminalSwitching = false; renderConnection(); if (loggedIn && !accessExpired && !pollController && !terminalController) { stopPolling(); void poll(); } } }
+  } finally { views.cancelTarget(entry); if (generation === uiGeneration) { terminalBusy = !!terminalController; terminalSwitching = false; renderConnection(); if (loggedIn && !accessExpired && !pollController && !terminalController) { stopPolling(); void poll(); } } }
 }
 function overlay(title, description, takeover = false) {
   $('overlay-title').textContent = title;
@@ -914,20 +914,11 @@ function stopFrame({ keepLogout = false } = {}) {
   terminalSwitching = false;
   shortcutMenu.close();
   if (!keepLogout || confirmation?.kind !== 'logout') closeConfirmation();
-  clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; nativeIdle = false; frameResizeReady = false;
-  clearTimeout(switchTimer); transportSwitching = false;
+  clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = ''; views.active.nativeIdle = false; views.active.resizeReady = false;
+  clearTimeout(switchTimer); views.active.paused = false;
   resetDirectControl();
   resetPanelRequests();
-  frameLoaded = false;
-  frameState = 'idle';
-  frameTransport = '';
-  frameInputNoticeKey = '';
-  frameTerminalKey = ''; terminalGeometry = null; terminalReviewing = false;
-  frameComposing = frameTouchInput = false;
-  frameNetwork = null; frameLatency.clear(); directIssue = '';
-  frameEpoch = ++frameSerial;
-  displayScale = 0;
-  scaleRevision = -1;
+  views.reset(displayPreferences.mode);
   renderDisplayControls();
   $('desktop-frame').hidden = true;
   $('desktop-frame').src = 'about:blank';
@@ -938,7 +929,7 @@ function restrictWorkspace() {
   inputController?.abort(); terminalController?.abort(); settingsController?.abort(); clipboardController?.abort();
   for (const id of ['desktop-settings-dialog', 'terminals-dialog', 'terminal-switch-dialog']) if ($(id).open) $(id).close();
   if (confirmation && confirmation.kind !== 'logout') closeConfirmation();
-  if (frameLoaded || standbyFrame) stopFrame({ keepLogout: true });
+  if (views.active.loaded || views.standby) stopFrame({ keepLogout: true });
 }
 function updateAccess(value) {
   if (!value) return;
@@ -965,12 +956,12 @@ function assistantRequest(path, body, signal) {
   return new Promise((resolve, reject) => {
     const id = ++controlSequence;
     const abort = () => {
-      $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-cancel', frame: String(frameEpoch), id }, location.origin);
+      $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-cancel', frame: String(views.active.epoch), id }, location.origin);
       finishDirectControl(Object.assign(new Error('输入操作结果未知，请先查看桌面确认'), { outcome: 'unknown' }));
     };
     controlPending = { id, resolve, reject, signal, abort, timer: setTimeout(abort, 8000) };
     signal?.addEventListener('abort', abort, { once: true });
-    $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-request', frame: String(frameEpoch), id, action, body }, location.origin);
+    $('desktop-frame').contentWindow.postMessage({ type: 'codex-control-request', frame: String(views.active.epoch), id, action, body }, location.origin);
   });
 }
 function stopPolling() {
@@ -998,7 +989,7 @@ function showLogin(message = '') {
   closeDraftLeave(); fileTransferController?.abort(); fileProgress.clear();
   $('transfer-path').textContent = '等待读取…';
   terminalController?.abort(); terminalController = null; terminalBusy = terminalFocusBusy = false; terminalLoadAttempted = false; terminalCatalog = []; terminalSlots = []; selectedTerminal = ''; selectedTerminalToken = ''; terminalSelectionState = 'loading'; renderTerminalList();
-  desktopReady = null; frameDimensions = null; panelState = 'auth';
+  desktopReady = null; views.active.dimensions = null; panelState = 'auth';
   stopPolling();
   stopFrame();
   stopDiagnostics();
@@ -1018,8 +1009,7 @@ function showLogin(message = '') {
 function standbyCapable() { return modeStandbyEnabled && !terminalOnly; }
 function standbyEnabled() { return standbyCapable() && displayPreferences.modeStandby; }
 function discardStandby() {
-  if (!standbyFrame) return;
-  const previous = standbyFrame; standbyFrame = null;
+  const previous = views.discard(); if (!previous) return;
   previous.element.src = 'about:blank'; previous.element.remove();
 }
 function standbyTarget() {
@@ -1029,88 +1019,65 @@ function standbyTarget() {
     : item.id === 'main'));
 }
 function sendStandbyPreferences() {
-  const entry = standbyFrame; if (!entry || !owned) return;
+  const entry = views.standby; if (!entry || !owned) return;
   entry.element.contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(entry.epoch), standby: true,
     rtc: { ...rtcConfig, hints: directHints.value }, csrf, zoom: displayPreferences.zoom, pan: displayPreferences.pan,
     blocked: true, busy: true, revision: displayRevision, pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting }, location.origin);
 }
 function syncModeStandby() {
-  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || !frameLoaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
+  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || !views.active.loaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
   const mode = terminalMode() ? 'desktop' : 'terminal', target = mode === 'terminal' ? standbyTarget() : null;
   const key = target ? `${target.id}:${target.token}` : '';
   // A parked terminal can attach the next target on its retained stream when
   // foregrounded. Changing the desktop selection must not tear that stream down.
-  if (standbyFrame && (standbyFrame.mode !== mode || standbyFrame.key !== key &&
-    (!streamProtocolEnabled || terminalCatalogVerified && !terminalCatalog.some(item => item.supported && `${item.id}:${item.token}` === standbyFrame.key)))) discardStandby();
-  if (standbyFrame || mode === 'terminal' && !target || frameState !== 'connected' || terminalBusy) return;
+  if (views.standby && (views.standby.mode !== mode || views.standby.key !== key &&
+    (!streamProtocolEnabled || terminalCatalogVerified && !terminalCatalog.some(item => item.supported && `${item.id}:${item.token}` === views.standby.key)))) discardStandby();
+  if (views.standby || mode === 'terminal' && !target || views.active.state !== 'connected' || terminalBusy) return;
   const element = document.createElement('iframe');
   element.id = 'standby-frame'; element.inert = true; element.setAttribute('aria-hidden', 'true'); element.tabIndex = -1;
   element.referrerPolicy = 'same-origin'; element.allow = $('desktop-frame').allow;
   element.title = mode === 'terminal' ? '待命网页终端' : '待命开发桌面';
-  standbyFrame = { element, epoch: ++frameSerial, mode, key, state: 'connecting', transport: '', paused: false, inputNoticeKey: '', noticeTarget: mode === 'terminal' ? noticeTarget(target.id, target.token) : '', dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false };
-  element.src = frameUrl(mode, standbyFrame.epoch, target);
+  views.prepare(element, mode, key, mode === 'terminal' ? noticeTarget(target.id, target.token) : '');
+  element.src = frameUrl(mode, views.standby.epoch, target);
   $('desktop-stage').insertBefore(element, $('desktop-overlay'));
 }
+function updateView(entry, value) {
+  return views.update(entry, value, { revision: displayRevision, fontSize: displayPreferences.terminalFontSize, terminalSwitching, issues: Object.keys(directIssues) });
+}
 function receiveStandby(value) {
-  const entry = standbyFrame;
+  const entry = views.standby;
+  updateView(entry, value);
   if (value.type === 'codex-network-event') { recordConnection(value.event?.type, value.event, entry.mode, true); return; }
   if (value.type === 'codex-desktop') {
     if (value.state === 'ready') { sendStandbyPreferences(); return; }
-    if (value.state === 'connected') { entry.state = 'connected'; entry.transport = value.transport === 'direct' ? 'direct' : entry.mode === 'terminal' ? 'terminal' : 'relay'; sendStandbyPreferences(); }
-    else if (['disconnected', 'connecting'].includes(value.state)) { entry.state = value.state === 'disconnected' ? 'reconnecting' : 'connecting'; entry.panelReady = entry.panelCapabilitiesKnown = entry.terminalSwitchReady = entry.terminalCreateReady = entry.terminalOpenReady = false; }
-  } else if (value.type === 'codex-panel-state') {
-    entry.panelCapabilitiesKnown = entry.state === 'connected' && !entry.paused;
-    entry.panelReady = value.ready === true;
-    entry.terminalSwitchReady = value.terminalSwitch === true;
-    entry.terminalCreateReady = value.terminalCreate === true;
-    entry.terminalOpenReady = value.terminalOpen === true;
-  } else if (value.type === 'codex-stream-state' && typeof value.paused === 'boolean') { entry.paused = value.paused; if (value.paused) entry.panelCapabilitiesKnown = false; }
-  else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
+    if (value.state === 'connected') sendStandbyPreferences();
+  } else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
     const record = streamInputNotice(value, { mode: entry.mode, epoch: entry.epoch, standby: true, target: entry.noticeTarget });
     if (record && record.key !== entry.inputNoticeKey) toast(record.message, true);
     entry.inputNoticeKey = record?.key || '';
-  } else if (value.type === 'codex-terminal-size' && Number.isInteger(value.cols) && value.cols >= 2 && value.cols <= 500 && Number.isInteger(value.rows) && value.rows >= 1 && value.rows <= 200) {
-    entry.geometry = { cols: value.cols, rows: value.rows, fontSize: displayPreferences.terminalFontSize };
-  } else if (value.type === 'codex-desktop-view' && value.revision === displayRevision) {
-    if (Number.isFinite(value.scale) && value.scale > 0 && value.scale <= 16) { entry.scale = value.scale; entry.scaleRevision = value.revision; }
-    if (Number.isInteger(value.width) && Number.isInteger(value.height) && value.width > 0 && value.height > 0 && value.width <= 16384 && value.height <= 16384) entry.dimensions = { width: value.width, height: value.height };
-  } else if (value.type === 'codex-terminal-history' && typeof value.reviewing === 'boolean') entry.reviewing = value.reviewing;
-  else if (value.type === 'codex-direct-prepare') entry.element.contentWindow.postMessage({ type: 'codex-direct-approved', frame: String(entry.epoch), id: value.id, allowed: false }, location.origin);
+  } else if (value.type === 'codex-direct-prepare') entry.element.contentWindow.postMessage({ type: 'codex-direct-approved', frame: String(entry.epoch), id: value.id, allowed: false }, location.origin);
   // No hidden frame may change the active target, send controls, open tools,
   // approve a route handoff, or turn an old input result into a new action.
 }
 function swapStandby(mode) {
-  const next = standbyFrame;
-  if (!standbyEnabled() || !next || next.mode !== mode || !frameLoaded || document.hidden ||
-    mode === 'terminal' && next.key !== `${selectedTerminal}:${selectedTerminalToken}` && (next.state !== 'connected' || next.paused || !next.terminalSwitchReady)) return false;
+  const key = `${selectedTerminal}:${selectedTerminalToken}`, previous = views.active;
+  if (!standbyEnabled() || document.hidden || !views.canSwap(mode, key)) return false;
   historyToolsPortal.reset();
-  const previous = { element: $('desktop-frame'), epoch: frameEpoch, mode: displayPreferences.mode, key: frameTerminalKey,
-    state: frameState, transport: frameTransport, paused: transportSwitching, inputNoticeKey: frameInputNoticeKey, noticeTarget: terminalMode() ? noticeTarget() : '', dimensions: frameDimensions, geometry: terminalGeometry,
-    scale: displayScale, scaleRevision, reviewing: terminalReviewing, panelReady, panelCapabilitiesKnown, terminalSwitchReady, terminalCreateReady, terminalOpenReady };
   clearTimeout(viewportTimer); viewportController?.abort(); viewportController = null; viewportResizing = false; viewportApplied = '';
-  clearTimeout(switchTimer); transportSwitching = false; resetDirectControl(); resetPanelRequests();
+  clearTimeout(switchTimer); resetDirectControl(); resetPanelRequests({ preserveView: true });
+  views.swap(mode, key, terminalMode() ? noticeTarget() : '');
+  const next = views.active;
   previous.element.id = 'standby-frame'; previous.element.inert = true; previous.element.tabIndex = -1; previous.element.setAttribute('aria-hidden', 'true');
-  standbyFrame = previous; sendStandbyPreferences();
+  sendStandbyPreferences();
   next.element.id = 'desktop-frame'; next.element.inert = false; next.element.removeAttribute('aria-hidden'); next.element.removeAttribute('tabindex');
   next.element.title = mode === 'terminal' ? 'Codex 网页终端' : 'Ubuntu 开发桌面';
   historyToolsPortal.setFrame(next.element);
-  frameEpoch = next.epoch; frameState = next.state; frameTransport = next.transport; frameTerminalKey = next.key;
-  panelReady = next.state === 'connected' && next.panelReady === true;
-  panelCapabilitiesKnown = next.state === 'connected' && next.panelCapabilitiesKnown === true;
-  terminalSwitchReady = mode === 'terminal' && next.state === 'connected' && next.terminalSwitchReady === true;
-  terminalCreateReady = mode === 'terminal' && next.state === 'connected' && next.terminalCreateReady === true;
-  terminalOpenReady = mode === 'desktop' && next.state === 'connected' && next.terminalOpenReady === true;
-  frameDimensions = next.dimensions; terminalGeometry = next.geometry; displayScale = next.scale; scaleRevision = next.scaleRevision;
-  terminalReviewing = next.reviewing; frameComposing = frameTouchInput = false; nativeIdle = frameResizeReady = false;
-  transportSwitching = next.paused === true;
-  frameInputNoticeKey = next.inputNoticeKey;
   const notice = inputNotices.snapshot().find(record => record.key === next.inputNoticeKey);
   if (notice) { inputNotices.activate(notice.key); inputMessage('unknown', notice.message); }
-  frameNetwork = null; frameLatency.clear(); directIssue = '';
   return true;
 }
-function frameUrl(mode = displayPreferences.mode, epoch = frameEpoch, terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported)) {
+function frameUrl(mode = displayPreferences.mode, epoch = views.active.epoch, terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported)) {
   const query = new URLSearchParams({ viewer, frame: String(epoch) });
   if (nodeIdentity()) query.set('node', nodeIdentity());
   const ui = document.querySelector('meta[name="ui-revision"]')?.content; if (ui) query.set('ui', ui);
@@ -1126,15 +1093,13 @@ function frameUrl(mode = displayPreferences.mode, epoch = frameEpoch, terminal =
   return entryPath(`/desktop/index.html?${query}`);
 }
 function openFrame() {
-  if (frameLoaded || !owned) return;
+  if (views.active.loaded || !owned) return;
   if (terminalMode()) {
     if (terminalSelectionState !== 'ready') return;
     const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
     if (!terminal || terminal.token !== selectedTerminalToken) return;
-    frameTerminalKey = `${terminal.id}:${terminal.token}`;
   }
-  frameLoaded = true;
-  frameState = 'connecting';
+  views.begin(displayPreferences.mode, terminalMode() ? `${selectedTerminal}:${selectedTerminalToken}` : '');
   $('desktop-frame').src = frameUrl();
   $('desktop-frame').title = terminalMode() ? 'Codex 网页终端' : 'Ubuntu 开发桌面';
   $('desktop-frame').hidden = false;
@@ -1185,7 +1150,7 @@ async function poll() {
     renderConnection();
   } catch (error) {
     if (loggedIn && pollController === controller) {
-      if (!(frameTransport === 'direct' && panelReady && [409, 429].includes(error.status))) panelState = 'offline';
+      if (!(views.active.transport === 'direct' && views.active.panelReady && [409, 429].includes(error.status))) panelState = 'offline';
       renderConnection();
     }
   } finally {
@@ -1256,13 +1221,13 @@ function confirmationValid(pending) {
   if (!loggedIn || accessExpired || pending.generation !== uiGeneration) return false;
   if (pending.kind === 'logout') return true;
   if (pending.kind === 'drafts-clear') return terminalCatalogVerified && !inputBusy && !inputComposing && terminalState.stale(terminalCatalog, draftIdentity) > 0;
-  if (pending.epoch !== frameEpoch || pending.frameState !== frameState || pending.owned !== owned) return false;
+  if (pending.epoch !== views.active.epoch || pending.frameState !== views.active.state || pending.owned !== owned) return false;
   if (pending.kind === 'mode') return !document.hidden && pending.body?.from === displayPreferences.mode && ['desktop', 'terminal'].includes(pending.body.mode) && pending.body.mode !== displayPreferences.mode && !modeChangeBusy();
   const focused = pending.destination?.target === 'focused';
   if (focused && terminalMode()) return false;
   if (pending.destination && !focused && JSON.stringify(pending.destination) !== JSON.stringify(inputDestination(false))) return false;
   if (['terminal-open', 'terminal-close'].includes(pending.kind) && !terminalCatalog.some(item => item.id === pending.body?.terminalId && item.token === pending.body.terminalToken && item.supported)) return false;
-  if (['terminal-open', 'terminal-create', 'terminal-close'].includes(pending.kind)) return canManageTerminals() && !inputComposing && !frameComposing;
+  if (['terminal-open', 'terminal-create', 'terminal-close'].includes(pending.kind)) return canManageTerminals() && !inputComposing && !views.active.composing;
   return pending.kind === 'reconnect' ? panelState === 'online' && navigator.onLine && !maintenancePending && !controlsState.maintenance : !inputBusy && canInput(focused);
 }
 function closeConfirmation() {
@@ -1275,7 +1240,7 @@ function requestConfirmation(kind, key, body) {
   const shortcut = kind === 'shortcut' ? SHORTCUT_BY_KEY.get(key) : null;
   if (kind === 'shortcut' && !shortcut?.confirm) return;
   shortcutMenu.close();
-  const pending = { kind, key: shortcut?.key, generation: uiGeneration, epoch: frameEpoch, frameState, owned,
+  const pending = { kind, key: shortcut?.key, generation: uiGeneration, epoch: views.active.epoch, frameState: views.active.state, owned,
     destination: ['interrupt', 'shortcut'].includes(kind) ? body?.target === 'focused' && !terminalMode() ? { target: 'focused' } : inputDestination(false) : null, body: body ? { ...body } : null };
   if (!confirmationValid(pending)) return;
   const copy = {
@@ -1342,7 +1307,7 @@ function inputMessage(outcome, message, notice) {
 }
 async function inputAction(path, body, label, success, destination) {
   const focused = !terminalMode() && body?.target === 'focused';
-  if (inputBusy || inputComposing || frameComposing || !canInput(focused)) return { outcome: 'rejected' };
+  if (inputBusy || inputComposing || views.active.composing || !canInput(focused)) return { outcome: 'rejected' };
   if (['/api/key', '/api/paste', '/api/edit'].includes(path)) {
     try { body = { ...body, ...(destination || inputDestination()) }; }
     catch (error) { inputMessage('rejected', error.message); return { outcome: 'rejected' }; }
@@ -1350,7 +1315,7 @@ async function inputAction(path, body, label, success, destination) {
   const controller = new AbortController(); inputController = controller;
   const notice = { key: `assistant:${++inputNoticeSequence}`, source: 'assistant', mode: displayPreferences.mode, target: focused ? '' : noticeTarget(),
     action: ['/api/paste', '/api/edit'].includes(path) ? 'paste' : path === '/api/key' ? 'key' : 'terminal', keyName: body.key,
-    path: controlReady && ['/api/paste', '/api/edit', '/api/key'].includes(path) ? frameTransport === 'direct' ? 'direct' : 'terminal' : 'https' };
+    path: controlReady && ['/api/paste', '/api/edit', '/api/key'].includes(path) ? views.active.transport === 'direct' ? 'direct' : 'terminal' : 'https' };
   const timeout = setTimeout(() => controller.abort(), 8000);
   inputBusy = true;
   inputMessage('pending', `正在${label}…`);
@@ -1462,7 +1427,7 @@ async function terminalRequest(body, { waitForView = false } = {}) {
     if (terminalMode()) stopFrame();
     terminalSelectionState = 'loading';
   }
-  const controller = new AbortController(), generation = uiGeneration, expectedFrame = frameEpoch;
+  const controller = new AbortController(), generation = uiGeneration, expectedFrame = views.active.epoch;
   if (body && terminalMode()) body = { ...body, view: 'terminal' };
   terminalController = controller; terminalBusy = true; terminalFocusBusy = body?.action === 'open' && !terminalMode(); shortcutMenu.close();
   const timeout = setTimeout(() => controller.abort(), 6500);
@@ -1472,16 +1437,16 @@ async function terminalRequest(body, { waitForView = false } = {}) {
       // One admitted navigation, no command sent yet. Reuse the existing
       // request's cancellation and deadline; never queue or replay a focus.
       const deadline = performance.now() + 1500;
-      const current = () => generation === uiGeneration && terminalController === controller && frameEpoch === expectedFrame && loggedIn && owned && !accessExpired && !document.hidden && !pageLeaving && navigator.onLine && !terminalMode() && !controller.signal.aborted;
-      while (current() && (inputPaused() || frameState !== 'connected' || !panelCapabilitiesKnown) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-      if (!current() || inputPaused() || frameState !== 'connected' || !panelCapabilitiesKnown) throw Object.assign(Error('桌面待命连接尚未就绪，打开未发送；请稍后重新点击目标标签'), { outcome: 'rejected' });
+      const current = () => generation === uiGeneration && terminalController === controller && views.active.epoch === expectedFrame && loggedIn && owned && !accessExpired && !document.hidden && !pageLeaving && navigator.onLine && !terminalMode() && !controller.signal.aborted;
+      while (current() && (inputPaused() || views.active.state !== 'connected' || !views.active.panelCapabilitiesKnown) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      if (!current() || inputPaused() || views.active.state !== 'connected' || !views.active.panelCapabilitiesKnown) throw Object.assign(Error('桌面待命连接尚未就绪，打开未发送；请稍后重新点击目标标签'), { outcome: 'rejected' });
     }
     const result = await api('/api/terminals', { method: body ? 'POST' : 'GET', body, signal: controller.signal });
     if (terminalController !== controller || generation !== uiGeneration || !loggedIn || (body && !owned)) return;
     if (body?.action === 'close' && result.closed !== body.terminalId) throw new Error('结束结果无效，请手动刷新');
     if (body?.action === 'open' && (result.opened !== body.terminalId || !result.terminals?.some(item => item.id === body.terminalId && item.token === body.terminalToken && item.supported))) throw new Error('切换结果未确认，请刷新列表核对；不会重复打开。');
     if (body?.action === 'rename' && !result.terminals?.some(item => item.id === body.terminalId && item.token === body.terminalToken && item.name === body.name.trim())) throw new Error('名称保存未确认，请刷新列表核对。');
-    const retainConnection = body?.action === 'create' && terminalMode() && frameLoaded && terminalSwitchReady;
+    const retainConnection = body?.action === 'create' && terminalMode() && views.active.loaded && views.active.terminalSwitchReady;
     if (body?.action === 'create' && (result.created !== result.opened || body.terminalId !== undefined && result.created !== body.terminalId || !result.terminals?.some(item => item.id === result.created && item.supported))) throw new Error('创建结果未确认，请刷新列表核对，不要重复新建。');
     updateTerminalCatalog(result, retainConnection ? undefined : body ? result.opened : undefined);
     if (body?.action === 'open') desktopFocusFailureKey = '';
@@ -1491,7 +1456,7 @@ async function terminalRequest(body, { waitForView = false } = {}) {
     renderTerminalList();
     if (retainConnection) {
       const created = terminalCatalog.find(item => item.id === result.created);
-      if (frameLoaded && terminalSwitchReady) {
+      if (views.active.loaded && views.active.terminalSwitchReady) {
         const attached = await switchTerminalStream({ id: created.id, token: created.token });
         if (!attached && terminalController === controller && generation === uiGeneration) $('terminals-status').textContent = '终端已创建，查看切换未完成；请选择已有终端，不要重复新建。';
       } else activateTerminal({ id: created.id, token: created.token });
@@ -1551,11 +1516,11 @@ function syncTerminalView() {
   if (!terminalMode() || !loggedIn || !owned || terminalSelectionState !== 'ready') return;
   const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
   if (!terminal || terminal.token !== selectedTerminalToken) return;
-  if (frameLoaded && frameTerminalKey === `${terminal.id}:${terminal.token}`) return;
+  if (views.active.loaded && views.active.key === `${terminal.id}:${terminal.token}`) return;
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
-  return !owned || inputBusy || inputComposing || frameComposing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || transportSwitching || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
+  return !owned || inputBusy || inputComposing || views.active.composing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || views.active.paused || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
 }
 function changeMode(mode) {
   if (terminalOnly && mode !== 'terminal') return;
@@ -1569,8 +1534,8 @@ function changeMode(mode) {
   const reused = swapStandby(mode);
   if (!reused) stopFrame();
   updateDisplayPreferences({ mode }); renderTerminalList(); openFrame();
-  if (mode === 'terminal' && !frameLoaded) void loadTerminals();
-  if (mode === 'terminal' && reused && frameTerminalKey !== `${selectedTerminal}:${selectedTerminalToken}`) void switchTerminalStream({ id: selectedTerminal, token: selectedTerminalToken });
+  if (mode === 'terminal' && !views.active.loaded) void loadTerminals();
+  if (mode === 'terminal' && reused && views.active.key !== `${selectedTerminal}:${selectedTerminalToken}`) void switchTerminalStream({ id: selectedTerminal, token: selectedTerminalToken });
   if (mode === 'desktop' && selectedTerminal && terminalSelectionState === 'ready') {
     const generation = uiGeneration, identity = `${selectedTerminal}:${selectedTerminalToken}`;
     void manageTerminals({ action: 'open', terminalId: selectedTerminal, terminalToken: selectedTerminalToken }, { waitForView: reused }).then(result => {
@@ -1632,7 +1597,7 @@ $('fullscreen-button').addEventListener('click', () => {
   else toast('此浏览器不支持网页全屏，可以横屏或添加到主屏幕使用');
 });
 document.addEventListener('codex-desktop-touch-action', event => {
-  if (event.target !== $('desktop-frame') || event.detail?.frame !== String(frameEpoch) || !frameLoaded || terminalMode() || inputBusy || frameComposing || !canInput(true)) return;
+  if (event.target !== $('desktop-frame') || event.detail?.frame !== String(views.active.epoch) || !views.active.loaded || terminalMode() || inputBusy || views.active.composing || !canInput(true)) return;
   if (event.detail.action === 'interrupt') requestConfirmation('interrupt', null, { target: 'focused' });
   else if (event.detail.action === 'assistant' && workspacePanels.active !== 'input') toggleWorkspacePanel('input');
 });
@@ -1679,10 +1644,10 @@ function renderFiles(files) {
   renderFileControls();
 }
 function canInsertFilePath() {
-  return canManageTerminals() && !inputComposing && !frameComposing && !confirmation && (!selectedTerminal || terminalSelectionState === 'ready');
+  return canManageTerminals() && !inputComposing && !views.active.composing && !confirmation && (!selectedTerminal || terminalSelectionState === 'ready');
 }
 function canOpenTransferDirectory() {
-  return !terminalOnly && !terminalMode() && canManageTerminals() && canInput(true) && !inputComposing && !frameComposing && !confirmation;
+  return !terminalOnly && !terminalMode() && canManageTerminals() && canInput(true) && !inputComposing && !views.active.composing && !confirmation;
 }
 function renderFileControls() {
   const readable = loggedIn && !accessExpired && navigator.onLine && !!transferDirectory;
@@ -1880,11 +1845,11 @@ function hintProbeReport(id, phase, value) {
 }
 function startHintProbe() {
   if (hintProbe || !loggedIn || accessExpired || hintProbeSequence >= 2147483647) return;
-  const id = ++hintProbeSequence, phase = frameLoaded && owned ? 'workspace' : 'service';
+  const id = ++hintProbeSequence, phase = views.active.loaded && owned ? 'workspace' : 'service';
   hintProbe = { id, phase, timer: setTimeout(() => hintProbeReport(id, phase, { state: 'cancelled' }), 32000) };
   for (const name of ['save-direct-hints', 'save-direct-hints-only', 'import-direct-hints', 'clear-direct-hints']) $(name).disabled = true;
   hintProbeReport(id, phase, { state: 'probing' });
-  if (phase === 'workspace') $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-recheck', frame: String(frameEpoch), id }, location.origin);
+  if (phase === 'workspace') $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-recheck', frame: String(views.active.epoch), id }, location.origin);
   else void serviceLink.recheck(state => hintProbeReport(id, phase, state));
 }
 $('direct-hints-form').addEventListener('submit', event => {
@@ -2005,14 +1970,14 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !accessExpired && !transportSwitching && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !accessExpired && !views.active.paused && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
   const live = desktopSettings?.canResize === true;
   for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !writable || !!adaptive;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
   for (const id of ['maximize-terminal', 'restore-terminal']) $(id).disabled = !writable;
-  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !frameResizeReady || !nativeIdle || frameState !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
+  $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !views.active.resizeReady || !views.active.nativeIdle || views.active.state !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
   $('desktop-restart-notice').hidden = !desktopSettings?.restartRequired;
   if (!desktopSettings) return;
   const { actual, saved, session, job } = desktopSettings;
@@ -2059,7 +2024,7 @@ async function loadDesktopSettings(resetForm = false) {
 async function settingsAction(path, body) {
   if (settingsBusy || !desktopSettings || !loggedIn || !owned) return;
   const live = path.endsWith('/resolution');
-  if (live && (viewportController || !frameResizeReady || !nativeIdle || inputPaused())) return;
+  if (live && (viewportController || !views.active.resizeReady || !views.active.nativeIdle || inputPaused())) return;
   stopSettingsPolling();
   const controller = live ? new AbortController() : null;
   const timeout = live ? setTimeout(() => controller.abort(), 10000) : null;
@@ -2136,19 +2101,15 @@ for (const [id, action] of [['maximize-terminal', 'maximize'], ['restore-termina
 });
 window.addEventListener('message', event => {
   if (event.origin !== location.origin || !owned) return;
-  if (standbyFrame && event.source === standbyFrame.element.contentWindow && event.data?.frame === String(standbyFrame.epoch)) { receiveStandby(event.data); return; }
-  if (event.source !== $('desktop-frame').contentWindow) return;
-  if (event.data?.frame !== String(frameEpoch) || !frameLoaded) return;
+  const entry = views.match(event.source, event.data?.frame);
+  if (!entry) return;
+  if (entry === views.standby) { receiveStandby(event.data); return; }
+  const wasReady = entry.panelReady;
+  updateView(entry, event.data);
   if (event.data.type === 'codex-direct-recheck-state') { hintProbeReport(event.data.id, 'workspace', event.data); return; }
   if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
   if (event.data?.type === 'codex-panel-state') {
-    const wasReady = panelReady;
-    panelCapabilitiesKnown = frameState === 'connected' && !transportSwitching;
-    panelReady = event.data.ready === true && frameState === 'connected' && frameTransport === 'direct';
-    terminalSwitchReady = terminalMode() && frameState === 'connected' && event.data.terminalSwitch === true;
-    terminalCreateReady = terminalMode() && frameState === 'connected' && event.data.terminalCreate === true;
-    terminalOpenReady = !terminalMode() && frameState === 'connected' && event.data.terminalOpen === true;
-    if (panelReady && !wasReady) { stopPolling(); void poll(); }
+    if (views.active.panelReady && !wasReady) { stopPolling(); void poll(); }
     renderConnection(); return;
   }
   if (event.data?.type === 'codex-panel-result') {
@@ -2157,15 +2118,15 @@ window.addEventListener('message', event => {
     finishPanelRequest(event.data.id, error, event.data.value); return;
   }
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {
-    frameComposing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
+    views.active.composing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
   }
   if (event.data?.type === 'codex-desktop-input-state' && !terminalMode() && typeof event.data.composing === 'boolean') {
-    frameComposing = event.data.composing; frameTouchInput = event.data.touch === true; renderInputControls(); scheduleViewport(); return;
+    views.active.composing = event.data.composing; views.active.touchInput = event.data.touch === true; renderInputControls(); scheduleViewport(); return;
   }
   if (event.data?.type === 'codex-desktop-text' && !terminalMode()) {
     // Use the parent's postMessage function for replies. In WebKit the child
     // method can attribute async calls to the child, which fails source checks.
-    const value = event.data, destination = $('desktop-frame').contentWindow, sourceFrame = String(frameEpoch);
+    const value = event.data, destination = $('desktop-frame').contentWindow, sourceFrame = String(views.active.epoch);
     if (!Number.isSafeInteger(value.id) || value.id < 1 || value.id > 2147483647) return;
     if (desktopTextFrame !== sourceFrame) { desktopTextFrame = sourceFrame; desktopTextSequence = 0; }
     if (value.id <= desktopTextSequence) return;
@@ -2181,58 +2142,37 @@ window.addEventListener('message', event => {
     if (!terminalMode() && canInput() && ['viewport', 'remote'].includes(event.data.scrollTarget)) updateDisplayPreferences({ scrollTarget: event.data.scrollTarget });
     return;
   }
-  if (event.data?.type === 'codex-transport') {
-    if (typeof event.data.issue === 'string' && (Object.hasOwn(directIssues, event.data.issue) || event.data.issue === '')) directIssue = event.data.issue;
-    const route = event.data.details;
-    const validEnd = value => value && (value.address === null || typeof value.address === 'string' && value.address.length <= 253 && /^[a-zA-Z0-9:.%-]+$/.test(value.address)) && (value.port === null || Number.isInteger(value.port) && value.port >= 1 && value.port <= 65535);
-    const copyEnd = value => ({ address: value.address, port: value.port, type: ['host', 'srflx', 'prflx', 'relay'].includes(value.type) ? value.type : 'unknown' });
-    frameNetwork = route && ['IPv4', 'IPv6', 'unknown'].includes(route.family) && ['UDP', 'TCP', 'unknown'].includes(route.protocol) && validEnd(route.local) && validEnd(route.remote) && (route.rttMs === null || Number.isInteger(route.rttMs) && route.rttMs >= 0 && route.rttMs <= 600000)
-      ? { family: route.family, protocol: route.protocol, rttMs: route.rttMs, local: copyEnd(route.local), remote: copyEnd(route.remote) } : null;
-    frameLatency.set(event.data.rttMs);
-    renderConnection(); return;
-  }
+  if (event.data?.type === 'codex-transport') { renderConnection(); return; }
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
-    const allowed = loggedIn && owned && !accessExpired && frameState === 'connected' && !inputPaused() && !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !terminalActions.busy && !terminalReviewing && !$('terminals-dialog').open && !$('terminal-switch-dialog').open && !$('draft-leave-dialog').open && !clipboardController && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    const allowed = loggedIn && owned && !accessExpired && views.active.state === 'connected' && !inputPaused() && !inputBusy && !inputComposing && !views.active.composing && !terminalBusy && !terminalActions.busy && !views.active.reviewing && !$('terminals-dialog').open && !$('terminal-switch-dialog').open && !$('draft-leave-dialog').open && !clipboardController && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
     if (allowed) {
-      transportSwitching = true;
+      views.active.paused = true;
       clearTimeout(switchTimer);
-      switchTimer = setTimeout(() => { transportSwitching = false; renderConnection(); }, 15000);
+      switchTimer = setTimeout(() => { views.active.paused = false; renderConnection(); }, 15000);
       renderConnection();
     }
-    $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-approved', frame: String(frameEpoch), id: event.data.id, allowed }, location.origin);
+    $('desktop-frame').contentWindow.postMessage({ type: 'codex-direct-approved', frame: String(views.active.epoch), id: event.data.id, allowed }, location.origin);
     return;
   }
   if (event.data?.type === 'codex-direct-finished') {
-    clearTimeout(switchTimer); transportSwitching = false; renderConnection(); return;
+    clearTimeout(switchTimer); views.active.paused = false; renderConnection(); return;
   }
-  if (event.data?.type === 'codex-stream-state' && typeof event.data.paused === 'boolean') {
-    // A selected terminal is already protected by terminalBusy. Treating its
-    // preparation as a route handoff would block and cancel its own wait.
-    transportSwitching = event.data.paused && !(terminalSwitching && event.data.terminalSwitch === true);
-    if (event.data.paused) panelCapabilitiesKnown = false;
-    renderConnection(); return;
-  }
+  if (event.data?.type === 'codex-stream-state' && typeof event.data.paused === 'boolean') { renderConnection(); return; }
   if (event.data?.type === 'codex-stream-reset' && event.data.reason === 'target-unknown') {
     terminalSelectionState = 'error'; stopFrame(); renderConnection(); toast('终端切换结果未知，草稿已保留；请重新选择目标，不会重发输入。', true); return;
   }
   if (event.data?.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(event.data.reason)) {
-    const record = streamInputNotice(event.data); frameInputNoticeKey = record.key;
+    const record = streamInputNotice(event.data); views.active.inputNoticeKey = record.key;
     inputMessage('unknown', record.message); return;
   }
   if (event.data?.type === 'codex-control-state') {
-    controlReady = event.data.ready === true && frameState === 'connected' && ['direct', 'terminal'].includes(frameTransport);
+    controlReady = event.data.ready === true && views.active.state === 'connected' && ['direct', 'terminal'].includes(views.active.transport);
     if (!controlReady) resetDirectControl();
     renderConnection(); return;
   }
-  if (event.data?.type === 'codex-terminal-size' && terminalMode()) {
-    if (Number.isInteger(event.data.cols) && Number.isInteger(event.data.rows) && event.data.cols >= 2 && event.data.cols <= 500 && event.data.rows >= 1 && event.data.rows <= 200) terminalGeometry = { cols: event.data.cols, rows: event.data.rows,
-      fontSize: Number.isFinite(event.data.fontSize) && event.data.fontSize >= 10 && event.data.fontSize <= 112 ? event.data.fontSize : displayPreferences.terminalFontSize };
-    renderConnection(); return;
-  }
-  if (event.data?.type === 'codex-terminal-history' && terminalMode() && typeof event.data.reviewing === 'boolean') {
-    terminalReviewing = event.data.reviewing; renderInputControls(); return;
-  }
+  if (event.data?.type === 'codex-terminal-size' && terminalMode()) { renderConnection(); return; }
+  if (event.data?.type === 'codex-terminal-history' && terminalMode() && typeof event.data.reviewing === 'boolean') { renderInputControls(); return; }
   if (event.data?.type === 'codex-control-result') {
     if (!controlPending || event.data.id !== controlPending.id) return;
     const error = event.data.ok === true ? null : Object.assign(new Error(event.data.error?.message || '输入操作失败'), { outcome: event.data.error?.outcome || 'unknown', status: event.data.error?.status });
@@ -2240,34 +2180,19 @@ window.addEventListener('message', event => {
   }
   if (event.data?.type === 'codex-desktop-view') {
     if (event.data.revision !== displayRevision) return;
-    nativeIdle = event.data.idle === true;
-    if (typeof event.data.resizeReady === 'boolean') frameResizeReady = event.data.resizeReady;
-    if (nativeIdle) scheduleViewport();
-    if (Number.isFinite(event.data.scale) && event.data.scale > 0 && event.data.scale <= 16) {
-      displayScale = event.data.scale;
-      scaleRevision = event.data.revision;
-      renderDisplayControls();
-    }
-    if (Number.isInteger(event.data.width) && Number.isInteger(event.data.height) && event.data.width > 0 && event.data.height > 0 && event.data.width <= 16384 && event.data.height <= 16384) frameDimensions = { width: event.data.width, height: event.data.height };
-    viewportWaiter?.();
-    renderConnection();
-    return;
+    if (views.active.nativeIdle) scheduleViewport();
+    renderDisplayControls(); viewportWaiter?.(); renderConnection(); return;
   }
   if (event.data?.type !== 'codex-desktop') return;
   if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
-  if (event.data.state === 'connected') {
-    const nextTransport = event.data.transport === 'direct' ? 'direct' : terminalMode() ? 'terminal' : 'relay';
-    if (frameState !== 'connected' || frameTransport !== nextTransport) frameLatency.clear();
-    frameState = 'connected'; frameTransport = nextTransport; sendDisplayPreferences();
-  }
-  else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); frameLatency.clear(); frameState = 'reconnecting'; if (panelRoute === 'direct') panelState = 'offline'; scaleRevision = -1; clearClipboard(); renderClipboard(); }
-  else if (event.data.state === 'connecting') { frameLatency.clear(); if (frameState !== 'reconnecting') frameState = 'connecting'; }
-  else return;
+  if (event.data.state === 'connected') sendDisplayPreferences();
+  else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); if (panelRoute === 'direct') panelState = 'offline'; clearClipboard(); renderClipboard(); }
+  else if (event.data.state !== 'connecting') return;
   renderConnection();
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
-document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { discardStandby(); frameLatency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
-window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); syncRelayLatency(); frameLatency.clear(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; discardStandby(); shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
+document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { discardStandby(); views.active.latency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
+window.addEventListener('pagehide', () => { workspaceInitialized = false; serviceLink.stop(); syncRelayLatency(); views.active.latency.clear(); historyToolsPortal.reset(); if (loggedIn) rememberDraft(); pageLeaving = true; discardStandby(); shortcutMenu.close(); closeConfirmation(); syncScreenLock(); });
 window.addEventListener('pageshow', () => { pageLeaving = false; draftUnloadApproved = false; if (loggedIn) workspaceInitialized = true; syncScreenLock(); renderConnection(); renderDraftSafety(); });
 
 accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,
@@ -2277,7 +2202,7 @@ forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: (
   prepareDownloads: () => { if (serviceProtocol !== 1 || !rtcConfig?.webrtc) return false; serviceLink.start(); return serviceLink.state.issue === 'connecting' || serviceLink.transport?.features?.helperDownloadsProtocol === 1; },
   downloadClient: () => serviceLink.helperFiles, downloadRoute: () => serviceLink.state.route, saveDownload: saveDirectFile,
   capabilities: () => ({ manageDevices: permissions.canManageHelpers, viewHelperKeys: permissions.canViewHelperKeys, temporary: permissions.role === 'temporary' }) });
-function canLeaveNode() { return !inputBusy && !inputComposing && !frameComposing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
+function canLeaveNode() { return !inputBusy && !inputComposing && !views.active.composing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
 $('gateway-switch-button').addEventListener('click', () => {
   leaveWorkspace('gateway');
 });

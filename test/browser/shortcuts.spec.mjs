@@ -160,6 +160,7 @@ test('the public offline shell includes shortcut modules and never caches authen
     expect(paths).toContain('/shortcuts.js'); expect(paths).toContain('/shortcut-menu.js');
     expect(paths).toContain('/workspace-panels.js'); expect(paths).toContain('/workspace.css');
     expect(paths).toContain('/terminal-state.js'); expect(paths).toContain('/terminal-tabs.js');
+    expect(paths).toContain('/view-lifecycle.js');
     expect(paths).toContain('/terminal-history-limits.js');
     expect(paths).toContain('/access-ui.js'); expect(paths).toContain('/forward-agents-ui.js');
     expect(paths).toContain('/forward-prompt.js');

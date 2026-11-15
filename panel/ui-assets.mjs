@@ -37,6 +37,7 @@ export const ASSETS = new Map([
   ['/transport-policy.js', ['transport-policy.js', 'text/javascript; charset=utf-8']],
   ['/workspace-panels.js', ['workspace-panels.js', 'text/javascript; charset=utf-8']],
   ['/terminal-state.js', ['terminal-state.js', 'text/javascript; charset=utf-8']],
+  ['/view-lifecycle.js', ['view-lifecycle.js', 'text/javascript; charset=utf-8']],
   ['/terminal-slots.js', ['terminal-slots.js', 'text/javascript; charset=utf-8']],
   ['/terminal-history-limits.js', ['terminal-history-limits.js', 'text/javascript; charset=utf-8']],
   ['/terminal-unicode.js', ['terminal-unicode.js', 'text/javascript; charset=utf-8']],

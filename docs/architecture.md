@@ -22,6 +22,8 @@ flowchart LR
 
 宿主持有任务，面板和浏览器持有观看／输入连接。关闭浏览器、切换网络或重载 panel 不主动结束任务。明确结束终端或重启宿主会影响相应程序；恢复连接不自动启动 Codex、重发输入或审批。[服务关系](reliability.md)
 
+浏览器的 [视图控制器](../panel/public/view-lifecycle.js) 最多持有一个活动视图和一个待命视图。每个视图独立保存代次、已确认与待切换目标、连接能力、尺寸和历史状态；切换时交换记录，不逐项复制全局变量。前后台消息使用同一套状态校验，来源或代次不匹配的消息被丢弃；目标切换未确认时保持输入受限。网络路径复用继续由现有 StreamSession 负责。
+
 桌面部署包括 desktop、actions、files、manager、panel；纯终端包括 terminal、files、manager、panel。cloudflared 和自建 frpc 是可选入口组件，不是任务宿主。中心服务器与节点使用不同的服务及权限，详见[中心部署](selfhost-server.md)和[服务生命周期](reliability.md)。
 
 ## 认证与权限

@@ -1,0 +1,73 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createViewLifecycle } from '../panel/public/view-lifecycle.js';
+const element = () => ({ contentWindow: {} });
+const main = 'main:%0:4000', other = 'aux1:%1:4001';
+const connected = (views, entry, transport = 'direct') => views.update(entry, { type: 'codex-desktop', state: 'connected', transport });
+const capabilities = (views, entry) => views.update(entry, { type: 'codex-panel-state', ready: true, terminalSwitch: true, terminalCreate: true, terminalOpen: true });
+
+test('view swaps retain records, geometry and capabilities while input remains exclusive to the active view', () => {
+  const views = createViewLifecycle(element()); views.begin('desktop');
+  const desktop = views.active; connected(views, desktop); capabilities(views, desktop);
+  const terminal = views.prepare(element(), 'terminal', main); connected(views, terminal); capabilities(views, terminal);
+  views.update(terminal, { type: 'codex-terminal-size', cols: 80, rows: 24, fontSize: 15 });
+  views.update(terminal, { type: 'codex-terminal-history', reviewing: true });
+  assert.equal(views.inputReady(desktop), true); assert.equal(views.inputReady(terminal), false);
+  for (let n = 0; n < 5; n++) {
+    assert.equal(views.swap('terminal', main), true); assert.equal(views.active, terminal); assert.equal(views.standby, desktop);
+    assert.deepEqual(views.active.geometry, { cols: 80, rows: 24, fontSize: 15 }); assert.equal(views.active.reviewing, true);
+    assert.equal(views.active.terminalSwitchReady, true); assert.equal(views.active.terminalOpenReady, false);
+    assert.equal(views.swap('desktop', ''), true); assert.equal(views.active, desktop); assert.equal(views.active.terminalOpenReady, true);
+    assert.equal(views.active.terminalSwitchReady, false); assert.equal(views.active.nativeIdle, false); assert.equal(views.active.resizeReady, false);
+  }
+  assert.throws(() => views.prepare(element(), 'terminal', main));
+});
+
+test('retired frame generations and sources cannot update a replacement that reuses the iframe', () => {
+  const frame = element(), views = createViewLifecycle(frame); views.begin('terminal', main);
+  const retired = views.active, epoch = String(retired.epoch); views.reset('terminal'); views.begin('terminal', other);
+  assert.equal(views.match(frame.contentWindow, epoch), null); assert.equal(views.match({}, String(views.active.epoch)), null);
+  assert.equal(views.match(frame.contentWindow, String(views.active.epoch)), views.active);
+  assert.equal(connected(views, retired), false); assert.equal(views.confirmTarget(retired, main), false);
+  assert.equal(views.active.key, other); assert.equal(views.active.state, 'connecting');
+});
+
+test('desired terminal identity blocks input until its matching confirmed result and cancellation restores the actual identity', () => {
+  const views = createViewLifecycle(element()); views.begin('terminal', main); connected(views, views.active);
+  assert.equal(views.requestTarget(views.active, other), true); assert.equal(views.active.key, main); assert.equal(views.inputReady(), false);
+  assert.equal(views.confirmTarget(views.active, main), false); assert.equal(views.inputReady(), false);
+  views.cancelTarget(views.active); assert.equal(views.active.desiredKey, main); assert.equal(views.inputReady(), true);
+  views.requestTarget(views.active, other); assert.equal(views.confirmTarget(views.active, other), true);
+  assert.equal(views.inputReady(), true); assert.equal(views.active.key, other);
+});
+
+test('disconnected parked viewers invalidate stale capabilities and cannot promise a different terminal attachment', () => {
+  const views = createViewLifecycle(element()); views.begin('desktop'); connected(views, views.active);
+  const terminal = views.prepare(element(), 'terminal', main); connected(views, terminal); capabilities(views, terminal);
+  assert.equal(views.canSwap('terminal', other), true);
+  views.update(terminal, { type: 'codex-desktop', state: 'disconnected' });
+  assert.equal(terminal.panelReady, false); assert.equal(terminal.terminalSwitchReady, false); assert.equal(views.canSwap('terminal', other), false);
+  assert.equal(views.swap('terminal', main), true); assert.equal(views.inputReady(), false);
+  assert.equal(views.active.panelCapabilitiesKnown, false);
+});
+
+test('promoting a different parked terminal retains its actual key until target confirmation', () => {
+  const views = createViewLifecycle(element()); views.begin('desktop'); connected(views, views.active);
+  const terminal = views.prepare(element(), 'terminal', main); connected(views, terminal); capabilities(views, terminal);
+  assert.equal(views.swap('terminal', other), true);
+  assert.equal(views.active.key, main); assert.equal(views.active.desiredKey, other); assert.equal(views.inputReady(), false);
+  assert.equal(views.confirmTarget(terminal, main), false);
+  assert.equal(views.confirmTarget(terminal, other), true); assert.equal(views.inputReady(), true);
+});
+
+test('background updates share validation but do not change foreground geometry or input readiness', () => {
+  const views = createViewLifecycle(element()); views.begin('terminal', main); connected(views, views.active);
+  const desktop = views.prepare(element(), 'desktop'); connected(views, desktop);
+  views.update(desktop, { type: 'codex-desktop-view', revision: 3, width: 1920, height: 1080, scale: .5, idle: true, resizeReady: true }, { revision: 3 });
+  assert.deepEqual(desktop.dimensions, { width: 1920, height: 1080 }); assert.equal(views.active.dimensions, null);
+  assert.equal(views.update(desktop, { type: 'codex-desktop-view', revision: 2, width: 1, height: 1 }, { revision: 3 }), false);
+  views.update(views.active, { type: 'codex-stream-state', paused: true, terminalSwitch: true }, { terminalSwitching: true });
+  assert.equal(views.active.paused, false); assert.equal(views.active.panelCapabilitiesKnown, false);
+  views.update(views.active, { type: 'codex-stream-state', paused: true }); assert.equal(views.inputReady(), false);
+  views.discard(); assert.equal(views.update(desktop, { type: 'codex-panel-state', ready: true }), false);
+});
