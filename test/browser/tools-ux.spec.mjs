@@ -2,10 +2,12 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { openTools, openInput, closePanels } from './ui.mjs';
 
-test('tools keep their close button and preference status reachable while keyboard focus scrolls to the last action', async ({ page }) => {
+test('tools keep their close button and preference status reachable while keyboard focus scrolls to the last action', async ({ context }) => {
   test.setTimeout(60000);
   for (const mode of ['desktop', 'terminal']) {
-    const app = await fixture({ rfb: true, mode }), errors = [];
+    // Close each mode's page before its server. Reusing a live page on the
+    // next fixture can report the retired origin's poll as a WebKit pageerror.
+    const app = await fixture({ rfb: true, mode }), page = await context.newPage(), errors = [];
     const pageError = error => errors.push(error.message); page.on('pageerror', pageError);
     try {
       await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
@@ -36,7 +38,7 @@ test('tools keep their close button and preference status reachable while keyboa
       await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('滚动工具面板后保留的草稿');
       expect({ vnc: app.vncConnections, terminal: app.terminalConnections }).toEqual(connections); expect(app.managementStats.restarts).toBe(0);
       expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(errors).toEqual([]);
-    } finally { page.off('pageerror', pageError); await app.close(); }
+    } finally { page.off('pageerror', pageError); await page.close(); await app.close(); }
   }
 });
 
@@ -62,10 +64,10 @@ test('server desktop settings keep their heading and result visible while scroll
   } finally { await app.close(); }
 });
 
-test('desktop and terminal access settings retain drafts and reachable close and feedback areas in short viewports', async ({ page }) => {
+test('desktop and terminal access settings retain drafts and reachable close and feedback areas in short viewports', async ({ context }) => {
   test.setTimeout(60000);
   for (const mode of ['desktop', 'terminal']) {
-    const app = await fixture({ mode, rfb: true });
+    const app = await fixture({ mode, rfb: true }), page = await context.newPage();
     try {
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
@@ -86,7 +88,7 @@ test('desktop and terminal access settings retain drafts and reachable close and
       expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
       expect({ vnc: app.vncConnections, terminal: app.terminalConnections }).toEqual(connections);
       expect(app.managementStats.restarts).toBe(0); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
-    } finally { await app.close(); }
+    } finally { await page.close(); await app.close(); }
   }
 });
 
