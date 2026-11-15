@@ -19,6 +19,25 @@ spec.loader.exec_module(terminal)
 
 
 class TerminalCapabilitiesTests(unittest.TestCase):
+    def test_output_credit_is_bounded_and_never_uses_operation_ids(self):
+        credit = terminal.OutputCredit(True)
+        for _ in range(8):
+            credit.consume(credit.read_size)
+        self.assertEqual(credit.read_size, 0)
+        self.assertFalse(credit.acknowledge({'id': 1, 'action': 'resize'}))
+        for value in [{'action': 'output-ack', 'bytes': 0}, {'action': 'output-ack', 'bytes': True},
+                      {'action': 'output-ack', 'bytes': 65537}, {'action': 'output-ack', 'bytes': 1, 'id': 1}]:
+            with self.assertRaises(ValueError):
+                credit.acknowledge(value)
+        self.assertTrue(credit.acknowledge({'action': 'output-ack', 'bytes': 123}))
+        self.assertEqual(credit.read_size, 123)
+        with self.assertRaises(ValueError):
+            credit.consume(124)
+        credit.consume(123)
+        credit.acknowledge({'action': 'output-ack', 'bytes': 65536})
+        with self.assertRaises(ValueError):
+            credit.acknowledge({'action': 'output-ack', 'bytes': 1})
+
     def test_combining_cells_follow_the_running_server_version(self):
         for version, expected in [('2.6', 0), ('3.3a', 0), ('3.4', 21), ('3.5a', 21), ('3.6a', 32), ('invalid', 0)]:
             self.assertEqual(terminal.combining_limit(version), expected)

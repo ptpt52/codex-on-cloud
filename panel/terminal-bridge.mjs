@@ -19,13 +19,14 @@ export function terminalPaste(text, bracketed) {
   return bracketed ? `\x1b[200~${clean}\x1b[201~` : clean;
 }
 export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env, valid, verify, readClipboard, launch }) {
-  const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken, '--geometry'], { env: { ...(env || process.env), CODEX_TERMINAL_WIDTHS: widthCache.get(socketPath) || '' }, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken, '--geometry', '--output-flow'], { env: { ...(env || process.env), CODEX_TERMINAL_WIDTHS: widthCache.get(socketPath) || '' }, stdio: ['pipe', 'pipe', 'ignore'] });
   let ended = false, ready = false, pending = '', outstanding = 0, sequence = 0, lastClientId = 0, busy = false;
   const requests = new Map(); // At most 64 streamed records / 64 KiB in the helper.
   let rawWindow = Date.now(), rawBytes = 0;
   let lastHealthNonce = 0, healthWindow = Date.now(), healthCount = 0;
   let historyBusy = false, historyAt = 0;
   let geometryEnabled = false, geometryMaxCols;
+  let outputFlow = false;
   let pressureTimer, escapeTimer;
   const close = () => {
     if (ended) return;
@@ -66,6 +67,8 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       if (value.type === 'ready' && !ready) {
         const columnAlignment = value.columnAlignment === undefined ? 1 : value.columnAlignment;
         if (![1, 2].includes(columnAlignment)) return close();
+        if (value.outputWindow !== undefined && value.outputWindow !== 64 * 1024) return close();
+        outputFlow = value.outputWindow === 64 * 1024;
         if (value.widths !== undefined) {
           if (!validTerminalWidths(value.widths) || JSON.stringify(value.widths).length > 16384) return close();
           if (widthCache.size >= 8) widthCache.delete(widthCache.keys().next().value);
@@ -79,9 +82,14 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       }
       else if (value.type === 'output' && typeof value.data === 'string' && value.data.length <= 11000) {
         const size = Buffer.from(value.data, 'base64').length; outstanding += size;
-        if (outstanding > 192 * 1024) return close();
+        if (outstanding > (outputFlow ? 64 : 192) * 1024) return close();
         send({ type: 'output', data: value.data });
-        if (outstanding >= 64 * 1024) { child.stdout.pause(); pressureTimer ||= setTimeout(close, 10000).unref(); }
+        if (outstanding >= 64 * 1024) {
+          // New helpers pause PTY reads at their credit limit. Keep reading
+          // this pipe so control results and geometry cannot queue behind data.
+          if (!outputFlow) child.stdout.pause();
+          pressureTimer ||= setTimeout(close, 10000).unref();
+        }
       } else if (value.type === 'history' && requests.get(value.id)?.history) {
         const request = requests.get(value.id), id = request.history; requests.delete(value.id); historyBusy = false;
         if (value.ok !== true) { send({ type: 'history', id, ok: false }); continue; }
@@ -111,7 +119,13 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
     }
     if (value?.type === 'ack') {
       if (!Number.isSafeInteger(value.bytes) || value.bytes <= 0 || value.bytes > outstanding) return close();
-      outstanding -= value.bytes; if (outstanding < 16 * 1024) { clearTimeout(pressureTimer); pressureTimer = null; child.stdout.resume(); } return;
+      outstanding -= value.bytes;
+      if (outputFlow) {
+        if (child.stdin.writableLength > 64 * 1024) return close();
+        child.stdin.write(JSON.stringify({ action: 'output-ack', bytes: value.bytes }) + '\n');
+      }
+      if (outputFlow || outstanding < 16 * 1024) { clearTimeout(pressureTimer); pressureTimer = null; if (!outputFlow) child.stdout.resume(); }
+      return;
     }
     if (!ready || !Number.isSafeInteger(value?.id) || value.id <= lastClientId || value.id > 2147483647) return close();
     lastClientId = value.id;

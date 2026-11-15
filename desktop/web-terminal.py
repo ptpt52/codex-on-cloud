@@ -27,6 +27,34 @@ HISTORY_ROWS = 10000
 HISTORY_SCAN_BYTES = 32 * 1024 * 1024
 
 
+class OutputCredit:
+    """Bound unread PTY output without blocking helper control replies."""
+    window = 64 * 1024
+
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.remaining = self.window
+
+    def acknowledge(self, value):
+        if value.get('action') != 'output-ack':
+            return False
+        count = value.get('bytes')
+        if not self.enabled or set(value) != {'action', 'bytes'} or type(count) is not int or not 0 < count <= self.window - self.remaining:
+            raise ValueError('invalid output credit')
+        self.remaining += count
+        return True
+
+    @property
+    def read_size(self):
+        return min(8192, self.remaining) if self.enabled else 8192
+
+    def consume(self, count):
+        if self.enabled:
+            if not 0 < count <= self.remaining:
+                raise ValueError('output window exceeded')
+            self.remaining -= count
+
+
 def width_query(socket, args):
     child = subprocess.Popen(['tmux', '-S', socket] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     data = bytearray()
@@ -526,9 +554,11 @@ def waiting_view(socket, slot):
 
 def main():
     socket, slot, token = sys.argv[1:4]
-    geometry_enabled = sys.argv[4:] == ['--geometry']
-    if sys.argv[4:] and not geometry_enabled:
+    capabilities = sys.argv[4:]
+    if len(capabilities) != len(set(capabilities)) or any(value not in ['--geometry', '--output-flow'] for value in capabilities):
         raise ValueError('invalid capability')
+    geometry_enabled = '--geometry' in capabilities
+    output_credit = OutputCredit('--output-flow' in capabilities)
     session = SESSIONS[slot]
     if not socket.startswith('/') or len(socket.encode()) > 100:
         raise ValueError('invalid socket')
@@ -584,7 +614,8 @@ def main():
             if child.poll() is not None or time.monotonic() >= deadline:
                 raise ValueError('terminal target unavailable')
             time.sleep(0.03)
-        emit({'type': 'ready', 'columnAlignment': alignment, 'widths': widths})
+        emit({'type': 'ready', 'columnAlignment': alignment, 'widths': widths,
+              **({'outputWindow': output_credit.window} if output_credit.enabled else {})})
         last_id = 0
         last_width = None
         width_at = 0
@@ -607,7 +638,7 @@ def main():
             if history and time.monotonic() - history_at > 15:
                 history = b''
                 history_offset = 0
-            readable, writable, _ = select.select([0, master], [master] if writes else [], [], 0.1 if resize_notice.pending else 0.5)
+            readable, writable, _ = select.select([0] + ([master] if output_credit.read_size else []), [master] if writes else [], [], 0.1 if resize_notice.pending else 0.5)
             if 0 in readable:
                 data = os.read(0, 8192)
                 if not data:
@@ -621,6 +652,8 @@ def main():
                     if len(line) > 64 * 1024:
                         raise ValueError('command too large')
                     value = json.loads(line)
+                    if output_credit.acknowledge(value):
+                        continue
                     ident = value['id']
                     if not isinstance(ident, int) or ident <= last_id or ident > 2147483647:
                         raise ValueError('invalid command id')
@@ -703,12 +736,13 @@ def main():
                         raise ValueError('invalid action')
             if master in readable:
                 try:
-                    data = os.read(master, 8192)
+                    data = os.read(master, output_credit.read_size)
                 except BlockingIOError:
                     data = b''
                 except OSError:
                     break
                 if data:
+                    output_credit.consume(len(data))
                     emit({'type': 'output', 'data': base64.b64encode(data).decode()})
             if master in writable and writes:
                 ident, content, offset = writes[0]
