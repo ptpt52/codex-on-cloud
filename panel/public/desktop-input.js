@@ -207,6 +207,10 @@ export function createDesktopInput({ screen, field, status, current, allowed, pa
   screen.addEventListener('mousedown', event => {
     if (pending || queue.length) { event.preventDefault(); event.stopImmediatePropagation(); show('文字正在输入，请稍后再点击桌面。'); }
     else if (composing) cancel();
+    // A click may move the insertion point within the same remote X11 window.
+    // Keep the local keyboard open, but never revise its old text at that new
+    // location, even when noVNC leaves this textarea focused for a trackpad.
+    else if (retained) boundary();
   }, true);
   window.addEventListener('blur', () => cancel());
   window.addEventListener('offline', () => cancel('连接已断开，未完成的输入不会自动重发。'));

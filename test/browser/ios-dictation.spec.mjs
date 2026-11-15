@@ -36,6 +36,41 @@ test('desktop: fast dictation revisions coalesce only unstarted snapshots behind
   } finally { release(); await app.close(); }
 });
 
+for (const button of ['left', 'right']) test(`desktop: ${button} click ends iPad dictation before editing another control in the same remote window`, async ({ page }) => {
+  // An iPad trackpad keeps the local textarea focused while noVNC sends the
+  // click. Both remote controls share one X11 window, so its ID cannot guard
+  // against a revision erasing text at the newly selected insertion point.
+  await page.addInitScript(() => {
+    const media = window.matchMedia.bind(window);
+    window.matchMedia = query => query === '(any-pointer: fine)' ? { matches: true } : media(query);
+  });
+  let active = 'first'; const buffers = { first: '', second: '已有内容' };
+  const { app, frame, field } = await setup(page, 'desktop', { inputHook: call => {
+    if (['paste', 'edit'].includes(call.action)) {
+      const chars = Array.from(buffers[active]); chars.splice(Math.max(0, chars.length - (call.erase || 0)));
+      buffers[active] = chars.join('') + call.text;
+    }
+    return { focus: { window: '123', target: 'application' } };
+  } });
+  try {
+    await update(field, '你好世界');
+    await expect(frame.locator('#desktop-input-status')).toContainText('键盘控制远程桌面');
+    await expect.poll(() => buffers.first).toBe('你好世界');
+    await frame.locator('#screen canvas').click({ button, position: { x: 200, y: 100 } });
+    active = 'second';
+    await expect(field).toBeFocused();
+    await expect(frame.locator('#desktop-touch-panel')).toBeVisible();
+    await update(field, '新位置');
+    await expect.poll(() => buffers.second).toBe('已有内容新位置');
+    expect(app.inputCalls.at(-1)).toMatchObject({ action: 'paste', text: '新位置' });
+    for (const value of ['新位置追加', '新位置，追加。']) {
+      await update(field, value);
+      await expect.poll(() => buffers.second).toBe('已有内容' + value);
+    }
+    expect(buffers.first).toBe('你好世界'); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 test('desktop: rewritten input uses the acknowledged RTC control path without HTTP replay', async ({ page }) => {
   const { app, frame, field } = await setup(page, 'desktop', { seamless: true, webrtc: true, fastConnect: true }); let http = 0;
   try {
