@@ -133,12 +133,18 @@ jobs:
           - target: webkit-desktop
             engine: webkit
             projects: --project=webkit-desktop
-          - target: webkit-phone
+          - target: webkit-phone-1
             engine: webkit
-            projects: --project=webkit-phone
-          - target: webkit-tablet
+            projects: --project=webkit-phone --shard=1/2
+          - target: webkit-phone-2
             engine: webkit
-            projects: --project=webkit-tablet
+            projects: --project=webkit-phone --shard=2/2
+          - target: webkit-tablet-1
+            engine: webkit
+            projects: --project=webkit-tablet --shard=1/2
+          - target: webkit-tablet-2
+            engine: webkit
+            projects: --project=webkit-tablet --shard=2/2
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -156,9 +162,9 @@ jobs:
       - name: Install CJK fonts for actual mixed-script terminal metrics
         run: sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Cross-browser compatibility
-        # The serial WebKit tablet suite takes about 20 minutes on hosted
-        # runners. Leave time for all cases and browser cleanup; individual
-        # Playwright test deadlines and the 45-minute job bound still apply.
+        # Mobile WebKit exceeds 30 minutes as a single serial suite. Keep all
+        # cases in two shards with one worker each; per-test deadlines and
+        # the 45-minute job bound still apply.
         timeout-minutes: 30
         run: npm run test:compat -- ${{ matrix.projects }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

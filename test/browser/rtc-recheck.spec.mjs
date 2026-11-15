@@ -73,9 +73,16 @@ test('service recheck waits for an existing file confirmation before replacing i
     await page.addInitScript(() => {
       window.servicePeers = []; const PC = RTCPeerConnection;
       window.RTCPeerConnection = class extends PC {
-        constructor(...args) { super(...args); window.servicePeers.push(this); }
+        constructor(...args) { super(...args); this.previousPath = window.servicePeers.length === 0; window.servicePeers.push(this); }
         createDataChannel(label, options) {
           const channel = super.createDataChannel(label, options);
+          // Make the candidate unambiguously better before testing the file
+          // admission fence. Loopback jitter or unknown route diagnostics may
+          // otherwise legitimately keep the current peer without a handoff.
+          if (label === 'codex-health' && this.previousPath) channel.addEventListener('message', event => {
+            if (!event.isTrusted) return;
+            event.stopImmediatePropagation(); setTimeout(() => channel.dispatchEvent(new MessageEvent('message', { data: event.data })), 250);
+          });
           if (label === 'codex-files') channel.addEventListener('open', () => { window.serviceFileReady = true; });
           if (label === 'codex-files') channel.addEventListener('message', event => {
             if (!event.isTrusted || typeof event.data !== 'string' || JSON.parse(event.data).type !== 'done') return;

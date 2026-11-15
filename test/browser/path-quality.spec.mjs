@@ -76,17 +76,24 @@ test('an unconfirmed input explains the blocked promotion, then acknowledgment r
     await page.evaluate(() => { window.pathProfile.holdAcks = true; });
     await frame.locator('.xterm-helper-textarea').press('x');
     await expect.poll(() => app.terminalInputs.map(value => value.text).join('')).toBe('x');
-    await page.evaluate(() => { window.pathProfile.direct = 1; });
+    // Apple's retained editing context correctly blocks handoff while the
+    // textarea has focus. End that edit so this case isolates the missing ACK.
+    await frame.locator('.xterm-helper-textarea').evaluate(field => field.blur());
+    await expect.poll(() => frame.evaluate(() => window.pathSockets.some(socket => socket.heldAcks.length > 0))).toBe(true);
+    // WebKit may report an unknown route, which requires a clear latency
+    // improvement. Slow the old path so ACK admission, rather than smoothed
+    // quality measurements near that threshold, determines this assertion.
+    await page.evaluate(() => { window.pathProfile.direct = 1; window.pathProfile.relay = 300; });
     await expect.poll(() => page.evaluate(() => window.pathEvents.some(event => event.type === 'probe-waiting' && event.reason === 'input-unconfirmed' && event.pendingInputs > 0)), { timeout: 20000 }).toBe(true);
     await expect(page.locator('#diag-transport')).toContainText('WebSocket');
     await page.evaluate(() => { window.pathProfile.holdAcks = false; });
     await frame.evaluate(() => { for (const socket of window.pathSockets) for (const data of socket.heldAcks.splice(0)) socket.dispatchEvent(new MessageEvent('message', { data })); });
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 10000 });
     expect(app.terminalInputs.map(value => value.text).join('')).toBe('x'); expect(app.terminalConnections).toBe(1);
-  } finally {
-    if (testInfo.status !== testInfo.expectedStatus) await testInfo.attach('network-events', { body: JSON.stringify(await page.evaluate(() => window.pathEvents)), contentType: 'application/json' });
-    await app.close();
-  }
+  } catch (error) {
+    await testInfo.attach('network-events', { body: JSON.stringify(await page.evaluate(() => window.pathEvents)), contentType: 'application/json' });
+    throw error;
+  } finally { await app.close(); }
 });
 
 for (const turn of [false, true, 'unknown']) test(`${turn === 'unknown' ? 'unknown-route' : turn ? 'TURN' : 'direct'} candidate keeps faster WSS, then reuses the same peer when quality improves`, async ({ page }) => {
