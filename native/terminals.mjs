@@ -173,11 +173,12 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     }
     if (body.action === 'rename') {
       // The guarded branch is parsed as a tmux command, not a shell command.
-      // Quote its literal argument against tmux's quotes, escapes and $ENV.
-      const label = name(body.name).replace(/[\\$"]/g, '\\$&');
-      await guarded(terminal, `set-option -t =${definitions.get(terminal.id).session} @codex_cloud_name "${label}"`, '重命名');
-    }
-    else if (body.view !== 'terminal') await focus(body, true);
+      // Quote its literal argument against tmux's quotes, escapes, ~ and $ENV.
+      // Newer tmux versions resolve user-option targets as panes, so include
+      // the window and pane even though this remains a session-scoped option.
+      const label = name(body.name).replace(/[\\$"~]/g, '\\$&');
+      await guarded(terminal, `set-option -t =${definitions.get(terminal.id).session}:0.0 @codex_cloud_name "${label}"`, '重命名');
+    } else if (body.view !== 'terminal') await focus(body, true);
     return { ...(await list()), opened: body.action === 'open' ? terminal.id : undefined };
   }
   return { list, manage, focus, assertFocused };

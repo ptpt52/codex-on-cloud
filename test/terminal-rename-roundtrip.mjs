@@ -26,9 +26,13 @@ export async function terminalRenameRoundtrip() {
     await tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'codex-host', '/bin/sleep', '120']);
     await tmux(['new-session', '-d', '-s', 'codex', '/bin/sleep', '120']);
     const target = await destination();
-    for (const name of ["日志 ' $(never) `never`", '"; kill-server; #', '$HOME "x" \\', '#{pane_pid}', '}; kill-server; {']) {
+    for (const name of ["日志 ' $(never) `never`", '"; kill-server; #', '$HOME "x" \\', '#{pane_pid}', '}; kill-server; {', '~/中文']) {
       const result = await manager.manage({ action: 'rename', ...target, name });
-      assert.equal(result.terminals[0].name, name);
+      // tmux 3.4 sanitizes $ENV in CLI output. Compare the stored values inside
+      // tmux as well as their displayed names against a literal argv write.
+      await tmux(['set-option', '-t', '=codex:0.0', '@expected_name', name]);
+      assert.equal(await tmux(['display-message', '-p', '-t', '=codex:0.0', '#{==:#{@codex_cloud_name},#{@expected_name}}']), '1');
+      assert.equal(result.terminals[0].name, await tmux(['show-option', '-v', '-t', '=codex:0.0', '@expected_name']));
       assert.equal(result.terminals[0].token, target.terminalToken);
     }
     for (const mutation of ['replace', 'respawn', 'split']) {
@@ -39,10 +43,10 @@ export async function terminalRenameRoundtrip() {
           await tmux(['new-session', '-d', '-s', 'codex', '/bin/sleep', '120']);
         } else if (mutation === 'respawn') await tmux(['respawn-pane', '-k', '-t', '=codex:0.0', '/bin/sleep', '120']);
         else await tmux(['split-window', '-d', '-t', '=codex:0.0', '/bin/sleep', '120']);
-        await tmux(['set-option', '-t', '=codex', '@codex_cloud_name', 'replacement']);
+        await tmux(['set-option', '-t', '=codex:0.0', '@codex_cloud_name', 'replacement']);
       };
       await assert.rejects(manager.manage({ action: 'rename', ...target, name: 'stale name' }), error => error.status === 409 && error.outcome === 'rejected', mutation);
-      assert.equal(await tmux(['show-option', '-v', '-t', '=codex', '@codex_cloud_name']), 'replacement', mutation);
+      assert.equal(await tmux(['show-option', '-v', '-t', '=codex:0.0', '@codex_cloud_name']), 'replacement', mutation);
     }
     console.log('✓ isolated real tmux: literal rename arguments; replaced, respawned and split terminals reject stale renames');
   } finally { await tmux(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true }); }
