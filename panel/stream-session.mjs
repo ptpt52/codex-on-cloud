@@ -1,3 +1,4 @@
+import { createTerminalAttachment } from './terminal-attachment.mjs';
 export const STREAM_ID = /^[a-f0-9]{32}$/;
 export const STREAM_CHUNK = 12 * 1024;
 export const STREAM_WINDOW = 256 * 1024;
@@ -11,16 +12,21 @@ function decode(text) {
 
 // One upstream, two authenticated paths, bounded unacknowledged output. Input
 // is never retransmitted. An uncertain input gap requires a fresh attachment.
-export function createStreamSession({ id, valid, connect, canActivate = async () => true, performPanel, createTerminal, openTerminal, switchTarget, closed = () => {}, ttl = STREAM_TTL }) {
+export function createStreamSession({ id, valid, connect, attachment, canActivate = async () => true, performPanel, createTerminal, openTerminal, switchTarget, closed = () => {}, ttl = STREAM_TTL }) {
   const peers = new Map(), output = [];
   let upstream, active, ended = false, epoch = 0, produced = 0, acked = 0, input = 0, assembly, assemblyTimer, expiry, activating = false, creating = false, holding = false, holdTimer, handoff, upstreamGeneration = 0;
   const stop = () => {
     if (ended) return; ended = true; clearTimeout(expiry); clearTimeout(assemblyTimer); clearTimeout(holdTimer); clearInterval(guard);
-    upstream?.close(); upstream = undefined; assembly = undefined; output.length = 0;
+    terminal?.close(); upstream?.close(); upstream = undefined; assembly = undefined; output.length = 0;
     for (const peer of peers.values()) peer.io.close(); peers.clear(); active = undefined; closed();
   };
   const check = () => { if (ended || !valid()) { stop(); return false; } return true; };
   const guard = setInterval(check, 1000).unref();
+  const terminal = attachment ? createTerminalAttachment({ connect, push,
+    changed: status => { if (active) send(active, { type: 'attachment', epoch, target: attachment.target(), status }); },
+    expired: () => { if (active) send(active, { type: 'reset', reason: 'attachment-idle' }); stop(); }, fatal: stop,
+    ...(attachment.idleMs === undefined ? {} : { idleMs: attachment.idleMs }),
+  }) : null;
   function send(peer, value) {
     if (!check() || peers.get(peer.kind) !== peer || peer.io.buffered() > STREAM_LIMIT) return false;
     try { peer.io.send(value); return true; } catch { detach(peer); return false; }
@@ -37,8 +43,9 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
     clearTimeout(holdTimer); holding = false; handoff = undefined;
     if (active) flush(active, active.sent); pressure();
   }
-  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalCreate: createTerminal ? 1 : 0, terminalOpen: openTerminal ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0 });
+  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalCreate: createTerminal ? 1 : 0, terminalOpen: openTerminal ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0, terminalAttachment: terminal ? 1 : 0 });
   function openUpstream() {
+    if (terminal) { upstream = terminal; terminal.attach(); return; }
     const generation = ++upstreamGeneration;
     upstream = connect({ push: bytes => { if (generation === upstreamGeneration) push(bytes); }, close: () => { if (generation === upstreamGeneration) stop(); } });
   }
@@ -110,7 +117,7 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
           acked = value.out; while (output.length && output[0].at + output[0].bytes.length <= acked) output.shift();
           send(peer, { type: 'active', epoch, input, out: value.out });
           flush(peer, value.out);
-          if (!upstream) openUpstream();
+          if (!upstream) openUpstream(); else terminal?.publish();
           pressure();
         } finally { activating = false; }
         return;
@@ -163,7 +170,8 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
           change.commit(); committed = true;
           // Retire callbacks before closing the viewer; the shell itself lives
           // in tmux. Old output must never enter the newly selected terminal.
-          upstreamGeneration++; const previous = upstream; upstream = undefined; previous?.close();
+          upstreamGeneration++; const previous = upstream; upstream = undefined;
+          if (terminal) terminal.release(); else previous?.close();
           output.length = 0; acked = produced; epoch++; peer.sent = produced;
           for (const other of [...peers.values()]) if (other !== peer) detach(other);
           send(peer, { type: 'switched', id: value.id, epoch, out: produced, input, target: change.target });
@@ -199,7 +207,8 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
       assembly.chunks.push(bytes); assembly.length += bytes.length;
       if (assembly.chunks.length === assembly.parts) {
         const data = Buffer.concat(assembly.chunks); assembly = undefined; clearTimeout(assemblyTimer);
-        upstream.write(data); input = value.id; send(peer, { type: 'input-ack', epoch, id: input });
+        if (terminal && !terminal.ready) { input = value.id; send(peer, { type: 'input-rejected', epoch, id: input }); }
+        else { upstream.write(data); input = value.id; send(peer, { type: 'input-ack', epoch, id: input }); }
       }
     } catch { detach(peer); }
   }
@@ -213,6 +222,7 @@ export function createStreamSession({ id, valid, connect, canActivate = async ()
       return { receive: value => { void receive(peer, value); }, close: () => detach(peer), get active() { return active === peer; } };
     },
     close: stop,
+    targetEnded() { if (check()) terminal?.end('target-exited'); },
     get idle() { return !assembly && (upstream?.idle ?? true); },
     get closed() { return ended; },
     get retained() { return produced - acked; },

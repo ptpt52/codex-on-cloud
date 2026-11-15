@@ -24,6 +24,8 @@ flowchart LR
 
 浏览器的 [视图控制器](../panel/public/view-lifecycle.js) 最多持有一个活动视图和一个待命视图。每个视图独立保存代次、已确认与待切换目标、连接能力、尺寸和历史状态；切换时交换记录，不逐项复制全局变量。前后台消息使用同一套状态校验，来源或代次不匹配的消息被丢弃；目标切换未确认时保持输入受限。网络路径复用继续由现有 StreamSession 负责。
 
+网页终端的 [附加控制器](../panel/terminal-attachment.mjs) 单独管理 PTY 查看进程，与 StreamSession 网络连接及 tmux 任务分开。终端退出或附加失败后，保留只读画面和已认证连接，选择其他终端时复用连接；未附加终端最多保留 60 秒，之后只回收查看连接。重新附加必须由用户选择，不自动启动已结束任务；旧附加进程的回调按代次丢弃，未附加期间拒绝输入，不设重放队列。锁屏、退出登录和接管仍撤销整个查看会话。
+
 工作台按功能管理短期操作：[文件控制器](../panel/public/workbench-files.js) 持有单项传输、目录读取、同名确认与两个限时下载 URL；[剪贴板控制器](../panel/public/workbench-clipboard.js) 持有一次显式读取及可清空预览。[页面生命周期](../panel/public/workspace-lifetime.js) 在离开页面时统一清理这些操作，返回后由工作区重新核验身份与控制权。旧操作的响应不能释放新操作的忙碌状态，不会在重连时补发输入、复制或上传。关闭文件对话框仍允许当前传输继续，离开页面则取消等待并提示核对未确认的结果。
 
 桌面部署包括 desktop、actions、files、manager、panel；纯终端包括 terminal、files、manager、panel。cloudflared 和自建 frpc 是可选入口组件，不是任务宿主。中心服务器与节点使用不同的服务及权限，详见[中心部署](selfhost-server.md)和[服务生命周期](reliability.md)。

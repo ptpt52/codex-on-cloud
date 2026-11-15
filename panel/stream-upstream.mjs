@@ -9,12 +9,12 @@ export function vncUpstream(path, { push, close }) {
     pause: () => socket.pause(), resume: () => socket.resume(), close: () => socket.destroy() };
 }
 
-export function terminalUpstream(options, { push, close }) {
+export function terminalUpstream(options, { push, close, ready }) {
   const socket = new EventEmitter(); let ended = false, pending = '', terminal;
   Object.defineProperties(socket, { readyState: { get: () => ended ? 3 : 1 }, bufferedAmount: { get: () => 0 } });
   socket.send = text => { if (!ended) push(Buffer.from(text + '\n')); };
-  socket.terminate = () => { if (!ended) { ended = true; terminal?.close(); close(); } };
-  terminal = attachTerminal(socket, options);
+  socket.terminate = reason => { if (!ended) { ended = true; terminal?.close(); close(reason || 'protocol'); } };
+  terminal = attachTerminal(socket, { ...options, onReady: () => ready?.() });
   return { write(bytes) {
     if (ended || pending.length + bytes.length > 192 * 1024) throw new Error('terminal input too large');
     pending += bytes.toString('utf8'); let newline;

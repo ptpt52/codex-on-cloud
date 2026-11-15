@@ -42,8 +42,10 @@ const report = (state, extra = {}) => parent.postMessage({ type: 'codex-desktop'
 const controlState = () => { parent.postMessage({ type: 'codex-control-state', frame, ready }, location.origin); panelBridge.report(); };
 const targetInputIdle = () => !composing && !pressedKeys.size && !pressedPointers.size && !pending;
 const targetIdle = () => targetInputIdle() && pendingWrites === 0 && !retainedTerminal?.active;
-const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped,
-  canSwitch: () => ready && !blocked && !switching && !streamPaused && targetInputIdle() });
+const sessionConnected = () => !stopped && socket?.terminalAttachment === true && socket.readyState === WebSocket.OPEN;
+const panelBridge = createPanelBridge({ frame, current: () => socket, connected: () => ready && !stopped || sessionConnected(),
+  attachmentState: () => !ready && socket?.attachmentState === 'ready' ? 'attaching' : socket?.attachmentState,
+  canSwitch: () => (ready || sessionConnected()) && !blocked && !switching && !streamPaused && targetInputIdle() });
 const reportNetwork = () => {
   const rttMs = ready && !streamPaused && !document.hidden && navigator.onLine ? socket?.session ? socket.rttMs : health?.rttMs ?? null : null;
   parent.postMessage({ type: 'codex-transport', frame, details: networkDetails, rttMs, issue: directIssue }, location.origin);
@@ -343,7 +345,7 @@ async function connect() {
   message('正在连接原有终端…'); report('connecting');
   if (streamEnabled) {
     streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf, terminal: { terminalId, terminalToken }, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }), targetIdle,
-      canSwitchTarget: () => ready && !blocked && !switching && targetInputIdle(), idle: idleForSwitch,
+      canSwitchTarget: () => (ready || sessionConnected()) && !blocked && !switching && targetInputIdle(), idle: idleForSwitch,
       settled: () => nativeIdle() && !pending && !history?.reviewing && pendingWrites === 0,
       prepare: prepareSwitch,
       paused: (value, { terminalSwitch = false } = {}) => {
@@ -352,7 +354,7 @@ async function connect() {
         else { if (pendingOutputAck && socket) acknowledgeOutput(socket, 0); health?.wake(); size(); }
         inputState(); parent.postMessage({ type: 'codex-stream-state', frame, paused: value, terminalSwitch }, location.origin); panelBridge.report();
       },
-      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } },
+      changed: () => { networkDetails = null; if (streamClient?.socket.direct) directIssue = ''; if (ready || sessionConnected() && ['idle', 'exited', 'failed'].includes(socket.attachmentState)) { report('connected'); reportNetwork(); controlState(); void refreshNetwork(); } },
       measured: () => { reportNetwork(); void refreshNetwork(); }, issue: directFailure });
     attachSocket(streamClient.socket); streamClient.start(); return;
   }
@@ -383,6 +385,21 @@ function attachSocket(current) {
   ready = false; sequence = 0; historySequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
   previous?.close(); networkDetails = null; reportNetwork();
   connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, current.session ? 45000 : 12000);
+  current.addEventListener('attachment', event => {
+    if (socket !== current || currentEpoch !== epoch) return;
+    const state = event.data.state;
+    if (state !== 'ready' || ready) parent.postMessage({ type: 'codex-terminal-attachment', frame, state }, location.origin);
+    if (!['exited', 'failed', 'idle'].includes(state)) return;
+    clearTimeout(connectingTimer); connectingTimer = undefined;
+    health?.close(); health = undefined; ready = false; composing = false; pressedKeys.clear(); pressedPointers.clear(); pendingOutputAck = 0;
+    finish(null, { message: '终端已结束或附加中断，操作结果请核对；不会重发', outcome: 'unknown' });
+    finishHistory(new Error('终端附加已结束，保留最后画面'));
+    message(state === 'failed' ? '终端附加失败，已保留画面；可重新选择终端重试。' : '终端已结束，画面保留；请选择其他终端或新开终端。');
+    inputState(); report('connected'); controlState();
+  });
+  current.addEventListener('input-rejected', () => {
+    if (socket === current) finish(null, { message: '终端已结束，本次输入未发送', outcome: 'rejected' });
+  });
   current.addEventListener('target', event => {
     if (socket !== current || currentEpoch !== epoch) return;
     terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; firstPainted = false; firstFrameAt = performance.now();
@@ -439,7 +456,7 @@ function attachSocket(current) {
       term.write(bytes, () => {
         pendingWrites--;
         if (!firstPainted && socket === current && term === writtenTerm) { firstPainted = true; trace('first-frame', { path: current.direct ? 'direct' : 'relay', durationMs: Math.round(performance.now() - firstFrameAt) }); }
-        if (socket === current && current.readyState === WebSocket.OPEN && bytes.length) acknowledgeOutput(current, bytes.length);
+        if (socket === current && term === writtenTerm && ready && current.readyState === WebSocket.OPEN && bytes.length) acknowledgeOutput(current, bytes.length);
       }); return;
     }
     if (value.type === 'result' && pending?.id === value.id) {
@@ -447,7 +464,14 @@ function attachSocket(current) {
     }
     retire(current);
   });
-  current.addEventListener('close', () => { if (!switching || current !== switchingFrom) retire(current, current.direct ? 0 : retryDelay); });
+  current.addEventListener('close', () => {
+    if (switching && current === switchingFrom) return;
+    if (current.lastError === 'attachment-idle') {
+      retire(current, null); message('未附加终端的查看连接已回收；选择终端时按需连接。');
+      parent.postMessage({ type: 'codex-terminal-attachment', frame, state: 'expired' }, location.origin); return;
+    }
+    retire(current, current.direct ? 0 : retryDelay);
+  });
   current.addEventListener('error', () => { if (!switching || current !== switchingFrom) retire(current, current.direct ? 0 : retryDelay); });
 }
 function acknowledgeOutput(current, bytes) {

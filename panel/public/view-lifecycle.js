@@ -3,7 +3,7 @@ import { createRoundTrip } from './health.js';
 const terminalKey = value => typeof value === 'string' && /^(?:main|aux[1-7]):%\d{1,10}:\d{1,10}$/.test(value);
 function view(element, epoch, mode = 'desktop', key = '', noticeTarget = '') {
   return { element, epoch, mode, key, desiredKey: key, noticeTarget, loaded: false, state: 'idle', transport: '', paused: false,
-    panelReady: false, panelCapabilitiesKnown: false, terminalSwitchReady: false, terminalCreateReady: false, terminalOpenReady: false,
+    panelReady: false, panelCapabilitiesKnown: false, terminalSwitchReady: false, terminalCreateReady: false, terminalOpenReady: false, terminalAttachment: false, attachmentState: '',
     dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false, composing: false, touchInput: false,
     nativeIdle: false, resizeReady: false, frameReady: mode !== 'desktop', activationPending: false, inputNoticeKey: '', network: null, issue: '', latency: createRoundTrip() };
 }
@@ -67,7 +67,7 @@ export function createViewLifecycle(element) {
       entry.key = key; entry.geometry = null; entry.reviewing = false; return true;
     },
     cancelTarget(entry) { if (live(entry)) entry.desiredKey = entry.key; },
-    inputReady(entry = active) { return entry === active && entry.loaded && entry.state === 'connected' && !entry.paused && entry.frameReady && !entry.activationPending && entry.key === entry.desiredKey; },
+    inputReady(entry = active) { return entry === active && entry.loaded && entry.state === 'connected' && !entry.paused && entry.frameReady && !entry.activationPending && entry.key === entry.desiredKey && (!entry.terminalAttachment || entry.attachmentState === 'ready'); },
     update(entry, value, { revision, fontSize, terminalSwitching = false, issues = [] } = {}) {
       if (!live(entry)) return false;
       if (value.type === 'codex-desktop' && ['connected', 'connecting', 'disconnected'].includes(value.state)) {
@@ -87,6 +87,13 @@ export function createViewLifecycle(element) {
         entry.terminalSwitchReady = connected && entry.mode === 'terminal' && value.terminalSwitch === true;
         entry.terminalCreateReady = connected && entry.mode === 'terminal' && value.terminalCreate === true;
         entry.terminalOpenReady = connected && entry.mode === 'desktop' && value.terminalOpen === true;
+        if (entry.mode === 'terminal' && value.terminalAttachment === true) {
+          entry.terminalAttachment = true;
+          if (['idle', 'attaching', 'ready', 'exited', 'failed'].includes(value.attachmentState)) entry.attachmentState = value.attachmentState;
+        }
+      } else if (value.type === 'codex-terminal-attachment' && entry.mode === 'terminal' && ['idle', 'attaching', 'ready', 'exited', 'failed', 'expired'].includes(value.state)) {
+        entry.terminalAttachment = true; entry.attachmentState = value.state;
+        if (value.state === 'expired') entry.state = 'idle';
       } else if (value.type === 'codex-stream-state' && typeof value.paused === 'boolean') {
         // Target admission has its own busy guard; it must not block itself
         // by being treated as an unrelated route handoff.

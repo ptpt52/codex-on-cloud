@@ -18,7 +18,7 @@ export function terminalPaste(text, bracketed) {
   const clean = text.replace(/\x1b\[20[01]~/g, '');
   return bracketed ? `\x1b[200~${clean}\x1b[201~` : clean;
 }
-export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env, valid, verify, readClipboard, launch }) {
+export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env, valid, verify, readClipboard, launch, onReady = () => {} }) {
   const child = launch ? launch() : spawn('python3', [helper, socketPath, terminalId, terminalToken, '--geometry', '--output-flow'], { env: { ...(env || process.env), CODEX_TERMINAL_WIDTHS: widthCache.get(socketPath) || '' }, stdio: ['pipe', 'pipe', 'ignore'] });
   let ended = false, ready = false, pending = '', outstanding = 0, sequence = 0, lastClientId = 0, busy = false;
   const requests = new Map(); // At most 64 streamed records / 64 KiB in the helper.
@@ -28,15 +28,15 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   let geometryEnabled = false, geometryMaxCols;
   let outputFlow = false;
   let pressureTimer, escapeTimer;
-  const close = () => {
+  const close = (reason = 'protocol') => {
     if (ended) return;
     ended = true; clearTimeout(startTimer); clearTimeout(pressureTimer); clearTimeout(escapeTimer); clearInterval(heartbeat); clearInterval(guard);
     child.stdin.destroy(); child.stdout.destroy(); child.kill('SIGTERM');
     const killTimer = setTimeout(() => child.kill('SIGKILL'), 1500).unref(); child.once('close', () => clearTimeout(killTimer));
-    requests.clear(); ws.terminate();
+    requests.clear(); ws.terminate(typeof reason === 'string' ? reason : 'protocol');
   };
   const send = value => { if (ended || !valid() || ws.readyState !== 1 || ws.bufferedAmount > 256 * 1024) return close(); ws.send(JSON.stringify(value)); };
-  const startTimer = setTimeout(close, 4500).unref();
+  const startTimer = setTimeout(() => close('helper-timeout'), 4500).unref();
   let alive = true;
   ws.on('pong', () => { alive = true; });
   const heartbeat = ws.ping ? setInterval(() => { if (!alive || !valid()) return close(); alive = false; ws.ping(); }, 15000).unref() : undefined;
@@ -44,7 +44,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   const guard = setInterval(() => {
     if (checking || ended) return;
     checking = true;
-    void verify().then(ok => { if (!ok) close(); }, close).finally(() => { checking = false; });
+    void verify().then(ok => { if (!ok) close('target-exited'); }, () => close('helper-failed')).finally(() => { checking = false; });
   }, 3000).unref();
   function command(action, value, clientId, history = false) {
     if (ended || !ready || !valid() || sequence >= 2147483647 || requests.size >= 64 || child.stdin.writableLength > 64 * 1024) throw new Error('terminal unavailable');
@@ -74,7 +74,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
           if (widthCache.size >= 8) widthCache.delete(widthCache.keys().next().value);
           widthCache.set(socketPath, JSON.stringify(value.widths));
         }
-        ready = true; clearTimeout(startTimer); send({ type: 'ready', historyStyles: true, columnAlignment, ...(value.widths ? { widths: value.widths } : {}) });
+        ready = true; clearTimeout(startTimer); onReady(); send({ type: 'ready', historyStyles: true, columnAlignment, ...(value.widths ? { widths: value.widths } : {}) });
       }
       else if (value.type === 'geometry' && ready && Number.isInteger(value.maxCols) && value.maxCols >= 2 && value.maxCols <= 500) {
         geometryMaxCols = value.maxCols;
@@ -177,7 +177,8 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       })();
     } catch { close(); }
   });
-  for (const stream of [child, child.stdin, child.stdout]) stream.on('error', close);
-  child.once('close', close); ws.once('close', close); ws.once('error', close);
+  for (const stream of [child, child.stdin, child.stdout]) stream.on('error', () => close('helper-failed'));
+  child.once('close', () => { if (!ended) void verify().then(ok => close(ok ? 'helper-failed' : 'target-exited'), () => close('helper-failed')); });
+  ws.once('close', close); ws.once('error', close);
   return { close, get idle() { return !ended && ready && !busy && requests.size === 0; } };
 }

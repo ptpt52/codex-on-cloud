@@ -212,6 +212,7 @@ export async function createPanel(config) {
     const valid = () => streamStates.get(id) === state && owner === expected && !!auth.get(token) && !closing && !maintenancePending;
     const request = { headers: { cookie: sessionCookieName(config) + '=' + token, 'x-viewer-id': expected.viewer } };
     state.stream = createStreamSession({ id, valid,
+      ...(mode === 'terminal' ? { attachment: { target: () => state.target } } : {}),
       canActivate: async planned => {
         const controls = await controlStatus();
         return valid() && controls.available && !controls.maintenance && (!planned || (!controls.inputBusy && !controls.clipboardBusy && !controls.viewportBusy && state.stream.idle));
@@ -493,7 +494,11 @@ export async function createPanel(config) {
     if (path === '/api/terminals' && req.method === 'POST') {
       const body = await ownedBody(req, 1024);
       if (maintenancePending) throw new HttpError(409, '桌面操作正在进行，本次终端操作未发送');
-      return reply(res, 200, await managerRequest(config, '/terminals', body));
+      const result = await managerRequest(config, '/terminals', body);
+      if (body.action === 'close' && result.closed === body.terminalId) for (const state of streamStates.values()) {
+        if (state.mode === 'terminal' && state.target?.terminalId === body.terminalId && state.target?.terminalToken === body.terminalToken) state.stream.targetEnded();
+      }
+      return reply(res, 200, result);
     }
     if (path === '/api/desktop/transfer-directory' && req.method === 'POST') {
       const body = await ownedBody(req, 128);
@@ -578,7 +583,7 @@ export async function createPanel(config) {
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         if (!controls.available || controls.maintenance || maintenancePending) throw new HttpError(503, '桌面暂不可连接');
-        if (terminalMode && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
+        if (terminalMode && !(resumable && streamStates.has(body.streamId)) && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
         requireOwner(req);
         if (owner !== expected || closing || res.destroyed) throw new HttpError(409, '页面控制权已变化');
         // A candidate may negotiate while the current stream stays usable.
@@ -608,7 +613,7 @@ export async function createPanel(config) {
             if (action === 'activate') {
               if (!state.rtcPending) return { active: true };
               const current = await controlStatus();
-              if (terminalMode && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
+              if (terminalMode && !resumable && !await terminalAvailable(target)) throw new HttpError(409, '终端目标已变化');
               if (!valid() || !live()) throw new HttpError(409, '页面控制权或连接已变化');
               if (!current.available || current.maintenance || (!resumable && (current.inputBusy || current.clipboardBusy || current.viewportBusy))) throw new HttpError(409, '当前操作未结束，暂不切换连接');
               if (resumable) { state.rtcPending = false; bridge.activate(); return { active: true }; }
@@ -805,7 +810,7 @@ export async function createPanel(config) {
       if (mode === 'terminal') {
         try { target = terminalTarget({ terminalId: url.searchParams.get('terminalId'), terminalToken: url.searchParams.get('terminalToken') }); }
         catch { return deny(400); }
-        if (!await terminalAvailable(target)) return deny(409);
+        if (!streamStates.has(id) && !await terminalAvailable(target)) return deny(409);
       }
       if (owner !== expected || !sessionOf(req) || closing || maintenancePending || socket.destroyed) return deny(409);
       const standby = url.searchParams.get('standby') === '1' && config.mode !== 'terminal';

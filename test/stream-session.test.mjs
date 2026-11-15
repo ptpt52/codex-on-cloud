@@ -291,3 +291,41 @@ test('standby and revoked stream peers cannot create terminals', async t => {
   allowed = false; relay.entry.receive({ type: 'panel', id: 1, epoch: 1, action: 'create-terminal', body: { name: 'revoked' } }); await tick();
   assert.equal(calls, 0); assert.equal(app.session.closed, true);
 });
+
+test('terminal attachment exit retains the session, rejects late input and explicitly attaches another target', async t => {
+  let target = { terminalId: 'main', terminalToken: '%0:4000' };
+  const app = setup({ attachment: { target: () => target }, switchTarget: async next => ({ target: next, commit() { target = next; } }) });
+  t.after(() => app.session.close()); const relay = app.peer('relay'); await activate(relay, 0);
+  app.connections[0].ready(); app.push('final screen'); app.connections[0].close('target-exited');
+  assert.equal(app.session.closed, false); assert.equal(relay.closed, false); assert.equal(app.launches, 1);
+  assert.equal(relay.records.at(-1).status.state, 'exited');
+  relay.entry.receive(input(1, 1, 'late old input')); await tick(); assert.deepEqual(app.writes, []);
+  assert.equal(relay.records.at(-1).type, 'input-rejected');
+  const direct = app.peer('direct'); await activate(direct, 1, 12, 1);
+  assert.equal(app.launches, 1, 'route recovery must not reopen the ended terminal');
+  direct.entry.receive({ type: 'switch-terminal', epoch: 2, id: 1, input: 1, target: { terminalId: 'aux1', terminalToken: '%1:4100' } }); await tick();
+  assert.equal(app.launches, 2); app.connections[1].ready();
+  app.connections[0].push(Buffer.from('retired output')); app.connections[0].close('protocol');
+  assert.equal(app.session.closed, false); direct.entry.receive(input(3, 2, 'new target input')); await tick();
+  assert.deepEqual(app.writes, ['new target input']);
+});
+
+test('an unattached terminal expires even while its authenticated path stays open', async () => {
+  const app = setup({ attachment: { target: () => ({ terminalId: 'main', terminalToken: '%0:4000' }), idleMs: 25 } });
+  const relay = app.peer('relay'); await activate(relay, 0); app.connections[0].ready(); app.session.targetEnded();
+  assert.equal(app.session.closed, false); await delay(60);
+  assert.equal(app.session.closed, true); assert.equal(relay.records.at(-1).reason, 'attachment-idle'); assert.equal(app.launches, 1);
+});
+
+test('helper failure retains an idle attachment but protocol or authority failure closes the session', async t => {
+  for (const reason of ['helper-failed', 'protocol']) {
+    const app = setup({ attachment: { target: () => ({ terminalId: 'main', terminalToken: '%0:4000' }) } });
+    t.after(() => app.session.close()); const peer = app.peer('relay'); await activate(peer, 0); app.connections[0].ready(); app.connections[0].close(reason);
+    assert.equal(app.session.closed, reason === 'protocol');
+    if (reason === 'helper-failed') assert.equal(peer.records.at(-1).status.state, 'failed');
+  }
+  let allowed = true;
+  const app = setup({ valid: () => allowed, attachment: { target: () => ({ terminalId: 'main', terminalToken: '%0:4000' }) } });
+  t.after(() => app.session.close()); const peer = app.peer('relay'); await activate(peer, 0); app.session.targetEnded(); allowed = false;
+  peer.entry.receive({ type: 'ping', id: 1 }); await tick(); assert.equal(app.session.closed, true);
+});

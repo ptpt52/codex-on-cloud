@@ -74,11 +74,12 @@ export function createControlClient(channel, changed) {
 
 // Fixed operations, one pending request per operation, no replay queue.
 // The parent verifies source + frame generation again before using any result.
-export function createPanelBridge({ frame, current, connected, canSwitch = () => false, canOpen = () => false }) {
+export function createPanelBridge({ frame, current, connected, canSwitch = () => false, canOpen = () => false, attachmentState = () => current()?.attachmentState }) {
   const pending = new Map();
   const report = () => parent.postMessage({ type: 'codex-panel-state', frame, ready: connected() && current()?.panelReady === true,
     terminalSwitch: connected() && current()?.terminalSwitch === true, terminalCreate: connected() && current()?.terminalCreate === true,
-    terminalOpen: connected() && current()?.terminalOpen === true }, location.origin);
+    terminalOpen: connected() && current()?.terminalOpen === true,
+    terminalAttachment: connected() && current()?.terminalAttachment === true, attachmentState: attachmentState() }, location.origin);
   window.addEventListener('message', event => {
     const value = event.data;
     if (event.origin !== location.origin || event.source !== parent || value?.frame !== frame || !Number.isSafeInteger(value.id) || value.id < 1) return;

@@ -21,6 +21,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   let heldOutput = [], heldBytes = 0;
   let directExpedited = false, directHalted = false, directAttempts = 0, pauseTerminal = false;
   let lastPath = '';
+  let attachmentState = 'attaching';
   let textDecoder = new TextDecoder('utf-8', { fatal: true }), panelSequence = 0, targetSequence = 0, targetPending;
   const panelRequests = new Map();
   const failure = (message, status = 409) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -66,7 +67,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     }
   }
   function emit(type, data) {
-    const event = ['message', 'target'].includes(type) ? new MessageEvent(type, { data }) : new Event(type);
+    const event = ['message', 'target', 'attachment', 'input-rejected'].includes(type) ? new MessageEvent(type, { data }) : new Event(type);
     socket[`on${type}`]?.(event); socket.dispatchEvent(event);
   }
   function pause(value) {
@@ -172,6 +173,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         peer.terminalCreate = value.terminalCreate === 1;
         peer.terminalOpen = value.terminalOpen === 1;
         peer.terminalSwitch = value.terminalSwitch === 1 && (peer.kind === 'direct' || value.terminalSwitchRelay === 1);
+        peer.terminalAttachment = !!terminal && value.terminalAttachment === 1;
         if (!peer.ready) trace(peer.kind === 'relay' ? 'relay-ready' : 'direct-ready', { path: peer.kind, durationMs: Math.round(performance.now() - peer.startedAt) });
         peer.ready = true; peer.healthyAt = performance.now(); clearTimeout(peer.startTimer); heartbeat(peer, 0);
         if (peer.prepareWait || peer.wait?.handoff !== undefined) { peer.prepareWait?.reject(new Error('busy')); peer.wait?.reject(new Error('busy')); return; }
@@ -194,6 +196,11 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         return;
       }
       if (value.type === 'reset') return close(value.reason || 'session-reset');
+      if (value.type === 'attachment') {
+        if (peer !== active || value.epoch !== epoch) return;
+        if (!terminal || !peer.terminalAttachment || !['idle', 'attaching', 'ready', 'exited', 'failed'].includes(value.status?.state) || !['', 'target-exited', 'helper-failed', 'helper-timeout'].includes(value.status?.reason) || value.target?.terminalId !== terminal.terminalId || value.target?.terminalToken !== terminal.terminalToken) throw new Error();
+        attachmentState = value.status.state; emit('attachment', value.status); changed(); return;
+      }
       if (value.type === 'panel-result') {
         const pending = panelRequests.get(value.id);
         if (!pending || pending.peer !== peer || pending.epoch !== value.epoch || peer !== active || value.epoch !== epoch) return;
@@ -206,6 +213,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         inputSizes.clear(); inputBytes = 0; terminalText = ''; textDecoder = new TextDecoder('utf-8', { fatal: true }); Object.assign(terminal, value.target);
         for (const id of [...panelRequests.keys()]) finishPanel(id, failure('终端查看目标已变化'));
         directHalted = false; directAttempts = 0; probeDelay = 15000;
+        attachmentState = 'attaching';
         emit('target', value.target); finishTarget(null, value.target);
         for (const other of [...peers.values()]) if (other !== peer) lost(other);
         changed(); ensureRelay(); return;
@@ -231,12 +239,13 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         if (!opened) { opened = true; emit('open'); }
         changed(); waiter.resolve(); return;
       }
-      if (value.type === 'input-ack') {
+      if (value.type === 'input-ack' || value.type === 'input-rejected') {
         if (peer !== active || value.epoch !== epoch || !integer(value.id) || value.id > sent) return;
         if (value.id > inputAck) peer.progressAt = performance.now(); inputAck = Math.max(inputAck, value.id);
         for (const [n, record] of inputSizes) if (n <= inputAck) {
           peer.quality.acknowledge(performance.now() - record.at); inputBytes -= record.size; inputSizes.delete(n);
         }
+        if (value.type === 'input-rejected') emit('input-rejected', { id: value.id });
         return;
       }
       if (value.type !== 'chunk' || peer !== active || value.epoch !== epoch) return;
@@ -504,6 +513,11 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       // No bytes were admitted: don't advance the sequence or fabricate an
       // unknown input on resume. Actual send failures remain unreplayed.
       if (!peer.writable()) { lost(peer); throw failure('连接正在关闭，本次操作未发送'); }
+      if (terminal && peer.terminalAttachment && attachmentState !== 'ready') {
+        const value = JSON.parse(data);
+        if (['ack', 'health'].includes(value.type)) return;
+        throw failure('当前没有就绪的终端，本次输入未发送');
+      }
       const bytes = terminal ? new TextEncoder().encode(data + '\n') : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength);
       if (!bytes.length || bytes.length > 128 * 1024 || inputSizes.size >= 64 || inputBytes + bytes.length > 128 * 1024) { close('input-pressure'); throw new Error('input pressure'); }
       const id = ++sent, parts = Math.ceil(bytes.length / CHUNK); inputSizes.set(id, { size: bytes.length, at: performance.now() }); inputBytes += bytes.length;
@@ -511,7 +525,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       catch { lost(peer); }
     },
   });
-  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalOpen: { get: () => !terminal && !ended && active?.ready === true && active.terminalOpen === true }, terminalCreate: { get: () => !!terminal && !ended && active?.ready === true && active.terminalCreate === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
+  Object.defineProperties(socket, { readyState: { enumerable: true, get: () => ended ? 3 : opened ? 1 : 0 }, direct: { enumerable: true, get: () => active?.kind === 'direct' }, rttMs: { get: () => !ended && active?.ready && !active.gone ? active.latency.value : null }, terminalAttachment: { get: () => !!terminal && active?.terminalAttachment === true }, attachmentState: { get: () => attachmentState }, panelReady: { get: () => !ended && active?.kind === 'direct' && active.panel === true }, terminalOpen: { get: () => !terminal && !ended && active?.ready === true && active.terminalOpen === true }, terminalCreate: { get: () => !!terminal && !ended && active?.ready === true && active.terminalCreate === true }, terminalSwitch: { get: () => !!terminal && !ended && active?.ready === true && active.terminalSwitch === true }, bufferedAmount: { enumerable: true, get: () => inputBytes + (active?.buffered() || 0) } });
   for (const name of ['online', 'offline']) window.addEventListener(name, wake);
   navigator.connection?.addEventListener('change', wake); document.addEventListener('visibilitychange', wake);
   return { socket, start() { ensureRelay(); scheduleDirect(0); }, close, wake, async recheck(report) { await recheck.run(report); scheduleDirect(); },

@@ -258,7 +258,7 @@ function reconcileTerminalSelection(opened) {
     else terminalSelectionState = terminal?.supported && terminal.token === selectedTerminalToken ? 'ready' : !terminal && terminalSlots.some(item => item.id === selectedTerminal) ? 'closed' : 'invalid';
   }
   adoptWindowDraft = false;
-  if (terminalMode() && ['invalid', 'closed'].includes(terminalSelectionState) && views.active.loaded) stopFrame();
+  if (terminalMode() && ['invalid', 'closed'].includes(terminalSelectionState) && views.active.loaded && !views.active.terminalAttachment) stopFrame();
 }
 function terminalEntries() {
   const entries = TERMINAL_IDS.map(id => terminalCatalog.find(item => item.id === id)).filter(Boolean);
@@ -278,12 +278,12 @@ function selectTerminal(id) {
   const terminal = terminalCatalog.find(item => item.id === id && item.supported);
   if (id && !terminal || !id && terminalMode()) return false;
   const identity = id ? { id: terminal.id, token: terminal.token } : { id: '', token: '' };
-  if (terminalMode() && views.active.loaded && views.active.terminalSwitchReady && views.active.key !== `${identity.id}:${identity.token}`) {
+  if (terminalMode() && views.active.loaded && views.active.terminalSwitchReady && (views.active.key !== `${identity.id}:${identity.token}` || views.active.terminalAttachment && views.active.attachmentState !== 'ready')) {
     if (!rememberDraft()) return false;
     void switchTerminalStream(identity); return true;
   }
   if (!activateTerminal(identity)) { renderTerminalSelection(); return false; }
-  shortcutMenu.close(); renderTerminalList(); if (terminalMode()) syncTerminalView(); else syncModeStandby();
+  shortcutMenu.close(); renderTerminalList(); if (terminalMode()) syncTerminalView(true); else syncModeStandby();
   return true;
 }
 function requestCloseTerminal(terminal) {
@@ -647,6 +647,10 @@ function renderConnection() {
   else if (!controlsState.available) label = '输入服务未就绪';
   else if (terminalSwitching) label = '正在切换终端…';
   else if (terminalMode() && terminalSelectionState === 'closed') label = '终端已关闭';
+  else if (terminalMode() && views.active.terminalAttachment && views.active.attachmentState === 'exited') label = '终端已退出';
+  else if (terminalMode() && views.active.terminalAttachment && views.active.attachmentState === 'failed') label = '终端附加失败';
+  else if (terminalMode() && views.active.terminalAttachment && views.active.attachmentState === 'expired') label = '查看连接已释放';
+  else if (terminalMode() && views.active.terminalAttachment && views.active.attachmentState === 'attaching') label = '正在附加终端';
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) label = '终端目标待确认';
   else if (views.active.state === 'connected') label = terminalMode() ? '终端在线' : '桌面在线';
   else label = views.active.state === 'reconnecting' ? '画面重连中' : '画面连接中';
@@ -710,6 +714,7 @@ function renderConnection() {
   } else if (!owned && permissions.role === 'temporary') overlay('临时访问', '此账号仅可查看连接状态、配置服务器访问本地设备的映射，以及上传和下载共享中转文件。');
   else if (!owned && permissions.requiresUnlock) overlay('屏幕已锁定', '既有双向端口映射仍可连接；新增或管理本机 → 服务器映射需先解锁。连接状态、本地设备映射和文件中转仍可用。', true);
   else if (!owned) overlay('在这里继续工作', terminalOnly ? '终端已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启任务。' : '桌面已在另一页面打开，或服务刚刚重启。接管只切换观看位置，不会重启 Codex。', true);
+  else if (terminalMode() && views.active.loaded && views.active.terminalAttachment && ['idle', 'exited', 'failed', 'expired'].includes(views.active.attachmentState)) $('desktop-overlay').hidden = true;
   else if (terminalMode() && terminalSelectionState === 'closed') {
     overlay('已关闭', '点击下方入口新开终端，或切换到其他终端。');
     $('choose-terminal-button').textContent = '新开终端';
@@ -1433,8 +1438,10 @@ async function terminalRequest(body, { waitForView = false } = {}) {
   if (!loggedIn || terminalBusy || (body && !canManageTerminals(waitForView))) return;
   if (body?.action === 'close' && !rememberDraft()) return;
   const closingCurrent = body?.action === 'close' && body.terminalId === selectedTerminal && body.terminalToken === selectedTerminalToken;
+  const retainClosing = closingCurrent && terminalMode() && views.active.loaded && views.active.terminalAttachment;
+  const neighbors = closingCurrent ? [...terminalCatalog.slice(terminalCatalog.findIndex(item => item.id === selectedTerminal) + 1), ...terminalCatalog.slice(0, terminalCatalog.findIndex(item => item.id === selectedTerminal)).reverse()] : [];
   if (closingCurrent) {
-    if (terminalMode()) stopFrame();
+    if (terminalMode() && !retainClosing) stopFrame();
     terminalSelectionState = 'loading';
   }
   const controller = new AbortController(), generation = uiGeneration, expectedFrame = views.active.epoch;
@@ -1459,16 +1466,17 @@ async function terminalRequest(body, { waitForView = false } = {}) {
     const retainConnection = body?.action === 'create' && terminalMode() && views.active.loaded && views.active.terminalSwitchReady;
     if (body?.action === 'create' && (result.created !== result.opened || body.terminalId !== undefined && result.created !== body.terminalId || !result.terminals?.some(item => item.id === result.created && item.supported))) throw new Error('创建结果未确认，请刷新列表核对，不要重复新建。');
     updateTerminalCatalog(result, retainConnection ? undefined : body ? result.opened : undefined);
+    const fallback = retainClosing ? neighbors.find(previous => terminalCatalog.some(item => item.id === previous.id && item.token === previous.token && item.supported)) : undefined;
     if (body?.action === 'open') desktopFocusFailureKey = '';
     clearTimeout(timeout);
     if (body?.action === 'create') $('new-terminal-name').value = '';
     $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
     renderTerminalList();
-    if (retainConnection) {
-      const created = terminalCatalog.find(item => item.id === result.created);
+    if (retainConnection || fallback) {
+      const created = fallback || terminalCatalog.find(item => item.id === result.created);
       if (views.active.loaded && views.active.terminalSwitchReady) {
         const attached = await switchTerminalStream({ id: created.id, token: created.token });
-        if (!attached && terminalController === controller && generation === uiGeneration) $('terminals-status').textContent = '终端已创建，查看切换未完成；请选择已有终端，不要重复新建。';
+        if (!attached && terminalController === controller && generation === uiGeneration) $('terminals-status').textContent = fallback ? '终端已关闭，查看切换未完成；请手动选择其他终端。' : '终端已创建，查看切换未完成；请选择已有终端，不要重复新建。';
       } else activateTerminal({ id: created.id, token: created.token });
     }
     return { ok: true };
@@ -1522,11 +1530,11 @@ $('choose-terminal-button').addEventListener('click', () => {
 $('clear-stale-drafts').addEventListener('click', () => requestConfirmation('drafts-clear'));
 $('create-terminal-form').addEventListener('submit', event => { event.preventDefault(); if (canManageTerminals()) requestConfirmation('terminal-create', null, { action: 'create', name: $('new-terminal-name').value }); });
 $('input-terminal').addEventListener('change', () => selectTerminal($('input-terminal').value));
-function syncTerminalView() {
+function syncTerminalView(explicit = false) {
   if (!terminalMode() || !loggedIn || !owned || terminalSelectionState !== 'ready') return;
   const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
   if (!terminal || terminal.token !== selectedTerminalToken) return;
-  if (views.active.loaded && views.active.key === `${terminal.id}:${terminal.token}`) return;
+  if (views.active.loaded && views.active.key === `${terminal.id}:${terminal.token}` && (!explicit || !views.active.terminalAttachment || views.active.attachmentState === 'ready')) return;
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
@@ -1872,6 +1880,7 @@ window.addEventListener('message', event => {
   if (entry === views.standby) { receiveStandby(event.data); return; }
   const wasReady = entry.panelReady;
   updateView(entry, event.data);
+  if (event.data.type === 'codex-terminal-attachment') { renderConnection(); return; }
   if (event.data.type === 'codex-direct-recheck-state') { hintProbeReport(event.data.id, 'workspace', event.data); return; }
   if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
   if (event.data?.type === 'codex-panel-state') {
