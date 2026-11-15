@@ -2210,6 +2210,10 @@ window.addEventListener('pagehide', event => {
   pageLeaving = true; workspaceInitialized = false; cachedResumePending = event.persisted === true;
   cachedViewReset = !terminalMode() || terminalSwitching;
   if (loggedIn) rememberDraft();
+  // Frozen pages may never receive compositionend; keep the draft, not its
+  // transient IME lock. No text is committed or sent during this cleanup.
+  inputComposing = false;
+  terminalLoadAttempted = false;
   if (terminalFocusBusy) desktopFocusFailureKey = `${selectedTerminal}:${selectedTerminalToken}`;
   if (terminalSwitching) terminalSelectionState = 'error';
   uiGeneration++; stopPolling(); serviceLink.stop(); stopDiagnostics(); stopSettingsPolling();

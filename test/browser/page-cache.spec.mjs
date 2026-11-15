@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { openInput, closePanels } from './ui.mjs';
-test.use({ launchOptions: { ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}), ignoreDefaultArgs: ['--disable-back-forward-cache'] } });
 async function setup(page, app, mode = 'desktop') {
   await page.addInitScript(mode => {
     if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode }));
@@ -103,5 +102,39 @@ test('a pending accepted paste stays unknown across cached return and its late r
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'unknown');
     await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
     expect(app.inputCalls).toHaveLength(1); expect(app.terminalInputs).toEqual([]);
+  } finally { release(); await app.close(); }
+});
+
+for (const mode of ['desktop', 'terminal']) test(`${mode}: cached return cancels unfinished assistant composition without sending or blocking its draft`, async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true, rfbSize: { width: 640, height: 480 } });
+  try {
+    const frame = await setup(page, app, mode); await openInput(page);
+    await expect(page.locator('#input-terminal option[value=main]')).toHaveCount(1);
+    await page.locator('#mobile-input').focus();
+    await page.locator('#mobile-input').dispatchEvent('compositionstart', { data: '输入中' });
+    await expect(page.locator('#paste-button')).toBeDisabled();
+    await hide(page, frame); await show(page, frame, mode === 'terminal');
+    await expect(page.locator('#connection-status')).toContainText(mode === 'desktop' ? '桌面在线' : '终端在线');
+    await expect(page.locator('#paste-button')).toBeEnabled();
+    await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('cached return re-reads an interrupted initial terminal catalog before enabling its preserved draft', async ({ page }) => {
+  let hold = true, release, reads = 0; const gate = new Promise(resolve => { release = resolve; });
+  const app = await fixture({ rfb: true, seamless: true, rfbSize: { width: 640, height: 480 } });
+  await page.route('**/api/terminals', async route => {
+    if (route.request().method() === 'GET') { reads++; if (hold) await gate; }
+    await route.continue().catch(() => {});
+  });
+  try {
+    const frame = await setup(page, app); await expect.poll(() => reads).toBe(1);
+    await hide(page, frame); hold = false; release(); await show(page, frame);
+    await expect.poll(() => reads).toBeGreaterThan(1);
+    await expect(page.locator('#input-terminal option[value=main]')).toHaveCount(1);
+    await expect(page.locator('#paste-button')).toBeEnabled();
+    await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
+    expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { release(); await app.close(); }
 });

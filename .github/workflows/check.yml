@@ -234,9 +234,14 @@ jobs:
         run: npm run test:browser -- test/browser/viewport-frame.spec.mjs
       - run: npm run test:pointer
       - run: npm run test:desktop-input
+        env:
+          DESKTOP_IME_TEST_STANDBY: '1'
+          DESKTOP_IME_TEST_CACHE: '1'
       - run: npm run test:desktop-input
         env:
           DESKTOP_IME_TEST_DIRECT: '1'
+          DESKTOP_IME_TEST_STANDBY: '1'
+          DESKTOP_IME_TEST_CACHE: '1'
       - run: npm run test:forward
       - run: npm run test:forward:agents
       - run: npm run test:serial
