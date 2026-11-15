@@ -11,8 +11,10 @@ async function login(page, app) {
         super(...args); if (new URL(this.url).pathname !== '/session/connect') return;
         window.networkSockets.push(this);
         this.addEventListener('message', event => {
-          if (!event.isTrusted || !window.pongDelay || JSON.parse(event.data).type !== 'pong') return;
-          event.stopImmediatePropagation(); setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: event.data })), window.pongDelay);
+          if (!event.isTrusted || JSON.parse(event.data).type !== 'pong') return;
+          const delay = window.pongDelays?.shift() ?? window.pongDelay;
+          if (!delay) return;
+          event.stopImmediatePropagation(); setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: event.data })), delay);
         });
       }
       send(data) {
@@ -58,9 +60,11 @@ test('measured latency raises the bounded deadline so a slow following heartbeat
   const app = await fixture({ rfb: true, seamless: true });
   try {
     const frame = await login(page, app);
-    await frame.evaluate(() => { window.pongDelay = 900; window.dispatchEvent(new Event('online')); });
+    // Stage consecutive replies before probing. By the time the UI reports
+    // the first sample, a warm-up probe may already have captured its delay.
+    await frame.evaluate(() => { window.pongDelays = [900]; window.pongDelay = 2300; window.dispatchEvent(new Event('online')); });
     await expect.poll(async () => Number((await page.locator('#diag-latency').textContent()).replace(/[^\d]/g, ''))).toBeGreaterThanOrEqual(850);
-    await frame.evaluate(() => { window.pongDelay = 2300; window.dispatchEvent(new Event('online')); });
+    await frame.evaluate(() => { window.dispatchEvent(new Event('online')); });
     await expect.poll(async () => Number((await page.locator('#diag-latency').textContent()).replace(/[^\d]/g, '')), { timeout: 6000 }).toBeGreaterThanOrEqual(2200);
     expect(await frame.evaluate(() => window.networkSockets.length)).toBe(1);
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
