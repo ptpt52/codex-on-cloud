@@ -19,7 +19,10 @@ async function setup(page, profile) {
     const PC = RTCPeerConnection;
     window.RTCPeerConnection = class extends PC {
       constructor(...args) { super(...args); window.pathPeers.push(this); }
-      async getStats(...args) { const stats = await super.getStats(...args); return parent.pathProfile.turn ? new Map([...stats].map(([id, row]) => [id, /^(?:local|remote)-candidate$/.test(row.type) ? { ...row, candidateType: 'relay' } : row])) : stats; }
+      async getStats(...args) {
+        if (parent.pathProfile.stallStats) return new Promise(() => {});
+        const stats = await super.getStats(...args); return parent.pathProfile.turn ? new Map([...stats].map(([id, row]) => [id, /^(?:local|remote)-candidate$/.test(row.type) ? { ...row, candidateType: 'relay' } : row])) : stats;
+      }
       createDataChannel(label, options) {
         const channel = super.createDataChannel(label, options);
         if (label === 'codex-stream') {
@@ -44,12 +47,22 @@ async function login(page, app) {
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
 
-for (const turn of [false, true]) test(`${turn ? 'TURN' : 'direct'} candidate keeps faster WSS, then reuses the same peer when quality improves`, async ({ page }) => {
+test('unresolved RTC statistics cannot indefinitely block a healthy direct candidate', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
+  try {
+    await setup(page, { relay: 350, direct: 1, turn: false, stallStats: true }); const frame = await login(page, app);
+    await expect.poll(() => frame.evaluate(() => window.pathPeers.some(peer => peer.connectionState === 'connected'))).toBe(true);
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 10000 });
+    expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+for (const turn of [false, true, 'unknown']) test(`${turn === 'unknown' ? 'unknown-route' : turn ? 'TURN' : 'direct'} candidate keeps faster WSS, then reuses the same peer when quality improves`, async ({ page }) => {
   test.setTimeout(45000);
   const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true }); let offers = 0;
   page.on('request', request => { if (request.url().endsWith('/api/terminal/rtc')) offers++; });
   try {
-    await setup(page, { relay: 50, direct: turn ? 50 : 250, turn }); const frame = await login(page, app);
+    await setup(page, { relay: 50, direct: turn ? 50 : 250, turn: turn === true, stallStats: turn === 'unknown' }); const frame = await login(page, app);
     await expect.poll(() => frame.evaluate(() => window.pathPeers.some(peer => peer.connectionState === 'connected'))).toBe(true);
     await expect(page.locator('#diag-direct-status')).toContainText('保留当前延迟更低');
     await expect(page.locator('#diag-transport')).toContainText('WebSocket');

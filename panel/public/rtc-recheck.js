@@ -17,7 +17,7 @@ export function createRTCRecheck({ open, current, allowed, idle, replace }) {
       for (let n = 0; n < 3; n++) await candidate.health.ping();
       const route = await candidate.stats(), previous = await current();
       if (controller.signal.aborted || !allowed() || document.hidden || !navigator.onLine) throw Error('cancelled');
-      if (previous && Number.isFinite(previous.rttMs) && !pathPreferred({ candidateMs: candidate.health.rttMs, currentMs: previous.rttMs, candidate: 'direct', turn: rtcRouteKind(route) === 'relay' })) {
+      if (previous && Number.isFinite(previous.rttMs) && !pathPreferred({ candidateMs: candidate.health.rttMs, currentMs: previous.rttMs, candidate: 'direct', turn: rtcRouteKind(route) !== 'direct' })) {
         report({ state: 'kept', reason: 'quality' }); return;
       }
       report({ state: 'waiting' });

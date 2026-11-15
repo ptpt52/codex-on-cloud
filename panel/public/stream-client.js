@@ -18,7 +18,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
   let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
   let relayTimer, directTimer, directDue = 0, promotionTimer, recoveryTimer, directController, relayDelay = 250, probeDelay = 15000, terminalText = '';
-  let heldOutput = [], heldBytes = 0;
+  let heldOutput = [], heldBytes = 0, draining = false;
   let directExpedited = false, directHalted = false, directAttempts = 0, pauseTerminal = false;
   let lastPath = '';
   let attachmentState = 'attaching';
@@ -181,7 +181,11 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (!value || typeof value !== 'object') throw new Error();
       if (value.type === 'welcome') {
         if (value.id !== id || !integer(value.epoch)) throw new Error();
-        if (opened && value.epoch === 0 && (out || sent)) return close('session-expired');
+        // A path's initial greeting can be in flight while the other path
+        // becomes active. Only an already verified writer admits that stale
+        // greeting; preparation and activation still fence epoch/input/output.
+        const delayedGreeting = !peer.ready && active !== peer && healthy(active);
+        if (opened && value.epoch === 0 && (out || sent) && !delayedGreeting) return close('session-expired');
         // A standby's delayed welcome cannot advance the active writer or an
         // in-flight target switch. Only activation commits that boundary.
         if (!active || peer === active && !targetPending) epoch = Math.max(epoch, value.epoch);
@@ -276,7 +280,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         return;
       }
       if (value.type !== 'chunk' || peer !== active || value.epoch !== epoch) return;
-      if (claiming || targetPending) {
+      if (claiming || targetPending || draining) {
         if (typeof value.data !== 'string' || value.data.length > 16384 || (heldBytes += value.data.length) > 1400 * 1024 || heldOutput.length >= 1024) throw new Error();
         heldOutput.push([peer, value]); return;
       }
@@ -300,15 +304,21 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
     try {
       if (planned) {
-        if (!idle() || inputAck !== sent || peer.networkProbePending || routes.remaining() && !peer.networkProbe) return false;
+        if (!idle() || peer.networkProbePending || routes.remaining() && !peer.networkProbe) return false;
         const controller = new AbortController();
-        approved = await prepare(controller.signal); if (!approved || ended || peer.gone || !settled() || document.hidden || !navigator.onLine) return false;
+        approved = await prepare(controller.signal); if (!approved || ended || peer.gone || document.hidden || !navigator.onLine) return false;
       }
+      // A busy output stream keeps producing consumption ACKs. Admit an idle
+      // user's switch before waiting for zero in-flight records, then hold
+      // output within the existing window while those records drain once.
+      draining = planned && !!active;
       pause(true);
       // Drain releases before freezing the output offset. The new candidate
       // can then fence the old writer without waiting for the old network.
-      const deadline = performance.now() + 1500;
+      const budget = planned ? Math.max(3000, Math.min(8000, (active?.latency.value || 0) * 2 + 1000)) : 1500;
+      const deadline = performance.now() + budget;
       while (active && (inputAck !== sent || (planned && !settled())) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      draining = false;
       if (planned && (inputAck !== sent || !settled())) return false;
       claiming = true;
       if (planned && active) {
@@ -344,7 +354,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       return false;
     }
     finally {
-      claiming = false; transitioning = false;
+      draining = false; claiming = false; transitioning = false;
       if (handoff !== undefined && active !== peer && !peer.gone) { try { send(peer, { type: 'cancel-prepare', epoch, id: handoff }); } catch { lost(peer); } }
       if (heldPeer && active === heldPeer && !heldPeer.gone) { try { send(heldPeer, { type: 'unhold', epoch }); } catch { lost(heldPeer); } }
       const held = heldOutput; heldOutput = []; heldBytes = 0;
@@ -398,7 +408,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
           direct.routeKind = rtcRouteKind(await direct.transport.stats()); direct.routeAt = performance.now();
         }
         if (active !== previous || ended || targetPending || creating() || peer.gone) return;
-        const preferred = healthy(peer) && pathPreferred({ candidateMs: peer.quality.scoreMs, currentMs: previous.quality.scoreMs, candidate: peer.kind, turn: direct.routeKind === 'relay' });
+        const preferred = healthy(peer) && pathPreferred({ candidateMs: peer.quality.scoreMs, currentMs: previous.quality.scoreMs, candidate: peer.kind, turn: direct.routeKind !== 'direct' });
         if (peer.qualityVote !== peer.quality.version) { peer.qualityVote = peer.quality.version; peer.qualityWins = preferred ? Math.min(2, peer.qualityWins + 1) : 0; }
         if (!preferred || peer.qualityWins < 2) {
           if (!preferred && peer.kind === 'direct' && peer.quality.rttMs !== null && previous.quality.rttMs !== null && !peer.qualityReported) { peer.qualityReported = true; issue('quality'); }

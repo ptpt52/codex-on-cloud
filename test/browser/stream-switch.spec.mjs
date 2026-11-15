@@ -18,6 +18,35 @@ async function login(page, app, mode) {
 async function route(page, expected) {
   await page.locator('#connection-button').click(); await expect(page.locator('#diag-transport')).toContainText(expected, { timeout: 12000 }); await page.locator('#close-connection').click();
 }
+for (const mode of ['desktop', 'terminal']) test(`${mode}: a delayed initial relay greeting preserves the healthy direct writer; repeated expired greetings remain fatal`, async ({ page }) => {
+  const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
+  try {
+    await page.addInitScript(() => {
+      const Native = WebSocket;
+      window.WebSocket = class extends Native {
+        constructor(...args) {
+          super(...args); if (new URL(this.url).pathname !== '/session/connect') return;
+          this.addEventListener('message', event => {
+            if (!event.isTrusted || window.initialRelayGreeting) return;
+            const value = JSON.parse(event.data);
+            if (value.type === 'welcome' && value.epoch === 0) { event.stopImmediatePropagation(); window.initialRelayGreeting = { socket: this, data: event.data }; }
+          });
+        }
+      };
+    });
+    await login(page, app, mode); await route(page, 'WebRTC');
+    const child = page.frameLocator('#desktop-frame').locator('body');
+    await expect.poll(() => child.evaluate(() => !!window.initialRelayGreeting)).toBe(true);
+    await child.evaluate(() => { const { socket, data } = window.initialRelayGreeting; socket.dispatchEvent(new MessageEvent('message', { data })); });
+    await page.waitForTimeout(250);
+    expect(await child.evaluate(() => window.streamPeers[0].connectionState)).toBe('connected');
+    expect(mode === 'desktop' ? app.vncConnections : app.terminalConnections).toBe(1);
+    // Once greeted, an epoch reset is no longer an initial-response race.
+    await child.evaluate(() => { const { socket, data } = window.initialRelayGreeting; socket.dispatchEvent(new MessageEvent('message', { data })); });
+    await expect.poll(() => child.evaluate(() => window.streamPeers[0].connectionState)).toBe('closed');
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
 for (const mode of ['desktop', 'terminal']) test(`${mode}: warm relay and direct share one upstream and keep the original renderer through fallback`, async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, webrtc: true, fastConnect: true, seamless: true });
   try {

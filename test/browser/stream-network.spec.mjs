@@ -28,6 +28,7 @@ async function login(page, app) {
     window.WebSocket = class extends Native {
       constructor(...args) { super(...args); if (new URL(this.url).pathname === '/session/connect') window.streamSockets.push(this); }
       addEventListener(type, callback, options) { return super.addEventListener(type, type === 'message' ? event => {
+        if (event.isTrusted && window.streamAckDelay && JSON.parse(event.data).type === 'input-ack') { window.streamDelayedAcks = (window.streamDelayedAcks || 0) + 1; setTimeout(() => callback(new MessageEvent('message', { data: event.data })), window.streamAckDelay); return; }
         if (event.isTrusted && window.streamPongDelay && JSON.parse(event.data).type === 'pong') { setTimeout(() => callback(new MessageEvent('message', { data: event.data })), window.streamPongDelay); return; }
         callback(event);
       } : callback, options); }
@@ -38,6 +39,36 @@ async function login(page, app) {
   await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
+
+test('a burst of small output chunks does not exhaust the input record limit while relay acknowledgments are in flight', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true, fastConnect: true });
+  try {
+    const frame = await login(page, app);
+    await frame.evaluate(() => { window.streamAckDelay = 600; });
+    for (let i = 0; i < 90; i++) app.terminalChildren[0].stdout.write(JSON.stringify({ type: 'output', data: Buffer.from(`line ${i}\r\n`).toString('base64') }) + '\n');
+    await page.waitForTimeout(1300);
+    expect(await frame.evaluate(() => window.streamSockets.length)).toBe(1);
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('continuous terminal output cannot starve a healthy direct handoff while slow relay acknowledgments drain', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true, fastConnect: true, webrtc: true }); let output, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    await page.route('**/api/terminal/rtc', async route => { await gate; await route.continue(); });
+    const frame = await login(page, app), child = app.terminalChildren[0];
+    await frame.evaluate(() => { window.streamAckDelay = 2400; window.streamPongDelay = 700; });
+    output = setInterval(() => child.stdout.write(JSON.stringify({ type: 'output', data: Buffer.from('background progress\r\n').toString('base64') }) + '\n'), 100);
+    await expect.poll(() => frame.evaluate(() => window.streamDelayedAcks || 0)).toBeGreaterThan(0);
+    release();
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 12000 });
+    expect(app.terminalConnections).toBe(1); expect(app.terminalChildren[0]).toBe(child);
+    expect(await frame.evaluate(() => window.streamSockets.length)).toBe(1); expect(await frame.evaluate(() => window.streamPeers.length)).toBe(1);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { release(); clearInterval(output); await app.close(); }
+});
 
 test('independent RTC heartbeats survive blocked data-stream pongs without replacing its peer or terminal', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true, fastConnect: true, webrtc: true });

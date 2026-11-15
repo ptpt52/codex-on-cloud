@@ -19,7 +19,7 @@ const fastConnect = query.get('fast') === '1', routes = routePolicy();
 const trace = createTraceReporter(frame);
 let probed = false;
 const streamEnabled = query.get('stream') === '1';
-let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0;
+let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0, outputAckTimer;
 let terminalId = query.get('terminalId'), terminalToken = query.get('terminalToken'), rtcConfig;
 const host = document.getElementById('terminal'), status = document.getElementById('terminal-status');
 const touchPointer = matchMedia('(pointer: coarse)');
@@ -329,7 +329,7 @@ function retire(current, delay = retryDelay) {
   // may never deliver a close event, and late events must not touch its successor.
   socket = null; ready = false; sentStandby = undefined; health?.close(); health = undefined;
   if (current.session) { streamClient?.close(); streamClient = undefined; streamPaused = false; }
-  pendingOutputAck = 0;
+  clearOutputAck();
   if (current.direct) { directFailed = true; routes.changed(); if (!directIssue) directFailure('connection'); }
   stopProbe(); finishSwitch(); networkDetails = null; reportNetwork();
   clearTimeout(connectingTimer); connectingTimer = undefined;
@@ -380,7 +380,7 @@ async function connect() {
 }
 function attachSocket(current) {
   const previous = socket;
-  socket = current; health?.close(); clearTimeout(connectingTimer);
+  socket = current; health?.close(); clearTimeout(connectingTimer); clearOutputAck();
   const currentEpoch = ++epoch; let firstPainted = false, firstFrameAt = performance.now();
   ready = false; sequence = 0; historySequence = 0; lastSize = ''; lastReport = ''; createTerminal(); message('正在连接原有终端…'); report('connecting');
   previous?.close(); networkDetails = null; reportNetwork();
@@ -391,7 +391,7 @@ function attachSocket(current) {
     if (state !== 'ready' || ready) parent.postMessage({ type: 'codex-terminal-attachment', frame, state }, location.origin);
     if (!['exited', 'failed', 'idle'].includes(state)) return;
     clearTimeout(connectingTimer); connectingTimer = undefined;
-    health?.close(); health = undefined; ready = false; composing = false; pressedKeys.clear(); pressedPointers.clear(); pendingOutputAck = 0;
+    health?.close(); health = undefined; ready = false; composing = false; pressedKeys.clear(); pressedPointers.clear(); clearOutputAck();
     finish(null, { message: '终端已结束或附加中断，操作结果请核对；不会重发', outcome: 'unknown' });
     finishHistory(new Error('终端附加已结束，保留最后画面'));
     message(state === 'failed' ? '终端附加失败，已保留画面；可重新选择终端重试。' : '终端已结束，画面保留；请选择其他终端或新开终端。');
@@ -404,7 +404,7 @@ function attachSocket(current) {
     if (socket !== current || currentEpoch !== epoch) return;
     terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; firstPainted = false; firstFrameAt = performance.now();
     health?.close(); health = undefined;
-    ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; pendingOutputAck = 0;
+    ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; clearOutputAck();
     finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = undefined;
     createTerminal(); message('正在附加所选终端…'); report('connecting'); controlState();
     clearTimeout(connectingTimer); connectingTimer = setTimeout(() => { if (socket === current && !ready) retire(current); }, 12000);
@@ -474,11 +474,20 @@ function attachSocket(current) {
   });
   current.addEventListener('error', () => { if (!switching || current !== switchingFrom) retire(current, current.direct ? 0 : retryDelay); });
 }
+function clearOutputAck() { clearTimeout(outputAckTimer); outputAckTimer = undefined; pendingOutputAck = 0; }
 function acknowledgeOutput(current, bytes) {
   pendingOutputAck += bytes;
   if (pendingOutputAck > 192 * 1024) return retire(current, 0);
   if (!pendingOutputAck) return;
-  try { current.send(JSON.stringify({ type: 'ack', bytes: pendingOutputAck })); pendingOutputAck = 0; } catch {}
+  const flush = () => {
+    clearTimeout(outputAckTimer); outputAckTimer = undefined;
+    if (socket !== current || !ready || !pendingOutputAck) return;
+    try { current.send(JSON.stringify({ type: 'ack', bytes: pendingOutputAck })); pendingOutputAck = 0; } catch {}
+  };
+  // Batch only consumption acknowledgments, never keystrokes or commands.
+  // Small output records otherwise exhaust 64 in-flight input slots in one RTT.
+  if (!bytes || pendingOutputAck >= 32 * 1024) flush();
+  else outputAckTimer ??= setTimeout(flush, 16);
 }
 function needsProbe() { return !legacyRecheck.running && ready && socket && !socket.session && !socket.direct && !stopped && canTryDirect(); }
 function nativeIdle() { return !composing && !pressedKeys.size && !pressedPointers.size && performance.now() - lastInteraction >= 800; }

@@ -69,10 +69,27 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       else channel.addEventListener('open', notify, { once: true });
     };
     if (!probe && !service) video();
-    let features;
+    let features, statsRead, statsResolve, statsTimer, statsPending = false;
+    function stats() {
+      if (ended) return Promise.resolve(null);
+      if (statsRead) return statsRead;
+      // Statistics are optional diagnostics, not a prerequisite for healthy
+      // data channels. Keep at most one native read, even if it never settles.
+      if (statsPending) return Promise.resolve(null);
+      statsPending = true;
+      statsRead = new Promise(resolve => {
+        const finish = value => { clearTimeout(statsTimer); statsResolve = statsRead = undefined; resolve(value); };
+        statsResolve = finish;
+        statsTimer = setTimeout(() => finish(null), 1000);
+        Promise.resolve().then(() => peer.getStats()).then(value => ended ? null : selectedRoute(value), () => null)
+          .catch(() => null).then(value => { statsPending = false; statsResolve?.(value); });
+      });
+      return statsRead;
+    }
     const close = () => {
       if (ended) return;
       ended = true; grace?.close(); clearTimeout(timeout); signal?.removeEventListener('abort', cancel);
+      statsResolve?.(null);
       rejectReady(new Error('直连已关闭')); controller.abort(); control.close(); health.close(); peer.close();
     };
     controller.signal.addEventListener('abort', close, { once: true });
@@ -80,7 +97,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     peer.addEventListener('connectionstatechange', () => grace.state(peer.connectionState));
     return { get channel() { return channel; }, get features() { return features; }, video, viewerReady, control, health, close,
       fileChannel() { if (!service) throw Error('非服务通道'); return peer.createDataChannel('codex-files', { ordered: true, protocol: 'files-v1' }); },
-      async stats() { return ended ? null : selectedRoute(await peer.getStats()); }, async start() {
+      stats, async start() {
       try {
         let stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'gathering' });
         deadline('gathering', 3000);
