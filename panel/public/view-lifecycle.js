@@ -78,6 +78,7 @@ export function createViewLifecycle(element) {
         } else {
           entry.state = value.state === 'disconnected' || entry.state === 'reconnecting' ? 'reconnecting' : 'connecting';
           invalidate(entry); entry.latency.clear(); entry.scaleRevision = -1;
+          entry.frameReady = entry.mode !== 'desktop'; entry.resizeReady = entry.nativeIdle = false;
         }
       } else if (value.type === 'codex-panel-state') {
         const connected = entry.state === 'connected';

@@ -99,3 +99,13 @@ test('a new desktop viewer cannot accept input on connect before its first paint
   views.update(views.active, { type: 'codex-desktop', state: 'connected' }); assert.equal(views.inputReady(), false);
   views.update(views.active, { type: 'codex-desktop-view', revision: 0, frameReady: true }, { revision: 0 }); assert.equal(views.inputReady(), true);
 });
+
+test('a reconnecting desktop drops old painting and resize readiness before accepting a new connection', () => {
+  const views = createViewLifecycle(element()); views.begin('desktop'); connected(views, views.active);
+  views.update(views.active, { type: 'codex-desktop-view', revision: 1, frameReady: true, resizeReady: true, idle: true }, { revision: 1 });
+  views.update(views.active, { type: 'codex-desktop', state: 'disconnected' });
+  views.update(views.active, { type: 'codex-desktop', state: 'connected' });
+  assert.equal(views.inputReady(), false); assert.equal(views.active.resizeReady, false); assert.equal(views.active.nativeIdle, false);
+  views.update(views.active, { type: 'codex-desktop-view', revision: 1, frameReady: true }, { revision: 1 });
+  assert.equal(views.inputReady(), true);
+});
