@@ -260,6 +260,19 @@ def view_session(slot):
     return 'codex-view-' + slot
 
 
+def view_redraw(socket, slot, requested=None):
+    # Option commands in tmux 3.4 do not honor =name. Resolve the exact session
+    # through a pane target (=name:) and pin its ID, never a name prefix.
+    target = width_query(socket, ['display-message', '-p', '-t', '=' + view_session(slot) + ':', '#{session_id}']).strip()
+    if not re.fullmatch(rb'\$\d{1,10}', target):
+        raise ValueError('invalid waiting session')
+    if requested is None:
+        return width_query(socket, ['show-options', '-qv', '-t', target.decode(), '@codex_cloud_redraw']).strip() == b'1'
+    if type(requested) is not bool:
+        raise ValueError('invalid redraw request')
+    tmux_action(socket, ['set-option', '-t', target.decode(), '@codex_cloud_redraw', '1' if requested else '0'])
+
+
 @contextmanager
 def viewer_lock(socket, slot):
     # At most eight empty 0600 lock files in the private runtime directory. A
@@ -513,7 +526,7 @@ def yield_desktop(socket, slot, own_tty):
             # One boolean in each of the eight fixed waiting sessions. A rapid
             # park/restore can occur entirely between guardian polls; retain
             # that handoff even if the previous redraw has just completed.
-            tmux_action(socket, ['set-option', '-t', '=' + parked, '@codex_cloud_redraw', '1'])
+            view_redraw(socket, slot, True)
             tmux_action(socket, ['switch-client', '-c', tty, '-t', '=' + parked])
 
 
@@ -536,9 +549,9 @@ def waiting_view(socket, slot):
                     # The manager, browser PTY or this guardian may restore the
                     # desktop first. This one guardian owns the final redraw in
                     # all cases; neither the selection API nor input waits on it.
-                    requested = width_query(socket, ['show-options', '-qv', '-t', '=' + view_session(slot), '@codex_cloud_redraw']).strip() == b'1'
+                    requested = view_redraw(socket, slot)
                     if redraw is None or requested:
-                        tmux_action(socket, ['set-option', '-t', '=' + view_session(slot), '@codex_cloud_redraw', '0'])
+                        view_redraw(socket, slot, False)
                         redraw = TerminalResizeNotice(socket, slot, token)
                         redraw.request()
                     if not redraw.pending:

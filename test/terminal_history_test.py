@@ -229,6 +229,24 @@ class DetachedReaderTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('tmux'), 'requires tmux')
 class TerminalHistoryTests(unittest.TestCase):
+    def test_waiting_redraw_marker_uses_exact_session_ids_across_tmux_versions(self):
+        waiting, extra = 'codex-view-main', 'codex-view-main-extra'
+        self.run_tmux('new-session', '-d', '-s', waiting, 'sleep 60')
+        self.run_tmux('new-session', '-d', '-s', extra, 'sleep 60')
+        try:
+            terminal.view_redraw(self.socket, 'main', True)
+            self.assertTrue(terminal.view_redraw(self.socket, 'main'))
+            terminal.view_redraw(self.socket, 'main', False)
+            self.assertFalse(terminal.view_redraw(self.socket, 'main'))
+            self.assertEqual(self.run_tmux('show-options', '-qv', '-t', extra, '@codex_cloud_redraw').stdout.strip(), '')
+            self.run_tmux('kill-session', '-t', '=' + waiting)
+            with self.assertRaises((ValueError, OSError, subprocess.SubprocessError)):
+                terminal.view_redraw(self.socket, 'main', True)
+            self.assertEqual(self.run_tmux('show-options', '-qv', '-t', extra, '@codex_cloud_redraw').stdout.strip(), '')
+        finally:
+            self.run_tmux('kill-session', '-t', '=' + waiting, check=False)
+            self.run_tmux('kill-session', '-t', '=' + extra, check=False)
+
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix='codex-history-test-')
