@@ -3,7 +3,7 @@ import { mkdir,mkdtemp,rm,writeFile,readFile,readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { once, getEventListeners } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import http from 'node:http';
@@ -16,6 +16,26 @@ import { FILE_MAX } from '../panel/public/file-wire.js';
 import { attachServiceFiles } from '../panel/service-files.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
+test('recoverable file channel closures release abort and native subscriptions before replacement',async t=>{
+ const upstream=http.createServer((_req,res)=>{res.writeHead(404,{'content-type':'application/json'});res.end('{"error":"missing"}');});
+ upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));
+ const signal=()=>{const handlers=new Set();return{subscribe(fn){handlers.add(fn);return{unSubscribe(){handlers.delete(fn);}};},emit(value){for(const fn of [...handlers])fn(value);},get size(){return handlers.size;}};};
+ const controller=new AbortController(),handles=[],failures=[];let closes=0;
+ t.after(()=>{for(const handle of handles)handle.close();controller.abort();});
+ for(let n=0;n<24;n++){
+  const message=signal(),state=signal(),error=signal(),sent=[];
+  const channel={readyState:'open',bufferedAmount:0,onMessage:message,stateChange:state,error,send:bytes=>sent.push(JSON.parse(bytes)),close(){if(this.readyState==='closed')return;this.readyState='closed';closes++;state.emit('closed');}};
+  const files=attachServiceFiles(channel,{valid:()=>true,headers:{},port:()=>upstream.address().port,signal:controller.signal,fail:value=>failures.push(value)});handles.push(files);
+  assert.equal(getEventListeners(controller.signal,'abort').length,1);
+  message.emit(JSON.stringify({type:'start',id:1,direction:n%2?'upload':'download',name:'missing',size:1}));
+  if(n%2)message.emit('{"type":"cancel","id":1}');
+  else{for(let i=0;i<200&&!sent.some(value=>value.type==='error');i++)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(sent.some(value=>value.recoverable===true),true);}
+  channel.close();files.close();
+  assert.equal(getEventListeners(controller.signal,'abort').length,0,'retired file channels cannot accumulate on the live service signal');
+  assert.equal(message.size+state.size+error.size,0,'native channel subscriptions are released on every close path');
+ }
+ controller.abort();assert.equal(closes,24);assert.deepEqual(failures,Array(24).fill(true));
+});
 test('an early HTTP rejection drains already-sent file frames until the rejection can reach the browser',async t=>{
  const upstream=http.createServer((_req,res)=>{res.writeHead(412,{'content-type':'application/json'});res.end('{"error":"原文件已变化"}');});
  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));

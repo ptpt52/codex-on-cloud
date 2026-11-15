@@ -10,9 +10,10 @@ const fault=(status,message)=>Object.assign(Error(message),{status});
 export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entryBasePath='/'}){
  const prefix=normalizeEntryBasePath(entryBasePath).slice(0,-1);
  let active,lastId=0,ended=false,recoverable=false,retireTimer;
+ const subscriptions=[];
  const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:bytes=>channel.send(bytes),close:()=>channel.close(),
-  addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(state=>{if(state==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};
- const wire=createFileWire(adapter,{control,chunk:receive,failed(){ended=true;clearTimeout(retireTimer);cleanup();fail(recoverable);}});
+  addEventListener(type,fn){if(type==='message')subscriptions.push(channel.onMessage.subscribe(data=>fn({data})));else if(type==='close')subscriptions.push(channel.stateChange.subscribe(state=>{if(state==='closed')fn();}));else if(type==='error')subscriptions.push(channel.error.subscribe(fn));}};
+ const wire=createFileWire(adapter,{control,chunk:receive,failed(){ended=true;clearTimeout(retireTimer);signal.removeEventListener('abort',cancel);for(const subscription of subscriptions.splice(0))subscription?.unSubscribe?.();cleanup();fail(recoverable);}});
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
@@ -76,6 +77,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   async function* source(){for await(const bytes of res){check(entry);total+=bytes.length;if(total>length)throw fault(502,'下载长度无效');yield bytes;}}
   await sendFileChunks(source(),wire,()=>active===entry&&valid());check(entry);if(total!==length)throw fault(502,'下载长度不完整');finish(entry,{size:total});
  }
- const cancel=()=>wire.close();signal.addEventListener('abort',cancel,{once:true});
- return{close(){signal.removeEventListener('abort',cancel);wire.close();cleanup();}};
+ function cancel(){wire.close();}
+ signal.addEventListener('abort',cancel,{once:true});if(signal.aborted)cancel();
+ return{close:cancel};
 }
