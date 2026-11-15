@@ -112,6 +112,16 @@ try {
     const serverIdentity = (await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim();
     const stat = await readFile('/proc/' + serverIdentity + '/stat', 'utf8');
     tmuxOwner = { pid: Number(serverIdentity), started: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] };
+    console.log('Terminal-only: a timed-out readiness query must preserve the host and its task');
+    await writeFile(join(bin, 'tmux'), '#!/bin/bash\nif [[ "$*" == *"has-session -t =codex-host"* ]]; then /bin/sleep 4; exit 1; fi\nexec /usr/bin/tmux "$@"\n', { mode: 0o700 });
+    try {
+      await assert.rejects(tmux(['has-session', '-t', '=codex-host']), error => error.killed === true);
+      await new Promise(resolve => setTimeout(resolve, 3500));
+      assert.equal(host.exitCode, null, 'a single query timeout must not end the task host');
+      assert.equal(host.signalCode, null);
+      assert.equal((await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim(), initial.token.split(':')[1]);
+      assert.equal((await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
+    } finally { await rm(join(bin, 'tmux')); }
     async function attach(terminal) {
       const query = new URLSearchParams({ viewer, terminalId: terminal.id, terminalToken: terminal.token });
       const ws = new WebSocket(origin.replace('http', 'ws') + '/terminal/connect?' + query, { headers: { origin, cookie } }); sockets.add(ws);
@@ -240,7 +250,15 @@ try {
     const originalPath=env.PATH;env.PATH=bin;files=launch('native/file-agent.mjs');host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>files.exitCode!==null,'failed file helper did not exit');assert.notEqual(files.exitCode,0);
     await until(async () => { try { return (await tmux(['list-panes','-t','=codex','-F','#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'file helper failure must not prevent task host startup');
-    assert.equal(host.exitCode,null); await stop(host);
+    assert.equal(host.exitCode,null);
+    const survivor = (await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim();
+    await tmux(['kill-session', '-t', '=codex-host']);
+    await new Promise(resolve => setTimeout(resolve, 3500));
+    assert.equal(host.exitCode, null, 'a missing keeper must not terminate surviving user tasks');
+    assert.equal((await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim(), survivor);
+    await tmux(['kill-server']);
+    await until(() => host.exitCode !== null, 'the task host must notice its owned tmux process exiting');
+    assert.equal(host.exitCode, 1, 'an ended server is reported without starting replacement tasks');
     await assert.rejects(tmux(['list-sessions']));await assert.rejects(access(join(runtime,'terminal.pid')),{code:'ENOENT'});
     console.log('✓ real terminal-only install without an executable Codex, no noVNC/X11/display, loopback helper, private tmux, real PTY input and ACK, eight-slot manager, panel/manager restarts preserve tasks, confirmed close ends only its shell, stale close rejected, closing all slots and migrating a desktop keeper preserve the server, explicit reopening, fixed host lifetime and shutdown');
     if(systemd)console.log('✓ real transient systemd control groups: all tasks and the keeper remain in the host, user bus settings are preserved, panel/manager stops preserve tasks, host stop kills HUP/TERM-ignoring tasks, host SIGKILL cleans its group; only unique test units were created');

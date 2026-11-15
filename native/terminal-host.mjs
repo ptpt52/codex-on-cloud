@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, lstat, chmod, unlink, open } from 'node:fs/promises';
+import { mkdir, lstat, chmod, unlink, open, readFile } from 'node:fs/promises';
 import { constants, lstatSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -12,15 +12,15 @@ import { acquireTerminalLease } from './terminal-lease.mjs';
 // only clients; restarting them cannot terminate a shell or replay its input.
 const config = settings(), exec = promisify(execFile), env = terminalEnvironment(config);
 const socket = env.TMUX_SOCKET, lock = join(config.runtime, 'terminal.pid');
-let lease, serverOwned = false, serverSocket, stopping = false;
+let lease, serverOwned = false, serverSocket, serverProcess, stopping = false;
 let starting = true, stopRequested = false;
 let monitor, probing = false;
 const tmux = args => exec('tmux', ['-S', socket, ...args], { env, timeout: 3000, maxBuffer: 16384 });
-async function stop(code = 0) {
+async function stop(code = 0, cleanup = true) {
   if (stopping) return;
   stopping = true;
   clearInterval(monitor);
-  if (serverOwned && serverSocket) {
+  if (cleanup && serverOwned && serverSocket) {
     try {
       const current = await lstat(socket, { bigint: true });
       // tmux changes socket permission bits as clients attach/detach. Those
@@ -30,6 +30,12 @@ async function stop(code = 0) {
   }
   await lease?.release();
   process.exit(code);
+}
+async function processIdentity(pid) {
+  const value = await readFile('/proc/' + pid + '/stat', 'utf8');
+  const fields = value.slice(value.lastIndexOf(')') + 2).split(' ');
+  if (!/^[0-9]+$/.test(fields[19])) throw Error('无法确认 tmux 进程身份');
+  return { started: fields[19], state: fields[0] };
 }
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (starting) stopRequested = true; else void stop(); });
 try {
@@ -86,19 +92,30 @@ try {
   lease.check();
   // One hidden fixed keeper session keeps the server in this service's cgroup
   // even when all eight user terminals have exited. It accepts no browser input.
-  await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket,
+  const started = await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket,
     'start-server', ';', 'set-environment', '-gu', 'DBUS_SESSION_BUS_ADDRESS', ';',
-    'new-session', '-d', '-s', 'codex-host', '-c', config.workspace, 'sleep', 'infinity'], { env: serverEnv, timeout: 5000, maxBuffer: 16384 });
+    'new-session', '-d', '-s', 'codex-host', '-c', config.workspace, 'sleep', 'infinity', ';',
+    'display-message', '-p', '-t', '=codex-host:0.0', '#{pid}'], { env: serverEnv, timeout: 5000, maxBuffer: 16384 });
   serverOwned = true; await chmod(socket, 0o600);
   serverSocket = await lstat(socket, { bigint: true });
+  const pid = started.stdout.trim();
+  if (!/^[1-9][0-9]*$/.test(pid) || !Number.isSafeInteger(Number(pid))) throw Error('无法确认 tmux 服务身份');
+  serverProcess = { pid: Number(pid), ...await processIdentity(pid) };
   await tmux(['new-session', '-d', '-s', 'codex', '-c', config.workspace, 'bash', join(config.root, 'desktop', 'codex-session')]);
   starting = false;
   if (stopRequested) await stop();
   monitor = setInterval(async () => {
     if (probing || stopping) return;
     probing = true;
-    try { await tmux(['has-session', '-t', '=codex-host']); }
-    catch { if (!stopping) await stop(1); }
+    // A failed tmux query (or a missing keeper) says nothing about task
+    // lifetime. Only the owned process exiting can end this service. Never
+    // kill a server as a side effect of a health/readiness observation.
+    try {
+      const current = await processIdentity(serverProcess.pid);
+      if (current.started !== serverProcess.started || ['Z', 'X'].includes(current.state)) await stop(1, false);
+    } catch (error) {
+      if (!stopping && ['ENOENT', 'ESRCH'].includes(error.code)) await stop(1, false);
+    }
     finally { probing = false; }
   }, 3000);
   console.log('纯网页终端后台已启动，不启动图形桌面或 Codex 任务。');
