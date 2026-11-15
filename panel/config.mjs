@@ -28,8 +28,8 @@ function secret(env, name) {
   return value;
 }
 
-export function readConfig(env = environment()) {
-  const native = settings(env);
+export function readConfig(env = environment(), { readSecret = secret, nativeSettings = settings } = {}) {
+  const native = nativeSettings(env);
   const origin = new URL(env.PUBLIC_ORIGIN || 'http://localhost:36080');
   if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
     throw new Error('PUBLIC_ORIGIN 必须是完整的 HTTP(S) 根地址');
@@ -64,11 +64,11 @@ export function readConfig(env = environment()) {
     secureCookies: origin.protocol === 'https:', hosts,
     dataDir: join(native.root, 'data', 'panel'),
     username: env.ADMIN_USER || 'admin',
-    password: secret({ ADMIN_PASSWORD_FILE: join(native.root, 'secrets', 'panel_password') }, 'ADMIN_PASSWORD'),
-    agentSecret: secret({ AGENT_SECRET_FILE: join(native.root, 'secrets', 'agent_secret') }, 'AGENT_SECRET'),
+    password: readSecret({ ADMIN_PASSWORD_FILE: join(native.root, 'secrets', 'panel_password') }, 'ADMIN_PASSWORD'),
+    agentSecret: readSecret({ AGENT_SECRET_FILE: join(native.root, 'secrets', 'agent_secret') }, 'AGENT_SECRET'),
     vncSocket: native.socket, agentUrl, fileAgentUrl: `http://127.0.0.1:${native.fileAgentPort}`, transferDir: native.transfer,
     tunnelDiagnosticsUrl: `http://127.0.0.1:${native.tunnelMetricsPort}/diag/tunnel`,
-    managerSocket: native.managerSocket, tunnelSocket: native.tunnelSocket,
+    managerSocket: native.managerSocket, desktopActionsSocket: native.desktopActionsSocket, tunnelSocket: native.tunnelSocket,
     terminalSocket: join(native.runtime, 'tmux.sock'), terminalEnv: native.mode === 'terminal' ? terminalEnvironment(native) : desktopEnvironment(native),
     sessionMs: 7 * 24 * 60 * 60 * 1000,
     webrtc: env.WEBRTC_ENABLED !== '0', fastConnect: true, streamProtocol: 1,
