@@ -36,6 +36,13 @@ test('retired frame generations and sources cannot update a replacement that reu
   assert.equal(views.active.key, other); assert.equal(views.active.state, 'connecting');
 });
 
+test('a replacement iframe rejects the retired source even when it sends the current epoch', () => {
+  const previous = element(), next = element(), views = createViewLifecycle(previous); views.begin('desktop');
+  const retired = views.active; views.reset('desktop', next); views.begin('desktop');
+  assert.equal(views.active.element, next); assert.equal(views.match(previous.contentWindow, String(views.active.epoch)), null);
+  assert.equal(views.match(next.contentWindow, String(views.active.epoch)), views.active); assert.equal(connected(views, retired), false);
+});
+
 test('desired terminal identity blocks input until its matching confirmed result and cancellation restores the actual identity', () => {
   const views = createViewLifecycle(element()); views.begin('terminal', main); connected(views, views.active);
   assert.equal(views.requestTarget(views.active, other), true); assert.equal(views.active.key, main); assert.equal(views.inputReady(), false);

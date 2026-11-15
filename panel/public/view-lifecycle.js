@@ -29,10 +29,10 @@ export function createViewLifecycle(element) {
   return {
     get active() { return active; }, get standby() { return standby; },
     match(source, epoch) { return [active, standby].find(entry => entry?.loaded && entry.element.contentWindow === source && String(entry.epoch) === epoch) || null; },
-    reset(mode) {
+    reset(mode, element = active.element) {
       if (standby) throw Error('dispose standby before resetting active view');
       const dimensions = active.dimensions;
-      active = view(active.element, ++serial, mode); active.dimensions = dimensions;
+      active = view(element, ++serial, mode); active.dimensions = dimensions;
     },
     begin(mode, key = '') {
       active.mode = mode; active.frameReady = mode !== 'desktop'; active.key = active.desiredKey = key; active.loaded = true; active.state = 'connecting';

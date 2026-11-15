@@ -138,6 +138,7 @@ test('an unknown close result retains output without selecting or retrying until
       closes++; await route.fetch(); await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
     await closeCurrent(page); await expect(page.locator('#terminals-status')).toContainText('结果未知');
+    await expect(page.locator('#overlay-title')).toHaveText('请选择终端');
     await expect(page.frameLocator('#desktop-frame').locator('.xterm-rows')).toContainText('CLOSE-UNKNOWN-SCREEN');
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(src); expect(app.terminalConnections).toBe(1);
     await openTools(page); await page.locator('#terminal-view-manage').click(); await page.locator('#refresh-terminals').click(); await page.locator('#close-terminals').click();

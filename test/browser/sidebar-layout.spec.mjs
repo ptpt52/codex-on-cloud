@@ -14,6 +14,11 @@ async function setup(page, { mode = 'terminal', count = 2, webrtc = false, fastC
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: `研发任务 ${n}：客户现场调试`, view: 'terminal' });
   await page.addInitScript(() => {
     if (!location.pathname.endsWith('/terminal/index.html')) return;
+    const Socket = WebSocket;
+    window.WebSocket = class extends Socket { constructor(...args) {
+      super(...args); if (new URL(this.url).pathname !== '/session/connect') return;
+      window.sidebarSessionSocket = this; window.sidebarSocketCount = (window.sidebarSocketCount || 0) + 1;
+    } };
     let Native;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Native,
       set: Value => { Native = class extends Value { constructor(...args) { super(...args); window.sidebarTerminal = this; } }; } });
@@ -283,8 +288,12 @@ test('find and paging remain usable through responsive changes, terminal switche
     await expect.poll(() => app.terminalInputs.map(item => item.text)).toEqual(['x', '\x1b[5~']);
     await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     await expect(page.locator('#sidebar-history #terminal-tools')).toBeVisible(); await page.locator('#history-program').click();
-    const connections = app.terminalConnections; app.disconnectTerminals();
-    await expect.poll(() => app.terminalConnections).toBe(connections + 1); await expect(page.locator('#connection-status')).toContainText('在线');
+    const connections = app.terminalConnections, sockets = await frame.evaluate(() => window.sidebarSocketCount);
+    // Interrupt the network path, keeping the task's attachment alive. A
+    // helper exit is a separate, explicitly retried attachment failure.
+    await frame.evaluate(() => { window.sidebarOriginalTerminal = window.sidebarTerminal; window.sidebarSessionSocket.close(); });
+    await expect.poll(() => frame.evaluate(() => window.sidebarSocketCount)).toBe(sockets + 1); await expect(page.locator('#connection-status')).toContainText('在线');
+    expect(app.terminalConnections).toBe(connections); expect(await frame.evaluate(() => window.sidebarTerminal === window.sidebarOriginalTerminal)).toBe(true);
     await expect(page.locator('#sidebar-history #history-tools-toggle')).toBeVisible();
     await page.locator('#history-tools-toggle').click(); await expect(page.locator('#history-query')).toBeVisible();
     await page.screenshot({ path: info.outputPath('sidebar-find.png') });

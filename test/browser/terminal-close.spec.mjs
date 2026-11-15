@@ -112,7 +112,7 @@ test('an unknown close result never retries or attaches a replacement until an e
     await endButton(page, 'aux1').click(); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#terminals-status')).toContainText('结果未知'); expect(closes).toBe(1);
     const connections = app.terminalConnections;
-    await expect(page.locator('#desktop-overlay')).toBeHidden();
+    await expect(page.locator('#overlay-title')).toHaveText('请选择终端');
     await expect(page.frameLocator('#desktop-frame').locator('#terminal-status')).toContainText('终端已结束');
     await page.locator('#refresh-terminals').click(); await expect(page.locator('#input-terminal')).toHaveValue('new');
     await expect(page.locator('#desktop-overlay')).toBeVisible(); await expect(page.locator('#choose-terminal-button')).toBeEnabled();

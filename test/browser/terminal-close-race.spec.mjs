@@ -7,6 +7,7 @@ async function setup(page) {
   await page.addInitScript(() => {
     if (window === parent) {
       window.closeRaceConnections = [];
+      window.closeRaceTargets = [];
       localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', controlsCollapsed: true, terminalInputCollapsed: true }));
     } else if (location.pathname === '/terminal/index.html') {
       const Native = WebSocket;
@@ -14,6 +15,11 @@ async function setup(page) {
         constructor(...args) {
           super(...args);
           if (new URL(this.url).pathname === '/session/connect' && parent.closeRaceConnections.length < 64) parent.closeRaceConnections.push(new URL(this.url).searchParams.get('terminalToken'));
+        }
+        send(data) {
+          const value = JSON.parse(data);
+          if (value.type === 'switch-terminal' && parent.closeRaceTargets.length < 64) parent.closeRaceTargets.push(value.target.terminalToken);
+          super.send(data);
         }
       };
     }
@@ -36,11 +42,12 @@ async function chooseMain(page) {
   } else await page.locator('#terminal-tabs [data-terminal-choice=main]').click();
 }
 
-for (const replacement of [false, true]) test(`a rejected close rechecks a ${replacement ? 'replaced' : 'finished'} terminal before any viewer reconnects`, async ({ page }) => {
+for (const replacement of [false, true]) test(`a rejected close rechecks a ${replacement ? 'replaced' : 'finished'} terminal without reattaching before explicit selection`, async ({ page }) => {
   const app = await setup(page); let closes = 0, reads = 0, release;
   const gate = new Promise(resolve => { release = resolve; });
   try {
     const original = (await app.controls.listTerminals()).terminals[0];
+    const source = await page.locator('#desktop-frame').getAttribute('src');
     const attempts = await page.evaluate(() => window.closeRaceConnections.length);
     await page.route('**/api/terminals', async route => {
       const method = route.request().method(), body = method === 'POST' ? route.request().postDataJSON() : null;
@@ -54,7 +61,7 @@ for (const replacement of [false, true]) test(`a rejected close rechecks a ${rep
     });
     await closeCurrent(page); await expect.poll(() => reads).toBe(1);
     expect(await page.evaluate(() => window.closeRaceConnections.length)).toBe(attempts);
-    await expect(page.locator('#desktop-frame')).toHaveAttribute('src', 'about:blank');
+    await expect(page.locator('#desktop-frame')).toHaveAttribute('src', source); await expect(page.locator('#paste-button')).toBeDisabled();
     release();
     await expect(page.locator('#overlay-title')).toHaveText(replacement ? '请选择终端' : '已关闭');
     await expect(page.locator('#input-terminal')).toHaveValue(replacement ? 'stale' : 'new');
@@ -65,7 +72,8 @@ for (const replacement of [false, true]) test(`a rejected close rechecks a ${rep
       const live = (await app.controls.listTerminals()).terminals[0]; expect(live.token).not.toBe(original.token);
       await chooseMain(page); await expect(page.locator('#connection-status')).toContainText('终端在线');
       await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('');
-      expect(await page.evaluate(() => window.closeRaceConnections.at(-1))).toBe(live.token);
+      expect(await page.evaluate(() => window.closeRaceConnections.length)).toBe(attempts);
+      expect(await page.evaluate(() => window.closeRaceTargets)).toEqual([live.token]);
       expect(closes).toBe(1);
     }
   } finally { release(); await app.close(); }
@@ -93,7 +101,7 @@ test('a failed close recheck keeps the stale catalog unusable until an explicit 
   } finally { await app.close(); }
 });
 
-test('a rejected close restores the original viewer only after a fresh matching identity is verified', async ({ page }) => {
+test('a rejected close keeps the original connection and restores input after its matching identity is verified', async ({ page }) => {
   const app = await setup(page); let closes = 0, reads = 0;
   try {
     const original = (await app.controls.listTerminals()).terminals[0];
@@ -103,7 +111,7 @@ test('a rejected close restores the original viewer only after a fresh matching 
     });
     await closeCurrent(page); await expect.poll(() => reads).toBe(1); await expect(page.locator('#connection-status')).toContainText('终端在线');
     expect((await app.controls.listTerminals()).terminals).toEqual([original]);
-    expect(await page.evaluate(() => window.closeRaceConnections)).toEqual([original.token, original.token]);
+    expect(await page.evaluate(() => window.closeRaceConnections)).toEqual([original.token]); expect(app.terminalConnections).toBe(1);
     await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('旧终端草稿保留，不能发给新进程');
     expect(closes).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
@@ -113,7 +121,7 @@ test('a late close recheck cannot restore the viewer after another page takes co
   const app = await setup(page); let closes = 0, reads = 0, release, second;
   const gate = new Promise(resolve => { release = resolve; });
   try {
-    const attempts = await page.evaluate(() => window.closeRaceConnections.length);
+    const attachments = app.terminalConnections;
     await page.route('**/api/terminals', async route => {
       if (route.request().method() === 'POST') { closes++; return route.fulfill({ status: 409, json: { error: '输入仍在处理', outcome: 'rejected' } }); }
       if (closes) {
@@ -126,9 +134,13 @@ test('a late close recheck cannot restore the viewer after another page takes co
     second = await context.newPage(); await second.goto(app.config.origin);
     await expect(second.locator('#connection-status')).toContainText('终端在线');
     await expect(page.locator('#takeover-button')).toBeVisible({ timeout: 10000 });
+    // Until revocation is observed, the old browser may probe its failed path;
+    // server ownership checks reject those probes without attaching a PTY.
+    const attempts = await page.evaluate(() => window.closeRaceConnections.length);
     release(); await expect(page.locator('#desktop-frame')).toHaveAttribute('src', 'about:blank');
     await expect(page.locator('#connection-status')).toContainText('等待接管');
     expect(await page.evaluate(() => window.closeRaceConnections.length)).toBe(attempts);
+    expect(app.terminalConnections).toBe(attachments + 1); expect(await page.evaluate(() => window.closeRaceTargets)).toEqual([]);
     expect(closes).toBe(1); expect(reads).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { release(); await second?.close(); await app.close(); }
 });

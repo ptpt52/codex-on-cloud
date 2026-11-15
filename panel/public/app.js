@@ -720,12 +720,12 @@ function renderConnection() {
     $('choose-terminal-button').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals || !!confirmation;
     $('choose-terminal-button').hidden = false;
   }
-  else if (terminalMode() && views.active.loaded && views.active.terminalAttachment && ['idle', 'exited', 'failed', 'expired'].includes(views.active.attachmentState)) $('desktop-overlay').hidden = true;
   else if (terminalMode() && ['invalid', 'error'].includes(terminalSelectionState)) {
     overlay('请选择终端', '原终端未通过身份校验，草稿仍保留。请刷新列表或手动选择目标。');
     $('choose-terminal-button').textContent = '选择终端'; $('choose-terminal-button').disabled = false;
     $('choose-terminal-button').hidden = false;
   }
+  else if (terminalMode() && views.active.loaded && views.active.terminalAttachment && ['idle', 'exited', 'failed', 'expired'].includes(views.active.attachmentState)) $('desktop-overlay').hidden = true;
   else if (desktopReady === false && views.active.state !== 'connected') overlay(terminalOnly ? '终端后台未就绪' : '桌面未就绪', terminalOnly ? '正在等待终端后台。网页不会自动重启后台或重新执行任务。' : '正在等待桌面服务。网页不会自动重启桌面或重新执行任务。');
   else if ((viewportResizing || controlsState.viewportBusy || views.active.paused) && views.active.state === 'connected') $('desktop-overlay').hidden = true;
   else if (inputPaused()) overlay(label, '输入暂时暂停。当前操作完成后恢复，不会自动重发输入。');
@@ -912,7 +912,7 @@ function overlay(title, description, takeover = false) {
   $('choose-terminal-button').hidden = true;
   $('desktop-overlay').hidden = false;
 }
-function stopFrame({ keepLogout = false } = {}) {
+function stopFrame({ keepLogout = false, replaceElement = false } = {}) {
   if (hintProbe?.phase === 'workspace') finishHintProbe();
   discardStandby();
   historyToolsPortal.reset();
@@ -924,10 +924,13 @@ function stopFrame({ keepLogout = false } = {}) {
   clearTimeout(switchTimer); views.active.paused = false;
   resetDirectControl();
   resetPanelRequests();
-  views.reset(displayPreferences.mode);
+  const previous = views.active.element, element = replaceElement ? previous.cloneNode(false) : previous;
+  if (replaceElement) { element.removeAttribute('src'); element.hidden = true; }
+  views.reset(displayPreferences.mode, element);
+  if (replaceElement) { previous.replaceWith(element); historyToolsPortal.setFrame(element); }
   renderDisplayControls();
-  $('desktop-frame').hidden = true;
-  $('desktop-frame').src = 'about:blank';
+  element.hidden = true;
+  if (!replaceElement) element.src = 'about:blank';
 }
 function restrictWorkspace() {
   terminalActions.close();
@@ -1986,9 +1989,10 @@ createWorkspaceLifetime(window, { features: [fileWorkbench, clipboardUI], onHide
   pageLeaving = false; draftUnloadApproved = false;
   if (event.persisted && loggedIn) {
     cachedResumePending = true; workspaceInitialized = false;
-    // noVNC and its touch/resize observers were destroyed on pagehide. Only
-    // replace that viewer; xterm has its own persisted-return recovery.
-    if (cachedViewReset || !terminalMode()) stopFrame();
+    // The old desktop can still commit its queued about:blank navigation in
+    // WebKit. Give the replacement its own browsing context, source and epoch.
+    // xterm retains its element and uses its own persisted-return recovery.
+    if (cachedViewReset || !terminalMode()) stopFrame({ replaceElement: !terminalMode() });
     cachedViewReset = false; stopPolling(); void poll();
   } else if (loggedIn) workspaceInitialized = true;
   syncScreenLock(); renderConnection(); renderDraftSafety();

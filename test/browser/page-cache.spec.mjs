@@ -33,6 +33,7 @@ for (const mode of ['desktop', 'terminal']) test(`${mode}: repeated persisted re
     }
     for (let round = 0; round < 2; round++) {
       const source = await page.locator('#desktop-frame').getAttribute('src');
+      await page.locator('#desktop-frame').evaluate(element => { window.previousCacheFrame = element; });
       await hide(page, frame);
       await page.route('**/api/state', async route => {
         await new Promise(resolve => { release = resolve; });
@@ -48,6 +49,7 @@ for (const mode of ['desktop', 'terminal']) test(`${mode}: repeated persisted re
       await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
       await expect(page.locator('#paste-button')).toBeEnabled(); await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
       frame = page.frames().find(frame => frame.url().includes(`/${mode}/index.html`));
+      expect(await page.locator('#desktop-frame').evaluate(element => element === window.previousCacheFrame)).toBe(mode === 'terminal');
       if (mode === 'desktop') { expect(await page.locator('#desktop-frame').getAttribute('src')).not.toBe(source); await expect(frame.locator('#screen canvas')).toHaveCount(1); }
       else { expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(terminalSource); expect(await frame.locator('.xterm-screen').evaluate(el => el === window.retainedCacheTerminal)).toBe(true); }
       await closePanels(page);
@@ -103,6 +105,22 @@ test('a pending accepted paste stays unknown across cached return and its late r
     await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
     expect(app.inputCalls).toHaveLength(1); expect(app.terminalInputs).toEqual([]);
   } finally { release(); await app.close(); }
+});
+
+test('a late blank navigation from the retired desktop cannot replace its restored viewer', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true });
+  try {
+    const frame = await setup(page, app);
+    await page.locator('#desktop-frame').evaluate(element => { window.retiredCacheFrame = element; });
+    await hide(page, frame); await show(page, frame);
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await page.evaluate(() => { window.retiredCacheFrame.src = 'about:blank'; });
+    await expect(page.locator('#desktop-frame')).toHaveAttribute('src', /\/desktop\/index\.html/);
+    await expect(page.frameLocator('#desktop-frame').locator('#screen canvas')).toHaveCount(1);
+    await openInput(page); await expect(page.locator('#paste-button')).toBeEnabled();
+    await expect(page.locator('#mobile-input')).toHaveValue('缓存返回保留的草稿');
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
 });
 
 for (const mode of ['desktop', 'terminal']) test(`${mode}: cached return cancels unfinished assistant composition without sending or blocking its draft`, async ({ page }) => {
