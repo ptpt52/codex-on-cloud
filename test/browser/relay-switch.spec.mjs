@@ -49,7 +49,14 @@ async function login(page, app, { legacy = false } = {}) {
       }
     };
     const Peer = RTCPeerConnection;
-    window.RTCPeerConnection = class extends Peer { constructor(...args) { super(...args); window.relayPeers.push(this); } };
+    window.RTCPeerConnection = class extends Peer {
+      constructor(...args) { super(...args); window.relayPeers.push(this); }
+      createDataChannel(label, options) {
+        const channel = super.createDataChannel(label, options);
+        if (label === 'codex-stream') this.streamChannel = channel;
+        return channel;
+      }
+    };
   }, { legacy });
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
@@ -242,9 +249,28 @@ test('switching a relay retires an old pending direct offer and later upgrades o
     await frame.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 12000 });
     expect(offers[0].terminalId).toBe('main'); expect(offers.at(-1).terminalId).toBe('aux1');
+    await frame.evaluate(async () => {
+      const { controlDecoder } = await import('/control.js');
+      const peer = window.relayPeers.at(-1), channel = peer.streamChannel;
+      let sent = 0, confirmed = 0, invalid = false;
+      const fail = () => { invalid = true; };
+      const outgoing = controlDecoder(value => { if (value.type === 'input') sent = value.id; }, fail);
+      const incoming = controlDecoder(value => { if (value.type === 'input-ack') confirmed = value.id; }, fail);
+      const send = channel.send.bind(channel);
+      channel.send = data => { outgoing.push(data); send(data); };
+      channel.addEventListener('message', event => incoming.push(event.data));
+      window.closeConfirmedDirect = () => {
+        if (invalid) throw Error('invalid stream observation');
+        if (!sent || confirmed < sent) return false;
+        peer.close(); return true;
+      };
+    });
     await openInput(page); await page.locator('#mobile-input').fill('新目标直连'); await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
-    await frame.evaluate(() => window.relayPeers.at(-1).close());
+    // Paste completion can precede resize/control ACKs caused by the input
+    // panel. Exercise idle fallback only after every sent record is confirmed;
+    // closing with unknown input correctly requires a new logical session.
+    await expect.poll(() => frame.evaluate(() => window.closeConfirmedDirect())).toBe(true);
     await expect(page.locator('#diag-transport')).toContainText('WebSocket'); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     expect(await page.evaluate(() => window.relayConnections)).toBe(1); expect(app.terminalConnections).toBe(2);
     expect(app.terminalInputs).toEqual([{ terminalId: 'aux1', text: '\x1b[200~新目标直连\x1b[201~' }]);
