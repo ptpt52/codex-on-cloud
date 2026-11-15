@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 from urllib.parse import quote
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('desktop_agent', Path(__file__).parents[1] / 'desktop' / 'agent.py')
 agent = importlib.util.module_from_spec(spec)
@@ -53,6 +53,29 @@ class AgentTests(unittest.TestCase):
 
     def test_requires_internal_secret(self):
         self.assertEqual(self.request('GET', '/files', auth=False)[0], 401)
+
+    def test_listing_skips_deleted_entries_and_keeps_other_files(self):
+        path = self.desktop.transfer_dir / 'keep'
+        path.write_bytes(b'keep')
+        keep = Mock(); keep.name = 'keep'; keep.is_file.return_value = True; keep.stat.return_value = path.stat()
+        gone = Mock(); gone.name = 'gone'; gone.is_file.return_value = True; gone.stat.side_effect = FileNotFoundError()
+        with patch.object(agent.os, 'scandir') as scan:
+            scan.return_value.__enter__.return_value = [gone, keep]
+            status, body = self.request('GET', '/files')
+        self.assertEqual(status, 200)
+        listing = json.loads(body)
+        self.assertEqual([entry['name'] for entry in listing['files']], ['keep'])
+        self.assertFalse(listing['truncated'])
+
+    def test_unreadable_entry_preserves_listing_but_blocks_temporary_uploads(self):
+        broken = Mock(); broken.name = 'unreadable'; broken.is_file.return_value = True; broken.stat.side_effect = PermissionError()
+        with patch.object(agent.os, 'scandir') as scan:
+            scan.return_value.__enter__.return_value = [broken]
+            status, body = self.request('GET', '/files')
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)['truncated'])
+            self.assertEqual(self.request('PUT', '/files/new', b'new', headers={'X-Codex-Upload-Quota': 'temporary-v1'})[0], 413)
+        self.assertFalse((self.desktop.transfer_dir / 'new').exists())
 
     def test_terminal_mode_starts_without_codex_or_when_version_query_times_out(self):
         with patch.dict(os.environ, {'DEPLOY_MODE': 'terminal'}):

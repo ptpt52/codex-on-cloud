@@ -34,12 +34,25 @@ def scan_files(directory):
             if scanned > MAX_DIRECTORY_ENTRIES:
                 truncated = True
                 break
-            if not item.name.startswith('.upload-') and item.is_file(follow_symlinks=False):
-                if len(entries) >= MAX_SHARED_FILES:
-                    truncated = True
-                    break
+            if item.name.startswith('.upload-'):
+                continue
+            try:
+                if not item.is_file(follow_symlinks=False):
+                    continue
                 info = item.stat(follow_symlinks=False)
-                entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime, 'version': file_version(info)})
+            except FileNotFoundError:
+                continue  # A task may move/delete an output while we enumerate.
+            except OSError:
+                # Listing remains usable, but incomplete accounting must never
+                # admit a temporary upload whose quota cannot be established.
+                truncated = True
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            if len(entries) >= MAX_SHARED_FILES:
+                truncated = True
+                break
+            entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime, 'version': file_version(info)})
     return entries, truncated
 
 
