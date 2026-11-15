@@ -47,25 +47,28 @@ export function readUploadHeaders(headers) {
 // One pending decision, one metadata snapshot. The caller retains at most one
 // already-bounded File (50 MiB). No bytes are read/sent before this resolves.
 export function createUploadPrompt({ dialog, filename, detail, cancel, rename, replace }, valid, sizeLabel = String) {
-  let pending;
+  let pending, disposed = false;
+  const listeners = [];
+  const listen = (element, type, handler) => { element.addEventListener(type, handler); listeners.push(() => element.removeEventListener(type, handler)); };
   function finish(value, error) {
     if (!pending) return;
     const entry = pending; pending = undefined; clearTimeout(entry.timer); entry.signal?.removeEventListener('abort', entry.abort);
     dialog.close(); filename.textContent = detail.textContent = '';
     error ? entry.reject(error) : entry.resolve(value && valid() ? value : null);
   }
-  cancel.addEventListener('click', () => finish(null));
-  rename.addEventListener('click', () => finish({ mode: 'rename' }));
-  replace.addEventListener('click', () => finish(pending ? { mode: 'replace', version: pending.version } : null));
-  dialog.addEventListener('cancel', event => { event.preventDefault(); finish(null); });
-  dialog.addEventListener('close', () => { if (!dialog.open) finish(null); });
+  listen(cancel, 'click', () => finish(null));
+  listen(rename, 'click', () => finish({ mode: 'rename' }));
+  listen(replace, 'click', () => finish(pending ? { mode: 'replace', version: pending.version } : null));
+  listen(dialog, 'cancel', event => { event.preventDefault(); finish(null); });
+  listen(dialog, 'close', () => { if (!dialog.open) finish(null); });
   const revalidate = () => { if (pending && !valid()) finish(null); };
-  window.addEventListener('offline', revalidate);
-  window.addEventListener('pagehide', () => finish(null));
+  listen(window, 'offline', revalidate);
+  listen(window, 'pagehide', () => finish(null));
   return {
     revalidate, cancel: () => finish(null),
+    dispose() { if (disposed) return; disposed = true; finish(null); for (const remove of listeners) remove(); },
     ask(file, existing, signal) {
-      if (pending || !valid() || signal?.aborted) return Promise.reject(invalid('当前不能确认上传，请重新选择文件'));
+      if (disposed || pending || !valid() || signal?.aborted) return Promise.reject(invalid('当前不能确认上传，请重新选择文件'));
       let options; try { options = uploadOptions({ mode: 'replace', version: existing.version }); } catch { return Promise.reject(invalid('原文件缺少版本信息，请更新文件服务后重试')); }
       filename.textContent = file.name;
       detail.textContent = `原文件 ${sizeLabel(existing.size)}，新文件 ${sizeLabel(file.size)}。替换会覆盖原内容；自动改名会保留两份文件。`;

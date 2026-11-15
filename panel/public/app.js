@@ -11,10 +11,11 @@ import { HISTORY_ROWS } from './terminal-history-limits.js';
 import { createBrowserPreferences } from './browser-preferences.js';
 import { createRTCHints, hintIP } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
-import { FILE_MAX } from './file-wire.js';
-import { createUploadPrompt, uploadHeaders, uploadResult, validTransferName, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL } from './file-upload.js';
-import { createFileListReader } from './file-list.js';
-import { createFileProgress, observeUploadProgress, readFileDownload } from './file-transfer.js';
+import { uploadHeaders } from './file-upload.js';
+import { createWorkbenchFiles } from './workbench-files.js';
+import { createWorkbenchClipboard } from './workbench-clipboard.js';
+import { createWorkspaceLifetime } from './workspace-lifetime.js';
+import { readFileDownload } from './file-transfer.js';
 import { createRoundTrip } from './health.js';
 import { createConnectionTrace, TRACE_LABELS, TRACE_STAGES } from './connection-trace.js';
 import { createInputNotices } from './input-notices.js';
@@ -28,8 +29,8 @@ const views = createViewLifecycle($('desktop-frame'));
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
 let accessUI;
-let uploadPrompt, fileTransferController, fileListReader, inputDirection = 'send';
-let transferDirectory = '', filePathCopyBusy = false, filePathGeneration = 0;
+let fileWorkbench, inputDirection = 'send';
+let transferDirectory = '';
 let permissions = { role: 'admin', full: false, screenLockEnabled: false, requiresUnlock: false, canClaim: true, canManageHelpers: false, canViewHelperKeys: false };
 let fastConnectEnabled = false;
 let streamProtocolEnabled = false, modeStandbyEnabled = false;
@@ -42,7 +43,7 @@ let inputBusy = false;
 let inputComposing = false;
 let inputController = null, inputFeedback = false, maintenancePending = false;
 let controlsState = { available: false, maintenance: false, inputBusy: false };
-let clipboardController = null, clipboardGeneration = 0, clipboardCopyBusy = false, clipboardText = '';
+let clipboardUI;
 let panelState = 'connecting', desktopReady = null, accessExpired = false, nodeMismatch = false;
 let diagnosticsController = null, diagnosticsTimer;
 const relayLatency = createRoundTrip();
@@ -145,7 +146,7 @@ const directHints = createRTCHints(browserStorage, { nodeId: nodeIdentity(), bas
 let hintProbe, hintProbeSequence = 0;
 let workspaceInitialized = false, serviceProtocol = 0;
 const serviceLink = createServiceLink({ viewer, options: () => ({ ...rtcConfig, csrf, hints: directHints.value }), changed: () => renderConnection(),
-  canReplace: () => !fileTransferController && !fileListReader?.busy,
+  canReplace: () => !fileWorkbench?.busy,
   trace: (type, detail) => recordConnection(type, detail, 'service') });
 let terminalOnly = false;
 const terminalMode = () => displayPreferences.mode === 'terminal';
@@ -354,7 +355,7 @@ function sendDisplayPreferences() {
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (views.active.paused || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, desktopIme: displayPreferences.desktopIme, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
-    busy: views.active.activationPending || (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardController || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
+    busy: views.active.activationPending || (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardUI?.busy || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : views.active.scaleRevision === displayRevision ? views.active.scale : 0; }
 function renderDisplayControls() {
@@ -523,7 +524,7 @@ function waitForViewport(actual, signal) {
 async function resizeViewport() {
   viewportTimer = null;
   if (terminalMode() || !loggedIn || !owned || !views.active.loaded || !views.active.resizeReady || views.active.state !== 'connected' || !controlsState.viewport?.supported || viewportController) return;
-  if (!views.active.nativeIdle || views.active.touchInput || document.documentElement.classList.contains('workspace-keyboard-open') || inputPaused() || inputBusy || terminalBusy || terminalActions.busy || $('terminals-dialog').open || clipboardController || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
+  if (!views.active.nativeIdle || views.active.touchInput || document.documentElement.classList.contains('workspace-keyboard-open') || inputPaused() || inputBusy || terminalBusy || terminalActions.busy || $('terminals-dialog').open || clipboardUI?.busy || controlsState.inputBusy || controlsState.clipboardBusy || settingsBusy || confirmation || shortcutMenu.open || accessUI?.blocking || document.hidden) { scheduleViewport(1000); return; }
   const rect = $('desktop-stage').getBoundingClientRect();
   const size = followsViewport() ? { width: Math.min(8192, Math.max(160, Math.floor(rect.width))), height: Math.min(8192, Math.max(160, Math.floor(rect.height))) } : fixedSize();
   if (!followsViewport() && (controlsState.viewport.maximum.width < size.width || controlsState.viewport.maximum.height < size.height)) return;
@@ -555,10 +556,10 @@ $('auto-resolution').addEventListener('change', () => {
   renderDesktopSettings(); scheduleViewport();
 });
 function canInput(focused = false) {
-  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && views.inputReady() && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !views.active.reviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+  return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && views.inputReady() && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !views.active.reviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardUI?.busy && !accessUI?.blocking;
 }
 function canManageTerminals(allowPaused = false) {
-  return loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && (allowPaused === true || !inputPaused()) && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController && !accessUI?.blocking;
+  return loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && navigator.onLine && panelState === 'online' && controlsState.available && (allowPaused === true || !inputPaused()) && !inputBusy && !terminalBusy && !settingsBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardUI?.busy && !accessUI?.blocking;
 }
 function renderInputControls() {
   $('desktop-frame').inert = terminalFocusBusy || pageLeaving || cachedResumePending;
@@ -627,9 +628,7 @@ function renderConnectionNotice() {
   notice.hidden = !message || (!record && statusNoticeDismissed);
 }
 function renderConnection() {
-  fileListReader?.revalidate();
-  uploadPrompt?.revalidate();
-  if (!loggedIn || accessExpired || !navigator.onLine) fileTransferController?.abort();
+  fileWorkbench?.revalidate();
   if (workspaceInitialized && !pageLeaving && !cachedResumePending && loggedIn && !owned && !accessExpired && serviceProtocol === 1) serviceLink.start();
   syncRelayLatency();
   forwardingUI?.update();
@@ -928,7 +927,7 @@ function stopFrame({ keepLogout = false } = {}) {
 function restrictWorkspace() {
   terminalActions.close();
   hideWorkspacePanels(); shortcutMenu.close();
-  inputController?.abort(); terminalController?.abort(); settingsController?.abort(); clipboardController?.abort();
+  inputController?.abort(); terminalController?.abort(); settingsController?.abort(); clipboardUI?.suspend();
   for (const id of ['desktop-settings-dialog', 'terminals-dialog', 'terminal-switch-dialog']) if ($(id).open) $(id).close();
   if (confirmation && confirmation.kind !== 'logout') closeConfirmation();
   if (views.active.loaded || views.standby) stopFrame({ keepLogout: true });
@@ -976,7 +975,7 @@ function showLogin(message = '') {
   finishHintProbe();
   clearConnectionTrace();
   clearInputNotices();
-  clearFileURLs();
+  fileWorkbench?.reset();
   workspaceInitialized = false; serviceProtocol = 0; serviceLink.stop();
   rtcConfig = undefined; panelRoute = 'https';
   accessUI?.close();
@@ -989,7 +988,7 @@ function showLogin(message = '') {
   maintenancePending = false;
   $('input-status').hidden = true;
   loggedIn = false; owned = false; csrf = ''; transferDirectory = ''; desktopFocusFailureKey = '';
-  closeDraftLeave(); fileTransferController?.abort(); fileProgress.clear();
+  closeDraftLeave();
   $('transfer-path').textContent = '等待读取…';
   terminalController?.abort(); terminalController = null; terminalBusy = terminalFocusBusy = false; terminalLoadAttempted = false; terminalCatalog = []; terminalSlots = []; selectedTerminal = ''; selectedTerminalToken = ''; terminalSelectionState = 'loading'; renderTerminalList();
   desktopReady = null; views.active.dimensions = null; panelState = 'auth';
@@ -1531,7 +1530,7 @@ function syncTerminalView() {
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
-  return pageLeaving || cachedResumePending || !owned || inputBusy || inputComposing || views.active.composing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || views.active.paused || viewportResizing || controlsState.viewportBusy || !!clipboardController || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
+  return pageLeaving || cachedResumePending || !owned || inputBusy || inputComposing || views.active.composing || terminalBusy || settingsBusy || maintenancePending || controlsState.maintenance || views.active.paused || viewportResizing || controlsState.viewportBusy || !!clipboardUI?.busy || !!controlPending || controlsState.inputBusy || controlsState.clipboardBusy || !!accessUI?.blocking;
 }
 function changeMode(mode) {
   if (terminalOnly && mode !== 'terminal') return;
@@ -1616,210 +1615,31 @@ document.addEventListener('codex-desktop-touch-action', event => {
   else if (event.detail.action === 'assistant' && workspacePanels.active !== 'input') toggleWorkspacePanel('input');
 });
 
-function sizeLabel(size) { return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`; }
-const fileURLs = new Map();
-const fileProgress = createFileProgress({ panel: $('file-progress'), title: $('file-progress-title'), meter: $('file-progress-meter'), detail: $('file-progress-detail'), cancel: $('cancel-file-transfer') });
-function clearFileURLs() { for (const [url, timer] of fileURLs) { clearTimeout(timer); URL.revokeObjectURL(url); } fileURLs.clear(); }
-function saveDirectFile(blob, name) {
-  while (fileURLs.size >= 2) { const [url, timer] = fileURLs.entries().next().value; clearTimeout(timer); URL.revokeObjectURL(url); fileURLs.delete(url); }
-  const url = URL.createObjectURL(blob), timer = setTimeout(() => { URL.revokeObjectURL(url); fileURLs.delete(url); }, 30000); fileURLs.set(url, timer);
-  const link = document.createElement('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove();
-}
-window.addEventListener('pagehide', clearFileURLs);
-function renderFiles(files) {
-  $('file-list').replaceChildren();
-  if (!files.length) {
-    const empty = document.createElement('p'); empty.className = 'empty-files'; empty.textContent = '还没有中转文件。上传文件，或在节点主机中把文件放进上方共享目录。'; $('file-list').append(empty);
-  }
-  for (const file of files) {
-    const row = document.createElement('div'); row.className = 'file-row';
-    const available = validTransferName(file.name); row.dataset.unavailable = String(!available);
-    const detail = document.createElement('span'); detail.textContent = file.name;
-    const info = document.createElement('small'); info.textContent = sizeLabel(file.size) + (available ? '' : ' · 文件名无法在网页使用，请在节点主机改名'); detail.append(info);
-    const link = document.createElement('a'); if (available) link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.textContent = '下载'; link.download = file.name;
-    if (!available) link.tabIndex = -1;
-    link.addEventListener('click', event => {
-      event.preventDefault();
-      if (!available) return toast('此文件名无法在网页使用，请先在节点主机改名', true);
-      if (!loggedIn || accessExpired || !navigator.onLine) return toast('文件传输暂不可用，请恢复连接后重试。', true);
-      if (file.size > FILE_MAX) {
-        if (fileTransferController) return toast('请先完成当前文件传输。');
-        $('upload-status').textContent = '大于 50 MiB 的文件由浏览器下载，请在浏览器下载列表查看进度或取消。';
-        const nativeLink = document.createElement('a'); nativeLink.href = link.href; nativeLink.download = file.name; document.body.append(nativeLink); nativeLink.click(); nativeLink.remove(); return;
-      }
-      void downloadFile(file);
-    });
-    const actions = document.createElement('div'); actions.className = 'file-row-actions';
-    const copy = document.createElement('button'); copy.className = 'quiet'; copy.type = 'button'; copy.textContent = '复制路径'; copy.dataset.fileCopy = '';
-    copy.setAttribute('aria-label', `复制 ${file.name} 的服务器路径`);
-    copy.addEventListener('click', () => void copyFilePath(file.name));
-    const insert = document.createElement('button'); insert.className = 'quiet'; insert.type = 'button'; insert.textContent = '加入草稿'; insert.dataset.fileInsert = '';
-    insert.setAttribute('aria-label', `将 ${file.name} 的路径加入输入草稿`);
-    insert.addEventListener('click', () => insertFilePath(file.name));
-    actions.append(link, copy, insert); row.append(detail, actions); $('file-list').append(row);
-  }
-  renderFileControls();
-}
 function canInsertFilePath() {
   return canManageTerminals() && !inputComposing && !views.active.composing && !confirmation && (!selectedTerminal || terminalSelectionState === 'ready');
 }
 function canOpenTransferDirectory() {
   return !terminalOnly && !terminalMode() && canManageTerminals() && canInput(true) && !inputComposing && !views.active.composing && !confirmation;
 }
-function renderFileControls() {
-  const readable = loggedIn && !accessExpired && navigator.onLine && !!transferDirectory;
-  const insertable = readable && canInsertFilePath();
-  for (const button of $('file-list').querySelectorAll('[data-file-copy]')) button.disabled = !readable || filePathCopyBusy || button.closest('.file-row').dataset.unavailable === 'true';
-  for (const button of $('file-list').querySelectorAll('[data-file-insert]')) { button.hidden = permissions.role === 'temporary'; button.disabled = !insertable || button.closest('.file-row').dataset.unavailable === 'true'; }
-  $('open-transfer-directory').hidden = terminalOnly || terminalMode() || permissions.role === 'temporary';
-  $('open-transfer-directory').disabled = !readable || !canOpenTransferDirectory();
-  $('upload-zone').disabled = !loggedIn || accessExpired || !navigator.onLine || !!fileTransferController;
-  $('files-button').setAttribute('aria-busy', String(!!fileTransferController));
-  for (const link of $('file-list').querySelectorAll('a')) link.setAttribute('aria-disabled', String(!readable || !!fileTransferController || link.closest('.file-row').dataset.unavailable === 'true'));
-}
-async function copyFilePath(name) {
-  if (filePathCopyBusy || !loggedIn || accessExpired || !$('files-dialog').open) return;
-  let path; try { path = transferFilePath(transferDirectory, name); } catch (error) { return toast(error.message, true); }
-  const generation = uiGeneration, previewGeneration = filePathGeneration;
-  filePathCopyBusy = true; $('file-path-fallback').hidden = true; renderFileControls();
-  try {
-    if (!navigator.clipboard?.writeText) throw Error('clipboard unavailable');
-    await navigator.clipboard.writeText(path);
-    if (generation === uiGeneration && previewGeneration === filePathGeneration && loggedIn && !accessExpired && $('files-dialog').open) $('file-list-status').textContent = '已复制服务器完整路径。';
-  } catch {
-    if (generation === uiGeneration && previewGeneration === filePathGeneration && loggedIn && !accessExpired && $('files-dialog').open) {
-      $('file-path-preview').value = path; $('file-path-fallback').hidden = false;
-      $('file-path-preview').focus({ preventScroll: true }); $('file-path-preview').select();
-    }
-  } finally { filePathCopyBusy = false; renderFileControls(); }
-}
-function insertFilePath(name) {
-  if (!canInsertFilePath() || !$('files-dialog').open) return;
-  let path; try { path = quoteFilePath(transferFilePath(transferDirectory, name)); } catch (error) { return toast(error.message, true); }
-  const field = $('mobile-input'), draft = field.value + (field.value ? '\n' : '') + path;
-  if (draft.length > 32768 || new TextEncoder().encode(draft).length > 32768) return toast('加入路径后超过 32 KiB，请先精简草稿。', true);
-  field.value = draft; rememberDraft();
-  $('files-dialog').close();
-  if (workspacePanels.active !== 'input') toggleWorkspacePanel('input');
-  setInputDirection('send', true); renderTerminalSelection();
-  toast('路径已加入输入草稿，尚未发送。');
-}
-$('open-transfer-directory').addEventListener('click', async () => {
-  if (!canOpenTransferDirectory()) return;
-  const generation = uiGeneration;
-  inputBusy = true; renderInputControls();
-  try {
-    const result = await api('/api/desktop/transfer-directory', { method: 'POST', body: {}, signal: AbortSignal.timeout(4500) });
-    if (generation !== uiGeneration || !owned || !loggedIn || accessExpired) return;
-    if (result?.ok !== true) throw Error('打开目录的结果未确认，请先查看桌面');
-    $('files-dialog').close(); toast('已请求在远程桌面打开共享目录。');
-  } catch (error) {
-    if (generation === uiGeneration && loggedIn && !accessExpired) $('file-list-status').textContent = `${error.message}；不会自动重试。`;
-  } finally { if (generation === uiGeneration) { inputBusy = false; renderInputControls(); } }
-});
-fileListReader = createFileListReader({ request: signal => api('/api/files', { signal }),
-  valid: () => loggedIn && !accessExpired && navigator.onLine && $('files-dialog').open,
-  render: renderFiles, status: text => { $('file-list-status').textContent = text; },
-});
-const loadFiles = signal => fileListReader.read(signal);
-$('files-button').addEventListener('click', () => void action($('files-button'), async () => { if (serviceProtocol === 1) serviceLink.start(); $('files-dialog').showModal(); await loadFiles(); }));
-$('close-files').addEventListener('click', () => $('files-dialog').close());
-$('files-dialog').addEventListener('close', () => { filePathGeneration++; fileListReader.cancel(); $('file-path-preview').value = ''; $('file-path-fallback').hidden = true; $('upload-zone').classList.remove('drag-over'); });
-$('upload-zone').addEventListener('click', () => { if (!$('upload-zone').disabled) $('upload-input').click(); });
-$('refresh-files').addEventListener('click', () => void action($('refresh-files'), loadFiles));
-uploadPrompt = createUploadPrompt({
-  dialog: $('file-conflict-dialog'), filename: $('file-conflict-name'), detail: $('file-conflict-detail'),
-  cancel: $('file-conflict-cancel'), rename: $('file-conflict-rename'), replace: $('file-conflict-replace'),
-}, () => loggedIn && !accessExpired && navigator.onLine, sizeLabel);
-async function uploadFile(file) {
-  if (fileTransferController) return toast('请先完成当前文件传输。');
-  if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
-  if (!file || !loggedIn || accessExpired || !navigator.onLine || !$('files-dialog').open) return;
-  if (!validTransferName(file.name, true)) { toast('文件名无效或超过 240 字节，请改名后上传。', true); $('upload-input').value = ''; return; }
-  if (file.size > 50 * 1024 * 1024) { toast('文件不能超过 50 MiB', true); $('upload-input').value = ''; return; }
-  const generation = uiGeneration, controller = fileTransferController = new AbortController();
-  const progress = fileProgress.start({ name: file.name, size: file.size, direction: 'upload', cancel: () => controller.abort('user') });
-  const timer = setTimeout(() => controller.abort(), 300000);
-  const current = () => generation === uiGeneration && loggedIn && !accessExpired;
-  let sending = false, stopProgress = () => {};
-  $('upload-input').disabled = true;
-  renderFileControls();
-  $('upload-status').textContent = `正在检查 ${file.name}…`;
-  try {
-    const listing = await api('/api/files', { signal: controller.signal });
-    if (!current()) return;
-    if (listing.uploadProtocol !== UPLOAD_PROTOCOL || !Array.isArray(listing.files)) throw Error('文件服务需要更新后才能安全上传；未发送文件内容');
-    const existing = listing.files.find(entry => entry.name === file.name);
-    if (existing) progress.phase('等待选择同名文件处理方式…');
-    const upload = existing ? await uploadPrompt.ask(file, existing, controller.signal) : { mode: 'create' };
-    if (!current()) return;
-    if (!upload || controller.signal.aborted) { $('upload-status').textContent = '已取消上传，原文件保留。'; progress.end('已取消，未发送文件内容。'); return; }
-    $('upload-status').textContent = `正在上传 ${file.name}…`;
-    sending = true;
-    const client = serviceLink.files;
-    progress.route(client ? 'WebRTC' : 'HTTPS'); progress.progress(0, file.size);
-    const report = (loaded, total) => { if (current() && !controller.signal.aborted) progress.progress(loaded, total); };
-    let result;
-    if (client) result = await client.upload(file, upload, controller.signal, report);
-    else {
-      const transferId = listing.fileProgressProtocol === 1 ? Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('') : undefined;
-      const pending = api(`/api/files/${encodeURIComponent(file.name)}`, { method: 'PUT', raw: file, upload, signal: controller.signal, transferId, progress: report });
-      if (transferId) stopProgress = observeUploadProgress(signal => api(`/api/file-progress/${transferId}`, { signal }), report, controller.signal);
-      else progress.phase('正在上传；当前后台未提供字节进度。');
-      result = await pending;
-    }
-    stopProgress();
-    if (!current()) return;
-    const { name } = uploadResult(result);
-    $('upload-status').textContent = `上传完成：${name}`;
-    progress.end('上传已确认完成。', true);
-    try { await loadFiles(controller.signal); } catch { if (current()) $('upload-status').textContent = `上传完成：${name}；列表刷新失败，请手动刷新，不要重复上传。`; }
-  } catch (error) {
-    progress.end(controller.signal.aborted ? sending ? '上传已中断；请刷新列表核对服务器结果。' : '已取消，未发送文件内容。' : '本次上传未完成，请核对文件列表；不会自动重试。');
-    if (current()) $('upload-status').textContent = controller.signal.aborted
-      ? sending ? '上传已中断，结果未知；请检查文件状态后手动重试。' : '检查已取消，未上传文件。'
-      : `${sending && error.outcome !== 'rejected' && (!error.status || error.outcome === 'unknown') ? '上传结果未确认：' : ''}${error.message}；不会自动重试，请刷新文件列表后重新选择。`;
-  } finally {
-    stopProgress(); clearTimeout(timer); if (fileTransferController === controller) fileTransferController = undefined;
-    $('upload-input').disabled = false; $('upload-input').value = '';
-    renderFileControls();
-  }
-}
-async function downloadFile(file) {
-  if (fileTransferController) return toast('请先完成当前文件传输。');
-  if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
-  if (!loggedIn || accessExpired || !navigator.onLine || !$('files-dialog').open) return;
-  const generation = uiGeneration, controller = fileTransferController = new AbortController();
-  const timer = setTimeout(() => controller.abort('timeout'), 300000), client = serviceLink.files;
-  const current = () => generation === uiGeneration && loggedIn && !accessExpired;
-  const progress = fileProgress.start({ name: file.name, size: file.size, direction: 'download', route: client ? 'WebRTC' : 'HTTPS', cancel: () => controller.abort('user') });
-  const report = (loaded, total) => { if (current() && !controller.signal.aborted) progress.progress(loaded, total); };
-  $('upload-input').disabled = true; renderFileControls(); $('upload-status').textContent = `正在下载 ${file.name}…`;
-  try {
-    const blob = client ? await client.download(file.name, file.size, controller.signal, report)
-      : await api(`/api/files/${encodeURIComponent(file.name)}`, { signal: controller.signal, progress: report, downloadSize: file.size });
-    if (!current() || controller.signal.aborted) { progress.end('下载已取消，未生成下载文件。'); return; }
-    saveDirectFile(blob, file.name); progress.end('下载完成，已交给浏览器保存。', true); $('upload-status').textContent = `下载完成：${file.name}`;
-  } catch (error) {
-    progress.end(controller.signal.aborted ? '下载已取消，未生成下载文件。' : '下载未完成，不会自动重试。');
-    if (current()) $('upload-status').textContent = controller.signal.aborted ? '下载已中断，未保存不完整文件。' : `${error.message}；请刷新列表后手动重试。`;
-  } finally {
-    clearTimeout(timer); if (fileTransferController === controller) fileTransferController = undefined;
-    $('upload-input').disabled = false; renderFileControls();
-  }
-}
-$('upload-input').addEventListener('change', () => void uploadFile($('upload-input').files[0]));
-for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) $('files-dialog').addEventListener(type, event => {
-  if (!event.dataTransfer?.types.includes('Files')) return;
-  event.preventDefault();
-  if (type === 'dragleave' && $('files-dialog').contains(event.relatedTarget)) return;
-  const active = (type === 'dragenter' || type === 'dragover') && !fileTransferController && loggedIn && !accessExpired && navigator.onLine;
-  $('upload-zone').classList.toggle('drag-over', active);
-  if (type !== 'drop') { if (event.dataTransfer) event.dataTransfer.dropEffect = active ? 'copy' : 'none'; return; }
-  if (fileTransferController) { toast('当前文件仍在处理中，请完成后再上传。'); return; }
-  const items = event.dataTransfer.items, files = event.dataTransfer.files;
-  if (files.length !== 1 || items?.length !== 1 || items[0].webkitGetAsEntry?.()?.isDirectory) return toast('每次请拖入一个文件，不支持文件夹。', true);
-  void uploadFile(files[0]);
+function renderFileControls() { fileWorkbench?.update(); }
+function saveDirectFile(blob, name) { fileWorkbench.saveDownload(blob, name); }
+fileWorkbench = createWorkbenchFiles({ $, api, action, toast, serviceLink,
+  state: () => ({ loggedIn, accessExpired, generation: uiGeneration, directory: transferDirectory, temporary: permissions.role === 'temporary', terminalOnly, terminalMode: terminalMode() }),
+  startService: () => { if (serviceProtocol === 1) serviceLink.start(); }, canInsert: canInsertFilePath, canOpenDirectory: canOpenTransferDirectory,
+  insertDraft(path) {
+    const field = $('mobile-input'), draft = field.value + (field.value ? '\n' : '') + path;
+    if (draft.length > 32768 || new TextEncoder().encode(draft).length > 32768) throw Error('加入路径后超过 32 KiB，请先精简草稿。');
+    field.value = draft; rememberDraft(); $('files-dialog').close();
+    if (workspacePanels.active !== 'input') toggleWorkspacePanel('input');
+    setInputDirection('send', true); renderTerminalSelection(); toast('路径已加入输入草稿，尚未发送。');
+  },
+  async openDirectory() {
+    const generation = uiGeneration; inputBusy = true; renderInputControls();
+    try {
+      const result = await api('/api/desktop/transfer-directory', { method: 'POST', body: {}, signal: AbortSignal.timeout(4500) });
+      return generation === uiGeneration && owned && loggedIn && !accessExpired ? result : undefined;
+    } finally { if (generation === uiGeneration) { inputBusy = false; renderInputControls(); } }
+  },
 });
 window.addEventListener('online', () => void poll());
 window.addEventListener('offline', () => {
@@ -1902,83 +1722,12 @@ function setInputDirection(direction, focus = false) {
   renderClipboard(); renderInputControls(); renderDesktopSettings(); sendDisplayPreferences();
   if (focus && direction === 'send') $('mobile-input').focus({ preventScroll: true });
 }
-function clearClipboard() {
-  clipboardController?.abort(); clipboardController = null;
-  clipboardGeneration++; clipboardCopyBusy = false;
-  clipboardText = '';
-  $('clipboard-preview').value = '';
-  $('clipboard-meta').textContent = '';
-  $('clipboard-status').textContent = '';
-}
-function renderClipboard() {
-  const accessible = clipboardAccess();
-  if (!accessible) clearClipboard();
-  const readable = accessible && !inputBusy && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardController;
-  const receiving = clipboardOpen();
-  $('input-dock').classList.toggle('is-receiving', receiving);
-  $('assistant-send-panel').hidden = receiving;
-  $('clipboard-dialog').hidden = !receiving;
-  $('assistant-send-button').setAttribute('aria-pressed', String(!receiving));
-  $('clipboard-button').setAttribute('aria-pressed', String(receiving));
-  $('clipboard-button').disabled = !accessible || terminalOnly;
-  $('read-clipboard').disabled = !readable || !receiving;
-  $('copy-clipboard').disabled = !accessible || !receiving || !clipboardText || clipboardCopyBusy;
-  $('select-clipboard').disabled = !accessible || !receiving || !$('clipboard-preview').value;
-  if (receiving && !$('clipboard-status').textContent) $('clipboard-status').textContent = '只在点击读取时获取；切换方向或关闭面板会清空预览。';
-}
-$('clipboard-button').addEventListener('click', () => {
-  if ($('clipboard-button').disabled) return;
-  setInputDirection('receive');
+function clearClipboard() { clipboardUI?.reset(); }
+function renderClipboard() { clipboardUI?.update(); }
+clipboardUI = createWorkbenchClipboard({ $, request: assistantRequest, access: clipboardAccess, open: clipboardOpen,
+  blocked: () => inputBusy || controlsState.inputBusy || controlsState.clipboardBusy, terminalOnly: () => terminalOnly,
+  receive: () => setInputDirection('receive'), changed: () => { renderInputControls(); renderDesktopSettings(); },
 });
-$('clipboard-source').addEventListener('change', () => { clearClipboard(); renderClipboard(); renderInputControls(); renderDesktopSettings(); });
-$('read-clipboard').addEventListener('click', async () => {
-  if ($('read-clipboard').disabled) return;
-  clearClipboard();
-  const controller = new AbortController(), source = $('clipboard-source').value;
-  clipboardController = controller;
-  const timeout = setTimeout(() => controller.abort(new Error('读取超时，请手动重试')), 8000);
-  $('clipboard-status').textContent = '正在读取远程文字…';
-  renderClipboard(); renderInputControls(); renderDesktopSettings();
-  try {
-    const result = await assistantRequest('/api/clipboard/read', { source }, controller.signal);
-    if (clipboardController !== controller || !clipboardOpen() || !clipboardAccess()) return;
-    if (result.source !== source || typeof result.text !== 'string' || result.text.length > 32768 || result.text.includes('\0') || new TextEncoder().encode(result.text).length > 32768) throw new Error('远程文字格式或大小无效');
-    clipboardText = result.text;
-    $('clipboard-preview').value = result.text;
-    $('clipboard-meta').textContent = `${source === 'clipboard' ? '远程剪贴板' : '选中文字'} · ${new TextEncoder().encode(result.text).length} 字节`;
-    $('clipboard-status').textContent = result.text ? '已读取，请预览后复制到本机。' : '当前内容为空，请在远程桌面复制或选中文字后手动读取。';
-  } catch (error) {
-    if (clipboardController === controller) $('clipboard-status').textContent = controller.signal.aborted ? '读取超时，请手动重试。' : error.message;
-  } finally {
-    clearTimeout(timeout);
-    if (clipboardController === controller) { clipboardController = null; renderClipboard(); renderInputControls(); renderDesktopSettings(); }
-  }
-});
-function selectClipboardText() {
-  $('clipboard-preview').focus(); $('clipboard-preview').select();
-  $('clipboard-preview').setSelectionRange(0, $('clipboard-preview').value.length);
-}
-$('select-clipboard').addEventListener('click', () => {
-  if ($('select-clipboard').disabled) return;
-  selectClipboardText();
-  $('clipboard-status').textContent = '已选中文字，请长按或使用系统的复制操作。';
-});
-$('copy-clipboard').addEventListener('click', async () => {
-  if ($('copy-clipboard').disabled) return;
-  const generation = clipboardGeneration;
-  clipboardCopyBusy = true; renderClipboard();
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-    await navigator.clipboard.writeText(clipboardText);
-    if (generation === clipboardGeneration && clipboardOpen() && clipboardAccess()) $('clipboard-status').textContent = '已复制到本机剪贴板。';
-  } catch {
-    if (generation === clipboardGeneration && clipboardOpen() && clipboardAccess()) {
-      selectClipboardText();
-      $('clipboard-status').textContent = '浏览器未允许自动复制，文字已选中，请长按或使用系统的复制操作。';
-    }
-  } finally { if (generation === clipboardGeneration) { clipboardCopyBusy = false; renderClipboard(); } }
-});
-window.addEventListener('pagehide', clearClipboard);
 function settingsValues() {
   return { width: Number($('desktop-width').value), height: Number($('desktop-height').value) };
 }
@@ -1987,7 +1736,7 @@ function settingsDirty() {
   return !desktopSettings || ['width', 'height'].some(key => value[key] !== desktopSettings.saved[key]);
 }
 function renderDesktopSettings() {
-  const writable = loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && !views.active.paused && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardController && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
+  const writable = loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && !views.active.paused && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardUI?.busy && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
   const live = desktopSettings?.canResize === true;
   for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !writable || !!adaptive;
@@ -2162,7 +1911,7 @@ window.addEventListener('message', event => {
   if (event.data?.type === 'codex-transport') { renderConnection(); return; }
   if (event.data?.type === 'codex-direct-prepare') {
     if (!Number.isSafeInteger(event.data.id) || event.data.id < 1) return;
-    const allowed = loggedIn && owned && !accessExpired && views.active.state === 'connected' && !inputPaused() && !inputBusy && !inputComposing && !views.active.composing && !terminalBusy && !terminalActions.busy && !views.active.reviewing && !$('terminals-dialog').open && !$('terminal-switch-dialog').open && !$('draft-leave-dialog').open && !clipboardController && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
+    const allowed = loggedIn && owned && !accessExpired && views.active.state === 'connected' && !inputPaused() && !inputBusy && !inputComposing && !views.active.composing && !terminalBusy && !terminalActions.busy && !views.active.reviewing && !$('terminals-dialog').open && !$('terminal-switch-dialog').open && !$('draft-leave-dialog').open && !clipboardUI?.busy && !controlPending && !settingsBusy && !confirmation && !shortcutMenu.open && !controlsState.inputBusy && !controlsState.clipboardBusy;
     if (allowed) {
       views.active.paused = true;
       clearTimeout(switchTimer);
@@ -2209,7 +1958,7 @@ window.addEventListener('message', event => {
 });
 document.addEventListener('fullscreenchange', () => shortcutMenu.close());
 document.addEventListener('visibilitychange', () => { syncScreenLock(); if (!document.hidden) void poll(); else { discardStandby(); views.active.latency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection(); });
-window.addEventListener('pagehide', event => {
+createWorkspaceLifetime(window, { features: [fileWorkbench, clipboardUI], onHide(event) {
   pageLeaving = true; workspaceInitialized = false; cachedResumePending = event.persisted === true;
   cachedViewReset = !terminalMode() || terminalSwitching;
   if (loggedIn) rememberDraft();
@@ -2220,14 +1969,13 @@ window.addEventListener('pagehide', event => {
   if (terminalFocusBusy) desktopFocusFailureKey = `${selectedTerminal}:${selectedTerminalToken}`;
   if (terminalSwitching) terminalSelectionState = 'error';
   uiGeneration++; stopPolling(); serviceLink.stop(); stopDiagnostics(); stopSettingsPolling();
-  inputController?.abort(); terminalController?.abort(); clipboardController?.abort(); viewportController?.abort();
+  inputController?.abort(); terminalController?.abort(); clipboardUI?.suspend(); viewportController?.abort();
   resetDirectControl(); resetPanelRequests();
   terminalController = null; terminalBusy = terminalFocusBusy = terminalSwitching = false;
   clearTimeout(viewportTimer); viewportController = null; viewportResizing = false;
   views.suspend(); syncRelayLatency(); historyToolsPortal.reset(); discardStandby();
   shortcutMenu.close(); closeConfirmation(); syncScreenLock(); renderInputControls();
-});
-window.addEventListener('pageshow', event => {
+}, onShow(event) {
   pageLeaving = false; draftUnloadApproved = false;
   if (event.persisted && loggedIn) {
     cachedResumePending = true; workspaceInitialized = false;
@@ -2237,7 +1985,7 @@ window.addEventListener('pageshow', event => {
     cachedViewReset = false; stopPolling(); void poll();
   } else if (loggedIn) workspaceInitialized = true;
   syncScreenLock(); renderConnection(); renderDraftSafety();
-});
+} });
 
 accessUI = createAccessUI({ api, allowed: () => loggedIn && owned && permissions.role !== 'temporary' && !accessExpired,
   canUnlock: () => loggedIn && permissions.canClaim && !accessExpired, needsUnlock: () => permissions.requiresUnlock,
@@ -2246,7 +1994,7 @@ forwardingUI = createForwardUI({ api, hints: () => directHints.value, allowed: (
   prepareDownloads: () => { if (serviceProtocol !== 1 || !rtcConfig?.webrtc) return false; serviceLink.start(); return serviceLink.state.issue === 'connecting' || serviceLink.transport?.features?.helperDownloadsProtocol === 1; },
   downloadClient: () => serviceLink.helperFiles, downloadRoute: () => serviceLink.state.route, saveDownload: saveDirectFile,
   capabilities: () => ({ manageDevices: permissions.canManageHelpers, viewHelperKeys: permissions.canViewHelperKeys, temporary: permissions.role === 'temporary' }) });
-function canLeaveNode() { return !inputBusy && !inputComposing && !views.active.composing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardController && !$('upload-input').disabled && !forwardingUI?.busy; }
+function canLeaveNode() { return !inputBusy && !inputComposing && !views.active.composing && !terminalBusy && !settingsBusy && !maintenancePending && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlPending && !clipboardUI?.busy && !$('upload-input').disabled && !forwardingUI?.busy; }
 $('gateway-switch-button').addEventListener('click', () => {
   leaveWorkspace('gateway');
 });

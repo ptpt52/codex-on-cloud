@@ -8,8 +8,9 @@ export function transferSize(value) {
 
 // One visible transfer, one paint timer, no queue or retained file contents.
 export function createFileProgress({ panel, title, meter, detail, cancel }, now = () => performance.now()) {
-  let active, timer;
-  cancel.addEventListener('click', () => { if (!active?.done && !cancel.disabled) { cancel.disabled = true; active.cancel(); } });
+  let active, timer, disposed = false;
+  const cancelClick = () => { if (!active?.done && !cancel.disabled) { cancel.disabled = true; active.cancel(); } };
+  cancel.addEventListener('click', cancelClick);
   function paint() {
     clearTimeout(timer); timer = undefined;
     if (!active) return;
@@ -28,6 +29,7 @@ export function createFileProgress({ panel, title, meter, detail, cancel }, now 
   }
   return {
     start({ name, size, direction, route = '', cancel: abort }) {
+      if (disposed) throw Error('文件进度已关闭');
       clearTimeout(timer);
       const entry = active = { name, total: size, direction, route, cancel: abort, loaded: 0, phase: '正在准备…', started: now(), painted: -Infinity, done: false };
       cancel.disabled = false; paint();
@@ -45,6 +47,7 @@ export function createFileProgress({ panel, title, meter, detail, cancel }, now 
       };
     },
     clear() { clearTimeout(timer); active = undefined; panel.hidden = true; title.textContent = detail.textContent = ''; cancel.hidden = true; },
+    dispose() { disposed = true; this.clear(); cancel.removeEventListener('click', cancelClick); },
   };
 }
 
