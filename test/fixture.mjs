@@ -210,6 +210,12 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
         const [, session, pane, pid] = match, id = session === 'codex' ? 'main' : session.slice(6);
         const current = id === 'main' ? mainAlive && { pid: panePid, pane: '%0' } : auxiliary.get(id);
         if (!current || String(current.pid) !== pid || (current.pane || `%${id.slice(-1)}`) !== pane) return 'STALE_TARGET';
+        const rename = `set-option -t =${session} @codex_cloud_name `;
+        if (action.startsWith(rename)) {
+          const label = JSON.parse(action.slice(rename.length).replace(/\\\$/g, '$'));
+          if (id === 'main') mainName = label; else current.name = label;
+          return '';
+        }
         if (action === 'new-session -d -s codex-host sleep infinity') { keeper = true; return ''; }
         if (action !== `kill-session -t =${session}`) throw new Error('Unexpected mock tmux action');
         if (id === 'main') { mainAlive = false; terminalVisible = false; if (terminalChild) terminalChild.exitCode = 0; }

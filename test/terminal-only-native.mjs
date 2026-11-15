@@ -12,6 +12,9 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
 import { createTerminalManager } from '../native/terminals.mjs';
+import { terminalRenameRoundtrip } from './terminal-rename-roundtrip.mjs';
+
+await terminalRenameRoundtrip();
 
 const exec = promisify(execFile), directory = await mkdtemp(join(tmpdir(), 'codex-terminal-only-'));
 const root = join(directory, 'app'), home = join(directory, 'home'), bin = join(directory, 'bin'), runtime = join(directory, 'run');

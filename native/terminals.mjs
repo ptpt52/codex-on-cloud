@@ -53,6 +53,17 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     if (!terminal?.supported || terminal.token !== body.terminalToken) throw fail(409, '终端已结束或布局已变化，请刷新终端列表后重新选择');
     return terminal;
   }
+  async function guarded(terminal, command, action) {
+    const session = definitions.get(terminal.id).session, [pane, pid] = terminal.token.split(':');
+    // tmux evaluates the identity and layout in the same command queue as the
+    // mutation. An exact session target also lets a replacement fail the guard
+    // when the original pane no longer exists. -F never invokes a shell.
+    const guard = `#{==:#{session_name}:#{pane_id}:#{pane_pid}:#{session_windows}:#{window_panes}:#{window_index}:#{pane_index},${session}:${pane}:${pid}:1:1:0:0}`;
+    let result;
+    try { result = await tmux(['if-shell', '-F', '-t', `=${session}:0.0`, guard, command, 'display-message -p STALE_TARGET']); }
+    catch { throw Object.assign(new Error(`${action}结果未知，请刷新列表确认，不会自动重试`), { status: 503, outcome: 'unknown' }); }
+    if (result.includes('STALE_TARGET')) throw fail(409, `终端已变化，未执行${action}；请刷新列表`);
+  }
   async function windows(id) {
     let text;
     try { text = await run('xdotool', ['search', '--class', `^${definitions.get(id).className}$`]); } catch { return []; }
@@ -146,17 +157,7 @@ export function createTerminalManager(config, { run, launch, parentPid = process
     if (body.action === 'close' && body.confirm !== true) throw fail(400, '结束终端需要确认');
     const terminal = await selected(body);
     if (body.action === 'close') {
-      const session = definitions.get(terminal.id).session, [pane, pid] = terminal.token.split(':');
-      // tmux evaluates this format and executes the fixed command in its own
-      // command queue. No shell runs, and a reused slot or changed layout cannot
-      // be killed between the identity check and the mutation.
-      const guard = `#{==:#{session_name}:#{pane_id}:#{pane_pid}:#{session_windows}:#{window_panes}:#{window_index}:#{pane_index},${session}:${pane}:${pid}:1:1:0:0}`;
-      const guarded = async command => {
-        let result;
-        try { result = await tmux(['if-shell', '-F', '-t', pane, guard, command, 'display-message -p STALE_TARGET']); }
-        catch { throw Object.assign(new Error('结束结果未知，请刷新列表确认，不会自动重试'), { status: 503, outcome: 'unknown' }); }
-        if (result.includes('STALE_TARGET')) throw fail(409, '终端已变化，未执行结束；请刷新列表');
-      };
+      const session = definitions.get(terminal.id).session;
       // Older desktop deployments have no hidden keeper. Create at most one on
       // the *existing* server before closing, so even closing the final terminal
       // preserves that server's desktop/host lifetime. if-shell cannot start a
@@ -164,13 +165,18 @@ export function createTerminalManager(config, { run, launch, parentPid = process
       try { await tmux(['has-session', '-t', '=codex-host']); }
       catch {
         if (config.mode === 'terminal') throw fail(503, '终端后台保活会话缺失，请检查后台');
-        await guarded('new-session -d -s codex-host sleep infinity');
+        await guarded(terminal, 'new-session -d -s codex-host sleep infinity', '结束');
       }
-      await guarded(`kill-session -t =${session}`);
+      await guarded(terminal, `kill-session -t =${session}`, '结束');
       try { return { ...(await list()), closed: terminal.id }; }
       catch { throw Object.assign(new Error('结束结果未知，请刷新列表确认，不会自动重试'), { status: 503, outcome: 'unknown' }); }
     }
-    if (body.action === 'rename') await tmux(['set-option', '-t', definitions.get(terminal.id).session, '@codex_cloud_name', name(body.name)]);
+    if (body.action === 'rename') {
+      // The guarded branch is parsed as a tmux command, not a shell command.
+      // Quote its literal argument against tmux's quotes, escapes and $ENV.
+      const label = name(body.name).replace(/[\\$"]/g, '\\$&');
+      await guarded(terminal, `set-option -t =${definitions.get(terminal.id).session} @codex_cloud_name "${label}"`, '重命名');
+    }
     else if (body.view !== 'terminal') await focus(body, true);
     return { ...(await list()), opened: body.action === 'open' ? terminal.id : undefined };
   }

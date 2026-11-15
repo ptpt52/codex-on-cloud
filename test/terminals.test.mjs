@@ -149,6 +149,22 @@ test('a terminal replaced between listing and the guarded close is rejected with
   assert.ok(calls.every(item => item.command !== 'sh' && item.command !== 'bash' && !item.args.includes('kill-session')));
 });
 
+for (const outcome of ['stale', 'unknown']) test(`a delayed terminal rename reports ${outcome} without retrying or mutating a replacement`, async () => {
+  let writes = 0;
+  const manager = createTerminalManager({ runtime: '/isolated' }, { run: async (command, args) => {
+    assert.equal(command, 'tmux');
+    if (args.includes('list-panes')) return 'codex-aux1\t%3\t4100\tbash\t0\t0\t';
+    writes++;
+    if (!args.includes('if-shell')) return ''; // Unguarded code would rename the new slot.
+    assert.ok(args.includes('-F')); assert.ok(args.includes('=codex-aux1:0.0'));
+    assert.ok(args.some(value => value.includes('codex-aux1:%3:4100:1:1:0:0')));
+    if (outcome === 'unknown') throw Error('lost tmux result');
+    return 'STALE_TARGET';
+  } });
+  await assert.rejects(manager.manage({ action: 'rename', terminalId: 'aux1', terminalToken: '%3:4100', name: '旧请求' }), error => error.status === (outcome === 'stale' ? 409 : 503) && error.outcome === (outcome === 'stale' ? 'rejected' : 'unknown'));
+  assert.equal(writes, 1);
+});
+
 test('a newly opened X window waits for its tmux client without launching or creating twice', async () => {
   let launched = 0, clientReads = 0, pidReads = 0, activations = 0;
   const manager = createTerminalManager({ runtime: '/isolated', workspace: '/workspace', maxTerminals: 8 }, {
