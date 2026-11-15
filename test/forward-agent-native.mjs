@@ -47,12 +47,15 @@ async function exchange(socket, text) {
 }
 let app, echo, echo6, replacement; let onlySix = false; let accepted = 0;
 let releaseNegotiation, holdFirstNegotiation = !tlsMode;
-const pooledPeers = [], transportUpgrades = [], currentPeers = new Map(), peerBudgets = new Map();
+const pooledPeers = [], transportUpgrades = [], currentPeers = new Map(), peerBudgets = new Map(), directPreference = new Map();
 const initialNegotiation = new Promise(resolve => { releaseNegotiation = resolve; });
 function nativePeer(options) {
   pooledPeers.push(options.shared === true);
   const flowBudget=createFlowBudget();peerBudgets.set(options.helperId,flowBudget);
-  const peer = createForwardPeer({...options,flowBudget}), answer = peer.answer, ipv6Only = onlySix;
+  // Loopback scheduler jitter cannot decide the route in a transport/capacity
+  // test. forward-pool.test.mjs verifies the real RTT policy with controlled
+  // samples; keep real health probes, Pion/werift and all data sockets here.
+  const peer = createForwardPeer({...options,flowBudget,prefer:()=>directPreference.get(options.helperId)!==false}), answer = peer.answer, ipv6Only = onlySix;
   if (options.shared) currentPeers.set(options.helperId, peer);
   const filter = sdp => sdp.split(/\r?\n/).filter(line => !line.startsWith('a=candidate:') || line.split(' ')[4]?.includes(':')).join('\r\n');
   peer.answer = async offer => {
@@ -136,12 +139,23 @@ try {
         const current=(await listing(app)).agents[0].rules.find(r=>r.config.localPort===port).mapping;
         assert.equal(current.connections,original.connections+1);assert.equal(current.directConnections,original.directConnections);
         assert.equal(accepted,before+1,'capacity preflight must not open a target before WSS fallback');
-        assert.equal(currentPeers.get(a.id),peer);assert.equal(peer.state.available,true);
+        assert.equal(currentPeers.get(a.id),peer);assert.equal(peer.state.available,true,'capacity rejection must preserve direct admission');
+        assert.equal(peer.state.healthy,true,'capacity rejection must preserve direct health');
         await exchange(one,'共享额度满时原直连小消息继续\n');await exchange(two,'原反向直连也保留\n');
         busy.destroy();await until(async()=>(await listing(app)).agents[0].rules.find(r=>r.config.localPort===port).mapping.connections===original.connections,'WSS capacity fallback did not close');
       }
     } finally { budget.release(charge,charge); }
     assert.equal(pooledPeers.length, 2);
+    // Losing preference is distinct from losing transport health. Existing
+    // TCP streams keep their peer even while new connections prefer WSS.
+    const beforePreference = accepted;
+    directPreference.set(a.id,false);
+    await until(()=>peer.state.reason==='rtc_path_slower','relay preference was not reported');
+    assert.equal(peer.state.available,false);assert.equal(peer.state.healthy,true);
+    await exchange(one,'中转优先时原正向直连保持\n');await exchange(two,'中转优先时原反向直连保持\n');
+    assert.equal(accepted,beforePreference);assert.equal(currentPeers.get(a.id),peer);
+    directPreference.set(a.id,true);
+    await until(async()=>(await listing(app)).agents[0].rules.every(r=>r.mapping.direct.available),'direct admission did not recover');
     const oldStandby = transportUpgrades.find(value => value.agent === a.id).socket;
     oldStandby.destroy();
     await exchange(one, 'WSS 备用断开时直连不受影响\n');
