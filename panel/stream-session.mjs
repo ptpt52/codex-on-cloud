@@ -4,6 +4,7 @@ export const STREAM_CHUNK = 12 * 1024;
 export const STREAM_WINDOW = 256 * 1024;
 export const STREAM_LIMIT = 1024 * 1024;
 export const STREAM_TTL = 15000;
+export const TARGET_SYNC_TTL = 3000;
 const integer = n => Number.isSafeInteger(n) && n >= 0 && n <= 2 ** 40;
 function decode(text) {
   if (typeof text !== 'string' || !text.length || text.length > STREAM_CHUNK * 4 / 3 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) throw new Error('invalid chunk');
@@ -12,13 +13,13 @@ function decode(text) {
 
 // One upstream, two authenticated paths, bounded unacknowledged output. Input
 // is never retransmitted. An uncertain input gap requires a fresh attachment.
-export function createStreamSession({ id, valid, connect, attachment, canActivate = async () => true, performPanel, createTerminal, openTerminal, switchTarget, closed = () => {}, ttl = STREAM_TTL }) {
+export function createStreamSession({ id, valid, connect, attachment, canActivate = async () => true, performPanel, createTerminal, openTerminal, switchTarget, closed = () => {}, ttl = STREAM_TTL, targetSyncMs = TARGET_SYNC_TTL }) {
   const peers = new Map(), output = [];
   let upstream, active, ended = false, epoch = 0, produced = 0, acked = 0, input = 0, assembly, assemblyTimer, expiry, activating = false, creating = false, holding = false, holdTimer, handoff, upstreamGeneration = 0;
   const stop = () => {
     if (ended) return; ended = true; clearTimeout(expiry); clearTimeout(assemblyTimer); clearTimeout(holdTimer); clearInterval(guard);
     terminal?.close(); upstream?.close(); upstream = undefined; assembly = undefined; output.length = 0;
-    for (const peer of peers.values()) peer.io.close(); peers.clear(); active = undefined; closed();
+    for (const peer of peers.values()) { clearTimeout(peer.syncTimer); peer.io.close(); } peers.clear(); active = undefined; closed();
   };
   const check = () => { if (ended || !valid()) { stop(); return false; } return true; };
   const guard = setInterval(check, 1000).unref();
@@ -34,7 +35,7 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
   function armExpiry() { clearTimeout(expiry); if (!ended) expiry = setTimeout(stop, ttl).unref(); }
   function detach(peer) {
     if (peers.get(peer.kind) !== peer) return;
-    peers.delete(peer.kind); peer.io.close();
+    peers.delete(peer.kind); clearTimeout(peer.syncTimer); peer.io.close();
     if (handoff?.peer === peer) releaseHold();
     if (active === peer) { active = undefined; upstream?.pause(); armExpiry(); }
   }
@@ -43,7 +44,12 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
     clearTimeout(holdTimer); holding = false; handoff = undefined;
     if (active) flush(active, active.sent); pressure();
   }
-  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalCreate: createTerminal ? 1 : 0, terminalOpen: openTerminal ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0, terminalAttachment: terminal ? 1 : 0 });
+  const welcome = peer => send(peer, { type: 'welcome', id, epoch, handoff: 1, panel: performPanel ? 1 : 0, terminalCreate: createTerminal ? 1 : 0, terminalOpen: openTerminal ? 1 : 0, terminalSwitch: switchTarget ? 1 : 0, terminalSwitchRelay: switchTarget ? 1 : 0, terminalAttachment: terminal ? 1 : 0, terminalTargetSync: switchTarget ? 1 : 0 });
+  function syncTarget(peer, target) {
+    clearTimeout(peer.syncTimer); peer.syncEpoch = epoch;
+    peer.syncTimer = setTimeout(() => detach(peer), targetSyncMs).unref();
+    send(peer, { type: 'target-sync', epoch, target });
+  }
   function openUpstream() {
     if (terminal) { upstream = terminal; terminal.attach(); return; }
     const generation = ++upstreamGeneration;
@@ -74,16 +80,21 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
         if (++peer.pings > 8) throw new Error(); peer.ping = value.id; send(peer, { type: 'pong', id: value.id }); return;
       }
       if (value.type === 'end') return stop();
+      if (value.type === 'target-synced') {
+        if (!integer(value.epoch)) throw new Error();
+        if (peer.syncEpoch === value.epoch && value.epoch === epoch) { clearTimeout(peer.syncTimer); peer.syncEpoch = undefined; }
+        return;
+      }
       if (value.type === 'prepare') {
         if (!integer(value.id) || value.id <= peer.prepare || !integer(value.epoch) || !integer(value.out) || !integer(value.input)) throw new Error();
         peer.prepare = value.id;
         if (value.epoch !== epoch) { welcome(peer); return; }
-        if (activating || creating || holding || active === peer || !active) { send(peer, { type: 'wait', prepare: value.id }); return; }
+        if (peer.syncEpoch !== undefined || activating || creating || holding || active === peer || !active) { send(peer, { type: 'wait', prepare: value.id }); return; }
         activating = true;
         try {
           if (!await canActivate(true) || !check() || peers.get(peer.kind) !== peer) { send(peer, { type: 'wait', prepare: value.id }); return; }
           if (value.epoch !== epoch) { welcome(peer); return; }
-          if (peer.cancelledPrepare === value.id || !active || holding || value.input !== input || assembly || value.out < acked || value.out > produced || (value.out !== produced && !output.some(item => item.at === value.out))) {
+          if (peer.syncEpoch !== undefined || peer.cancelledPrepare === value.id || !active || holding || value.input !== input || assembly || value.out < acked || value.out > produced || (value.out !== produced && !output.some(item => item.at === value.out))) {
             send(peer, { type: 'wait', prepare: value.id }); return;
           }
           // Freeze at the candidate's authenticated snapshot. The old relay
@@ -101,7 +112,7 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
       }
       if (value.type === 'activate') {
         if (!integer(value.epoch) || !integer(value.out) || !integer(value.input)) throw new Error();
-        if (activating || creating) { send(peer, { type: 'wait' }); return; }
+        if (peer.syncEpoch !== undefined || activating || creating) { send(peer, { type: 'wait' }); return; }
         if (value.epoch !== epoch) { welcome(peer); return; }
         const prepared = () => value.handoff === undefined ? !handoff : handoff?.peer === peer && handoff.id === value.handoff && handoff.epoch === epoch;
         if (!prepared()) { send(peer, { type: 'wait' }); return; }
@@ -109,7 +120,7 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
         try {
           if (!await canActivate(!!active && active !== peer) || !check() || peers.get(peer.kind) !== peer) { send(peer, { type: 'wait' }); return; }
           if (value.epoch !== epoch) { welcome(peer); return; }
-          if (!prepared()) { send(peer, { type: 'wait' }); return; }
+          if (peer.syncEpoch !== undefined || !prepared()) { send(peer, { type: 'wait' }); return; }
           if (value.input !== input || assembly || value.out < acked || value.out > produced || (value.out !== produced && !output.some(item => item.at === value.out))) {
             send(peer, { type: 'reset', reason: value.input !== input || assembly ? 'input-unknown' : 'output-expired' }); stop(); return;
           }
@@ -117,7 +128,8 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
           acked = value.out; while (output.length && output[0].at + output[0].bytes.length <= acked) output.shift();
           send(peer, { type: 'active', epoch, input, out: value.out });
           flush(peer, value.out);
-          if (!upstream) openUpstream(); else terminal?.publish();
+          if (!upstream && terminal && ['exited', 'failed'].includes(terminal.status.state)) { upstream = terminal; terminal.publish(); }
+          else if (!upstream) openUpstream(); else terminal?.publish();
           pressure();
         } finally { activating = false; }
         return;
@@ -173,8 +185,8 @@ export function createStreamSession({ id, valid, connect, attachment, canActivat
           upstreamGeneration++; const previous = upstream; upstream = undefined;
           if (terminal) terminal.release(); else previous?.close();
           output.length = 0; acked = produced; epoch++; peer.sent = produced;
-          for (const other of [...peers.values()]) if (other !== peer) detach(other);
           send(peer, { type: 'switched', id: value.id, epoch, out: produced, input, target: change.target });
+          for (const other of [...peers.values()]) if (other !== peer) syncTarget(other, change.target);
           openUpstream(); pressure();
         } catch (error) { if (committed) stop(); else reject(error); }
         finally { activating = false; }

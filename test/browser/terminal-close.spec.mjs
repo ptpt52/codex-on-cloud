@@ -42,7 +42,7 @@ async function placeholder(page, ids) {
   }
 }
 
-test('close confirmation leaves a reusable placeholder and preserves drafts without reopening or selecting another task', async ({ page }) => {
+test('close confirmation selects a neighboring task, preserves drafts and leaves a reusable placeholder', async ({ page }) => {
   const app = await setup(page, { maxTerminals: 8 });
   try {
     const original = (await app.controls.listTerminals()).terminals;
@@ -54,16 +54,16 @@ test('close confirmation leaves a reusable placeholder and preserves drafts with
     expect((await app.controls.listTerminals()).terminals).toEqual(original);
     await quickClose(page, 'aux1'); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#terminals-status')).toContainText('共 1');
-    await expect(page.locator('#overlay-title')).toHaveText('已关闭');
-    await expect(page.locator('#input-terminal')).toHaveValue('new');
+    await expect(page.locator('#desktop-overlay')).toBeHidden();
+    await expect(page.locator('#input-terminal')).toHaveValue('main');
     await placeholder(page, ['main']);
-    await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toHaveAttribute('aria-selected', 'true');
-    await expect(page.locator('#connection-status')).toContainText('终端已关闭');
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=main]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
     const afterClose = app.terminalConnections;
-    await page.reload(); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
-    expect(app.terminalConnections).toBe(afterClose);
-    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('旧会话草稿，不能发给新 shell'); await expect(page.locator('#paste-button')).toBeDisabled();
-    await closePanels(page); await page.locator('#choose-terminal-button').click();
+    await page.reload(); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    expect(app.terminalConnections).toBe(afterClose + 1);
+    await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('');
+    await choose(page, 'new', 'aux1');
     await expect(page.locator('#connection-status')).toContainText('终端在线');
     await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     await openInput(page); await expect(page.locator('#mobile-input')).toHaveValue('');
@@ -112,8 +112,10 @@ test('an unknown close result never retries or attaches a replacement until an e
     await endButton(page, 'aux1').click(); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#terminals-status')).toContainText('结果未知'); expect(closes).toBe(1);
     const connections = app.terminalConnections;
-    await expect(page.locator('#overlay-title')).toHaveText('请选择终端');
-    await page.locator('#refresh-terminals').click(); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
+    await expect(page.locator('#desktop-overlay')).toBeHidden();
+    await expect(page.frameLocator('#desktop-frame').locator('#terminal-status')).toContainText('终端已结束');
+    await page.locator('#refresh-terminals').click(); await expect(page.locator('#input-terminal')).toHaveValue('new');
+    await expect(page.locator('#desktop-overlay')).toBeHidden();
     expect(app.terminalConnections).toBe(connections); expect(closes).toBe(1); expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
@@ -141,7 +143,8 @@ test('the final terminal remains closed across reload and its single slot can ex
     await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toBeDisabled();
     await quickClose(page, 'main'); await page.locator('#accept-confirmation').click();
     await expect(page.locator('#terminals-status')).toContainText('共 0 / 1');
-    await expect(page.locator('#overlay-title')).toHaveText('已关闭');
+    await expect(page.locator('#desktop-overlay')).toBeHidden();
+    await expect(page.frameLocator('#desktop-frame').locator('#terminal-status')).toContainText('终端已结束');
     await placeholder(page, []); await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toBeEnabled();
     await page.reload(); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
     await page.locator('#choose-terminal-button').click(); await expect(page.locator('#connection-status')).toContainText('终端在线');
@@ -162,7 +165,7 @@ test('a full terminal list retains one disabled final placeholder and closing a 
     await expect(page.locator('#terminal-tabs [data-terminal-choice=new]')).toBeDisabled();
     await choose(page, 'aux2');
     await quickClose(page, 'aux2'); await page.locator('#accept-confirmation').click();
-    await expect(page.locator('#input-terminal')).toHaveValue('new'); await expect(page.locator('#overlay-title')).toHaveText('已关闭');
+    await expect(page.locator('#input-terminal')).toHaveValue('aux3'); await expect(page.locator('#desktop-overlay')).toBeHidden();
     await placeholder(page, ids.filter(id => id !== 'aux2'));
     if (!await page.locator('#terminal-session-button').isVisible()) expect(await page.locator('#terminal-tabs').evaluate(tabs => {
       const item = tabs.querySelector('[data-terminal-choice=new]').getBoundingClientRect(), viewport = tabs.getBoundingClientRect();

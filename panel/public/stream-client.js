@@ -89,13 +89,13 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     for (const [id, pending] of panelRequests) finishPanel(id, panelFailure(pending.action, '连接已关闭，操作结果请核对终端列表'));
     finishTarget(uncertainTarget ? failure('终端切换结果未知，请重新选择') : switchBusy('连接已关闭，切换未发送；恢复后请再点目标终端'));
     for (const timer of [relayTimer, directTimer, promotionTimer, recoveryTimer]) clearTimeout(timer);
-    for (const peer of peers.values()) { peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('closed')); peer.prepareWait?.reject(new Error('closed')); peer.close(); }
+    for (const peer of peers.values()) { peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); clearTimeout(peer.syncTimer); peer.wait?.reject(new Error('closed')); peer.prepareWait?.reject(new Error('closed')); peer.close(); }
     peers.clear(); active = undefined; inputSizes.clear(); terminalText = ''; pause(false);
     for (const name of ['online', 'offline']) window.removeEventListener(name, wake);
     navigator.connection?.removeEventListener('change', wake); document.removeEventListener('visibilitychange', wake);
     emit('close');
   }
-  function healthy(peer) { return peer?.ready && !peer.gone && !peer.health.suspect && peer.writable() && performance.now() - peer.healthyAt <= 10000; }
+  function healthy(peer) { return peer?.ready && !peer.syncing && !peer.gone && !peer.health.suspect && peer.writable() && performance.now() - peer.healthyAt <= 10000; }
   function lost(peer, reason = 'closed') {
     if (!peer || peer.gone || ended) return;
     for (const [id, pending] of panelRequests) if (pending.peer === peer) finishPanel(id, panelFailure(pending.action, '连接已中断，操作结果请核对终端列表'));
@@ -106,7 +106,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       finishTarget(switchBusy('连接正在恢复，切换未发送；恢复后请再点目标终端'));
     }
     trace('path-lost', { path: peer.kind, reason, queuedBytes: inputBytes + peer.buffered() });
-    peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); peer.wait?.reject(new Error('path lost')); peer.prepareWait?.reject(new Error('path lost'));
+    peer.gone = true; clearTimeout(peer.timer); clearTimeout(peer.deadline); clearTimeout(peer.startTimer); clearTimeout(peer.syncTimer); peer.wait?.reject(new Error('path lost')); peer.prepareWait?.reject(new Error('path lost'));
     if (peers.get(peer.kind) === peer) peers.delete(peer.kind); peer.close();
     if (active === peer) {
       active = undefined; claiming = false; pause(true); changed();
@@ -159,6 +159,22 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     peer.timer = undefined; peer.due = due;
     if (!document.hidden && navigator.onLine && !peer.gone && !ended && !peer.ping) peer.timer = setTimeout(() => { peer.timer = undefined; ping(peer); }, delay);
   }
+  function awaitTargetSync(peer) {
+    clearTimeout(peer.syncTimer);
+    peer.syncing = true;
+    peer.syncTimer = setTimeout(() => lost(peer, 'target-sync-timeout'), 3000);
+  }
+  function finishTargetSync(peer) {
+    const value = peer.syncTarget;
+    if (!value || value.epoch !== epoch || value.target.terminalId !== terminal.terminalId || value.target.terminalToken !== terminal.terminalToken) return;
+    // The active path must confirm the selection first. A backup's message
+    // never commits a user operation or advances the global writer epoch.
+    try { send(peer, { type: 'target-synced', epoch }); }
+    catch { lost(peer, 'target-sync'); return; }
+    clearTimeout(peer.syncTimer); peer.syncing = false; peer.syncTarget = undefined; peer.epoch = epoch;
+    heartbeat(peer, 0);
+    if (!active && !claiming) void activate(peer);
+  }
   function receive(peer, value) {
     if (ended || peer.gone) return;
     try {
@@ -174,6 +190,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         peer.terminalOpen = value.terminalOpen === 1;
         peer.terminalSwitch = value.terminalSwitch === 1 && (peer.kind === 'direct' || value.terminalSwitchRelay === 1);
         peer.terminalAttachment = !!terminal && value.terminalAttachment === 1;
+        peer.targetSync = !!terminal && value.terminalTargetSync === 1;
         if (!peer.ready) trace(peer.kind === 'relay' ? 'relay-ready' : 'direct-ready', { path: peer.kind, durationMs: Math.round(performance.now() - peer.startedAt) });
         peer.ready = true; peer.healthyAt = performance.now(); clearTimeout(peer.startTimer); heartbeat(peer, 0);
         if (peer.prepareWait || peer.wait?.handoff !== undefined) { peer.prepareWait?.reject(new Error('busy')); peer.wait?.reject(new Error('busy')); return; }
@@ -196,6 +213,13 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         return;
       }
       if (value.type === 'reset') return close(value.reason || 'session-reset');
+      if (value.type === 'target-sync') {
+        if (!terminal || !peer.targetSync || !integer(value.epoch) || !TERMINAL_IDS.includes(value.target?.terminalId) || !/^%\d{1,10}:\d{1,10}$/.test(value.target?.terminalToken)) throw new Error();
+        if (value.epoch < epoch || peer === active) return;
+        if (value.epoch > epoch && (!targetPending?.sent || value.target.terminalId !== targetPending.target.terminalId || value.target.terminalToken !== targetPending.target.terminalToken)) throw new Error();
+        awaitTargetSync(peer); peer.syncTarget = { epoch: value.epoch, target: { terminalId: value.target.terminalId, terminalToken: value.target.terminalToken } };
+        finishTargetSync(peer); return;
+      }
       if (value.type === 'attachment') {
         if (peer !== active || value.epoch !== epoch) return;
         if (!terminal || !peer.terminalAttachment || !['idle', 'attaching', 'ready', 'exited', 'failed'].includes(value.status?.state) || !['', 'target-exited', 'helper-failed', 'helper-timeout'].includes(value.status?.reason) || value.target?.terminalId !== terminal.terminalId || value.target?.terminalToken !== terminal.terminalToken) throw new Error();
@@ -215,7 +239,10 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         directHalted = false; directAttempts = 0; probeDelay = 15000;
         attachmentState = 'attaching';
         emit('target', value.target); finishTarget(null, value.target);
-        for (const other of [...peers.values()]) if (other !== peer) lost(other);
+        for (const other of [...peers.values()]) if (other !== peer) {
+          if (!peer.targetSync || !other.targetSync || !other.ready) lost(other);
+          else { awaitTargetSync(other); finishTargetSync(other); }
+        }
         changed(); ensureRelay(); return;
       }
       if (value.type === 'switch-result' && targetPending?.peer === peer && targetPending.id === value.id && value.epoch === epoch && value.ok === false) {
@@ -268,7 +295,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     } catch { lost(peer); }
   }
   async function activate(peer, planned = false) {
-    if (ended || targetPending || claiming || transitioning || creating() || peer.gone || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
+    if (ended || targetPending || claiming || transitioning || creating() || peer.gone || peer.syncing || !peer.ready || peer.health.suspect || active === peer || document.hidden || !navigator.onLine) return false;
     transitioning = true;
     let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
     try {
@@ -355,7 +382,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     directTimer = setTimeout(() => { directTimer = undefined; void connectDirect(); }, wait);
   }
   async function promote(peer) {
-    if (ended || targetPending || peer.gone || peer.health.suspect || peer.promoting || active === peer || document.hidden || !navigator.onLine) return;
+    if (ended || targetPending || peer.gone || peer.syncing || peer.health.suspect || peer.promoting || active === peer || document.hidden || !navigator.onLine) return;
     peer.promoting = true;
     try {
       const previous = active;
@@ -487,11 +514,12 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
           const pending = targetPending = { id, target, peer, resolve, reject, signal, abort, sent: false };
           signal?.addEventListener('abort', abort, { once: true }); pause(true);
           if (peer.kind === 'relay') {
-            // Retire probes admitted for the previous pane. Their completion
-            // cannot race a target change on the retained relay connection.
+            // Retire only probes still admitted for the old pane. A ready
+            // backup synchronizes the confirmed target on its existing path.
             clearTimeout(directTimer); directTimer = undefined; clearTimeout(promotionTimer);
             directExpedited = false;
-            directController?.abort(); const candidate = peers.get('direct'); if (candidate) lost(candidate);
+            const candidate = peers.get('direct');
+            if (!peer.targetSync || !candidate?.ready || !candidate.targetSync) { directController?.abort(); if (candidate) lost(candidate); }
           }
           void prepareTarget(pending);
         });

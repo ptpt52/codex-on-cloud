@@ -12,6 +12,29 @@ function setup(options = {}) {
 }
 async function activate(peer, epoch, out = 0, input = 0) { peer.entry.receive({ type: 'activate', epoch, out, input }); await tick(); }
 const input = (epoch, id, data) => ({ type: 'input', epoch, id, part: 0, parts: 1, data: Buffer.from(data).toString('base64') });
+for (const kind of ['relay', 'direct']) test(`${kind}: confirmed target synchronization retains both paths and gates backup input and promotion`, async t => {
+  const app = setup({ switchTarget: async target => ({ target, commit() {} }) }); t.after(() => app.session.close());
+  const current = app.peer(kind), backup = app.peer(kind === 'relay' ? 'direct' : 'relay'); await activate(current, 0);
+  const target = { terminalId: 'aux1', terminalToken: '%1:4100' };
+  current.entry.receive({ type: 'switch-terminal', id: 1, epoch: 1, input: 0, target }); await tick();
+  assert.equal(backup.closed, false); assert.deepEqual(backup.records.at(-1), { type: 'target-sync', epoch: 2, target });
+  app.push('new'); backup.entry.receive(input(2, 1, 'backup cannot write')); await activate(backup, 2, 3);
+  assert.equal(backup.records.at(-1).type, 'wait'); assert.equal(current.entry.active, true); assert.equal(backup.records.some(value => value.type === 'chunk'), false);
+  current.entry.receive(input(2, 1, 'once')); backup.entry.receive({ type: 'target-synced', epoch: 2 }); await tick();
+  // Synchronizing the target is independent of inputs accepted while the ACK
+  // is travelling. Promotion still verifies the latest input/output offsets.
+  current.entry.close(); await activate(backup, 2, 3, 1); backup.entry.receive(input(3, 2, 'after recovery')); await tick();
+  assert.equal(backup.entry.active, true); assert.equal(app.launches, 2); assert.deepEqual(app.writes, ['once', 'after recovery']);
+});
+test('stale target acknowledgements cannot admit a backup; timeout releases only that path', async t => {
+  const app = setup({ targetSyncMs: 30, switchTarget: async target => ({ target, commit() {} }) }); t.after(() => app.session.close());
+  const current = app.peer('relay'), backup = app.peer('direct'); await activate(current, 0);
+  for (const epoch of [1, 2]) { current.entry.receive({ type: 'switch-terminal', id: epoch, epoch, input: 0, target: { terminalId: 'aux' + epoch, terminalToken: '%' + epoch + ':4100' } }); await tick(); }
+  backup.entry.receive({ type: 'target-synced', epoch: 2 }); await activate(backup, 3);
+  assert.equal(backup.records.at(-1).type, 'wait'); await delay(60);
+  assert.equal(backup.closed, true); assert.equal(current.closed, false); assert.equal(app.session.closed, false);
+  current.entry.receive(input(3, 1, 'active survives')); await tick(); assert.deepEqual(app.writes, ['active survives']);
+});
 test('one upstream survives relay/direct handoffs; standby gets no output and old epochs cannot write', async t => {
   const app = setup(); t.after(() => app.session.close()); const relay = app.peer('relay'), direct = app.peer('direct');
   await activate(relay, 0); app.push('first');
@@ -315,6 +338,12 @@ test('an unattached terminal expires even while its authenticated path stays ope
   const relay = app.peer('relay'); await activate(relay, 0); app.connections[0].ready(); app.session.targetEnded();
   assert.equal(app.session.closed, false); await delay(60);
   assert.equal(app.session.closed, true); assert.equal(relay.records.at(-1).reason, 'attachment-idle'); assert.equal(app.launches, 1);
+});
+
+test('a target ended before first activation stays detached on late path admission', async t => {
+  const app = setup({ attachment: { target: () => ({ terminalId: 'main', terminalToken: '%0:4000' }) } }); t.after(() => app.session.close());
+  const peer = app.peer('relay'); app.session.targetEnded(); await activate(peer, 0);
+  assert.equal(app.launches, 0); assert.equal(peer.records.at(-1).status.state, 'exited'); assert.equal(app.session.closed, false);
 });
 
 test('helper failure retains an idle attachment but protocol or authority failure closes the session', async t => {
