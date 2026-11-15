@@ -170,6 +170,46 @@ test('leave releases the center grant and removes only generated node files', as
   assert.equal((await nodeStatus({ root: h.root, run: h.run })).joined, false);
 });
 
+for (const changed of ['env', 'credentials', 'gateway', 'new-gateway']) test(`leave preflight preserves every file and the active relay after ${changed} conflicts`, async t => {
+  const h = await setup(t), gatewayPath = join(h.root, 'data', 'gateway-node.json');
+  await mkdir(join(h.root, 'data'), { recursive: true, mode: 0o700 });
+  if (changed !== 'new-gateway') await writeFile(gatewayPath, '{"original":true}\n', { mode: 0o600 });
+  await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    switchExisting: true, request: async () => new Response(JSON.stringify(h.joined)), run: h.run, install: async () => '/opt/frpc', promptKey: async () => key });
+  const paths = { env: join(h.root, '.env'), credentials: join(h.root, 'secrets', 'credentials.txt'), gateway: gatewayPath };
+  const path = paths[changed === 'new-gateway' ? 'gateway' : changed];
+  await writeFile(path, changed.includes('gateway') ? '{"operatorEdit":true}\n' : (await readFile(path, 'utf8')) + '# operator edit\n', { mode: 0o600 });
+  const files = [paths.env, paths.credentials, gatewayPath, ...['connection.json', 'frpc.toml', 'panel-backup.json'].map(name => join(h.root, 'data', 'selfhost-node', name)), join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service')];
+  const read = path => readFile(path, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+  const before = await Promise.all(files.map(read)); h.calls.length = 0; let releases = 0;
+  await assert.rejects(leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => { releases++; return new Response('{"ok":true}'); } }), /被修改/);
+  assert.deepEqual(await Promise.all(files.map(read)), before);
+  assert.deepEqual(h.calls, [], 'pre-existing conflicts cannot stop the active relay or restart the panel');
+  assert.equal(releases, 0, 'pre-existing conflicts cannot release central authorization');
+});
+
+test('leave rechecks all restore snapshots after relay stop and retains recovery files for an explicit retry', async t => {
+  const h = await setup(t), gatewayPath = join(h.root, 'data', 'gateway-node.json');
+  await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request: async () => new Response(JSON.stringify(h.joined)), run: h.run, install: async () => '/opt/frpc', promptKey: async () => key });
+  const files = [join(h.root, '.env'), join(h.root, 'secrets', 'credentials.txt'), ...['connection.json', 'frpc.toml', 'panel-backup.json'].map(name => join(h.root, 'data', 'selfhost-node', name))];
+  const before = await Promise.all(files.map(path => readFile(path, 'utf8'))); h.calls.length = 0;
+  const run = async (file, args) => {
+    const result = await h.run(file, args);
+    if (args.includes('disable')) await writeFile(gatewayPath, '{"operatorEdit":true}\n', { mode: 0o600 });
+    return result;
+  };
+  await assert.rejects(leaveNode({ root: h.root, configHome: h.configHome, run, request: async () => new Response('{"ok":true}') }), /退出过程中被修改/);
+  assert.deepEqual(await Promise.all(files.map(path => readFile(path, 'utf8'))), before);
+  assert.equal(h.calls.some(call => call.includes('restart')), false);
+  assert.equal(await readFile(gatewayPath, 'utf8'), '{"operatorEdit":true}\n');
+  await rm(gatewayPath); // Explicitly resolve the operator's conflicting file.
+  const result = await leaveNode({ root: h.root, configHome: h.configHome, run: h.run, request: async () => new Response('{"ok":true}') });
+  assert.equal(result.left, true);
+  assert.match(await readFile(join(h.root, '.env'), 'utf8'), /PUBLIC_ORIGIN=https:\/\/old\.example\.test/);
+  await assert.rejects(access(join(h.root, 'data', 'selfhost-node', 'panel-backup.json')));
+});
+
 test('leave preserves all enrollment state when frpc cannot be confirmed stopped', async t => {
   const h = await setup(t), joined = async () => new Response(JSON.stringify(h.joined), { status: 200 });
   const common = { root: h.root, mode: 'terminal', panelPort: 36080, configHome: h.configHome, request: joined, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };

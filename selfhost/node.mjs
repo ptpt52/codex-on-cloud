@@ -233,19 +233,33 @@ async function preflightPanel(root, switchExisting) {
   if (publication && !switchExisting) throw Error('检测到现有 Cloudflare/Gateway 发布状态；如需接管，请显式使用 --switch-existing。普通 server:leave 会恢复原配置');
 }
 
-async function restorePanel(root, { run = command } = {}) {
+async function planPanelRestore(root) {
   const paths = panelPaths(root), backupText = await optional(paths.backup, 131072);
-  if (backupText === null) return false;
+  if (backupText === null) return { paths, backupText, files: [] };
   let backup; try { backup = JSON.parse(backupText); } catch { throw Error('Panel 切换备份损坏，未恢复'); }
-  const currentEnv = await optional(paths.env, 65536), currentCredentials = await optional(paths.credentials, 4096);
+  if (!backup || ![1, 2].includes(backup.version) || ['envBefore', 'envAfter'].some(key => typeof backup[key] !== 'string' || Buffer.byteLength(backup[key]) > 65536) ||
+    ['credentialsBefore', 'credentialsAfter', 'gatewayBefore'].some(key => backup[key] !== null && (typeof backup[key] !== 'string' || Buffer.byteLength(backup[key]) > 4096))) throw Error('Panel 切换备份内容无效，未恢复');
+  const [currentEnv, currentCredentials, currentGateway] = await Promise.all([optional(paths.env, 65536), optional(paths.credentials, 4096), optional(paths.gateway, 4096)]);
   if (currentEnv !== null && currentEnv !== backup.envBefore && currentEnv !== backup.envAfter) throw Error('Panel 环境在自建接入后被修改，未自动恢复');
   if (currentCredentials !== null && currentCredentials !== backup.credentialsBefore && currentCredentials !== backup.credentialsAfter) throw Error('Panel 登录说明在自建接入后被修改，未自动恢复');
-  if (currentEnv !== backup.envBefore) await writeStateFile(paths.env, backup.envBefore, { expected: currentEnv });
-  if (backup.credentialsBefore !== null && currentCredentials !== backup.credentialsBefore) await writeStateFile(paths.credentials, backup.credentialsBefore, { expected: currentCredentials });
-  if (backup.gatewayBefore !== null) {
-    const current = await optional(paths.gateway, 4096);
-    if (current !== null && current !== backup.gatewayBefore) throw Error('Gateway 配置在自建接入后被修改，未覆盖');
-    if (current === null) await writeStateFile(paths.gateway, backup.gatewayBefore, { expected: null });
+  if (currentGateway !== null && currentGateway !== backup.gatewayBefore) throw Error('Gateway 配置在自建接入后被修改，未覆盖');
+  return { paths, backupText, files: [
+    { path: paths.env, expected: currentEnv, restore: backup.envBefore, limit: 65536 },
+    { path: paths.credentials, expected: currentCredentials, restore: backup.credentialsBefore, limit: 4096 },
+    { path: paths.gateway, expected: currentGateway, restore: backup.gatewayBefore, limit: 4096 },
+  ] };
+}
+
+async function restorePanel(root, { run = command, plan } = {}) {
+  plan ??= await planPanelRestore(root);
+  // Revalidate the complete preflight after stopping/contacting the center,
+  // before writing any file. Each atomic write also checks its own snapshot.
+  const { paths, backupText, files } = plan;
+  if (await optional(paths.backup, 131072) !== backupText) throw Error('Panel 切换备份在退出过程中被修改，未恢复');
+  for (const file of files) if (await optional(file.path, file.limit) !== file.expected) throw Error('Panel 配置在退出过程中被修改，未覆盖');
+  if (backupText === null) return false;
+  for (const file of files) {
+    if (file.restore !== null && file.expected !== file.restore) await writeStateFile(file.path, file.restore, { expected: file.expected });
   }
   const result = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
   if (!result.ok) throw Error('Panel 原配置已恢复，但服务重启失败：' + (result.stderr || result.stdout || result.code));
@@ -477,10 +491,11 @@ async function recoverNodeLocked({ root, request = centerRequest, run = command,
     await removeStateFile(recoveryPath(root), { expected: recovery.text });
     return { recovered: true, origin: value.connection.origin, slug: value.connection.slug };
   }
+  const panelPlan = await planPanelRestore(root);
   const stopped = await stopRelay(run);
   if (!stopped.ok) throw Error('无法确认节点中继已停止，恢复记录已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
   await releaseCentral(value.connection, centerClient(value.connection.origin, value.before.ca || undefined, request));
-  await restorePanel(root, { run });
+  await restorePanel(root, { run, plan: panelPlan });
   const targets = [
     [servicePath(configHome), value.before.unit, 65536],
     [pathFor(root, 'frpc.toml'), value.before.config, 262144],
@@ -495,12 +510,13 @@ async function recoverNodeLocked({ root, request = centerRequest, run = command,
 async function leaveNodeLocked({ root, request = centerRequest, run = command, configHome } = {}) {
   if (await readRecovery(root)) throw Error('存在未完成的接入，请运行 server:leave --recover');
   const connection = await readNodeConnection(root); if (!connection) throw Error('本机尚未接入自建中心');
+  const panelPlan = await planPanelRestore(root);
   const stopped = await stopRelay(run);
   if (!stopped.ok) throw Error('无法确认节点中继已停止，本机接入配置已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
   const client = centerClient(connection.origin, await optional(pathFor(root, 'frps-ca.pem'), 262144) || undefined, request);
   const response = await client(connection.origin + '/api/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: 1, slug: connection.slug, credential: connection.credential, nodeId: connection.nodeId }), redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => null);
   if (response && !response.ok && response.status !== 401) { const value = await response.json().catch(() => ({})); throw Error(value.error || '中心释放节点失败'); }
-  await restorePanel(root, { run });
+  await restorePanel(root, { run, plan: panelPlan });
   const unit = servicePath(configHome), unitText = await optional(unit, 65536); if (unitText !== null) await removeStateFile(unit, { expected: unitText });
   for (const name of ['connection.json', 'frpc.toml', 'frps-ca.pem']) { const path = pathFor(root, name), text = await optional(path, 262144); if (text !== null) await removeStateFile(path, { expected: text }); }
   return { left: true, origin: connection.origin, slug: connection.slug, warning: !response ? '中心网络不可达；本地中继已停止并清理，中心租约会按超时释放' : response.status === 401 ? '中心认为节点已经离线；本地配置已清理' : '' };
