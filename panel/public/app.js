@@ -803,9 +803,18 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
   if (method === 'GET' && panelReady && owned && frameState === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {
-    const route = frameTransport, value = await framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
-    if (path === '/api/state') panelRoute = route;
-    return value;
+    const generation = uiGeneration, route = frameTransport;
+    try {
+      const value = await framePanelRequest(path === '/api/state' ? 'state' : 'terminals', {}, signal);
+      if (path === '/api/state') panelRoute = route;
+      return value;
+    } catch (error) {
+      // Only these read-only operations may fall back once. Keep the caller's
+      // deadline and never carry a read across logout, cancellation or denial.
+      if (signal?.aborted || generation !== uiGeneration || !loggedIn || !owned || accessExpired) throw error;
+      if (error.status === 401) showLogin('登录已过期，请重新登录');
+      if (error.code === 'node_changed' || [401, 403, 423].includes(error.status)) throw error;
+    }
   }
   const headers = { 'x-viewer-id': viewer, ...nodeHeaders() };
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
