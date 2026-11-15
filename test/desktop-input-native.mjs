@@ -108,7 +108,18 @@ while time.monotonic() < deadline:
     await eventually(() => page.evaluate(() => window.testFrameReady === true));
     const source = await page.locator('#desktop-frame').getAttribute('src');
     for (let round = 0; round < 2; round++) for (const mode of ['terminal', 'desktop']) {
-      await page.locator(`#${mode}-mode`).click(); await page.locator('#accept-confirmation').click();
+      // Route/viewport transitions intentionally cancel pending confirmations.
+      // This is input-test setup: choose and confirm an eligible mode in one
+      // browser turn, without racing those unrelated background transitions.
+      await page.waitForFunction(mode => {
+        const button = document.querySelector(`#${mode}-mode`);
+        if (button.getAttribute('aria-pressed') === 'true') return true;
+        if (button.disabled) return false;
+        button.click();
+        const dialog = document.querySelector('#action-confirmation');
+        if (dialog.open && dialog.dataset.kind === 'mode') document.querySelector('#accept-confirmation').click();
+        return button.getAttribute('aria-pressed') === 'true';
+      }, mode);
       await page.waitForFunction(mode => document.querySelector('#connection-status').textContent.includes(mode === 'desktop' ? '桌面在线' : '终端在线'), mode);
       if (mode === 'desktop') {
         await eventually(() => page.evaluate(() => window.testFrameReady === true));
