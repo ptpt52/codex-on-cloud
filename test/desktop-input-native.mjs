@@ -40,6 +40,7 @@ async function compose(frame, value) {
 let server, browser, app, switchedWindow, childWindow, forceFocusChange = false, forceChildFocus = false;
 const direct = process.env.DESKTOP_IME_TEST_DIRECT === '1';
 const ios = process.env.DESKTOP_IME_TEST_IOS === '1';
+const standby = process.env.DESKTOP_IME_TEST_STANDBY === '1';
 try {
   for (let number = 94; number < 200; number++) {
     const occupied = await Promise.all([`/tmp/.X${number}-lock`, `/tmp/.X11-unix/X${number}`].map(path => lstat(path).then(() => true, () => false)));
@@ -77,7 +78,7 @@ while time.monotonic() < deadline:
   const socketPath = join(directory, 'vnc.sock'); let vncConnections = 0;
   server = net.createServer(socket => { vncConnections++; socket.pause(); socket.on('error', () => {}); start('x11vnc', vncArguments(env.DISPLAY, env.XAUTHORITY), [socket, socket, 'ignore']); socket.destroy(); });
   server.listen(socketPath); await once(server, 'listening'); await chmod(socketPath, 0o600);
-  app = await fixture({ rfb: true, webrtc: direct, fastConnect: direct, seamless: direct, inputHook: body => executeInput(body, env, runInputCommand,
+  app = await fixture({ rfb: true, webrtc: direct, fastConnect: direct, seamless: direct || standby, inputHook: body => executeInput(body, env, runInputCommand,
     async text => {
       await runInputCommand('xclip', ['-selection', 'clipboard', '-i'], { env, input: text });
       if (forceFocusChange || forceChildFocus) await run('xdotool', ['windowfocus', forceChildFocus ? childWindow : switchedWindow]);
@@ -86,6 +87,11 @@ while time.monotonic() < deadline:
   app.config.vncSocket = socketPath;
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  if (standby) await page.addInitScript(() => {
+    if (window !== parent) return;
+    localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', modeStandby: true }));
+    window.addEventListener('message', event => { if (event.origin === location.origin && event.source === document.querySelector('#desktop-frame')?.contentWindow && event.data.type === 'codex-desktop-view') window.testFrameReady = event.data.frameReady; });
+  });
   if (ios) await page.addInitScript(() => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
     Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 5 });
@@ -96,6 +102,21 @@ while time.monotonic() < deadline:
     await page.locator('#connection-button').click();
     await page.waitForFunction(() => document.querySelector('#diag-transport').textContent.includes('WebRTC'));
     await page.locator('#close-connection').click();
+  }
+  if (standby) {
+    await eventually(() => page.evaluate(() => window.testFrameReady === true));
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    for (let round = 0; round < 2; round++) for (const mode of ['terminal', 'desktop']) {
+      await page.locator(`#${mode}-mode`).click(); await page.locator('#accept-confirmation').click();
+      await page.waitForFunction(mode => document.querySelector('#connection-status').textContent.includes(mode === 'desktop' ? '桌面在线' : '终端在线'), mode);
+      if (mode === 'desktop') {
+        await eventually(() => page.evaluate(() => window.testFrameReady === true));
+        assert.equal(await page.locator('#desktop-frame').getAttribute('src'), source);
+        assert.equal(vncConnections, 1);
+      }
+    }
+    assert.equal(terminal.exitCode, null); assert.equal(JSON.parse(await readFile(proof, 'utf8')).hex, '');
+    console.log('PASS: real x11vnc/noVNC refreshes the same parked viewer on repeated returns, without reconnecting VNC, restarting the xterm or injecting input.');
   }
   const frame = page.frames().find(value => value.url().includes('/desktop/index.html'));
   await frame.locator('#screen canvas').click({ position: { x: 30, y: 30 } });

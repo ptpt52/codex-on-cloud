@@ -15,7 +15,7 @@ import { readPreferences } from '../native/preferences.mjs';
 import { viewportSize } from '../native/viewport.mjs';
 
 
-export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, username = 'admin', password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalViewHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, selfhostNode = null, publicOrigin = '', entryBasePath = '/' } = {}) {
+export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, dataDir, username = 'admin', password = 'test_password_very_long_123', sessionMs, rfb = false, rfbSize, rfbFrameHook, rfbResumeHook, rfbUpdates = false, rfbContinuous = false, webrtc = false, fastConnect = false, seamless = false, webrtcIPv6 = false, webrtcIPv6Address, webrtcStunUrl = '', viewport = false, viewportMaximum, viewportHook, tunnelDiagnosticsUrl, serviceDiagnostics, inputHook, desktopHook, applyHook, clipboardHook, terminalHook, terminalReadyHook, terminalViewHook, terminalHistory = '', terminalHistoryHook, terminalHistoryAlternate = false, terminalMaxCols = 500, forwardPorts = [22], forwardDownloadDir, forwardPeerFactory, uiRoot, nodeId = '', sharedEntry = false, gatewayNode = null, selfhostNode = null, publicOrigin = '', entryBasePath = '/' } = {}) {
   const directory = dataDir || await mkdtemp(join(tmpdir(), 'codex-cloud-test-'));
   const received = [];
   const inputCalls = [];
@@ -67,7 +67,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
   });
   const clients = new Set();
   let viewersPaused = false;
-  let vncConnections = 0;
+  let vncConnections = 0, vncFrames = 0, vncFullRequests = 0;
   const vnc = net.createServer(socket => {
     vncConnections++;
     clients.add(socket);
@@ -77,9 +77,19 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     if (!rfb) return socket.on('data', bytes => { received.push({ method: 'VNC', bytes }); socket.write(bytes); });
     // Minimal RFB fixture; browsers still use the real noVNC client and Unix socket bridge.
     socket.write('RFB 003.008\n');
-    let phase = 0, pending = Buffer.alloc(0), sent = false;
+    let phase = 0, pending = Buffer.alloc(0), sent = false, updateTimer;
+    const send = full => {
+      if (socket.destroyed) return;
+      const width = full ? screenGeometry.width : 1, height = full ? screenGeometry.height : 1;
+      const frame = Buffer.alloc(16 + width * height * 4);
+      frame.writeUInt16BE(1, 2); frame.writeUInt16BE(width, 8); frame.writeUInt16BE(height, 10);
+      for (let i = 16; i < frame.length; i += 4) frame.set([34, 48, 29, 0], i);
+      vncFrames++; socket.write(frame);
+    };
+    socket.once('close', () => clearTimeout(updateTimer));
     socket.on('data', bytes => {
       pending = Buffer.concat([pending, bytes]);
+      if (pending.length > 256 * 1024) return socket.destroy();
       if (phase === 0 && pending.length >= 12) { pending = pending.subarray(12); socket.write(Buffer.from([1, 1])); phase = 1; }
       if (phase === 1 && pending.length >= 1) { pending = pending.subarray(1); socket.write(Buffer.alloc(4)); phase = 2; }
       if (phase === 2 && pending.length >= 1) {
@@ -89,15 +99,35 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
         header.writeUInt16BE(screenGeometry.width, 0); header.writeUInt16BE(screenGeometry.height, 2);
         header.set([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0], 4);
         header.writeUInt32BE(name.length, 20); socket.write(Buffer.concat([header, name]));
-      } else if (phase === 3 && !sent) {
-        sent = true;
-        const frame = Buffer.alloc(16 + screenGeometry.width * screenGeometry.height * 4);
-        frame.writeUInt16BE(1, 2); frame.writeUInt16BE(screenGeometry.width, 8); frame.writeUInt16BE(screenGeometry.height, 10);
-        for (let i = 16; i < frame.length; i += 4) frame.set([34, 48, 29, 0], i);
-        if (rfbFrameHook) void Promise.resolve(rfbFrameHook()).then(() => { if (!socket.destroyed) socket.write(frame); }).catch(() => socket.destroy());
-        else socket.write(frame);
       }
-      if (phase === 3) pending = Buffer.alloc(0);
+      if (phase !== 3) return;
+      while (pending.length) {
+        const type = pending[0];
+        let length = { 0: 20, 2: 4, 3: 10, 4: 8, 5: 6, 6: 8, 150: 10 }[type];
+        if (!length) { pending = Buffer.alloc(0); break; }
+        if (pending.length < length) break;
+        if (type === 2) length += pending.readUInt16BE(2) * 4;
+        if (type === 6) length += pending.readUInt32BE(4);
+        if (length > 256 * 1024) return socket.destroy();
+        if (pending.length < length) break;
+        const record = pending.subarray(0, length); pending = pending.subarray(length);
+        if (type === 3) {
+          if (!sent) {
+            sent = true; vncFullRequests++;
+            const first = () => { send(true); if (rfbContinuous && !socket.destroyed) socket.write(Buffer.from([150])); };
+            if (rfbFrameHook) void Promise.resolve(rfbFrameHook()).then(first, () => socket.destroy()); else first();
+          } else if (!record[1]) {
+            vncFullRequests++;
+            if (rfbResumeHook) void Promise.resolve(rfbResumeHook()).then(() => send(true), () => socket.destroy()); else send(true);
+          } else if (rfbUpdates) {
+            clearTimeout(updateTimer); updateTimer = setTimeout(() => send(false), 50);
+          }
+        } else if (type === 150 && rfbContinuous) {
+          clearInterval(updateTimer);
+          if (record[1] && rfbUpdates) updateTimer = setInterval(() => send(false), 50);
+          else if (!record[1]) socket.write(Buffer.from([150]));
+        }
+      }
     });
   });
   const vncSocket = join(directory, 'vnc.sock');
@@ -294,6 +324,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     resumeViewers() { viewersPaused = false; for (const client of clients) client.destroy(); },
     get cookie() { return cookie; }, get csrf() { return csrf; },
     get vncConnections() { return vncConnections; },
+    get vncFrames() { return vncFrames; }, get vncFullRequests() { return vncFullRequests; },
     async close({ preserve = false } = {}) {
       await panel.close();
       await new Promise(resolve => { manager.close(resolve); manager.closeAllConnections(); });

@@ -5,7 +5,7 @@ function view(element, epoch, mode = 'desktop', key = '', noticeTarget = '') {
   return { element, epoch, mode, key, desiredKey: key, noticeTarget, loaded: false, state: 'idle', transport: '', paused: false,
     panelReady: false, panelCapabilitiesKnown: false, terminalSwitchReady: false, terminalCreateReady: false, terminalOpenReady: false,
     dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false, composing: false, touchInput: false,
-    nativeIdle: false, resizeReady: false, inputNoticeKey: '', network: null, issue: '', latency: createRoundTrip() };
+    nativeIdle: false, resizeReady: false, frameReady: true, activationPending: false, inputNoticeKey: '', network: null, issue: '', latency: createRoundTrip() };
 }
 function invalidate(entry) {
   entry.panelReady = entry.panelCapabilitiesKnown = entry.terminalSwitchReady = entry.terminalCreateReady = entry.terminalOpenReady = false;
@@ -50,6 +50,7 @@ export function createViewLifecycle(element) {
       const previous = active; active = standby; standby = previous; standby.noticeTarget = noticeTarget;
       if (mode === 'terminal' && terminalKey(key)) active.desiredKey = key;
       active.composing = active.touchInput = active.nativeIdle = active.resizeReady = false;
+      if (mode === 'desktop') active.frameReady = false;
       active.network = null; active.issue = ''; active.latency.clear();
       if (active.state !== 'connected') invalidate(active);
       return true;
@@ -60,7 +61,7 @@ export function createViewLifecycle(element) {
       entry.key = key; entry.geometry = null; entry.reviewing = false; return true;
     },
     cancelTarget(entry) { if (live(entry)) entry.desiredKey = entry.key; },
-    inputReady(entry = active) { return entry === active && entry.loaded && entry.state === 'connected' && !entry.paused && entry.key === entry.desiredKey; },
+    inputReady(entry = active) { return entry === active && entry.loaded && entry.state === 'connected' && !entry.paused && entry.frameReady && !entry.activationPending && entry.key === entry.desiredKey; },
     update(entry, value, { revision, fontSize, terminalSwitching = false, issues = [] } = {}) {
       if (!live(entry)) return false;
       if (value.type === 'codex-desktop' && ['connected', 'connecting', 'disconnected'].includes(value.state)) {
@@ -89,6 +90,7 @@ export function createViewLifecycle(element) {
       } else if (value.type === 'codex-terminal-history' && entry.mode === 'terminal' && typeof value.reviewing === 'boolean') entry.reviewing = value.reviewing;
       else if (value.type === 'codex-desktop-view' && value.revision === revision) {
         entry.nativeIdle = value.idle === true;
+        if (typeof value.frameReady === 'boolean') entry.frameReady = value.frameReady;
         if (typeof value.resizeReady === 'boolean') entry.resizeReady = value.resizeReady;
         if (Number.isFinite(value.scale) && value.scale > 0 && value.scale <= 16) { entry.scale = value.scale; entry.scaleRevision = value.revision; }
         if (validSize(value.width, 16384) && validSize(value.height, 16384)) entry.dimensions = { width: value.width, height: value.height };

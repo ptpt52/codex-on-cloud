@@ -71,3 +71,13 @@ test('background updates share validation but do not change foreground geometry 
   views.update(views.active, { type: 'codex-stream-state', paused: true }); assert.equal(views.inputReady(), false);
   views.discard(); assert.equal(views.update(desktop, { type: 'codex-panel-state', ready: true }), false);
 });
+
+test('desktop activation keeps input blocked until matching frame and target confirmation, without blocking control admission', () => {
+  const views = createViewLifecycle(element()); views.begin('terminal', main); connected(views, views.active);
+  const desktop = views.prepare(element(), 'desktop'); connected(views, desktop); capabilities(views, desktop);
+  views.swap('desktop', ''); desktop.activationPending = true;
+  assert.equal(views.inputReady(), false); assert.equal(desktop.terminalOpenReady, true);
+  views.update(desktop, { type: 'codex-desktop-view', revision: 3, frameReady: true }, { revision: 2 }); assert.equal(desktop.frameReady, false);
+  views.update(desktop, { type: 'codex-desktop-view', revision: 3, frameReady: true }, { revision: 3 }); assert.equal(views.inputReady(), false);
+  desktop.activationPending = false; assert.equal(views.inputReady(), true);
+});

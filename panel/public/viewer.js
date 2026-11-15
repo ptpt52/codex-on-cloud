@@ -8,6 +8,7 @@ import { createFrameHold } from './frame-hold.js';
 import { routePolicy, STABLE_ROUTE } from './transport-policy.js';
 import { createStreamClient } from './stream-client.js';
 import { afterFirstFrame } from './first-frame.js';
+import { createFramebufferGate } from '/framebuffer-gate.js';
 import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
 import { createRTCRecheck } from '/rtc-recheck.js';
@@ -44,7 +45,7 @@ const legacyRecheck = createRTCRecheck({
     finally { if (!adopted) finishSwitch(); }
   },
 });
-let rfb, retry, stopping = false, resizeReady = false, frameReadiness;
+let rfb, retry, stopping = false, resizeReady = false, frameReadiness, frameGate;
 let transport, directFailed = false, connectionEpoch = 0, transportName = '';
 let viewing = false, connecting = false, switching = false, switchingFrom, probeTimer, probeController, probeDelay = 15000, switchSequence = 0, switchApproval;
 let healthTimer, healthGeneration = 0, healthNetworkCheck = false, viewAnchor, restoringView = false;
@@ -54,7 +55,7 @@ let lastInteraction = -Infinity, idleTimer;
 let canvas, layoutFrame = 0, reportFrame = 0, lastReport = '', drag = null, scrollGesture = null;
 let desktopText, desktopFocusFrame = 0, touchControls;
 const desktopInput = createDesktopInput({ screen, field: document.getElementById('desktop-input'), status: document.getElementById('desktop-input-status'),
-  current: () => canvas, allowed: () => viewing && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
+  current: () => canvas, allowed: () => viewing && !switching && !streamPaused && !frameGate?.blocked && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
   paste: (text, id, edit) => new Promise(resolve => {
     desktopText = { id, resolve, timer: setTimeout(() => {
       if (desktopText?.id !== id) return;
@@ -63,7 +64,7 @@ const desktopInput = createDesktopInput({ screen, field: document.getElementById
     parent.postMessage({ type: 'codex-desktop-text', frame, id, text, ...(edit || {}) }, location.origin);
   }), changed: value => { parent.postMessage({ type: 'codex-desktop-input-state', frame, ...value }, location.origin); touchControls?.update(); reportView(); } });
 touchControls = createDesktopTouchInput({ input: desktopInput, field: document.getElementById('desktop-input'), root: document.getElementById('desktop-touch-input'),
-  allowed: () => !!canvas && viewing && preferences.desktopIme !== false && !switching && !streamPaused && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
+  allowed: () => !!canvas && viewing && preferences.desktopIme !== false && !switching && !streamPaused && !frameGate?.blocked && !preferences.standby && !preferences.pan && !preferences.blocked && !preferences.busy && !stopping,
   // Dispatch on the current iframe synchronously so opening the parent's long
   // text field also retains the touch gesture required to show its keyboard.
   action: action => window.frameElement?.dispatchEvent(new CustomEvent('codex-desktop-touch-action', { bubbles: true, detail: { frame, action } })) });
@@ -117,7 +118,7 @@ function reportView() {
     const scale = canvas.getBoundingClientRect().width / canvas.width;
     if (!Number.isFinite(scale) || scale <= 0) return;
     const report = { type: 'codex-desktop-view', frame, revision: preferences.revision, scale: Math.round(scale * 10000) / 10000, width: canvas.width, height: canvas.height,
-      resizeReady, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800 };
+      frameReady: !frameGate?.blocked, resizeReady: resizeReady && !frameGate?.blocked, idle: !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800 };
     const signature = JSON.stringify(report);
     if (signature === lastReport) return;
     lastReport = signature;
@@ -151,12 +152,12 @@ function applyView() {
   screen.style.width = widthFit ? `${viewport.clientWidth}px` : manual ? `${Math.round(canvas.width * preferences.zoom)}px` : '100%';
   screen.style.height = widthFit ? `${Math.ceil(canvas.height * viewport.clientWidth / canvas.width)}px` : manual ? `${Math.round(canvas.height * preferences.zoom)}px` : '100%';
   // Release a synthetic drag on its original stream before viewOnly changes.
-  pointerControls.update(canvas, viewing && !streamPaused, preferences);
+  pointerControls.update(canvas, viewing && !streamPaused && !frameGate?.blocked, preferences);
   if (rfb) {
     // Resize the local container through public APIs; remote pixels and input coordinates stay intact.
     rfb.scaleViewport = true;
     rfb.focusOnClick = preferences.desktopIme === false || matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches;
-    if (rfb.viewOnly !== (preferences.pan || preferences.blocked || streamPaused)) rfb.viewOnly = preferences.pan || preferences.blocked || streamPaused;
+    rfb.viewOnly = preferences.pan || preferences.blocked || streamPaused || frameGate?.blocked;
   }
   if (!preferences.pan && !preferences.blocked) stopDrag();
   panLayer.hidden = !preferences.pan && !preferences.blocked;
@@ -237,6 +238,7 @@ window.addEventListener('message', event => {
   preferences.desktopIme = value.desktopIme !== false;
   preferences.revision = value.revision ?? 0;
   if (streamEnabled && typeof value.csrf === 'string' && value.csrf.length <= 256 && value.csrf && !streamCsrf) { streamCsrf = value.csrf; void connect(); }
+  frameGate?.setStandby(preferences.standby, { busy: preferences.busy });
   if (wasStandby !== preferences.standby) { lastReport = ''; reportControl(); reportNetwork(); }
   applyView();
 });
@@ -342,7 +344,7 @@ function monitorDirect(delay = 3000) {
   healthTimer = setTimeout(tick, delay);
 }
 function idleForSwitch() {
-  return !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800;
+  return !frameGate?.blocked && !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800;
 }
 function scheduleProbe(delay = probeDelay) {
   if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;
@@ -418,6 +420,7 @@ async function probeDirect() {
 function attachViewer(direct, channel) {
   desktopInput.cancel();
   frameReadiness?.(); frameReadiness = undefined;
+  frameGate?.close(); frameGate = undefined;
   pointerControls.update(canvas, false, preferences);
   rememberView(); stopHealth();
   restoringView = !!viewAnchor;
@@ -432,6 +435,15 @@ function attachViewer(direct, channel) {
   url.searchParams.set('viewer', viewer);
   const instance = rfb = new RFB(screen, channel || (direct ? direct.video() : url.href), { shared: false });
   resizeReady = false;
+  frameGate = createFramebufferGate(instance, RFB.messages, {
+    changed: () => {
+      if (rfb !== instance || stopping) return;
+      lastReport = ''; applyView();
+      if (viewing) { status.hidden = !frameGate?.blocked || preferences.standby; status.textContent = '正在恢复画面…'; }
+    },
+    failed: () => { if (rfb === instance && !stopping) instance.disconnect(); },
+  });
+  frameGate.setStandby(preferences.standby, { busy: preferences.busy });
   const firstFrameAt = performance.now();
   frameReadiness = afterFirstFrame(instance, () => {
     if (rfb !== instance || stopping) return;
@@ -450,7 +462,7 @@ function attachViewer(direct, channel) {
   previous?.disconnect();
   instance.scaleViewport = true;
   instance.resizeSession = false;
-  instance.viewOnly = preferences.pan || preferences.blocked;
+  instance.viewOnly = preferences.pan || preferences.blocked || frameGate.blocked;
   instance.qualityLevel = 6;
   instance.compressionLevel = 2;
   instance.addEventListener('connect', () => {
@@ -467,6 +479,7 @@ function attachViewer(direct, channel) {
   instance.addEventListener('disconnect', () => {
     if (rfb !== instance || stopping) return;
     frameReadiness?.(); frameReadiness = undefined;
+    frameGate?.close(); frameGate = undefined;
     stopHealth(); viewing = false; connecting = false;
     desktopInput.update();
     pointerControls.update(canvas, false, preferences);
@@ -513,7 +526,7 @@ async function connect() {
           if (releaseMouse && canvas) canvas.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, view: window, button: 0, buttons: 0, clientX: lastMouse.x, clientY: lastMouse.y }));
           releaseMouse = false;
         }
-        if (rfb) rfb.viewOnly = value || preferences.pan || preferences.blocked;
+        if (rfb) rfb.viewOnly = value || preferences.pan || preferences.blocked || frameGate?.blocked;
         desktopInput.update();
         parent.postMessage({ type: 'codex-stream-state', frame, paused: value }, location.origin);
         panelBridge.report();
@@ -564,6 +577,7 @@ window.addEventListener('pagehide', () => {
   desktopInput.cancel();
   if (desktopText) { clearTimeout(desktopText.timer); desktopText.resolve({ outcome: 'unknown' }); desktopText = undefined; }
   frameReadiness?.(); frameReadiness = undefined;
+  frameGate?.close(); frameGate = undefined;
   frameHold.clear();
   streamClient?.close();
   pointerControls.update(canvas, false, preferences);

@@ -354,7 +354,7 @@ function sendDisplayPreferences() {
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     handoff: (views.active.paused || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
     csrf, desktopIme: displayPreferences.desktopIme, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
-    busy: (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardController || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
+    busy: views.active.activationPending || (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardController || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : views.active.scaleRevision === displayRevision ? views.active.scale : 0; }
 function renderDisplayControls() {
@@ -1533,13 +1533,16 @@ function changeMode(mode) {
   }
   const reused = swapStandby(mode);
   if (!reused) stopFrame();
+  if (mode === 'desktop' && selectedTerminal && terminalSelectionState === 'ready') views.active.activationPending = true;
   updateDisplayPreferences({ mode }); renderTerminalList(); openFrame();
   if (mode === 'terminal' && !views.active.loaded) void loadTerminals();
   if (mode === 'terminal' && reused && views.active.key !== `${selectedTerminal}:${selectedTerminalToken}`) void switchTerminalStream({ id: selectedTerminal, token: selectedTerminalToken });
   if (mode === 'desktop' && selectedTerminal && terminalSelectionState === 'ready') {
-    const generation = uiGeneration, identity = `${selectedTerminal}:${selectedTerminalToken}`;
+    const generation = uiGeneration, entry = views.active, identity = `${selectedTerminal}:${selectedTerminalToken}`;
     void manageTerminals({ action: 'open', terminalId: selectedTerminal, terminalToken: selectedTerminalToken }, { waitForView: reused }).then(result => {
-      if (generation !== uiGeneration || !owned || terminalMode() || identity !== `${selectedTerminal}:${selectedTerminalToken}` || result?.ok) return;
+      if (generation !== uiGeneration || entry !== views.active) return;
+      entry.activationPending = false; sendDisplayPreferences(); renderConnection();
+      if (!owned || terminalMode() || identity !== `${selectedTerminal}:${selectedTerminalToken}` || result?.ok) return;
       desktopFocusFailureKey = identity; renderConnection();
       toast('桌面终端窗口未确认切换；请等待连接就绪后重新点击目标标签。', true);
     });
