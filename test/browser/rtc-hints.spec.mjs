@@ -56,6 +56,23 @@ test('optional IP hints are sent on a new probe, preserve automatic discovery an
   const app = await fixture({ mode: 'terminal', webrtc: true, fastConnect: true, seamless: true });
   const offers = [], answers = []; let first = true;
   try {
+    // This case requires a handoff to inspect the hinted path. Make the relay
+    // slower; loopback jitter may otherwise legitimately keep the current path.
+    await page.addInitScript(() => {
+      if (!location.pathname.endsWith('/terminal/index.html')) return;
+      const Native = WebSocket;
+      window.WebSocket = class extends Native {
+        constructor(...args) {
+          super(...args);
+          if (new URL(this.url).pathname !== '/session/connect') return;
+          this.addEventListener('message', event => {
+            if (!event.isTrusted || JSON.parse(event.data).type !== 'pong') return;
+            event.stopImmediatePropagation();
+            setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: event.data })), 250);
+          });
+        }
+      };
+    });
     await page.route('**/api/terminal/rtc', async route => {
       const body = route.request().postDataJSON(); offers.push(body);
       if (first) { first = false; return route.fulfill({ status: 503, json: { error: 'initial probe unavailable' } }); }
