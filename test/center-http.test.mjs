@@ -38,7 +38,7 @@ test('real HTTPS enrollment, doctor, rollback recovery and leave share scoped CA
   const origin = `https://127.0.0.1:${server.address().port}`, ca = readCenterCA(caFile), client = centerClient(origin, ca);
   assert((await client(origin + '/healthz')).ok);
   assert.throws(() => client('https://other.example.test/healthz'), /不匹配/);
-  await assert.rejects(centerClient(origin)(origin + '/healthz'), /certificate/);
+  await assert.rejects(centerClient(origin)(origin + '/healthz'), error => /certificate/.test(error.message) && error.outcome === 'rejected');
   const wrong = join(root, 'wrong.pem'); openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(root, 'wrong.key'), '-out', wrong, '-subj', '/CN=wrong']);
   await chmod(wrong, 0o644);
   await assert.rejects(centerClient(origin, readCenterCA(wrong))(origin + '/healthz'), /certificate/);

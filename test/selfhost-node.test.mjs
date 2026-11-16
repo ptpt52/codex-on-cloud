@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import https from 'node:https';
 import { once } from 'node:events';
@@ -274,6 +274,101 @@ test('join never contacts the center when local frpc preparation fails', async t
   await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
     request: async () => { requests++; throw Error('should not run'); }, run: h.run, install: async () => { throw Error('download failed'); }, promptKey: async () => key }), /download failed/);
   assert.equal(requests, 0);
+});
+
+test('join checks local configuration conflicts before creating a central enrollment', async t => {
+  const h = await setup(t); let requests = 0;
+  await writeFile(join(h.root, '.env'), 'PUBLIC_ORIGIN=https://one.example.test\nPUBLIC_ORIGIN=https://two.example.test\n', { mode: 0o600 });
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080,
+    configHome: h.configHome, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key,
+    request: async () => { requests++; return new Response(JSON.stringify(h.joined)); } }), /重复/);
+  assert.equal(requests, 0); assert.equal(h.calls.length, 0);
+});
+
+test('early compensation failure keeps a private receipt and recovery preserves operator edits and services', async t => {
+  const h = await setup(t), envPath = join(h.root, '.env'), recoveryPath = join(h.root, 'data/selfhost-node/join-recovery.json');
+  const edited = await readFile(envPath, 'utf8') + '# operator edit during enrollment\n';
+  let joins = 0, releases = 0, available = false;
+  const request = async (url, options) => {
+    if (url.endsWith('/api/join')) {
+      joins++;
+      const intent = await readFile(recoveryPath, 'utf8');
+      assert.equal(JSON.parse(intent).version, 3); assert(!intent.includes(key));
+      assert.equal(JSON.parse(intent).target.nodeId, JSON.parse(options.body).node.id);
+      await writeFile(envPath, edited, { mode: 0o600 });
+      return new Response(JSON.stringify(h.joined));
+    }
+    assert(url.endsWith('/api/leave')); releases++;
+    assert.equal(JSON.parse(options.body).credential, credential);
+    if (!available) throw Error('simulated network loss');
+    return new Response('{"ok":true}');
+  };
+  const options = { root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080,
+    configHome: h.configHome, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key, request };
+  await assert.rejects(joinNode(options), { outcome: 'unknown' });
+  const receipt = await readFile(recoveryPath, 'utf8'), info = await stat(recoveryPath);
+  assert.equal(JSON.parse(receipt).credential, credential); assert(!receipt.includes(key));
+  assert.equal(info.mode & 0o077, 0); assert(info.size <= 256 * 1024);
+  const doctor = await nodeDoctor({ root: h.root });
+  assert.equal(doctor.path, '/node/node-a/'); assert.match(doctor.issues[0], /server:leave --recover/);
+  await assert.rejects(joinNode(options), /server:leave --recover/);
+  assert.equal(joins, 1); assert.equal(releases, 1); assert.equal(h.calls.length, 0);
+  available = true;
+  assert.equal((await leaveNode({ ...options, recover: true })).recovered, true);
+  assert.equal(releases, 2); assert.equal(h.calls.length, 0);
+  assert.equal(await readFile(envPath, 'utf8'), edited);
+  await assert.rejects(access(recoveryPath));
+});
+
+for (const kind of ['lost', 'malformed', 'invalid-config', 'unknown-error']) test(`join retains a diagnosable receipt after a ${kind} response without replaying enrollment`, async t => {
+  const h = await setup(t), original = await readFile(join(h.root, '.env'), 'utf8'); let requests = 0;
+  const request = async () => {
+    requests++;
+    if (kind === 'lost') throw Error('simulated response loss');
+    if (kind === 'malformed') return new Response('invalid JSON');
+    if (kind === 'unknown-error') return new Response('{"error":"durability failed","outcome":"unknown"}', { status: 503 });
+    return new Response(JSON.stringify({ ...h.joined, frp: null }));
+  };
+  const options = { root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080,
+    configHome: h.configHome, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key, request };
+  await assert.rejects(joinNode(options), { outcome: 'unknown' });
+  const doctor = await nodeDoctor({ root: h.root });
+  assert.equal(doctor.ok, false); assert.equal(doctor.origin, options.server); assert.match(doctor.nodeId, /^[a-f0-9]{32}$/);
+  if (kind === 'invalid-config') {
+    assert.match(doctor.issues[0], /server:leave --recover/);
+    await leaveNode({ ...options, recover: true, request: async url => { assert(url.endsWith('/api/leave')); return new Response('{"ok":true}'); } });
+  } else {
+    assert.match(doctor.issues[0], /尚无凭据/);
+    await assert.rejects(leaveNode({ ...options, recover: true }), /尚无凭据/);
+    await assert.rejects(joinNode(options), /server:leave --recover/);
+    assert.equal(requests, 1);
+  }
+  assert.equal(await readFile(join(h.root, '.env'), 'utf8'), original); assert.equal(h.calls.length, 0);
+});
+
+test('an explicit central rejection removes only the preparation receipt', async t => {
+  const h = await setup(t);
+  await assert.rejects(joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080,
+    configHome: h.configHome, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key,
+    request: async () => new Response('{"error":"denied","outcome":"rejected"}', { status: 401 }) }), /denied/);
+  await assert.rejects(access(join(h.root, 'data/selfhost-node/join-recovery.json')));
+  assert.equal(h.calls.length, 0);
+});
+
+test('an early same-node refresh conflict leaves the prior relay and central connection intact', async t => {
+  const h = await setup(t); let refreshing = false, releases = 0;
+  const request = async url => {
+    if (url.endsWith('/api/leave')) releases++;
+    if (refreshing && url.endsWith('/api/join')) await writeFile(join(h.root, '.env'), await readFile(join(h.root, '.env'), 'utf8') + '# operator edit\n', { mode: 0o600 });
+    return new Response(JSON.stringify(h.joined));
+  };
+  const options = { root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080,
+    configHome: h.configHome, run: h.run, install: async () => '/opt/frpc', promptKey: async () => key, request };
+  await joinNode(options); refreshing = true; h.calls.length = 0;
+  await assert.rejects(joinNode(options), /配置在接入过程中被修改/);
+  assert.equal(releases, 0);
+  assert(h.calls.every(call => call.includes('is-active') || call.includes('is-enabled')));
+  await assert.rejects(access(join(h.root, 'data/selfhost-node/join-recovery.json')));
 });
 
 test('failed center release preserves a recovery record that can be retried safely', async t => {

@@ -160,6 +160,12 @@ const panelPaths = root => ({
 const recoveryPath = root => pathFor(root, 'join-recovery.json');
 
 function validateRecovery(value) {
+  if (value?.version === 3) {
+    if (!Number.isSafeInteger(value.at) || value.at <= 0 || !validPanelTarget(value.target) ||
+      value.credential !== null && (typeof value.credential !== 'string' || !CREDENTIAL.test(value.credential)) ||
+      value.ca !== null && (typeof value.ca !== 'string' || Buffer.byteLength(value.ca) > 262144) || typeof value.keepConnection !== 'boolean') throw Error('节点接入意图无效');
+    return value;
+  }
   if (value?.version === 2) return validateTransaction(value);
   if (!value || value.version !== 1 || !Number.isSafeInteger(value.at) || value.at <= 0 || typeof value.error !== 'string' || value.error.length > 2048 || !value.before || typeof value.before !== 'object' || Array.isArray(value.before)) throw Error('节点接入恢复记录无效');
   const connection = validateConnection(value.connection);
@@ -385,23 +391,60 @@ async function joinNodeLocked({
   // Existing trust belongs to the old origin. Reuse only for that same center.
   const caBytes = caFile ? readCenterCA(caFile) : existing?.origin === serverOrigin ? before.ca : null;
   const client = centerClient(serverOrigin, caBytes || undefined, request);
-  const response = await client(serverOrigin + '/api/join', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000) });
-  let joined;
-  try { joined = await response.json(); } catch { throw Error('中心接入响应格式无效'); }
-  if (!response.ok) throw Error(joined.error || '中心拒绝节点接入（HTTP ' + response.status + '）');
-  const connection = validateConnection({ version: 1, origin: serverOrigin, slug: nodeSlug, name: joined.name, path: joined.entryBasePath, nodeId: body.node.id, mode, credential: joined.credential, proxyHost: joined.proxyHost || joined.frp?.tlsServerName, turnEndpoint: joined.turnEndpoint || null, frp: joined.frp });
+  if (!Number.isInteger(panelPort) || panelPort < 1 || panelPort > 65535 || !['desktop', 'terminal'].includes(mode)) throw Error('本机面板端口或节点模式无效');
+  const target = { origin: serverOrigin, slug: nodeSlug, nodeId: body.node.id, path: entryBasePath(nodeSlug) };
+  const panelOptions = { switchExisting, replace, previousConnection: existing, caFile: caBytes ? caPath : undefined };
+  // Validate local conflicts and unit paths before creating a central lease.
+  const preparedPanel = await planPanel(root, target, panelOptions);
+  for (const name of ['env', 'credentials', 'gateway', 'backup']) if (before[name] !== preparedPanel.before[name]) throw Error('Panel 配置在接入过程中被修改，未覆盖');
+  const unitText = serviceUnit({ frpc, config });
+  const intent = validateRecovery({ version: 3, at: Date.now(), target, credential: null, ca: caBytes, keepConnection: !!body.credential });
+  let intentText = json(intent);
+  // One private, <=256 KiB journal covers even a lost/malformed HTTP response.
+  await writeStateFile(recoveryPath(root), intentText, { expected: null });
+  let connection;
+  try {
+    let response;
+    try { response = await client(serverOrigin + '/api/join', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000) }); }
+    catch (error) {
+      if (error.outcome === 'rejected') await removeStateFile(recoveryPath(root), { expected: intentText });
+      throw error;
+    }
+    let joined;
+    try { joined = await response.json(); } catch { throw Error('中心接入响应格式无效'); }
+    if (!response.ok) {
+      // Only explicit pre-commit rejection proves that no enrollment occurred.
+      if (joined?.outcome === 'rejected') await removeStateFile(recoveryPath(root), { expected: intentText });
+      throw Error(joined?.error || '中心拒绝节点接入（HTTP ' + response.status + '）');
+    }
+    if (!joined || typeof joined.credential !== 'string' || !CREDENTIAL.test(joined.credential)) throw Error('中心接入响应缺少有效凭据');
+    intent.credential = joined.credential;
+    const acceptedText = json(intent);
+    await writeStateFile(recoveryPath(root), acceptedText, { expected: intentText, committed: () => { intentText = acceptedText; } });
+    connection = validateConnection({ version: 1, ...target, path: joined.entryBasePath, name: joined.name, mode, credential: joined.credential, proxyHost: joined.proxyHost || joined.frp?.tlsServerName, turnEndpoint: joined.turnEndpoint || null, frp: joined.frp });
+  } catch (error) {
+    // No local configuration/service has changed. Preserve an unknown receipt;
+    // never replay the join or stop the previous node to recover this stage.
+    if (await optional(recoveryPath(root), 262144) !== null) {
+      throw Object.assign(Error(error.message + '；接入结果未确认，恢复记录已保留，请运行 server:doctor'), { outcome: 'unknown' });
+    }
+    throw error;
+  }
   let recoveryText, value;
   try {
-    const panel = await planPanel(root, connection, { switchExisting, replace, previousConnection: existing, caFile: caBytes ? caPath : undefined });
+    const panel = await planPanel(root, connection, panelOptions);
     // Recheck panel snapshots captured before contacting the center.
     for (const name of ['env', 'credentials', 'gateway', 'backup']) if (before[name] !== panel.before[name]) throw Error('Panel 配置在接入过程中被修改，未覆盖');
     value = validateTransaction({ version: 2, at: Date.now(), connection, unitPath: unit, relay: previousRelay || { active: false, enabled: false }, before,
-      after: { ...panel.after, ca: caBytes, connection: json(connection), config: frpcConfig(connection, { panelPort, caFile: caBytes ? caPath : undefined }), unit: serviceUnit({ frpc, config }) } });
+      after: { ...panel.after, ca: caBytes, connection: json(connection), config: frpcConfig(connection, { panelPort, caFile: caBytes ? caPath : undefined }), unit: unitText } });
     recoveryText = json(value);
     // writeStateFile enforces the total 256 KiB bound before any configuration mutation.
-    await writeStateFile(recoveryPath(root), recoveryText, { expected: null });
+    await writeStateFile(recoveryPath(root), recoveryText, { expected: intentText });
   } catch (error) {
-    try { await releaseCentral(connection, client); }
+    try {
+      if (!intent.keepConnection) await releaseCentral(connection, client);
+      await removeStateFile(recoveryPath(root), { expected: intentText });
+    }
     catch (failure) { throw Object.assign(Error(error.message + '；中心释放未确认：' + failure.message), { outcome: 'unknown' }); }
     throw error;
   }
@@ -450,6 +493,12 @@ export async function nodeStatus({ root, run = command } = {}) {
 
 export async function nodeDoctor({ root, run = command, request = centerRequest, secureHealth = httpsHealth } = {}) {
   const recovery = await readRecovery(root), connection = await readNodeConnection(root);
+  if (recovery?.value.version === 3) {
+    const { target, credential, keepConnection } = recovery.value;
+    return { ok: false, origin: target.origin, path: target.path, nodeId: target.nodeId, issues: [credential || keepConnection
+      ? '存在未完成的中心接入，请运行 server:leave --recover；本地配置尚未改写'
+      : '中心接入结果未确认且尚无凭据；请管理员核对该节点的接入状态，恢复记录已保留，未重发接入请求'], warnings: [] };
+  }
   if (!connection) return { ok: false, issues: [recovery ? '存在未完成的中继回滚，请运行 server:leave --recover' : '尚未执行 server:join'], warnings: [] };
   const issues = [], warnings = [];
   let ca;
@@ -485,6 +534,14 @@ async function recoverNodeLocked({ root, request = centerRequest, run = command,
   const recovery = await readRecovery(root);
   if (!recovery) throw Error('没有待恢复的节点接入记录');
   const value = recovery.value;
+  if (value.version === 3) {
+    if (!value.keepConnection) {
+      if (!value.credential) throw Error('中心接入结果未确认且尚无凭据；请管理员核对节点状态，恢复记录已保留');
+      await releaseCentral({ ...value.target, credential: value.credential }, centerClient(value.target.origin, value.ca || undefined, request));
+    }
+    await removeStateFile(recoveryPath(root), { expected: recovery.text });
+    return { recovered: true, origin: value.target.origin, slug: value.target.slug };
+  }
   if (value.version === 2) {
     const failures = await rollbackTransaction(root, value, { run, request, configHome });
     if (failures.length) throw Error('恢复未完成：' + failures.join('；'));

@@ -48,7 +48,7 @@ try {
     for (const warning of result.warnings) console.log(`警告：${warning}`);
   } else if (command === 'leave') {
     const result = await leaveNode({ root, recover: values.recover === true });
-    console.log(`已停止并清理本机节点中继：${result.origin}${result.slug ? '/node/' + result.slug + '/' : ''}`);
+    console.log(`${result.recovered ? '接入恢复已完成' : '已停止并清理本机节点中继'}：${result.origin}${result.slug ? '/node/' + result.slug + '/' : ''}`);
     if (result.warning) console.log(`提示：${result.warning}`);
   } else if (command === 'status') {
     console.log(JSON.stringify(await nodeStatus({ root }), null, 2));

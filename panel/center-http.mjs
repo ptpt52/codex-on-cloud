@@ -25,6 +25,7 @@ export function centerRequest(target, { ca, timeout = 10000, ...options } = {}) 
   const url = new URL(target);
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw Error('中心地址必须使用 HTTPS');
   return new Promise((resolve, reject) => {
+    let connected = false;
     const request = (url.protocol === 'https:' ? https : http).request(url, { agent: false, ...options, ca, rejectUnauthorized: true, timeout, signal: options.signal }, response => {
       const chunks = []; let size = 0;
       response.on('data', chunk => { size += chunk.length; if (size > 16384) response.destroy(Error('中心响应超过 16 KiB')); else chunks.push(chunk); });
@@ -35,7 +36,10 @@ export function centerRequest(target, { ca, timeout = 10000, ...options } = {}) 
       response.on('error', reject);
     });
     request.on('timeout', () => request.destroy(Error('中心请求超时')));
-    request.on('error', reject); request.end(options.body);
+    // agent:false always creates a new socket. Before TCP/TLS establishment no
+    // HTTP request can have reached the center; later errors remain unknown.
+    request.on('socket', socket => socket.once(url.protocol === 'https:' ? 'secureConnect' : 'connect', () => { connected = true; }));
+    request.on('error', error => { if (!connected) error.outcome = 'rejected'; reject(error); }); request.end(options.body);
   });
 }
 
