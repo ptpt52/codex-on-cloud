@@ -3,6 +3,9 @@ import http.client
 import json
 import os
 from pathlib import Path
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -295,6 +298,146 @@ class AgentTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(self.request('POST', '/key', {'key': 'Ctrl+C'})[0], 200)
         self.assertEqual(run.call_args.args[0][-1], 'ctrl+c')
+
+
+class AgentProcessTests(unittest.TestCase):
+    """Real helper processes and HTTP; no Codex or graphical commands."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.transfer = Path(self.temp.name) / 'transfer'
+        self.transfer.mkdir()
+        self.secret = Path(self.temp.name) / 'secret'
+        self.secret.write_text('isolated-process-test-secret')
+        self.secret.chmod(0o600)
+
+    def start(self, port=None, ready=True):
+        if port is None:
+            with socket.socket() as reservation:
+                reservation.bind(('127.0.0.1', 0))
+                port = reservation.getsockname()[1]
+        env = dict(os.environ, FILE_AGENT_ONLY='1', AGENT_PORT=str(port),
+                   AGENT_SECRET_FILE=str(self.secret), TRANSFER_DIR=str(self.transfer))
+        child = subprocess.Popen([sys.executable, str(Path(agent.__file__))], env=env,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(self.stop, child)
+        if ready:
+            for _ in range(100):
+                self.assertIsNone(child.poll(), 'helper exited before becoming ready')
+                try:
+                    if self.request(port, 'GET', '/health')[0] == 200:
+                        break
+                except OSError:
+                    pass
+                time.sleep(0.02)
+            else:
+                self.fail('helper did not become ready')
+        return child, port
+
+    def stop(self, child):
+        if child.poll() is None:
+            child.terminate()
+        try:
+            child.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.communicate(timeout=3)
+
+    def request(self, port, method, path, body=None):
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
+        try:
+            connection.request(method, path, body, {'Authorization': 'Bearer ' + self.secret.read_text()})
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def pending_upload(self, port):
+        contents = b'preserved upload\n' * 4096
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=3)
+        self.addCleanup(connection.close)
+        connection.putrequest('PUT', '/files/in-progress')
+        connection.putheader('Authorization', 'Bearer ' + self.secret.read_text())
+        connection.putheader('Content-Length', str(len(contents)))
+        connection.endheaders()
+        connection.send(contents[:1024])
+        for _ in range(100):
+            pending = list(self.transfer.glob('.upload-*'))
+            if pending:
+                return connection, contents, pending[0]
+            time.sleep(0.01)
+        self.fail('upload did not create a temporary file')
+
+    def finish_upload(self, connection, contents, port):
+        connection.send(contents[1024:])
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        self.assertEqual(self.request(port, 'GET', '/files/in-progress'), (200, contents))
+        self.assertEqual(list(self.transfer.glob('.upload-*')), [])
+
+    def test_duplicate_listener_does_not_delete_an_active_upload(self):
+        first, port = self.start()
+        connection, contents, pending = self.pending_upload(port)
+        second, _ = self.start(port, ready=False)
+        second.communicate(timeout=4)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertTrue(pending.exists(), 'rejected duplicate deleted another helper upload')
+        self.assertIsNone(first.poll())
+        self.finish_upload(connection, contents, port)
+
+    def test_helpers_on_distinct_ports_share_one_upload_lock_and_preserve_pending_files(self):
+        first, port = self.start()
+        connection, contents, pending = self.pending_upload(port)
+        second, other_port = self.start()
+        self.assertTrue(pending.exists(), 'startup cleanup deleted a live upload on another port')
+        self.assertEqual(self.request(other_port, 'PUT', '/files/concurrent', b'rejected')[0], 409)
+        self.assertIsNone(first.poll())
+        self.assertIsNone(second.poll())
+        self.finish_upload(connection, contents, port)
+        self.assertEqual(self.request(other_port, 'PUT', '/files/after', b'accepted')[0], 200)
+
+    def test_crash_releases_upload_lock_and_recovery_preserves_other_directory_entries(self):
+        child, port = self.start()
+        connection, _, pending = self.pending_upload(port)
+        child.kill()
+        child.communicate(timeout=3)
+        connection.close()
+        self.assertTrue(pending.exists())
+        target = self.transfer / 'committed'
+        target.write_bytes(b'keep')
+        link = self.transfer / ('.upload-' + 'b' * 24)
+        link.symlink_to(target)
+        unrelated = self.transfer / '.upload-user-file'
+        unrelated.write_bytes(b'keep too')
+        self.start(port)
+        self.assertFalse(pending.exists(), 'interrupted helper temporary file was not recovered')
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(target.read_bytes(), b'keep')
+        self.assertEqual(unrelated.read_bytes(), b'keep too')
+        self.assertEqual(self.request(port, 'PUT', '/files/recovered', b'accepted')[0], 200)
+
+    def test_cancelled_upload_releases_the_directory_for_another_helper(self):
+        _, port = self.start()
+        connection, _, pending = self.pending_upload(port)
+        _, other_port = self.start()
+        self.assertEqual(self.request(other_port, 'PUT', '/files/concurrent', b'rejected')[0], 409)
+        connection.close()
+        for _ in range(100):
+            if not pending.exists():
+                break
+            time.sleep(0.01)
+        self.assertFalse(pending.exists())
+        self.assertEqual(self.request(other_port, 'PUT', '/files/after-cancel', b'accepted')[0], 200)
+
+    def test_recovery_bounds_directory_enumeration(self):
+        for index in range(5):
+            (self.transfer / ('.upload-' + format(index, '024x'))).touch()
+        with patch.dict(os.environ, {'FILE_AGENT_ONLY': '1'}):
+            desktop = agent.Desktop(self.secret.read_text(), self.transfer)
+        with patch.object(agent, 'MAX_DIRECTORY_ENTRIES', 3):
+            agent.recover_uploads(desktop)
+        self.assertEqual(len(list(self.transfer.iterdir())), 2)
 
 
 if __name__ == '__main__':

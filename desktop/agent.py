@@ -5,6 +5,8 @@ Runs as the desktop user, on loopback, and accepts no shell commands.
 """
 import hmac
 import hashlib
+import fcntl
+from itertools import islice
 import json
 import os
 import re
@@ -56,6 +58,27 @@ def scan_files(directory):
                 break
             entries.append({'name': item.name, 'size': info.st_size, 'modified': info.st_mtime, 'version': file_version(info)})
     return entries, truncated
+
+
+def recover_uploads(desktop):
+    # Directory locks cover creation, quota checks and cleanup across helpers,
+    # including a desktop helper sharing a workspace with a files unit.
+    # No lock file is created; process termination releases the kernel lock.
+    directory = desktop.directory()
+    try:
+        try:
+            fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return  # Another helper is receiving/committing an upload.
+        with os.scandir(directory) as entries:
+            for item in islice(entries, MAX_DIRECTORY_ENTRIES):
+                if re.fullmatch(r'\.upload-[a-f0-9]{24}', item.name) and item.is_file(follow_symlinks=False):
+                    try:
+                        os.unlink(item.name, dir_fd=directory)
+                    except FileNotFoundError:
+                        pass
+    finally:
+        os.close(directory)
 
 
 def file_version(info):
@@ -253,8 +276,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise AgentError(400, '上传配额参数无效')
                 if not desktop.upload_lock.acquire(blocking=False):
                     raise AgentError(409, '正在上传其他文件，请稍后重试')
-                temp = '.upload-' + os.urandom(12).hex()
+                temp = None
                 try:
+                    try:
+                        fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        raise AgentError(409, '正在上传其他文件，请稍后重试')
+                    temp = '.upload-' + os.urandom(12).hex()
                     def check_target():
                         try:
                             info = os.stat(name, dir_fd=directory, follow_symlinks=False)
@@ -318,10 +346,14 @@ class Handler(BaseHTTPRequestHandler):
                             raise AgentError(409, '自动改名已尝试100个名称，请修改文件名后重试')
                 finally:
                     try:
-                        os.unlink(temp, dir_fd=directory)
-                    except FileNotFoundError:
-                        pass
-                    desktop.upload_lock.release()
+                        if temp is not None:
+                            try:
+                                os.unlink(temp, dir_fd=directory)
+                            except FileNotFoundError:
+                                pass
+                    finally:
+                        fcntl.flock(directory, fcntl.LOCK_UN)
+                        desktop.upload_lock.release()
                 return self.json(200, {'ok': True, 'name': name, 'size': length})
             finally:
                 os.close(directory)
@@ -386,16 +418,14 @@ if __name__ == '__main__':
     if len(secret) < 16:
         raise SystemExit('内部接口密钥无效')
     desktop = Desktop(secret, os.environ['TRANSFER_DIR'])
-    # Recover interrupted uploads left by process termination, bounded to this directory.
-    for item in desktop.transfer_dir.glob('.upload-*'):
-        if item.is_file() and not item.is_symlink():
-            item.unlink()
-    server = AgentServer(('127.0.0.1', int(os.environ.get('AGENT_PORT', '36902'))), desktop)
-    if desktop.files_only:
-        # A crashed wrapper closes the private pipe, including outside systemd.
-        def parent_closed():
-            sys.stdin.buffer.read(1)
-            server.shutdown()
-        threading.Thread(target=parent_closed, daemon=True).start()
-    print('终端与文件内部接口已启动' if desktop.terminal_only else '桌面内部接口已启动', flush=True)
-    server.serve_forever()
+    # Reject a duplicate listener before touching any upload temporary file.
+    with AgentServer(('127.0.0.1', int(os.environ.get('AGENT_PORT', '36902'))), desktop) as server:
+        recover_uploads(desktop)
+        if desktop.files_only:
+            # A crashed wrapper closes the private pipe, including outside systemd.
+            def parent_closed():
+                sys.stdin.buffer.read(1)
+                server.shutdown()
+            threading.Thread(target=parent_closed, daemon=True).start()
+        print('终端与文件内部接口已启动' if desktop.terminal_only else '桌面内部接口已启动', flush=True)
+        server.serve_forever()
