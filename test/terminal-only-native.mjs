@@ -237,8 +237,8 @@ try {
     if (systemd) {
       for (const pid of taskOwners.keys()) await until(async () => !await taskAlive(pid), 'stopping host must kill task ' + pid);
       host = launch('native/terminal-host.mjs');
-      await until(async () => { try { return (await tmux(['list-panes', '-t', '=codex', '-F', '#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'second terminal host did not start');
-      const pid = Number((await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim());
+      await until(async () => { try { return (await tmux(['list-panes', '-t', '=codex:0.0', '-F', '#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'second terminal host did not start');
+      const pid = Number((await tmux(['display-message', '-p', '-t', '=codex:0.0', '#{pane_pid}'])).stdout.trim());
       await rememberTask(pid);
       const hostGroup = await readFile('/proc/' + pid + '/cgroup', 'utf8'); assert.ok(hostGroup.includes(host.unit));
       await exec('systemctl', ['--user', 'kill', '--kill-who=main', '--signal=KILL', host.unit], { timeout: 3000, maxBuffer: 4096 });
@@ -249,13 +249,15 @@ try {
     await writeFile(join(bin,'python3'),'#!/no-such-codex-test-interpreter\n',{mode:0o700});
     const originalPath=env.PATH;env.PATH=bin;files=launch('native/file-agent.mjs');host=launch('native/terminal-host.mjs');env.PATH=originalPath;
     await until(()=>files.exitCode!==null,'failed file helper did not exit');assert.notEqual(files.exitCode,0);
-    await until(async () => { try { return (await tmux(['list-panes','-t','=codex','-F','#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'file helper failure must not prevent task host startup');
+    // list-panes takes a window target: bare '=codex' can still resolve the
+    // codex-host keeper before the main session exists. Require its exact pane.
+    await until(async () => { try { return (await tmux(['list-panes','-t','=codex:0.0','-F','#{pane_pid}'])).stdout.trim().length > 0; } catch { return false; } }, 'file helper failure must not prevent task host startup');
     assert.equal(host.exitCode,null);
-    const survivor = (await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim();
+    const survivor = (await tmux(['display-message', '-p', '-t', '=codex:0.0', '#{pane_pid}'])).stdout.trim();
     await tmux(['kill-session', '-t', '=codex-host']);
     await new Promise(resolve => setTimeout(resolve, 3500));
     assert.equal(host.exitCode, null, 'a missing keeper must not terminate surviving user tasks');
-    assert.equal((await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{pane_pid}'])).stdout.trim(), survivor);
+    assert.equal((await tmux(['display-message', '-p', '-t', '=codex:0.0', '#{pane_pid}'])).stdout.trim(), survivor);
     await tmux(['kill-server']);
     await until(() => host.exitCode !== null, 'the task host must notice its owned tmux process exiting');
     assert.equal(host.exitCode, 1, 'an ended server is reported without starting replacement tasks');
