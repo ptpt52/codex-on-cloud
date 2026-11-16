@@ -15,13 +15,17 @@ async function login(page, app, { legacy = false } = {}) {
     let terminalConstructor;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => terminalConstructor, set: Native => {
       terminalConstructor = class extends Native {
-        constructor(...args) { super(...args); window.relayTerminal = this; window.heldRender = []; }
-        write(data, callback) { super.write(data, () => {
-          if (parent.holdRender && callback) {
-            if (window.heldRender.length >= 8) throw Error('test render bound');
-            window.heldRender.push(callback);
-          } else callback?.();
-        }); }
+        constructor(...args) { super(...args); window.relayTerminal = this; window.heldRender = []; this.testPendingRenders = 0; }
+        write(data, callback) {
+          if (callback) this.testPendingRenders++;
+          const finish = () => { if (callback) this.testPendingRenders--; callback?.(); };
+          super.write(data, () => {
+            if (parent.holdRender && callback) {
+              if (window.heldRender.length >= 8) throw Error('test render bound');
+              window.heldRender.push(finish);
+            } else finish();
+          });
+        }
       };
     } });
     const Native = WebSocket;
@@ -236,7 +240,7 @@ test('relay switches reject composition and pending input without queuing a late
   } finally { release(); await app.close(); }
 });
 
-test('switching a relay retires an old pending direct offer and later upgrades only the confirmed new target', async ({ page }) => {
+for (const delayedRender of [false, true]) test(`switching a relay retires an old pending direct offer and later upgrades only the confirmed new target${delayedRender ? ' with delayed rendering' : ''}`, async ({ page }) => {
   const app = await create({ webrtc: true }); let release, entered;
   const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; }), offers = [];
   try {
@@ -252,24 +256,55 @@ test('switching a relay retires an old pending direct offer and later upgrades o
     await frame.evaluate(async () => {
       const { controlDecoder } = await import('/control.js');
       const peer = window.relayPeers.at(-1), channel = peer.streamChannel;
-      let sent = 0, confirmed = 0, invalid = false;
+      let sent = 0, confirmed = 0, invalid = false, pendingOutput = 0, outputText = '';
       const fail = () => { invalid = true; };
-      const outgoing = controlDecoder(value => { if (value.type === 'input') sent = value.id; }, fail);
-      const incoming = controlDecoder(value => { if (value.type === 'input-ack') confirmed = value.id; }, fail);
+      const text = new TextDecoder('utf-8', { fatal: true });
+      const bytes = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
+      const outgoing = controlDecoder(value => {
+        if (value.type !== 'input') return;
+        sent = value.id;
+        // This case sends only small, single-part terminal records. Count
+        // consumption ACKs as well as paste/resize records before losing a path.
+        if (value.parts !== 1) throw Error('unexpected multipart test input');
+        const record = JSON.parse(new TextDecoder().decode(bytes(value.data)));
+        if (record.type === 'ack') pendingOutput = Math.max(0, pendingOutput - record.bytes);
+      }, fail);
+      const incoming = controlDecoder(value => {
+        if (value.type === 'input-ack') confirmed = value.id;
+        if (value.type !== 'chunk') return;
+        outputText += text.decode(bytes(value.data), { stream: true });
+        if (outputText.length > 128 * 1024) throw Error('test output buffer bound');
+        let newline;
+        while ((newline = outputText.indexOf('\n')) >= 0) {
+          const record = JSON.parse(outputText.slice(0, newline)); outputText = outputText.slice(newline + 1);
+          if (record.type === 'output') pendingOutput += bytes(record.data).length;
+        }
+      }, fail);
       const send = channel.send.bind(channel);
       channel.send = data => { outgoing.push(data); send(data); };
       channel.addEventListener('message', event => incoming.push(event.data));
+      window.directInputConfirmed = () => sent > 0 && confirmed >= sent;
       window.closeConfirmedDirect = () => {
         if (invalid) throw Error('invalid stream observation');
-        if (!sent || confirmed < sent) return false;
+        if (!sent || confirmed < sent || pendingOutput || window.relayTerminal.testPendingRenders) return false;
         peer.close(); return true;
       };
     });
-    await openInput(page); await page.locator('#mobile-input').fill('新目标直连'); await page.locator('#paste-button').click();
+    await openInput(page); await page.locator('#mobile-input').fill('新目标直连');
+    if (delayedRender) await page.evaluate(() => { window.holdRender = true; });
+    await page.locator('#paste-button').click();
     await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
-    // Paste completion can precede resize/control ACKs caused by the input
-    // panel. Exercise idle fallback only after every sent record is confirmed;
-    // closing with unknown input correctly requires a new logical session.
+    if (delayedRender) {
+      await expect.poll(() => frame.evaluate(() => window.heldRender.length)).toBeGreaterThan(0);
+      await expect.poll(() => frame.evaluate(() => window.directInputConfirmed())).toBe(true);
+      // Input confirmation alone cannot establish idle: the echo still has
+      // an intentionally withheld render/consumption acknowledgment.
+      expect(await frame.evaluate(() => window.closeConfirmedDirect())).toBe(false);
+      await frame.evaluate(() => { parent.holdRender = false; for (const done of window.heldRender.splice(0)) done(); });
+    }
+    // Paste completion can precede rendering and its batched consumption ACK.
+    // Exercise idle fallback after both directions drain; closing with unknown
+    // input correctly requires a new logical session and is covered separately.
     await expect.poll(() => frame.evaluate(() => window.closeConfirmedDirect())).toBe(true);
     await expect(page.locator('#diag-transport')).toContainText('WebSocket'); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     expect(await page.evaluate(() => window.relayConnections)).toBe(1); expect(app.terminalConnections).toBe(2);
