@@ -130,9 +130,12 @@ jobs:
           - target: firefox
             engine: firefox
             projects: --project=firefox-desktop
-          - target: webkit-desktop
+          - target: webkit-desktop-1
             engine: webkit
-            projects: --project=webkit-desktop
+            projects: --project=webkit-desktop --shard=1/2
+          - target: webkit-desktop-2
+            engine: webkit
+            projects: --project=webkit-desktop --shard=2/2
           - target: webkit-phone-1
             engine: webkit
             projects: --project=webkit-phone --shard=1/2
@@ -162,9 +165,9 @@ jobs:
       - name: Install CJK fonts for actual mixed-script terminal metrics
         run: sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Cross-browser compatibility
-        # Mobile WebKit exceeds 30 minutes as a single serial suite. Keep all
-        # cases in two shards with one worker each; per-test deadlines and
-        # the 45-minute job bound still apply.
+        # WebKit can exceed 30 minutes as a single serial suite. Keep all
+        # desktop/mobile cases in two shards with one worker each. Per-test
+        # deadlines and the 45-minute job bound still apply.
         timeout-minutes: 30
         run: npm run test:compat -- ${{ matrix.projects }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
