@@ -29,7 +29,7 @@ const UPDATE_FILES = [
   ...SERVICES.map(file => join('/etc/systemd/system', file)), CERT_HOOK,
 ];
 const updateOptions = () => ({ directory: join(ROOT, 'update-backup'), files: UPDATE_FILES,
-  application: { current: join(ROOT, 'app'), previous: join(ROOT, 'app.previous'), failed: join(ROOT, 'app.failed') }, services: SERVICES, run: command });
+  application: { current: join(ROOT, 'app'), previous: join(ROOT, 'app.previous'), failed: join(ROOT, 'app.failed') }, services: SERVICES, applicationServices: ['codex-selfhost-center.service', 'codex-selfhost-frps.service'], run: command });
 const ARCHITECTURES = {
   x64: { node: 'x64', nodeSha: '48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75', frp: 'amd64', frpArchiveSha: 'daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804', frpsSha: '4ad311e0630cf12945041143b926f515458836e896ff93c253d43c98cf304b89' },
   arm64: { node: 'arm64', nodeSha: 'eb187837a2230d4047161ac0be008584e16b46f726e9c9490ee35dc6b17d9ba8', frp: 'arm64', frpArchiveSha: '02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf', frpsSha: '07d0a010dc60ba759d857365307a89dce1df215c5cdddee92ce355140461bf18' },
@@ -178,7 +178,7 @@ async function rollbackApplication() {
   if (!(await command('test', ['-d', previous])).ok) throw Error('没有可回滚的上一版中心应用');
   const envText = await readFile(join(ETC, 'server.env'), 'utf8'), domain = envText.match(/^SELFHOST_PUBLIC_HOST=(.+)$/m)?.[1];
   if (!domain) throw Error('中心域名配置丢失，未重启回滚应用');
-  const update = await serverUpdate(updateOptions());
+  const update = await serverUpdate({ ...updateOptions(), applicationOnly: true });
   try {
     await update.applicationRollingBack();
     await rm(failed, { recursive: true, force: true }); await rename(app, failed); await rename(previous, app);

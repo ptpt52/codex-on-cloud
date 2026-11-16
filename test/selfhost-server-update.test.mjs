@@ -111,3 +111,20 @@ test('committed application rollback keeps the selected previous version on reco
   assert.equal(await readFile(join(h.application.failed, 'version'), 'utf8'), 'old');
   await assert.rejects(stat(h.directory), { code: 'ENOENT' });
 });
+
+for (const scoped of [false, true]) test(`${scoped ? 'scoped' : 'legacy'} application rollback preserves renewed certificates and never stops edge or TURN services during recovery`, async t => {
+  const h = await setup(t); await mkdir(h.application.previous); await writeFile(join(h.application.previous, 'version'), 'previous');
+  const options = { ...h, services: ['center', 'frps', 'edge', 'turn'], applicationServices: ['center', 'frps'] };
+  const transaction = await serverUpdate({ ...options, applicationOnly: scoped }); await transaction.applicationRollingBack();
+  await rename(h.application.current, h.application.failed); await rename(h.application.previous, h.application.current);
+  await writeFile(h.files[0], 'renewed certificate configuration', { mode: 0o640 });
+  const manifest = JSON.parse(await readFile(join(h.directory, 'manifest.json'), 'utf8'));
+  if (scoped) { assert.equal(manifest.applicationOnly, true); assert.deepEqual(manifest.files, []); assert.deepEqual(manifest.services.map(value => value.name), ['center', 'frps']); }
+  h.calls.length = 0;
+  // A fresh recover command must infer the restricted scope from the journal.
+  await (await serverUpdate({ ...options, recover: true })).rollback();
+  assert.equal(await readFile(h.files[0], 'utf8'), 'renewed certificate configuration');
+  assert.equal(await readFile(join(h.application.current, 'version'), 'utf8'), 'old');
+  assert(h.calls.some(args => args.join(' ') === 'restart center frps'));
+  assert(h.calls.every(args => !args.includes('edge') && !args.includes('turn')));
+});

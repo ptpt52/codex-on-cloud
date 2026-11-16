@@ -26,8 +26,10 @@ async function bounded(path, limit) {
   } finally { await fd.close(); }
 }
 
-export async function serverUpdate({ directory, files, application, services, run, recover = false }) {
+export async function serverUpdate({ directory, files, application, services, applicationServices = services, applicationOnly = false, run, recover = false }) {
   if (files.length > 32 || new Set(files).size !== files.length) throw Error('更新备份路径无效');
+  if (!Array.isArray(applicationServices) || new Set(applicationServices).size !== applicationServices.length || applicationServices.some(name => !services.includes(name))) throw Error('应用恢复服务范围无效');
+  const applicationScope = () => { files = []; services = applicationServices; };
   const manifestFile = join(directory, 'manifest.json'); let state;
   const save = async (published = () => {}) => {
     const bytes = JSON.stringify(state); if (Buffer.byteLength(bytes) > MAX_MANIFEST) throw Error('更新恢复记录过大');
@@ -39,16 +41,26 @@ export async function serverUpdate({ directory, files, application, services, ru
     const stat = await info(directory);
     if (!stat?.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || stat.mode & 0o077) throw Error('更新备份目录无效');
     state = JSON.parse(await bounded(manifestFile, MAX_MANIFEST));
+    if (state.applicationOnly !== undefined && typeof state.applicationOnly !== 'boolean') throw Error('更新恢复范围无效');
+    if (state.applicationOnly) applicationScope();
     if (typeof state.committed !== 'boolean') throw Error('更新提交状态无效');
     if (state.rollbackTarget !== undefined && (!validIdentity(state.rollbackTarget) || !validIdentity(state.applicationBefore))) throw Error('应用回滚恢复记录无效');
     if (state.version !== 1 || !Array.isArray(state.files) || state.files.length !== files.length || state.files.some((entry, index) => entry.path !== files[index] || typeof entry.exists !== 'boolean' || entry.exists && (!/^[a-f0-9]{64}$/.test(entry.hash) || !Number.isInteger(entry.size) || entry.size < 0 || entry.size > MAX_FILE || !Number.isInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o777 || !Number.isInteger(entry.uid) || entry.uid < 0 || !Number.isInteger(entry.gid) || entry.gid < 0)) || state.files.reduce((sum, entry) => sum + (entry.size || 0), 0) > MAX_TOTAL || typeof state.applicationChanged !== 'boolean' || state.applicationBefore !== null && (!Number.isSafeInteger(state.applicationBefore?.dev) || !Number.isSafeInteger(state.applicationBefore?.ino)) || !Array.isArray(state.services) || state.services.length !== services.length || state.services.some((entry, index) => entry.name !== services[index] || typeof entry.active !== 'boolean' || typeof entry.enabled !== 'boolean')) throw Error('更新恢复记录无效');
+    if (state.rollbackTarget && !state.applicationOnly && !state.committed) {
+      // Earlier application-rollback journals captured all config/services.
+      // Validate the old record first, then durably narrow its recovery scope.
+      state.files = []; state.services = applicationServices.map(name => state.services.find(entry => entry.name === name));
+      state.applicationOnly = true; applicationScope(); await save();
+    }
   } else {
+    if (applicationOnly) applicationScope();
     if (await info(directory)) throw Error('存在未完成的服务器更新，请先运行 selfhost-server.sh recover');
     await mkdir(directory, { mode: 0o700 });
     try {
       const app = await info(application.current);
       if (app && (!app.isDirectory() || app.isSymbolicLink())) throw Error('应用目录无效');
       state = { version: 1, files: [], services: [], committed: false, applicationChanged: false, applicationBefore: app ? { dev: app.dev, ino: app.ino } : null };
+      if (applicationOnly) state.applicationOnly = true;
       let total = 0;
       for (const [index, path] of files.entries()) {
         const stat = await info(path);
