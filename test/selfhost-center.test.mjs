@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSelfhostCenter } from '../selfhost/center.mjs';
+import { joinNode, leaveNode, nodeDoctor } from '../selfhost/node.mjs';
+import { centerRequest } from '../panel/center-http.mjs';
 import { createAuth } from '../panel/auth.mjs';
 import { createHmac } from 'node:crypto';
 
@@ -42,6 +44,30 @@ async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
   };
   return { center, directory, origin, port, closed, request, login, legacyToken, get cookie() { return cookie; }, get csrf() { return csrf; } };
 }
+
+test('a lost enrollment response is resolved over authenticated HTTP without repeating the join or changing node services', async t => {
+  const h = await setup(t), key = await h.center.registry.createKey({ name: 'Lost response', slug: 'receipt' });
+  const root = join(h.directory, 'node'); await mkdir(root);
+  const env = 'PUBLIC_ORIGIN=http://127.0.0.1:36080\n'; await writeFile(join(root, '.env'), env, { mode: 0o600 });
+  let joins = 0, services = 0;
+  const options = { root, server: h.origin, slug: key.slug, mode: 'terminal', panelPort: 36080, configHome: join(root, 'config'),
+    install: async () => '/opt/isolated-frpc', promptKey: async () => key.key,
+    run: async () => { services++; return { ok: true, stdout: 'active' }; },
+    request: async (url, init) => { const response = await centerRequest(url, init); if (url.endsWith('/api/join')) { joins++; throw Error('simulated lost response'); } return response; } };
+  await assert.rejects(joinNode(options), { outcome: 'unknown' });
+  const journal = join(root, 'data/selfhost-node/join-recovery.json'), before = await readFile(journal, 'utf8'), receipt = JSON.parse(before);
+  assert.equal(receipt.credential, null); assert(h.center.registry.sessions.has(key.slug));
+  const diagnostic = await nodeDoctor({ root, resolve: true, request: centerRequest });
+  assert.equal(diagnostic.enrollment.state, 'accepted'); assert.equal(diagnostic.operationId, receipt.operation.id);
+  assert(!JSON.stringify(diagnostic).includes(receipt.operation.proof)); assert(!JSON.stringify(diagnostic).includes(h.center.registry.enrollmentResult({ ...receipt.target, mode: receipt.mode, operation: receipt.operation }).credential));
+  assert.equal(await readFile(journal, 'utf8'), before);
+  const denied = await h.request('/api/join-result', { method: 'POST', authenticated: false, body: { slug: key.slug, nodeId: receipt.target.nodeId, mode: receipt.mode, operation: { ...receipt.operation, proof: 'cocj_' + 'x'.repeat(43) } } });
+  assert.equal(denied.status, 404);
+  assert.equal((await leaveNode({ ...options, recover: true, request: centerRequest })).recovered, true);
+  assert.equal(joins, 1); assert.equal(services, 0); assert(!h.center.registry.sessions.has(key.slug));
+  assert.equal(await readFile(join(root, '.env'), 'utf8'), env);
+  await assert.rejects(readFile(journal), { code: 'ENOENT' });
+});
 
 for (const action of ['create', 'update', 'reissue', 'revoke', 'disconnect']) test(`logout rejects a delayed administrator ${action} request without changing registry state`, async t => {
   const h = await setup(t); await h.login();

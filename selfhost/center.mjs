@@ -164,6 +164,10 @@ export async function createSelfhostCenter({
       const joined = await registry.join({ ...body, source: client }, { valid });
       return reply(res, 200, { ...joined, origin: parsed.origin, proxyHost: publicHost, turnEndpoint: turnSecret ? parsed.origin + '/api/turn-credentials' : null, frp: { serverAddr: publicHost, serverPort: frpServerPort, tlsServerName: frpTlsServerName, token: frpToken } });
     }
+    if (path === '/api/join-result' && req.method === 'POST') {
+      rate(joinRequests, clientAddress(req), 60, 60_000);
+      return reply(res, 200, registry.enrollmentResult(await jsonBody(req, 4096)));
+    }
     if (path === '/api/turn-credentials' && req.method === 'POST') {
       if (!turnSecret) throw selfhostError(503, 'TURN 尚未启用');
       rate(turnRequests, clientAddress(req), 120, 60_000);

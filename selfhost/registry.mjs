@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { readStateFile, writeStateFile } from '../scripts/state-files.mjs';
 import {
   CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, displayName, entryBasePath, equalHash, keyExpiration, nodeIdentity,
-  proxyName, publicKey, randomToken, selfhostError, slug, tokenHash,
+  enrollmentCredential, enrollmentOperation, proxyName, publicKey, randomToken, selfhostError, slug, tokenHash,
 } from './protocol.mjs';
 
 function normalizeStored(value) {
@@ -198,6 +198,7 @@ export class SelfhostRegistry {
     if (!input || typeof input !== 'object' || Array.isArray(input) || input.version !== 1) throw selfhostError(400, '接入请求无效');
     const nodeSlug = slug(input.slug), nodeId = nodeIdentity(input.node?.id);
     if (!['desktop', 'terminal'].includes(input.node?.mode)) throw selfhostError(400, '节点模式无效');
+    if (input.operation !== undefined) { enrollmentOperation(input.operation); if (typeof input.key !== 'string') throw selfhostError(400, '接入操作编号需要授权 key'); }
     const key = value.keys.find(item => item.slug === nodeSlug);
     if (!key) throw selfhostError(401, '授权不存在');
     if (this.keyStatus(key, now) !== 'ready') throw selfhostError(401, this.keyStatus(key, now) === 'expired' ? '授权已过期' : '授权已撤销');
@@ -212,14 +213,18 @@ export class SelfhostRegistry {
 
   joinPlan(input, draft, now, close) {
     const { nodeSlug, nodeId, key } = this.joinAuthorization(input, draft.value, now);
-    const credential = typeof input.key === 'string' ? this.random('cocn_') : input.credential;
+    const operation = input.operation, credential = typeof input.key === 'string' ? operation ? enrollmentCredential(operation, nodeId, input.node.mode) : this.random('cocn_') : input.credential;
+    const result = () => ({ value: { version: 1, slug: nodeSlug, name: key.name, entryBasePath: entryBasePath(nodeSlug), credential, expiresAt: key.expiresAt, sessionId: key.id }, close });
+    if (operation && equalHash(key.credentialHash, tokenHash(credential))) {
+      return result(); // Retrieve the same receipt without creating a new lease.
+    }
     if (typeof input.key === 'string') key.credentialHash = tokenHash(credential);
     let current = draft.sessions.get(nodeSlug);
     if (current?.status === 'grace' && current.graceUntil <= now) { draft.sessions.delete(nodeSlug); current = undefined; }
     // HTTP configuration refresh does not create another live frp connection.
     // Keep its run ID and online status; frp Login still rejects a second peer.
     if (current?.status === 'online' && typeof input.key !== 'string' && current.nodeId === nodeId && current.mode === input.node.mode && equalHash(current.credentialHash, key.credentialHash)) {
-      return { value: { version: 1, slug: nodeSlug, name: key.name, entryBasePath: entryBasePath(nodeSlug), credential, expiresAt: key.expiresAt, sessionId: key.id }, close };
+      return result();
     }
     const graceMatch = current?.status === 'grace' && current.graceUntil > now && equalHash(key.credentialHash, current.credentialHash);
     const keyRecovery = typeof input.key === 'string' && (!current || current.status === 'grace');
@@ -230,7 +235,16 @@ export class SelfhostRegistry {
       authenticatedAt: null, onlineAt: null, lastSeenAt: now, graceUntil: null, runId: '',
     };
     draft.sessions.set(nodeSlug, session); this.audit(draft.value, 'node_joined', key, now);
-    return { value: { version: 1, slug: nodeSlug, name: key.name, entryBasePath: entryBasePath(nodeSlug), credential, expiresAt: key.expiresAt, sessionId: key.id }, close };
+    return result();
+  }
+
+  enrollmentResult(input = {}) {
+    const nodeSlug = slug(input.slug), nodeId = nodeIdentity(input.nodeId), operation = enrollmentOperation(input.operation);
+    if (!['desktop', 'terminal'].includes(input.mode)) throw selfhostError(400, '节点模式无效');
+    const item = this.value.keys.find(key => key.slug === nodeSlug), credential = enrollmentCredential(operation, nodeId, input.mode);
+    if (!item || this.keyStatus(item, this.now()) !== 'ready' || !equalHash(item.credentialHash, tokenHash(credential))) throw selfhostError(404, '接入结果无法确认', 'enrollment_unknown');
+    // Read only committed state, with no mutation or retained query queue.
+    return { version: 1, state: 'accepted', operationId: operation.id, slug: nodeSlug, nodeId, mode: input.mode, credential };
   }
 
   async join(input, options) {

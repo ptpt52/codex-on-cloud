@@ -85,6 +85,33 @@ test('a failed recovery query releases its slot without poisoning later writes o
   assert.equal(await registry.authorizeLogin({ metas: node.metas, runId: 'candidate', proxyOnline: async () => false }), true);
 });
 
+test('private enrollment receipts survive restart and repeated operations do not replace a live lease', async t => {
+  const { registry, directory } = await setup(t), key = await registry.createKey({ name: 'Receipt node', slug: 'receipt' });
+  const operation = { id: 'd'.repeat(32), proof: 'cocj_' + 'p'.repeat(43) };
+  const input = { version: 1, slug: key.slug, key: key.key, operation, node: { id: 'a'.repeat(32), mode: 'terminal' } };
+  const joined = await registry.join(input), metas = metadata(joined.credential, key.slug, input.node.id);
+  await registry.authorizeLogin({ metas, runId: 'live' });
+  await registry.authorizeProxy({ metas, runId: 'live', name: 'node-receipt', type: 'http', customDomains: ['desk.example.test'], locations: ['/node/receipt/'] });
+  const session = structuredClone(registry.sessions.get(key.slug)), revision = registry.value.revision;
+  assert.equal((await registry.join(input)).credential, joined.credential);
+  assert.deepEqual(registry.sessions.get(key.slug), session); assert.equal(registry.value.revision, revision);
+  const query = { slug: key.slug, nodeId: input.node.id, mode: input.node.mode, operation };
+  assert.equal(registry.enrollmentResult(query).credential, joined.credential);
+  for (const changed of [{ ...query, nodeId: 'b'.repeat(32) }, { ...query, mode: 'desktop' }, { ...query, operation: { ...operation, id: 'f'.repeat(32) } }, { ...query, operation: { ...operation, proof: 'cocj_' + 'x'.repeat(43) } }]) assert.throws(() => registry.enrollmentResult(changed), { status: 404 });
+  await assert.rejects(registry.join({ ...input, node: { ...input.node, id: 'b'.repeat(32) } }), { status: 409 });
+  const disk = await readFile(join(directory, 'state.json'), 'utf8');
+  assert.deepEqual(Object.keys(JSON.parse(disk).keys[0]).sort(), ['createdAt', 'credentialHash', 'expiresAt', 'id', 'keyHash', 'name', 'revokedAt', 'slug']);
+  for (const secret of [key.key, operation.proof, joined.credential]) assert(!disk.includes(secret));
+  assert(Buffer.byteLength(disk) <= SELFHOST_LIMITS.stateBytes);
+  assert(!JSON.stringify(await registry.list()).includes(operation.proof));
+  const reopened = await new SelfhostRegistry({ file: join(directory, 'state.json') }).open();
+  assert.equal(reopened.enrollmentResult(query).credential, joined.credential);
+  await registry.reissueKey(key.id, { neverExpires: true });
+  assert.throws(() => registry.enrollmentResult(query), { status: 404 });
+  const reissued = await new SelfhostRegistry({ file: join(directory, 'state.json') }).open();
+  assert.throws(() => reissued.enrollmentResult(query), { status: 404 });
+});
+
 test('registry admission bounds pending writes and reserves space for revocation', async t => {
   const { registry } = await setup(t), key = await registry.createKey({ name: 'Revocable', slug: 'revocable' });
   let release; registry.queue = new Promise(resolve => { release = resolve; });

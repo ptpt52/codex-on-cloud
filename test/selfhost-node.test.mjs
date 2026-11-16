@@ -293,7 +293,7 @@ test('early compensation failure keeps a private receipt and recovery preserves 
     if (url.endsWith('/api/join')) {
       joins++;
       const intent = await readFile(recoveryPath, 'utf8');
-      assert.equal(JSON.parse(intent).version, 3); assert(!intent.includes(key));
+      assert.equal(JSON.parse(intent).version, 4); assert(!intent.includes(key));
       assert.equal(JSON.parse(intent).target.nodeId, JSON.parse(options.body).node.id);
       await writeFile(envPath, edited, { mode: 0o600 });
       return new Response(JSON.stringify(h.joined));
@@ -322,7 +322,8 @@ test('early compensation failure keeps a private receipt and recovery preserves 
 
 for (const kind of ['lost', 'malformed', 'invalid-config', 'unknown-error']) test(`join retains a diagnosable receipt after a ${kind} response without replaying enrollment`, async t => {
   const h = await setup(t), original = await readFile(join(h.root, '.env'), 'utf8'); let requests = 0;
-  const request = async () => {
+  const request = async url => {
+    if (url.endsWith('/api/join-result')) return new Response('{}', { status: 404 });
     requests++;
     if (kind === 'lost') throw Error('simulated response loss');
     if (kind === 'malformed') return new Response('invalid JSON');

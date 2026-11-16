@@ -9,7 +9,8 @@ import { parseEnv, promisify } from 'node:util';
 import { readStateFile, removeStateFile, writeStateFile } from '../scripts/state-files.mjs';
 import { acquireDeploymentLease } from '../scripts/deployment-lease.mjs';
 import { installFrpc } from './frpc.mjs';
-import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, entryBasePath, slug } from './protocol.mjs';
+import { queryEnrollment } from './enrollment.mjs';
+import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, enrollmentOperation, entryBasePath, randomToken, slug } from './protocol.mjs';
 
 const exec = promisify(execFile);
 export const NODE_SERVICE = 'codex-cloud-selfhost-node.service';
@@ -161,10 +162,11 @@ const panelPaths = root => ({
 const recoveryPath = root => pathFor(root, 'join-recovery.json');
 
 function validateRecovery(value) {
-  if (value?.version === 3) {
+  if ([3, 4].includes(value?.version)) {
     if (!Number.isSafeInteger(value.at) || value.at <= 0 || !validPanelTarget(value.target) ||
       value.credential !== null && (typeof value.credential !== 'string' || !CREDENTIAL.test(value.credential)) ||
       value.ca !== null && (typeof value.ca !== 'string' || Buffer.byteLength(value.ca) > 262144) || typeof value.keepConnection !== 'boolean') throw Error('节点接入意图无效');
+    if (value.version === 4 && value.operation !== null) enrollmentOperation(value.operation);
     return value;
   }
   if (value?.version === 2) return validateTransaction(value);
@@ -385,7 +387,10 @@ async function joinNodeLocked({
   const previousRelay = existing ? await relayState(run) : null;
   const replacingRelay = !!previousRelay && !same;
   if (same && !reauthorize) body.credential = existing.credential;
-  else { const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key; }
+  else {
+    const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key;
+    body.operation = { id: randomBytes(16).toString('hex'), proof: randomToken('cocj_') };
+  }
   const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), unit = servicePath(configHome);
   const caPath = pathFor(root, 'frps-ca.pem'), paths = transactionPaths(root, configHome), before = {};
   for (const [name, limit] of Object.entries(transactionLimits)) before[name] = await optional(paths[name], limit);
@@ -399,7 +404,7 @@ async function joinNodeLocked({
   const preparedPanel = await planPanel(root, target, panelOptions);
   for (const name of ['env', 'credentials', 'gateway', 'backup']) if (before[name] !== preparedPanel.before[name]) throw Error('Panel 配置在接入过程中被修改，未覆盖');
   const unitText = serviceUnit({ frpc, config });
-  const intent = validateRecovery({ version: 3, at: Date.now(), target, credential: null, ca: caBytes, keepConnection: !!body.credential });
+  const intent = validateRecovery({ version: 4, at: Date.now(), target, mode, credential: null, ca: caBytes, keepConnection: !!body.credential, operation: body.operation || null });
   let intentText = json(intent);
   // One private, <=256 KiB journal covers even a lost/malformed HTTP response.
   await writeStateFile(recoveryPath(root), intentText, { expected: null });
@@ -492,13 +497,21 @@ export async function nodeStatus({ root, run = command } = {}) {
   return { joined: true, origin: connection.origin, slug: connection.slug, path: connection.path, mode: connection.mode, service: active.stdout || 'inactive', panel: panel.stdout || 'inactive' };
 }
 
-export async function nodeDoctor({ root, run = command, request = centerRequest, secureHealth = httpsHealth } = {}) {
+export async function nodeDoctor({ root, run = command, request = centerRequest, secureHealth = httpsHealth, resolve = false } = {}) {
   const recovery = await readRecovery(root), connection = await readNodeConnection(root);
-  if (recovery?.value.version === 3) {
+  if ([3, 4].includes(recovery?.value.version)) {
     const { target, credential, keepConnection } = recovery.value;
-    return { ok: false, origin: target.origin, path: target.path, nodeId: target.nodeId, issues: [credential || keepConnection
+    let result;
+    if (resolve && !credential && !keepConnection) {
+      try { result = await queryEnrollment(recovery.value, { request }); }
+      catch { result = { state: 'unknown', reason: 'query_failed' }; }
+    }
+    return { ok: false, origin: target.origin, path: target.path, nodeId: target.nodeId,
+      ...(recovery.value.operation ? { operationId: recovery.value.operation.id } : {}),
+      ...(result ? { enrollment: { state: result.state, ...(result.reason ? { reason: result.reason } : {}) } } : {}),
+      issues: [credential || keepConnection || result?.state === 'accepted'
       ? '存在未完成的中心接入，请运行 server:leave --recover；本地配置尚未改写'
-      : '中心接入结果未确认且尚无凭据；请管理员核对该节点的接入状态，恢复记录已保留，未重发接入请求'], warnings: [] };
+      : '中心接入结果未确认且尚无凭据；可运行 server:doctor --resolve 查询，或请管理员核对状态；恢复记录已保留，未重发接入请求'], warnings: [] };
   }
   if (!connection) return { ok: false, issues: [recovery ? '存在未完成的中继回滚，请运行 server:leave --recover' : '尚未执行 server:join'], warnings: [] };
   const issues = [], warnings = [];
@@ -532,12 +545,17 @@ export async function leaveNode(options = {}) {
 }
 
 async function recoverNodeLocked({ root, request = centerRequest, run = command, configHome } = {}) {
-  const recovery = await readRecovery(root);
+  let recovery = await readRecovery(root);
   if (!recovery) throw Error('没有待恢复的节点接入记录');
-  const value = recovery.value;
-  if (value.version === 3) {
+  let value = recovery.value;
+  if ([3, 4].includes(value.version)) {
     if (!value.keepConnection) {
-      if (!value.credential) throw Error('中心接入结果未确认且尚无凭据；请管理员核对节点状态，恢复记录已保留');
+      if (!value.credential) {
+        const result = await queryEnrollment(value, { request });
+        if (result.state !== 'accepted') throw Error('中心接入结果未确认且尚无凭据；请管理员核对节点状态，恢复记录已保留');
+        value = { ...value, credential: result.credential };
+        const text = json(value); await writeStateFile(recoveryPath(root), text, { expected: recovery.text }); recovery = { value, text };
+      }
       await releaseCentral({ ...value.target, credential: value.credential }, centerClient(value.target.origin, value.ca || undefined, request));
     }
     await removeStateFile(recoveryPath(root), { expected: recovery.text });

@@ -34,10 +34,10 @@ async function secret(prompt) {
 
 try {
   const command = process.argv[2] || 'help', { values } = parseArgs({ args: process.argv.slice(3), options: {
-    server: { type: 'string' }, slug: { type: 'string' }, replace: { type: 'boolean' }, reauthorize: { type: 'boolean' }, 'switch-existing': { type: 'boolean' }, recover: { type: 'boolean' }, 'ca-file': { type: 'string' }, help: { type: 'boolean' },
+    server: { type: 'string' }, slug: { type: 'string' }, replace: { type: 'boolean' }, reauthorize: { type: 'boolean' }, 'switch-existing': { type: 'boolean' }, recover: { type: 'boolean' }, resolve: { type: 'boolean' }, 'ca-file': { type: 'string' }, help: { type: 'boolean' },
   } });
   if (values.help || command === 'help') {
-    console.log(`用法：\n  npm run server:join -- [--server https://desk.example.com] [--slug node-a]\n  npm run server:leave [--recover]\n  npm run server:status\n  npm run server:doctor\n\njoin 的授权 key 只从隐藏终端或标准输入读取，不能作为命令行参数传入。\n--ca-file 用于中心证书不来自系统信任库的导入证书场景。\n--reauthorize 在当前中心和路径上读取新的 key，替换失效的旧节点凭据。\n--replace 允许用新 key 替换本机已有的其他中心或路径配置。\n--switch-existing 允许接管已有 Cloudflare/Gateway 发布；server:leave 会恢复原 Panel 配置。\n--recover 处理上次 join 回滚未完全确认的记录。`);
+    console.log(`用法：\n  npm run server:join -- [--server https://desk.example.com] [--slug node-a]\n  npm run server:leave [--recover]\n  npm run server:status\n  npm run server:doctor\n\njoin 的授权 key 只从隐藏终端或标准输入读取，不能作为命令行参数传入。\n--ca-file 用于中心证书不来自系统信任库的导入证书场景。\n--reauthorize 在当前中心和路径上读取新的 key，替换失效的旧节点凭据。\n--replace 允许用新 key 替换本机已有的其他中心或路径配置。\n--switch-existing 允许接管已有 Cloudflare/Gateway 发布；server:leave 会恢复原 Panel 配置。\n--recover 处理上次 join 回滚未完全确认的记录。\n--resolve 用于 doctor，只读查询未完成接入的中心回执，不重发接入。`);
   } else if (command === 'join') {
     if (process.platform !== 'linux') throw Error('节点接入当前只支持 Linux/Ubuntu');
     const native = maintenanceSettings(), server = values.server || await line('中心服务器地址：'), slug = values.slug || await line('节点路径 slug：');
@@ -53,7 +53,7 @@ try {
   } else if (command === 'status') {
     console.log(JSON.stringify(await nodeStatus({ root }), null, 2));
   } else if (command === 'doctor') {
-    const result = await nodeDoctor({ root });
+    const result = await nodeDoctor({ root, resolve: values.resolve === true });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 1;
   } else throw Error('未知命令：' + command);

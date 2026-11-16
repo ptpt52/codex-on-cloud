@@ -15,6 +15,19 @@ export const SLUG = /^[a-z0-9-]{1,48}$/;
 export const NODE_ID = /^[a-f0-9]{32}$/;
 export const KEY = /^coc_[A-Za-z0-9_-]{43}$/;
 export const CREDENTIAL = /^cocn_[A-Za-z0-9_-]{43}$/;
+export const ENROLLMENT_PROOF = /^cocj_[A-Za-z0-9_-]{43}$/;
+
+export function enrollmentOperation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'id,proof' ||
+    typeof value.id !== 'string' || !NODE_ID.test(value.id) || typeof value.proof !== 'string' || !ENROLLMENT_PROOF.test(value.proof)) throw selfhostError(400, '接入操作证明无效');
+  return value;
+}
+
+// The private 256-bit proof binds an operation to its exact node and mode.
+// The existing credential hash authenticates receipts across restarts without
+// adding fields that older centers cannot read during application rollback.
+export const enrollmentCredential = (operation, nodeId, mode) => 'cocn_' + createHash('sha256')
+  .update(['codex-enrollment-v1', operation.id, nodeId, mode, operation.proof].join('\0')).digest('base64url');
 
 export function selfhostError(status, message, code = '') {
   return Object.assign(Error(message), { status, code, outcome: 'rejected' });
