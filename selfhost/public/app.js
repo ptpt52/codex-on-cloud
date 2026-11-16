@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const labels = { offline: '离线', connecting: '接入中', authenticated: '认证中', online: '在线', grace: '断线恢复', revoked: '已撤销', expired: '已过期' };
-let csrf = '', keys = [], revision = 0, timer, loading, controller, epoch = 0, fresh = false, writing = false, target, pendingAction;
+let csrf = '', keys = [], revision = 0, timer, loading, controller, epoch = 0, suspended = false, fresh = false, writing = false, target, pendingAction;
 const rows = new Map();
 const dialogTriggers = new WeakMap();
 const date = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '从未';
@@ -32,20 +32,21 @@ async function api(path, { method = 'GET', body, signal } = {}) {
 }
 function schedule() {
   clearTimeout(timer);
-  if (!$('center-view').hidden && !document.hidden && !modalOpen() && !writing) timer = setTimeout(() => void load(), 5000);
+  if (!suspended && !$('center-view').hidden && !document.hidden && !modalOpen() && !writing) timer = setTimeout(() => void load(), 5000);
 }
 function endSession() {
-  epoch++; controller?.abort(); clearTimeout(timer); fresh = false; csrf = ''; keys = []; rows.clear(); $('key-list').replaceChildren();
+  epoch++; controller?.abort(); controller = loading = undefined; clearTimeout(timer); fresh = writing = false; csrf = ''; keys = []; target = pendingAction = null; rows.clear(); $('key-list').replaceChildren();
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
-  clearSecret(); view('login-view');
+  clearSecret(); $('password').value = ''; $('login-form').querySelector('button[type="submit"]').disabled = false; view('login-view'); permissions();
 }
 function permissions() {
-  $('new-key').disabled = !fresh || writing;
-  $('logout').disabled = writing;
-  for (const button of document.querySelectorAll('dialog button[type="submit"]')) button.disabled = !fresh || writing;
-  for (const button of document.querySelectorAll('[data-manage]')) button.disabled = !fresh || writing;
+  $('new-key').disabled = suspended || !fresh || writing;
+  $('logout').disabled = suspended || writing;
+  for (const button of document.querySelectorAll('dialog button[type="submit"]')) button.disabled = suspended || !fresh || writing;
+  for (const button of document.querySelectorAll('[data-manage]')) button.disabled = suspended || !fresh || writing;
 }
 async function load() {
+  if (suspended) return;
   if (loading) return loading;
   const current = epoch; controller = new AbortController(); $('refresh').disabled = true; $('retry').disabled = true;
   loading = (async () => {
@@ -64,7 +65,7 @@ async function load() {
       if (error.status === 401) endSession();
       else if (!$('center-view').hidden) { $('connection-state').textContent = '数据待刷新'; $('connection-state').className = 'status warning'; message('刷新失败：' + error.message + '。当前显示上次数据，请刷新后再管理节点。', true); }
       else { view('state-view'); $('state-title').textContent = '暂时无法加载管理中心'; $('state-message').textContent = error.message + '。请重试或返回节点首页。'; $('retry').hidden = false; }
-    } finally { loading = null; $('refresh').disabled = false; $('retry').disabled = false; permissions(); schedule(); }
+    } finally { if (current === epoch) { loading = null; $('refresh').disabled = false; $('retry').disabled = false; permissions(); schedule(); } }
   })();
   return loading;
 }
@@ -156,17 +157,24 @@ function openAction(action, item, trigger) {
   $('confirm-action').textContent = revoke ? '撤销此节点授权' : '断开此节点连接'; show($('confirm-dialog'), trigger);
 }
 async function mutate(dialog, errorId, action, success) {
-  if (writing || !fresh) return;
+  if (suspended || writing || !fresh) return;
+  const current = epoch;
   writing = true; clearTimeout(timer); $(errorId).textContent = '';
   dialog.querySelectorAll('button').forEach(button => { button.disabled = true; }); permissions();
-  try { const value = await action(); dialog.close(); await success?.(value); await load(); }
+  try {
+    const value = await action();
+    if (current !== epoch) return;
+    dialog.close(); await success?.(value);
+    if (current === epoch) await load();
+  }
   catch (error) {
+    if (current !== epoch) return;
     if (error.status === 401) { endSession(); $('login-message').textContent = '登录已过期，请重新登录并核对节点状态。'; }
     else {
       $(errorId).textContent = error.status && error.status < 500 ? error.message : '操作结果未确认：' + error.message + '。请刷新核对列表后再决定，系统不会自动重试此操作。';
       if (!error.status || error.status >= 500 || error.status === 409) { fresh = false; dialog.querySelector('.reconcile').hidden = false; message('操作结果需要核对，请刷新列表后再管理节点。', true); $('connection-state').textContent = '待核对'; $('connection-state').className = 'status warning'; }
     }
-  } finally { writing = false; dialog.querySelectorAll('button').forEach(button => { button.disabled = false; }); permissions(); restoreDialogFocus(dialog); schedule(); }
+  } finally { if (current === epoch) { writing = false; dialog.querySelectorAll('button').forEach(button => { button.disabled = false; }); permissions(); restoreDialogFocus(dialog); schedule(); } }
 }
 function clearSecret() { $('secret-value').textContent = ''; $('join-command').value = ''; $('secret-context').textContent = ''; $('copy-state').textContent = ''; }
 function secret(value, reissued) {
@@ -174,7 +182,12 @@ function secret(value, reissued) {
   $('join-command').value = 'npm run server:join -- --server ' + location.origin + ' --slug ' + value.slug + (reissued ? ' --reauthorize' : '');
   show($('secret-dialog'), dialogTriggers.get($('key-dialog')));
 }
-async function copyText(text, output) { try { await navigator.clipboard.writeText(text); output.textContent = '已复制'; output.classList.remove('error'); } catch { output.textContent = '无法自动复制，请手动选择文本复制。'; } }
+async function copyText(text, output) {
+  if (suspended) return;
+  const current = epoch;
+  try { await navigator.clipboard.writeText(text); if (current === epoch) { output.textContent = '已复制'; output.classList.remove('error'); } }
+  catch { if (current === epoch) output.textContent = '无法自动复制，请手动选择文本复制。'; }
+}
 for (const dialog of document.querySelectorAll('dialog')) {
   dialog.addEventListener('cancel', event => { if (writing) event.preventDefault(); });
   dialog.addEventListener('close', () => { if (dialog.id === 'secret-dialog') clearSecret(); restoreDialogFocus(dialog); schedule(); });
@@ -210,21 +223,28 @@ $('edit-form').addEventListener('submit', event => {
 });
 $('confirm-form').addEventListener('submit', event => { event.preventDefault(); const action = pendingAction; void mutate($('confirm-dialog'), 'confirm-error', () => api(action.path, { method: action.method, body: { revision: action.revision } })); });
 $('login-form').addEventListener('submit', async event => {
-  event.preventDefault(); const button = event.submitter; button.disabled = true;
-  try { const value = await api('/api/login', { method: 'POST', body: { username: $('username').value, password: $('password').value } }); csrf = value.csrf; $('password').value = ''; $('login-message').textContent = '使用中心管理员密码登录。'; $('login-message').className = 'muted'; view('state-view'); await load(); }
-  catch (error) { $('login-message').textContent = error.message; $('login-message').className = 'error'; }
-  finally { button.disabled = false; }
+  event.preventDefault(); if (suspended) return;
+  const current = epoch, button = event.submitter; button.disabled = true;
+  try {
+    const value = await api('/api/login', { method: 'POST', body: { username: $('username').value, password: $('password').value } });
+    if (current !== epoch) return;
+    csrf = value.csrf; $('password').value = ''; $('login-message').textContent = '使用中心管理员密码登录。'; $('login-message').className = 'muted'; view('state-view'); await load();
+  }
+  catch (error) { if (current === epoch) { $('login-message').textContent = error.message; $('login-message').className = 'error'; } }
+  finally { if (current === epoch) button.disabled = false; }
 });
 $('logout').addEventListener('click', async () => {
-  if (writing) return; writing = true; clearTimeout(timer); $('logout').disabled = true; permissions();
-  epoch++; controller?.abort(); if (loading) await loading;
-  try { await api('/api/logout', { method: 'POST', body: {} }); endSession(); }
+  if (suspended || writing) return; writing = true; clearTimeout(timer); $('logout').disabled = true; permissions();
+  const current = ++epoch; controller?.abort(); controller = loading = undefined;
+  try { await api('/api/logout', { method: 'POST', body: {} }); if (current === epoch) endSession(); }
   catch (error) {
+    if (current !== epoch) return;
     // Read back session state when the response is lost; never replay logout.
     let loggedOut = error.status === 401;
     if (!loggedOut) { try { await api('/api/me'); } catch (check) { loggedOut = check.status === 401; } }
+    if (current !== epoch) return;
     if (loggedOut) endSession(); else message('退出未完成：' + error.message + '。登录仍保留，可再次点击退出。', true);
-  } finally { writing = false; $('logout').disabled = false; permissions(); schedule(); }
+  } finally { if (current === epoch) { writing = false; $('logout').disabled = false; $('refresh').disabled = false; $('retry').disabled = false; permissions(); schedule(); } }
 });
 for (const id of ['refresh', 'retry']) $(id).addEventListener('click', () => void load());
 for (const id of ['search', 'filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
@@ -236,5 +256,12 @@ document.addEventListener('keydown', event => {
   if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return;
   for (const more of document.querySelectorAll('.node-more[open]')) { more.open = false; more.querySelector('summary').focus(); }
 });
-document.addEventListener('visibilitychange', () => { clearTimeout(timer); if (!document.hidden && !modalOpen() && !writing) void load(); });
+document.addEventListener('visibilitychange', () => { clearTimeout(timer); if (!suspended && !document.hidden && !modalOpen() && !writing) void load(); });
+// Cached documents must not retain one-time secrets or accept old callbacks.
+// Returning only reads authorization and committed state; writes are never replayed.
+window.addEventListener('pagehide', () => { suspended = true; endSession(); view('state-view'); });
+window.addEventListener('pageshow', event => {
+  if (!suspended && !event.persisted) return;
+  suspended = false; view('state-view'); void load();
+});
 void load();

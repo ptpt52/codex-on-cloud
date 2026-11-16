@@ -133,6 +133,112 @@ async function more(page, id, action) {
   const row = page.locator(`[data-id="${id}"]`); await row.locator('summary').click(); await row.locator(`[data-action="${action}"]`).click();
 }
 
+// Hold an already accepted HTTP response inside the browser, without keeping
+// the server transaction open or printing its one-time secret in test output.
+async function holdAdminResponse(page, path, method = 'POST', status) {
+  await page.evaluate(({ path, method, status }) => {
+    const original = window.fetch.bind(window);
+    window.fetch = async (url, options = {}) => {
+      const response = await original(url, options);
+      if (url !== path || options.method !== method) return response;
+      const value = await response.json();
+      await new Promise(resolve => { window.releaseAdminResponse = resolve; window.adminResponseHeld = true; });
+      return { status: status ?? response.status, ok: status === undefined ? response.ok : status < 400,
+        async json() { return status === undefined ? value : { error: '旧会话的回包' }; } };
+    };
+  }, { path, method, status });
+}
+async function releaseAdminResponse(page) {
+  await page.evaluate(async () => {
+    window.releaseAdminResponse();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+}
+for (const [outcome, status] of [['success', undefined], ['unauthorized', 401], ['unknown', 503]]) test(`a late ${outcome} key response cannot change a new admin session after confirmed logout`, async ({ page, context }) => {
+  await page.clock.install(); const h = await adminFixture(); let releaseRead;
+  try {
+    await loginAdmin(page, h.origin); await expect(page.locator('#refresh')).toBeEnabled();
+    // A refresh can already be in flight when the create dialog opens.
+    let readStarted; const started = new Promise(resolve => { readStarted = resolve; });
+    const gate = new Promise(resolve => { releaseRead = resolve; });
+    await page.route('**/admin/api/overview', async route => { readStarted(); await gate; await route.continue().catch(() => {}); });
+    await page.locator('#refresh').click(); await started;
+    await holdAdminResponse(page, '/admin/api/keys', 'POST', status);
+    await page.locator('#new-key').click(); await page.locator('#key-name').fill('旧会话授权'); await page.locator('#key-slug').fill('retired-session'); await page.locator('#create-key').click();
+    await page.waitForFunction(() => window.adminResponseHeld);
+    const me = await (await context.request.get(h.origin + '/admin/api/me')).json();
+    expect((await context.request.post(h.origin + '/admin/api/logout', { headers: { origin: h.origin, 'x-csrf-token': me.csrf }, data: {} })).status()).toBe(200);
+    releaseRead(); await page.unroute('**/admin/api/overview');
+    await expect(page.locator('#login-view')).toBeVisible(); await expect(page.locator('#secret-value')).toHaveText('');
+    await page.locator('#password').fill('center_password_very_long_123'); await page.locator('#login-form button[type=submit]').click();
+    await expect(page.locator('#center-view')).toBeVisible(); await expect(page.locator('#key-list')).toContainText('/node/retired-session/');
+    await expect(page.locator('#new-key')).toBeEnabled(); await page.locator('#new-key').click(); await page.locator('#key-name').fill('新会话草稿');
+    await releaseAdminResponse(page);
+    await expect(page.locator('#center-view')).toBeVisible(); await expect(page.locator('#key-dialog')).toBeVisible();
+    await expect(page.locator('#key-name')).toHaveValue('新会话草稿'); await expect(page.locator('#key-form-error')).toHaveText('');
+    await expect(page.locator('#secret-dialog')).toBeHidden(); await expect(page.locator('#secret-value')).toHaveText('');
+    expect((await h.center.registry.list()).length).toBe(1);
+  } finally { releaseRead?.(); await page.evaluate(() => window.releaseAdminResponse?.()).catch(() => {}); await h.close(); }
+});
+
+test('cached admin returns clear secrets, revalidate once and never replay a pending authorization', async ({ page }) => {
+  await page.clock.install(); const h = await adminFixture(); let writes = 0;
+  page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/admin/api/keys')) writes++; });
+  const hide = () => page.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+  const show = () => page.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+  try {
+    await loginAdmin(page, h.origin); await holdAdminResponse(page, '/admin/api/keys');
+    await page.locator('#new-key').click(); await page.locator('#key-name').fill('缓存中的授权'); await page.locator('#key-slug').fill('cached-session'); await page.locator('#create-key').click();
+    await page.waitForFunction(() => window.adminResponseHeld); await hide(); await releaseAdminResponse(page);
+    await expect(page.locator('#secret-dialog')).toBeHidden(); await expect(page.locator('#secret-value')).toHaveText('');
+    await show(); await expect(page.locator('#center-view')).toBeVisible(); await expect(page.locator('#key-list')).toContainText('/node/cached-session/');
+    await expect(page.locator('#new-key')).toBeEnabled(); expect(writes).toBe(1);
+    // An already displayed secret must also be absent from a cached document.
+    await page.reload(); await expect(page.locator('#center-view')).toBeVisible();
+    await page.locator('#new-key').click(); await page.locator('#key-name').fill('离开时清理'); await page.locator('#key-slug').fill('clear-secret'); await page.locator('#create-key').click();
+    await expect(page.locator('#secret-dialog')).toBeVisible();
+    await hide(); await expect(page.locator('#secret-value')).toHaveText(''); await expect(page.locator('#join-command')).toHaveValue('');
+    await show(); await expect(page.locator('#center-view')).toBeVisible(); await expect(page.locator('#secret-dialog')).toBeHidden(); expect(writes).toBe(2);
+    await hide(); await page.context().clearCookies(); await show(); await expect(page.locator('#login-view')).toBeVisible();
+    await expect(page.locator('#key-list')).toBeEmpty(); expect(writes).toBe(2);
+  } finally { await page.evaluate(() => window.releaseAdminResponse?.()).catch(() => {}); await h.close(); }
+});
+
+for (const operation of ['login', 'logout']) test(`a late ${operation} response cannot replace the admin session established after cached return`, async ({ page }) => {
+  await page.clock.install(); const h = await adminFixture(); let reads = 0;
+  page.on('request', request => { if (request.url().endsWith('/admin/api/overview')) reads++; });
+  try {
+    if (operation === 'logout') await loginAdmin(page, h.origin);
+    else { await page.goto(h.origin + '/admin/'); await expect(page.locator('#login-view')).toBeVisible(); }
+    await holdAdminResponse(page, '/admin/api/' + operation);
+    if (operation === 'logout') await page.locator('#logout').click();
+    else { await page.locator('#password').fill('center_password_very_long_123'); await page.locator('#login-form button[type=submit]').click(); }
+    await page.waitForFunction(() => window.adminResponseHeld);
+    await page.evaluate(() => { dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+    if (operation === 'logout') {
+      await expect(page.locator('#login-view')).toBeVisible();
+      await page.locator('#password').fill('center_password_very_long_123'); await page.locator('#login-form button[type=submit]').click();
+    }
+    await expect(page.locator('#center-view')).toBeVisible(); await expect(page.locator('#refresh')).toBeEnabled(); const checkedReads = reads;
+    await releaseAdminResponse(page); await expect(page.locator('#center-view')).toBeVisible();
+    await expect(page.locator('#new-key')).toBeEnabled(); expect(reads).toBe(checkedReads);
+  } finally { await page.evaluate(() => window.releaseAdminResponse?.()).catch(() => {}); await h.close(); }
+});
+
+test('a late clipboard result cannot restore secret feedback after leaving the admin page', async ({ page }) => {
+  await page.clock.install(); const h = await adminFixture();
+  try {
+    await loginAdmin(page, h.origin);
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true,
+      value: { writeText: () => new Promise(resolve => { window.releaseClipboard = resolve; }) } }));
+    await page.locator('#new-key').click(); await page.locator('#key-name').fill('复制回包'); await page.locator('#key-slug').fill('clipboard-result'); await page.locator('#create-key').click();
+    await expect(page.locator('#secret-dialog')).toBeVisible(); await page.locator('#copy-secret').click();
+    await page.evaluate(() => { dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); window.releaseClipboard(); dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); });
+    await expect(page.locator('#center-view')).toBeVisible(); await expect(page.locator('#secret-value')).toHaveText('');
+    await expect(page.locator('#copy-state')).toHaveText(''); await expect(page.locator('#secret-dialog')).toBeHidden();
+  } finally { await h.close(); }
+});
+
 test('cancel never submits and a finite authorization requires a future date', async ({ page }) => {
   const h = await adminFixture(); let creates = 0;
   page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/admin/api/keys')) creates++; });
