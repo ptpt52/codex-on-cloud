@@ -157,6 +157,8 @@ sudo ./scripts/selfhost-server.sh rollback
 sudo ./scripts/selfhost-server.sh recover
 ```
 
+运行时引导另用一把内核锁，重复调用不会同时下载。下载连接超时 15 秒、每次最多 300 秒，最多尝试 3 次，归档由 curl 和内核共同限制为 128 MiB；仅提取固定版本的 Node 可执行文件，限制为 256 MiB。校验 SHA-256、版本后原子发布，单个暂存目录在失败退出时清理，进程被强制终止后由下次安装清理。`status`、`rollback`、`recover` 只使用已就绪的固定版本运行时（可复用正式安装的二进制），不会下载或升级依赖。
+
 私有文件：
 
 ```text
