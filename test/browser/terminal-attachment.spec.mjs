@@ -12,6 +12,7 @@ async function setup(page, { direct = false, backup = false, count = 1 } = {}) {
       createDataChannel(label, options) {
         const channel = super.createDataChannel(label, options);
         if (label === 'codex-stream') {
+          window.attachmentChannel = channel;
           const send = channel.send.bind(channel);
           channel.send = data => {
             const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
@@ -77,6 +78,51 @@ async function closeCurrent(page) {
 }
 const paths = page => page.evaluate(() => ({ ...window.attachmentPaths }));
 const output = (app, text) => app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: Buffer.from(text).toString('base64') }) + '\n');
+async function observeAttachmentDrain(frame) {
+  await frame.evaluate(async () => {
+    const { controlDecoder } = await import('/control.js');
+    let sent = 0, confirmed = 0, pendingOutput = 0, outputText = '', outputAt, invalid = false;
+    const bytes = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
+    let text = new TextDecoder('utf-8', { fatal: true });
+    const outgoing = value => {
+      if (value.type !== 'input') return;
+      sent = value.id;
+      if (value.parts !== 1) throw Error('unexpected multipart test input');
+      const record = JSON.parse(new TextDecoder().decode(bytes(value.data)));
+      if (record.type === 'ack') pendingOutput = Math.max(0, pendingOutput - record.bytes);
+    };
+    const incoming = value => {
+      if (value.type === 'input-ack') confirmed = Math.max(confirmed, value.id);
+      if (value.type === 'switched') { outputAt = value.out; pendingOutput = 0; outputText = ''; text = new TextDecoder('utf-8', { fatal: true }); }
+      if (value.type !== 'chunk' || outputAt === undefined) return;
+      const data = bytes(value.data);
+      if (value.at + data.length <= outputAt) return;
+      if (value.at !== outputAt) throw Error('unexpected test output gap');
+      outputAt += data.length;
+      outputText += text.decode(data, { stream: true });
+      if (outputText.length > 128 * 1024) throw Error('test output buffer bound');
+      let newline;
+      while ((newline = outputText.indexOf('\n')) >= 0) {
+        const record = JSON.parse(outputText.slice(0, newline)); outputText = outputText.slice(newline + 1);
+        if (record.type === 'output') pendingOutput += bytes(record.data).length;
+      }
+    };
+    const fail = () => { invalid = true; };
+    const channel = window.attachmentChannel, socket = window.attachmentSocket;
+    const writing = controlDecoder(outgoing, fail), reading = controlDecoder(incoming, fail);
+    const channelSend = channel.send.bind(channel), socketSend = socket.send.bind(socket);
+    channel.send = data => { writing.push(data); channelSend(data); };
+    channel.addEventListener('message', event => reading.push(event.data));
+    socket.send = data => { outgoing(JSON.parse(data)); socketSend(data); };
+    socket.addEventListener('message', event => incoming(JSON.parse(event.data)));
+    window.closeConfirmedAttachment = direct => {
+      if (invalid) throw Error('invalid attachment observation');
+      if (!sent || confirmed < sent || pendingOutput || outputText) return false;
+      if (direct) window.attachmentPeer.close(); else socket.close();
+      return true;
+    };
+  });
+}
 for (const direct of [false, true]) {
   test(`${direct ? 'direct' : 'relay'}: the closed terminal screen can directly create on the retained connection`, async ({ page }) => {
     const app = await setup(page, { direct, count: 3 });
@@ -171,9 +217,14 @@ for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: both e
     expect(await paths(page)).toEqual(before);
     await closeCurrent(page); await expect(page.locator('#input-terminal')).toHaveValue('new'); await expect(page.locator('#paste-button')).toBeDisabled();
     expect(app.terminalConnections).toBe(4); expect(await paths(page)).toEqual(before);
+    await observeAttachmentDrain(frame);
     await choose(page, 'aux1'); await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#paste-button')).toBeEnabled();
     expect(await paths(page)).toEqual(before);
-    await frame.evaluate(direct => { if (direct) window.attachmentPeer.close(); else window.attachmentSocket.close(); }, direct);
+    // Target readiness can precede resize and render/consumption ACKs. Lose an
+    // idle path atomically; unconfirmed input requires a fresh session by design.
+    await expect.poll(() => frame.evaluate(direct => new Promise(resolve => requestAnimationFrame(() =>
+      resolve(window.closeConfirmedAttachment(direct)))), direct)).toBe(true);
+    await expect(page.locator('#diag-transport')).toContainText(direct ? 'WebSocket' : 'WebRTC');
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#paste-button')).toBeEnabled();
     await frame.locator('.xterm-helper-textarea').press('z'); await expect.poll(() => app.terminalInputs).toEqual([{ terminalId: 'aux1', text: 'z' }]);
     expect(app.terminalConnections).toBe(5); expect((await paths(page)).peers).toBe(before.peers);
