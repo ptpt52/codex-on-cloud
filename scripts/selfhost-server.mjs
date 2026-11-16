@@ -176,12 +176,21 @@ async function copyApplication(beforeActivate = async () => {}) {
 async function rollbackApplication() {
   const app = join(ROOT, 'app'), previous = join(ROOT, 'app.previous'), failed = join(ROOT, 'app.failed');
   if (!(await command('test', ['-d', previous])).ok) throw Error('没有可回滚的上一版中心应用');
-  await rm(failed, { recursive: true, force: true }); await rename(app, failed); await rename(previous, app);
   const envText = await readFile(join(ETC, 'server.env'), 'utf8'), domain = envText.match(/^SELFHOST_PUBLIC_HOST=(.+)$/m)?.[1];
   if (!domain) throw Error('中心域名配置丢失，未重启回滚应用');
-  for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service']) await requiredCommand('systemctl', ['restart', unit]);
-  await localHttpsHealth(domain);
-  return { rolledBack: true, domain };
+  const update = await serverUpdate(updateOptions());
+  try {
+    await update.applicationRollingBack();
+    await rm(failed, { recursive: true, force: true }); await rename(app, failed); await rename(previous, app);
+    for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service']) await requiredCommand('systemctl', ['restart', unit]);
+    await localHttpsHealth(domain); await update.commit();
+    return { rolledBack: true, domain };
+  } catch (error) {
+    if (update.committed) throw Error('应用回滚已生效，但备份清理未完成；请运行 selfhost-server.sh recover');
+    try { await update.rollback(); }
+    catch (failure) { throw Error(error.message + '；恢复未完成：' + failure.message + '。请运行 selfhost-server.sh recover'); }
+    throw Error(error.message + '；回滚前的应用与服务状态已恢复');
+  }
 }
 
 async function ensureUser() {

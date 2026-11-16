@@ -1,12 +1,19 @@
 import { constants } from 'node:fs';
 import { chmod, chown, lstat, mkdir, open, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // One private backup, at most 32 regular files / 8 MiB plus a 32 KiB manifest.
 // Backups survive failed restoration; recovery never runs commands from disk.
 const MAX_FILE = 1024 * 1024, MAX_TOTAL = 8 * MAX_FILE, MAX_MANIFEST = 32768;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const identity = stat => ({ dev: stat.dev, ino: stat.ino });
+const sameDirectory = (stat, expected) => !!expected && stat?.isDirectory() && !stat.isSymbolicLink() && stat.dev === expected.dev && stat.ino === expected.ino;
+const validIdentity = value => value && Number.isSafeInteger(value.dev) && Number.isSafeInteger(value.ino);
+async function syncDirectory(path) {
+  const file = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { await file.sync(); } finally { await file.close(); }
+}
 async function info(path) { try { return await lstat(path); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }
 async function bounded(path, limit) {
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -22,15 +29,18 @@ async function bounded(path, limit) {
 export async function serverUpdate({ directory, files, application, services, run, recover = false }) {
   if (files.length > 32 || new Set(files).size !== files.length) throw Error('更新备份路径无效');
   const manifestFile = join(directory, 'manifest.json'); let state;
-  const save = async () => {
+  const save = async (published = () => {}) => {
     const bytes = JSON.stringify(state); if (Buffer.byteLength(bytes) > MAX_MANIFEST) throw Error('更新恢复记录过大');
-    const next = manifestFile + '.next'; await writeFile(next, bytes, { mode: 0o600 }); await rename(next, manifestFile);
+    const next = manifestFile + '.next', file = await open(next, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+    try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
+    await rename(next, manifestFile); published(); await syncDirectory(directory);
   };
   if (recover) {
     const stat = await info(directory);
     if (!stat?.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || stat.mode & 0o077) throw Error('更新备份目录无效');
     state = JSON.parse(await bounded(manifestFile, MAX_MANIFEST));
     if (typeof state.committed !== 'boolean') throw Error('更新提交状态无效');
+    if (state.rollbackTarget !== undefined && (!validIdentity(state.rollbackTarget) || !validIdentity(state.applicationBefore))) throw Error('应用回滚恢复记录无效');
     if (state.version !== 1 || !Array.isArray(state.files) || state.files.length !== files.length || state.files.some((entry, index) => entry.path !== files[index] || typeof entry.exists !== 'boolean' || entry.exists && (!/^[a-f0-9]{64}$/.test(entry.hash) || !Number.isInteger(entry.size) || entry.size < 0 || entry.size > MAX_FILE || !Number.isInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o777 || !Number.isInteger(entry.uid) || entry.uid < 0 || !Number.isInteger(entry.gid) || entry.gid < 0)) || state.files.reduce((sum, entry) => sum + (entry.size || 0), 0) > MAX_TOTAL || typeof state.applicationChanged !== 'boolean' || state.applicationBefore !== null && (!Number.isSafeInteger(state.applicationBefore?.dev) || !Number.isSafeInteger(state.applicationBefore?.ino)) || !Array.isArray(state.services) || state.services.length !== services.length || state.services.some((entry, index) => entry.name !== services[index] || typeof entry.active !== 'boolean' || typeof entry.enabled !== 'boolean')) throw Error('更新恢复记录无效');
   } else {
     if (await info(directory)) throw Error('存在未完成的服务器更新，请先运行 selfhost-server.sh recover');
@@ -46,23 +56,31 @@ export async function serverUpdate({ directory, files, application, services, ru
         if (!stat.isFile() || stat.isSymbolicLink()) throw Error('拒绝备份非普通配置文件：' + path);
         const bytes = await bounded(path, MAX_FILE); total += bytes.length;
         if (total > MAX_TOTAL) throw Error('更新配置备份超过 8 MiB');
-        await writeFile(join(directory, String(index)), bytes, { flag: 'wx', mode: 0o600 });
+        const backup = await open(join(directory, String(index)), 'wx', 0o600);
+        try { await backup.writeFile(bytes); await backup.sync(); } finally { await backup.close(); }
         state.files.push({ path, exists: true, hash: hash(bytes), size: bytes.length, mode: stat.mode & 0o777, uid: stat.uid, gid: stat.gid });
       }
       for (const name of services) {
         const active = await run('systemctl', ['is-active', name]), enabled = await run('systemctl', ['is-enabled', name]);
         state.services.push({ name, active: active.ok && active.stdout === 'active', enabled: enabled.ok && ['enabled', 'enabled-runtime'].includes(enabled.stdout) });
       }
-      await save();
+      await save(); await syncDirectory(dirname(directory));
     } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
   }
   const required = async args => { const value = await run('systemctl', args); if (!value.ok) throw Error('恢复服务失败：systemctl ' + args.join(' ')); };
   return {
     get committed() { return state.committed === true; },
     async applicationChanging() { state.applicationChanged = true; await save(); },
+    async applicationRollingBack() {
+      const current = await info(application.current), previous = await info(application.previous);
+      if (!sameDirectory(current, state.applicationBefore) || !previous?.isDirectory() || previous.isSymbolicLink() || sameDirectory(previous, state.applicationBefore)) throw Error('应用目录已变化或没有可回滚的上一版，未切换');
+      state.rollbackTarget = identity(previous); state.applicationChanged = true; await save();
+    },
     async commit() {
+      if (state.applicationChanged) await syncDirectory(dirname(application.current));
+      let published = false;
       state.committed = true;
-      try { await save(); } catch (error) { state.committed = false; throw error; }
+      try { await save(() => { published = true; }); } catch (error) { if (!published) state.committed = false; throw error; }
       await rm(directory, { recursive: true, force: true });
     },
     async rollback() {
@@ -87,12 +105,23 @@ export async function serverUpdate({ directory, files, application, services, ru
       }
       if (state.applicationChanged) {
         const current = await info(application.current), previous = await info(application.previous), before = state.applicationBefore;
-        const original = stat => before && stat?.isDirectory() && !stat.isSymbolicLink() && stat.dev === before.dev && stat.ino === before.ino;
-        if (before && !original(current)) {
+        const original = stat => sameDirectory(stat, before);
+        if (state.rollbackTarget) {
+          const failed = await info(application.failed);
+          if (!original(current)) {
+            if (!original(failed)) throw Error('回滚前的应用目录已变化，保留恢复记录');
+            if (current) {
+              if (!sameDirectory(current, state.rollbackTarget) || previous) throw Error('回滚目标目录已变化，保留恢复记录');
+              await rename(application.current, application.previous);
+            } else if (!sameDirectory(previous, state.rollbackTarget)) throw Error('上一版应用目录已变化，保留恢复记录');
+            await rename(application.failed, application.current);
+          } else if (!sameDirectory(previous, state.rollbackTarget)) throw Error('上一版应用目录已变化，保留恢复记录');
+        } else if (before && !original(current)) {
           if (!original(previous)) throw Error('原应用目录已变化，保留更新备份');
           if (current) { await rm(application.failed, { recursive: true, force: true }); await rename(application.current, application.failed); }
           await rename(application.previous, application.current);
         } else if (!before && current) await rm(application.current, { recursive: true, force: true });
+        await syncDirectory(dirname(application.current));
       }
       await required(['daemon-reload']);
       for (const service of state.services) if (service.enabled) await required(['enable', service.name]);

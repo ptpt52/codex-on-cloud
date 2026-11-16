@@ -75,3 +75,39 @@ test('oversized configuration is rejected before changing files or services', as
   assert.equal((await stat(h.files[0])).size, 1024 * 1024 + 1); assert.deepEqual(h.calls, []);
   await assert.rejects(stat(h.directory), { code: 'ENOENT' });
 });
+
+for (const stage of ['prepared', 'current-moved', 'target-activated']) test(`application rollback recovers after interruption at ${stage} without replaying the switch`, async t => {
+  const h = await setup(t);
+  await mkdir(h.application.previous); await writeFile(join(h.application.previous, 'version'), 'previous');
+  const transaction = await serverUpdate(h); await transaction.applicationRollingBack();
+  if (stage !== 'prepared') await rename(h.application.current, h.application.failed);
+  if (stage === 'target-activated') await rename(h.application.previous, h.application.current);
+  await assert.rejects(serverUpdate(h), /未完成/);
+  await (await serverUpdate({ ...h, recover: true })).rollback();
+  assert.equal(await readFile(join(h.application.current, 'version'), 'utf8'), 'old');
+  assert.equal(await readFile(join(h.application.previous, 'version'), 'utf8'), 'previous');
+  await assert.rejects(stat(h.directory), { code: 'ENOENT' });
+});
+
+test('rollback recovery preserves an operator replacement and remains retryable after services cannot stop', async t => {
+  const h = await setup(t); await mkdir(h.application.previous); await writeFile(join(h.application.previous, 'version'), 'previous');
+  const transaction = await serverUpdate(h); await transaction.applicationRollingBack();
+  await rename(h.application.current, h.application.failed); await rename(h.application.previous, h.application.current);
+  const failed = await serverUpdate({ ...h, recover: true, run: async () => ({ ok: false, stdout: 'active' }) });
+  await assert.rejects(failed.rollback(), /无法确认/); await stat(h.directory);
+  const parked = h.application.current + '.operator'; await rename(h.application.current, parked); await mkdir(h.application.current);
+  await assert.rejects((await serverUpdate({ ...h, recover: true })).rollback(), /目录已变化/);
+  await rm(h.application.current, { recursive: true }); await rename(parked, h.application.current);
+  await (await serverUpdate({ ...h, recover: true })).rollback();
+  assert.equal(await readFile(join(h.application.current, 'version'), 'utf8'), 'old');
+});
+
+test('committed application rollback keeps the selected previous version on recovery', async t => {
+  const h = await setup(t); await mkdir(h.application.previous); await writeFile(join(h.application.previous, 'version'), 'previous');
+  const transaction = await serverUpdate(h); await transaction.applicationRollingBack();
+  await rename(h.application.current, h.application.failed); await rename(h.application.previous, h.application.current);
+  await transaction.commit();
+  assert.equal(await readFile(join(h.application.current, 'version'), 'utf8'), 'previous');
+  assert.equal(await readFile(join(h.application.failed, 'version'), 'utf8'), 'old');
+  await assert.rejects(stat(h.directory), { code: 'ENOENT' });
+});
