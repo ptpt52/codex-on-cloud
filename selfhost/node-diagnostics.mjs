@@ -39,7 +39,7 @@ export async function nodeDoctor({ root, run = command, request = centerRequest,
       if (text.length < 100 || !text.includes('-----BEGIN CERTIFICATE-----')) throw Error('节点 CA 文件内容无效');
       ca = text;
     }
-  } catch (error) { issues.push('节点 CA 文件无效：' + error.message); }
+  } catch { issues.push('节点 CA 文件无效，请检查文件权限、大小和 PEM 内容'); }
   const center = issues.length ? { ok: false, reason: 'ca_invalid' } : secureHealth === httpsHealth
     ? await centerHealthStatus(connection.origin, { request, ca })
     : { ok: await secureHealth(connection.origin, connection.frp.tlsServerName, ca).catch(() => false) };

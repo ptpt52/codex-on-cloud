@@ -69,3 +69,15 @@ test('doctor reports damaged private configuration as structured diagnostics wit
   assert.equal(result.ok, false); assert.equal(result.reason, 'configuration_invalid'); assert(!JSON.stringify(result).includes('private-proof'));
   assert.equal(await readFile(file, 'utf8'), '{"credential":"private-proof"}');
 });
+
+test('doctor redacts private filesystem paths when an enrolled CA cannot be opened', async t => {
+  const h = await setup(t), directory = join(h.root, 'data/selfhost-node'); await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, 'connection.json'), JSON.stringify({ version: 1, origin: 'https://desk.example.test', slug: 'a', path: '/node/a/', nodeId: 'a'.repeat(32), mode: 'terminal',
+    credential: 'cocn_' + 'b'.repeat(43), frp: { serverAddr: 'desk.example.test', serverPort: 7000, tlsServerName: 'desk.example.test', token: 'synthetic_token_123456' } }), { mode: 0o600 });
+  const ca = join(directory, 'frps-ca.pem'); await writeFile(ca, 'unreadable private CA', { mode: 0o600 }); await chmod(ca, 0);
+  try {
+    const result = await nodeDoctor({ root: h.root, run: async () => ({ ok: true, stdout: 'active' }) });
+    assert.equal(result.ok, false); assert.equal(result.checks.center.reason, 'ca_invalid');
+    assert(!JSON.stringify(result).includes(h.root)); assert(!JSON.stringify(result).includes('unreadable private CA'));
+  } finally { await chmod(ca, 0o600); }
+});
