@@ -10,6 +10,7 @@ import { readStateFile, removeStateFile, writeStateFile } from '../scripts/state
 import { acquireDeploymentLease } from '../scripts/deployment-lease.mjs';
 import { installFrpc } from './frpc.mjs';
 import { queryEnrollment } from './enrollment.mjs';
+import { mergeCredentials, mergeEnvironment } from './config-merge.mjs';
 import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, enrollmentOperation, entryBasePath, randomToken, slug } from './protocol.mjs';
 
 const exec = promisify(execFile);
@@ -123,20 +124,10 @@ export async function nodeEntryReady(connection, { request = centerRequest, ca }
   } catch { return false; }
 }
 
-function replaceEnv(text, key, value) {
-  if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw Error('Panel 环境配置值无效');
-  const pattern = new RegExp('^' + key + '=.*$', 'gm'), matches = text.match(pattern);
-  if (matches && matches.length > 1) throw Error('.env 包含重复的 ' + key + '，请先人工消除冲突');
-  return matches ? text.replace(pattern, key + '=' + value) : text + (text.endsWith('\n') ? '' : '\n') + key + '=' + value + '\n';
-}
-
 function panelEnvironment(before, connection, caFile) {
-  let text = replaceEnv(before, 'PUBLIC_ORIGIN', connection.origin);
-  text = replaceEnv(text, 'ENTRY_BASE_PATH', connection.path);
-  text = replaceEnv(text, 'SELFHOST_NODE_CONFIG_FILE', './data/selfhost-node/connection.json');
-  text = replaceEnv(text, 'SHARED_ENTRY', '0');
-  text = replaceEnv(text, 'NODE_ID', connection.nodeId);
-  text = replaceEnv(text, 'SELFHOST_CA_FILE', caFile ? './data/selfhost-node/frps-ca.pem' : '');
+  const values = { PUBLIC_ORIGIN: connection.origin, ENTRY_BASE_PATH: connection.path, SELFHOST_NODE_CONFIG_FILE: './data/selfhost-node/connection.json', SHARED_ENTRY: '0', NODE_ID: connection.nodeId, SELFHOST_CA_FILE: caFile ? './data/selfhost-node/frps-ca.pem' : '' };
+  for (const value of Object.values(values)) if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw Error('Panel 环境配置值无效');
+  const text = mergeEnvironment(before, before, Object.entries(values).map(([key, value]) => key + '=' + value + '\n').join(''));
   const parsed = parseEnv(text);
   if (parsed.PUBLIC_ORIGIN !== connection.origin || parsed.ENTRY_BASE_PATH !== connection.path || parsed.SELFHOST_NODE_CONFIG_FILE !== './data/selfhost-node/connection.json' || parsed.SHARED_ENTRY !== '0' || parsed.NODE_ID !== connection.nodeId) throw Error('Panel 环境配置存在冲突，未修改');
   return text;
@@ -222,13 +213,15 @@ async function planPanel(root, connection, { switchExisting = false, replace = f
   const previousEnvAfter = backup.envAfter, previousCredentialsAfter = backup.credentialsAfter;
   const desiredTarget = panelTarget(connection), sameTarget = JSON.stringify(backup.target) === JSON.stringify(desiredTarget);
   if (!sameTarget && !replace) throw Error('Panel 已绑定其他自建节点；切换中心或 slug 必须显式使用 --replace');
-  const desiredEnvAfter = panelEnvironment(backup.envBefore, connection, caFile);
+  const desiredEnvAfter = mergeEnvironment(current.env, previousEnvAfter, panelEnvironment(backup.envBefore, connection, caFile), [backup.envBefore]);
   const desiredCredentialsAfter = backup.credentialsBefore?.replace(/^工作台：.*$/m, '工作台：' + connection.origin) ?? null;
+  const envBefore = mergeEnvironment(current.env, previousEnvAfter, backup.envBefore, [desiredEnvAfter]);
+  const credentialsBefore = mergeCredentials(current.credentials, previousCredentialsAfter, backup.credentialsBefore, [desiredCredentialsAfter]);
+  const credentialsAfter = mergeCredentials(current.credentials, previousCredentialsAfter, desiredCredentialsAfter, [backup.credentialsBefore]);
   if (backup.target.origin !== desiredTarget.origin || backup.target.slug !== desiredTarget.slug || backup.target.nodeId !== desiredTarget.nodeId || backup.target.path !== desiredTarget.path || backup.envAfter !== desiredEnvAfter || backup.credentialsAfter !== desiredCredentialsAfter) backupChanged = true;
-  backup = { ...backup, target: desiredTarget, envAfter: desiredEnvAfter, credentialsAfter: desiredCredentialsAfter };
-
-  if (current.env !== backup.envBefore && current.env !== previousEnvAfter && current.env !== backup.envAfter) throw Error('Panel 环境配置在接入过程中被修改，未覆盖');
-  if (current.credentials !== backup.credentialsBefore && current.credentials !== previousCredentialsAfter && current.credentials !== backup.credentialsAfter) throw Error('Panel 登录说明在接入过程中被修改，未覆盖');
+  if (backup.envBefore !== envBefore || backup.credentialsBefore !== credentialsBefore || backup.credentialsAfter !== credentialsAfter) backupChanged = true;
+  backup = { ...backup, target: desiredTarget, envBefore, envAfter: desiredEnvAfter, credentialsBefore, credentialsAfter };
+  if (Buffer.byteLength(json(backup)) > 131072) throw Error('Panel 切换备份超过 128 KiB，未修改');
   return {
     before: { env: current.env, credentials: current.credentials, gateway: current.gatewayBefore, backup: backupText },
     after: { env: backup.envAfter, credentials: backup.credentialsAfter, gateway: null, backup: backupChanged ? json(backup) : backupText },
@@ -249,12 +242,12 @@ async function planPanelRestore(root) {
   if (!backup || ![1, 2].includes(backup.version) || ['envBefore', 'envAfter'].some(key => typeof backup[key] !== 'string' || Buffer.byteLength(backup[key]) > 65536) ||
     ['credentialsBefore', 'credentialsAfter', 'gatewayBefore'].some(key => backup[key] !== null && (typeof backup[key] !== 'string' || Buffer.byteLength(backup[key]) > 4096))) throw Error('Panel 切换备份内容无效，未恢复');
   const [currentEnv, currentCredentials, currentGateway] = await Promise.all([optional(paths.env, 65536), optional(paths.credentials, 4096), optional(paths.gateway, 4096)]);
-  if (currentEnv !== null && currentEnv !== backup.envBefore && currentEnv !== backup.envAfter) throw Error('Panel 环境在自建接入后被修改，未自动恢复');
-  if (currentCredentials !== null && currentCredentials !== backup.credentialsBefore && currentCredentials !== backup.credentialsAfter) throw Error('Panel 登录说明在自建接入后被修改，未自动恢复');
+  const restoredEnv = currentEnv === null ? backup.envBefore : mergeEnvironment(currentEnv, backup.envAfter, backup.envBefore);
+  const restoredCredentials = currentCredentials === null ? backup.credentialsBefore : mergeCredentials(currentCredentials, backup.credentialsAfter, backup.credentialsBefore);
   if (currentGateway !== null && currentGateway !== backup.gatewayBefore) throw Error('Gateway 配置在自建接入后被修改，未覆盖');
   return { paths, backupText, files: [
-    { path: paths.env, expected: currentEnv, restore: backup.envBefore, limit: 65536 },
-    { path: paths.credentials, expected: currentCredentials, restore: backup.credentialsBefore, limit: 4096 },
+    { path: paths.env, expected: currentEnv, restore: restoredEnv, limit: 65536 },
+    { path: paths.credentials, expected: currentCredentials, restore: restoredCredentials, limit: 4096 },
     { path: paths.gateway, expected: currentGateway, restore: backup.gatewayBefore, limit: 4096 },
   ] };
 }

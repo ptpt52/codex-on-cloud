@@ -178,7 +178,8 @@ for (const changed of ['env', 'credentials', 'gateway', 'new-gateway']) test(`le
     switchExisting: true, request: async () => new Response(JSON.stringify(h.joined)), run: h.run, install: async () => '/opt/frpc', promptKey: async () => key });
   const paths = { env: join(h.root, '.env'), credentials: join(h.root, 'secrets', 'credentials.txt'), gateway: gatewayPath };
   const path = paths[changed === 'new-gateway' ? 'gateway' : changed];
-  await writeFile(path, changed.includes('gateway') ? '{"operatorEdit":true}\n' : (await readFile(path, 'utf8')) + '# operator edit\n', { mode: 0o600 });
+  const edited = changed.includes('gateway') ? '{"operatorEdit":true}\n' : (await readFile(path, 'utf8')).replace(changed === 'env' ? /^PUBLIC_ORIGIN=.*$/m : /^工作台：.*$/m, changed === 'env' ? 'PUBLIC_ORIGIN=https://operator.example.test' : '工作台：https://operator.example.test');
+  await writeFile(path, edited, { mode: 0o600 });
   const files = [paths.env, paths.credentials, gatewayPath, ...['connection.json', 'frpc.toml', 'panel-backup.json'].map(name => join(h.root, 'data', 'selfhost-node', name)), join(h.configHome, 'systemd', 'user', 'codex-cloud-selfhost-node.service')];
   const read = path => readFile(path, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
   const before = await Promise.all(files.map(read)); h.calls.length = 0; let releases = 0;
@@ -186,6 +187,23 @@ for (const changed of ['env', 'credentials', 'gateway', 'new-gateway']) test(`le
   assert.deepEqual(await Promise.all(files.map(read)), before);
   assert.deepEqual(h.calls, [], 'pre-existing conflicts cannot stop the active relay or restart the panel');
   assert.equal(releases, 0, 'pre-existing conflicts cannot release central authorization');
+});
+
+for (const refresh of [false, true]) test(`leave preserves unrelated fields, multiline values and login notes${refresh ? ' after a credential refresh' : ''}`, async t => {
+  const h = await setup(t);
+  const options = { root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
+    request: async () => new Response(JSON.stringify(h.joined)), run: h.run, install: async () => '/opt/frpc', promptKey: async () => key };
+  await joinNode(options);
+  const envPath = join(h.root, '.env'), notes = '\n# operator preference\nCOLOR=blue\nNOTES="first\nNODE_ID=inside-the-note\nlast"\n';
+  await writeFile(envPath, await readFile(envPath, 'utf8') + notes, { mode: 0o600 });
+  const credentialsPath = join(h.root, 'secrets/credentials.txt');
+  await writeFile(credentialsPath, (await readFile(credentialsPath, 'utf8')).replace('用户名：admin', '用户名：operator') + '# keep this note\n', { mode: 0o600 });
+  if (refresh) await joinNode(options);
+  await leaveNode({ ...options, request: async () => new Response('{"ok":true}') });
+  const restored = await readFile(envPath, 'utf8');
+  assert(restored.endsWith(notes)); assert.match(restored, /^PUBLIC_ORIGIN=https:\/\/old.example.test$/m); assert.match(restored, /^NODE_ID=c{32}$/m);
+  const credentials = await readFile(credentialsPath, 'utf8');
+  assert.match(credentials, /工作台：https:\/\/old.example.test/); assert.match(credentials, /用户名：operator/); assert.match(credentials, /# keep this note/);
 });
 
 test('leave rechecks all restore snapshots after relay stop and retains recovery files for an explicit retry', async t => {
