@@ -19,6 +19,72 @@ async function setup(t, { host = 'desk.example.test', now = Date.now() } = {}) {
 
 const metadata = (credential, slug, nodeId) => ({ credential, slug, nodeId });
 
+async function onlineNode(registry, slug, nodeId = 'a'.repeat(32)) {
+  const key = await registry.createKey({ name: slug, slug });
+  const joined = await registry.join({ version: 1, slug, key: key.key, node: { id: nodeId, mode: 'terminal' } });
+  const metas = metadata(joined.credential, slug, nodeId), runId = 'run-' + slug;
+  const proxy = { metas, runId, name: 'node-' + slug, type: 'http', customDomains: ['desk.example.test'], locations: ['/node/' + slug + '/'] };
+  assert.equal(await registry.authorizeLogin({ metas, runId }), true);
+  assert.equal(await registry.authorizeProxy(proxy), true);
+  return { key, metas, runId, proxy };
+}
+
+test('a held recovery probe leaves unrelated routing, heartbeats, TURN and revocations usable', async t => {
+  const { registry } = await setup(t), first = await onlineNode(registry, 'first'), second = await onlineNode(registry, 'second', 'b'.repeat(32));
+  const gate = Promise.withResolvers(), entered = Promise.withResolvers(); let queries = 0;
+  const proxyOnline = async () => { queries++; entered.resolve(); return gate.promise; };
+  const pending = registry.authorizeLogin({ metas: first.metas, runId: 'candidate', proxyOnline });
+  try {
+    await entered.promise;
+    assert.equal(registry.mutations, 0);
+    const progress = await Promise.race([
+      Promise.all([registry.routeAllowed('second'), registry.authorizePing(second), registry.turnAuthorized({ slug: 'second', credential: second.metas.credential, nodeId: second.metas.nodeId })]),
+      new Promise(resolve => setImmediate(() => resolve('blocked'))),
+    ]);
+    assert.deepEqual(progress, [true, true, true]);
+    assert.equal(await registry.authorizeLogin({ metas: first.metas, runId: 'duplicate', proxyOnline }), false);
+    assert.equal(await registry.authorizeLogin({ metas: { ...first.metas, nodeId: 'f'.repeat(32) }, runId: 'wrong-node', proxyOnline }), false);
+    assert.equal(queries, 1);
+    await registry.revoke(second.key.id);
+    assert.equal(await registry.routeAllowed('second'), false); assert.equal(await registry.authorizePing(second), false);
+  } finally { gate.resolve(false); await pending; }
+  assert.equal(registry.loginProbes.size, 0);
+  assert.equal(await registry.authorizeProxy({ ...first.proxy, runId: 'candidate' }), true);
+});
+
+for (const change of ['revoke', 'reissue', 'disconnect', 'replacement', 'expiry']) test(`an offline recovery result cannot revive a connection after ${change}`, async t => {
+  const { registry, clock } = await setup(t), node = await onlineNode(registry, 'recover');
+  const gate = Promise.withResolvers(), entered = Promise.withResolvers();
+  const pending = registry.authorizeLogin({ metas: node.metas, runId: 'stale-candidate', proxyOnline: async () => { entered.resolve(); return gate.promise; } });
+  try {
+    await entered.promise;
+    if (change === 'revoke') await registry.revoke(node.key.id);
+    else if (change === 'reissue') await registry.reissueKey(node.key.id, { neverExpires: true });
+    else if (change === 'disconnect') await registry.disconnect(node.key.slug);
+    else if (change === 'expiry') {
+      await registry.updateKey(node.key.id, { expiresAt: clock.value + 1 }); clock.value += 2;
+    } else {
+      await registry.closeProxy(node);
+      // Reuse both the run ID and clock: the connection generation must still
+      // distinguish this fresh handshake from the one the probe observed.
+      assert.equal(await registry.authorizeLogin(node), true);
+      assert.equal(await registry.authorizeProxy(node.proxy), true);
+    }
+  } finally { gate.resolve(false); }
+  assert.equal(await pending, false);
+  if (change === 'replacement') assert.equal(await registry.authorizePing(node), true);
+  else assert.equal(await registry.routeAllowed(node.key.slug), false);
+  assert.equal(registry.loginProbes.size, 0);
+});
+
+test('a failed recovery query releases its slot without poisoning later writes or recovery', async t => {
+  const { registry } = await setup(t), node = await onlineNode(registry, 'recover');
+  await assert.rejects(registry.authorizeLogin({ metas: node.metas, runId: 'candidate', proxyOnline: async () => { throw Error('probe unavailable'); } }), /probe unavailable/);
+  assert.equal(registry.loginProbes.size, 0); assert.equal(registry.mutations, 0);
+  assert.equal(await registry.authorizePing(node), true);
+  assert.equal(await registry.authorizeLogin({ metas: node.metas, runId: 'candidate', proxyOnline: async () => false }), true);
+});
+
 test('registry admission bounds pending writes and reserves space for revocation', async t => {
   const { registry } = await setup(t), key = await registry.createKey({ name: 'Revocable', slug: 'revocable' });
   let release; registry.queue = new Promise(resolve => { release = resolve; });

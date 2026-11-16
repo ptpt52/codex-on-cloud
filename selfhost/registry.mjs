@@ -30,6 +30,8 @@ export class SelfhostRegistry {
     this.file = file; this.host = host.toLowerCase(); this.now = now; this.onClose = onClose; this.random = random;
     this.value = { version: 1, revision: 1, keys: [], audit: [] };
     this.text = null; this.sessions = new Map(); this.queue = Promise.resolve(); this.mutations = 0;
+    // At most one external recovery query per node, with no waiting queue.
+    this.loginProbes = new Set(); this.sessionGeneration = 0;
   }
 
   async open() {
@@ -284,17 +286,30 @@ export class SelfhostRegistry {
 
   async authorizeLogin({ metas, runId, source = '', proxyOnline } = {}) {
     const meta = this.loginMeta(metas); if (!meta || runId !== undefined && typeof runId !== 'string') return false;
-    return this.mutate(async ({ value, sessions, now, close }) => {
+    const owner = this.credentialOwner(this.value, meta.credential), current = this.sessions.get(meta.slug);
+    if (!owner || owner.slug !== meta.slug || this.keyStatus(owner, this.now()) !== 'ready') return false;
+    let probed;
+    if (current?.status === 'online') {
+      if (current.nodeId !== meta.nodeId || !proxyOnline || this.loginProbes.has(meta.slug) || this.loginProbes.size >= SELFHOST_LIMITS.mutations) return false;
+      probed = current;
+      this.loginProbes.add(meta.slug);
+      try { if (await proxyOnline(proxyName(meta.slug))) return false; }
+      finally { this.loginProbes.delete(meta.slug); }
+    }
+    // Network I/O never holds the global durable-write queue. Revalidate the
+    // grant and exact connection generation after the probe, inside the write.
+    return this.mutate(({ value, sessions, now, close }) => {
       const item = this.credentialOwner(value, meta.credential);
       if (!item || item.slug !== meta.slug) return { value: false, close };
       if (this.keyStatus(item, now) !== 'ready') return { value: false, close };
       let session = sessions.get(item.slug);
+      if (probed && (!session || session.status !== 'online' || session.generation !== probed.generation)) return { value: false, close };
       if (!session) {
         session = { slug: item.slug, keyId: item.id, credentialHash: item.credentialHash, nodeId: meta.nodeId, mode: meta.mode, source, status: 'connecting', connectedAt: now, authenticatedAt: null, onlineAt: null, lastSeenAt: now, graceUntil: null, runId: '' };
         sessions.set(item.slug, session);
       }
       if (session.status === 'online') {
-        if (!proxyOnline || await proxyOnline(proxyName(item.slug))) return { value: false, close };
+        if (!probed) return { value: false, close };
         session.status = 'connecting'; session.runId = ''; session.connectedAt = now; session.authenticatedAt = null; session.onlineAt = null; session.graceUntil = null; session.lastSeenAt = now;
         this.audit(value, 'node_recovered', item, now);
       }
@@ -314,7 +329,7 @@ export class SelfhostRegistry {
       const allowed = !!item && this.keyStatus(item, now) === 'ready' && item.slug === meta.slug && session && session.nodeId === meta.nodeId && effectiveRunId === runId && session.status === 'authenticated' && name === proxyName(item.slug) && type === 'http' && Array.isArray(customDomains) && customDomains.length === 1 && customDomains[0] === this.host && empty(subdomain) && Array.isArray(locations) && locations.length === 1 && locations[0] === entryBasePath(item.slug) && empty(httpUser) && empty(httpPwd) && empty(hostHeaderRewrite) && empty(routeByHTTPUser) && emptyHeaders(headers) && emptyHeaders(responseHeaders);
       if (!allowed) return { value: false, close };
       if (!session.runId) session.runId = runId;
-      session.status = 'online'; session.onlineAt = session.onlineAt || now; session.lastSeenAt = now; this.audit(value, 'node_online', item, now); return { value: true, close };
+      session.status = 'online'; session.generation = ++this.sessionGeneration; session.onlineAt = session.onlineAt || now; session.lastSeenAt = now; this.audit(value, 'node_online', item, now); return { value: true, close };
     });
   }
 
