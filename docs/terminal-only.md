@@ -12,6 +12,8 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 
 依赖已齐时省略 `--install-deps`。系统包为 tmux、Python 和 util-linux，npm 安装使用锁文件并省略开发依赖与 noVNC。Codex CLI 可选，安装器不安装或登录 Codex。
 
+源码、Node/npm 和 Python 的准备见[工具说明](node-prerequisites.md)；希望拆开执行初始化及服务启动时使用[手动部署指南](manual-deployment.md#纯网页终端)。
+
 本机访问 `http://localhost:36080`，登录信息位于 `secrets/credentials.txt`。域名参数和 Token 准备见[Cloudflare](cloudflare.md)，网页多节点入口见[Cloudflare 网关](gateway.md)或[自建节点接入](selfhost-node.md)，Windows 主机见[WSL](wsl.md)。
 
 ## 与桌面模式的区别

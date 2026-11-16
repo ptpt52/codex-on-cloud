@@ -56,6 +56,8 @@ Cloudflare 网关适用于多节点，也可以先接入一台再增加机器。
 
 Node.js / npm 和构建助手所需的固定 Go 1.26.4 不由 `--install-deps` 安装。首次准备和已有工具的 PATH 检查见[节点工具与依赖](node-prerequisites.md)。
 
+本节使用一键部署。希望手动执行 `npm ci`、`setup`、`native:doctor`、`native:install` 和 `native:start` 时，按[逐步手动部署](manual-deployment.md)操作；两种方式使用相同配置和服务，不在已有任务运行时重复安装依赖。
+
 ### 桌面 + 本机或 SSH
 
 ```sh

@@ -47,6 +47,8 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 
 系统依赖已齐可省略 `--install-deps`；不需要无人登录运行时可省略 `--enable-linger`。仅这两项按需使用 sudo；它们不安装 Node、Go 或 Codex。**以上命令不构建端口映射助手**：需要助手下载时，还须在最终入口确定后完成[助手构建与四平台验收](docs/deployment-checklist.md#3-需要助手时完成构建与发布)。
 
+希望逐步安装、核对每一步结果时，使用[手动部署指南](docs/manual-deployment.md)，包含依赖、初始化、服务安装与启动、SSH 和最终入口验收。它与上面的一键部署选择一种起步方式；已有部署按[维护指南](docs/operations.md)更新。
+
 访问 `http://localhost:36080`，在部署主机的私有文件 `secrets/credentials.txt` 查看账号密码。远程主机可先在自己的电脑运行：
 
 ```sh

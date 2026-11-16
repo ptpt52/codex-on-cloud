@@ -7,6 +7,7 @@
 | 当前任务 | 阅读顺序 |
 | --- | --- |
 | 第一次安装自己的工作台 | [选择组合](deployment.md) → [执行与验收清单](deployment-checklist.md) → [准备工具](node-prerequisites.md) → 执行对应安装指南 |
+| 希望逐步执行安装命令 | [手动部署节点](manual-deployment.md)，再完成所选公网 / 多节点入口 |
 | 交给 AI 部署，或人工检查是否遗漏 | [共用检查清单](deployment-checklist.md) → [部署后自动验收](deployment-verification.md)，提供自己的模式、入口和助手需求；AI 先读 [AGENTS.md](../AGENTS.md) |
 | 接入管理员已建好的中转中心 | [节点接入与恢复](selfhost-node.md)，无需先安装中心 |
 | 用自己的公网服务器统一接入节点 | [中心部署](selfhost-server.md) → [中心管理](selfhost-admin.md) → [节点接入](selfhost-node.md) |
@@ -22,6 +23,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [部署组合](deployment.md) | 工作区、入口的区别，常用组合及安装命令 |
+| [手动部署节点](manual-deployment.md) | 两种模式的系统包、npm 依赖、初始化、用户服务和验收顺序 |
 | [部署检查清单](deployment-checklist.md) | 人工 / AI 共用流程、最终入口、助手四平台构建和完成标准 |
 | [部署后自动验收](deployment-verification.md) | 综合检查命令、节点／中心、可选登录、四平台助手及 JSON 报告 |
 | [节点工具与依赖](node-prerequisites.md) | 固定版本、PATH、Node / Go 与系统依赖的职责 |

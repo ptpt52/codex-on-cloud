@@ -6,13 +6,15 @@
 
 ## 1. 部署本机工作台
 
-选择一种模式，例如纯网页终端：
+先完成[基础工具和 Git 源码准备](node-prerequisites.md)，再选择一种模式，例如纯网页终端：
 
 ```sh
 npm run deploy -- --mode terminal --install-deps --enable-linger
 ```
 
 需要完整桌面时改为 `--mode desktop`，并预先安装 Codex CLI。已有本机工作台直接进入下一步；系统依赖已齐时省略 `--install-deps`。
+
+也可按[手动部署](manual-deployment.md)逐步安装；先确认本机 `/readyz` 就绪，再申请接入。中心安装成功不代表这一步已完成。
 
 ## 2. 使用节点授权接入中心
 

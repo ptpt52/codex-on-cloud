@@ -44,12 +44,14 @@ npm run deploy -- --domain desk.example.com --zone example.com
 
 ## 手动接入已有 Tunnel
 
-如果希望通过 Cloudflare 控制台创建资源，可不在节点保存 API Token：
+如果希望通过 Cloudflare 控制台创建资源，可不在节点保存 API Token。本节适用于未加入网关 / 自建中心的独立节点；已有多节点入口使用对应的迁移或退出流程，不只修改 `.env`。
 
-1. 部署所选模式。新目录可使用 `npm run deploy -- --mode terminal --origin https://desk.example.com`；已有部署在私有编辑器中将 `.env` 的 `PUBLIC_ORIGIN` 改为同一 HTTPS 根地址。
+1. 先按[工具说明](node-prerequisites.md)准备源码、Node/npm、Python 和 systemd 用户服务。新目录例如执行 `npm run deploy -- --mode terminal --install-deps --enable-linger --origin https://desk.example.com`；桌面改为 `desktop` 并先准备 Codex CLI。也可按[手动部署](manual-deployment.md)逐步完成，在首次 `setup` 时填写同一 `--origin`。
 2. 在自己的账户创建或选择该节点专用的远程管理 Tunnel，为 `desk.example.com` 配置公开主机名。
 3. 将 Tunnel 上游设置为面板的私有 Unix socket。下面命令会打印本机实际上游，不需要照抄其他人的 UID 或运行路径。
 4. 将该 Tunnel 的运行 token 用私有编辑器保存为 `secrets/tunnel_token`，权限设为 0600，然后运行下方启动命令。
+
+已有独立部署先在私有编辑器中将 `.env` 的 `PUBLIC_ORIGIN` 改为同一 HTTPS 根地址。`setup --origin` 保留已有 `.env`，不能用来改绑。HTTPS 配置生效后再通过最终域名登录；尚未完成 Tunnel 时公网暂不可访问是本流程的中间状态。
 
 打印该节点的私有上游：
 
@@ -59,6 +61,8 @@ node --input-type=module -e 'import {maintenanceSettings} from "./native/config.
 
 使用与 systemd 用户服务一致的 `XDG_RUNTIME_DIR`。不要为 VNC 开放公网端口，也不要将 Tunnel 指向不可信的本地代理。
 
+公开主机名的 service 使用命令输出的完整 `unix:/…/tunnel.sock`，不是 VNC socket，也不是 `http://localhost:36080`。保持原请求 Host，不把 HTTP Host Header 覆盖成 localhost。Cloudflare 的 [Unix socket 服务说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/protocols/)列出了该服务类型。
+
 ```sh
 chmod 600 secrets/tunnel_token
 npm run native:cloudflared
@@ -67,6 +71,8 @@ npm run native:tunnel
 ```
 
 面板和 helper 仍保持回环监听，Tunnel 经私有 socket 接入。手动方式与 API 自动方式选择其一管理同一入口，避免相互覆盖配置。
+
+`secrets/credentials.txt` 在初始化后不会自动跟随手工修改的域名更新；可用私有编辑器只修正其中“工作台”地址行，保留原账号密码。实际入口始终以 `.env` 和 Tunnel 配置为准。需要助手时再按最终 HTTPS 入口构建，最后执行本页验收及 `npm run verify:deployment`。
 
 ## 可选的 Access 与直连
 

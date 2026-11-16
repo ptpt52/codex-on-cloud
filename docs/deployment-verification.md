@@ -25,11 +25,13 @@ npm run verify:deployment -- --login --forward
 中心与节点分别验收。在中心源码仓库使用已安装的固定 Node：
 
 ```sh
-sudo /opt/codex-selfhost/bootstrap/node/bin/node \
+sudo /opt/codex-selfhost/bin/node \
   scripts/verify-deployment.mjs --role center
 ```
 
 显式验证中心管理员登录时增加 `--login`。默认读取 `/etc/codex-selfhost/server.env`；自定义配置目录使用 `--config-dir /自己的配置目录`。该目录和管理员密码可能需要 root 读取权限。中心不检查节点的助手包，助手验收在每个工作台节点执行。
+
+使用正式安装的 `/opt/codex-selfhost/bin/node`，不依赖 `bootstrap/node/bin/node`；安装器可能直接复用正式运行时，引导目录不保证存在。命令中的脚本路径相对保留的中心源码仓库，不是在任意目录运行。
 
 私有 CA：节点自动沿用已保存的 `SELFHOST_CA_FILE`；也可增加 `--ca-file /path/to/ca.pem` 明确信任证书。中心使用私有证书时同样显式提供 CA。每次 HTTPS 请求保留证书链、有效期和主机名校验，不修改全局信任。
 
@@ -99,5 +101,11 @@ JSON 含 `version`、`deployment`、`checks` 和 `summary`。每项状态为 `pa
 实现限制：最多 64 个检查项；配置最多 64 KiB，密码文件最多 4 KiB、密码本身 16–512 个字符，CA 最多 256 KiB；网络响应最多 512 KiB，每请求最多 6 秒，不跟随重定向；子命令最多 12 秒、输出最多 16 KiB。助手沿用每包 32 MiB、清单 4 KiB 和四平台上限，逐包校验。没有新增持久队列、后台任务或自动重试。
 
 后台版本核算最多 256 个源码文件、每文件 1 MiB、合计 8 MiB；依赖分析在不执行源码的独立解析进程中完成，期限 5 秒、响应最多 128 KiB。诊断接口每次只读固定本机服务，响应及等待时间有界，不改变服务或任务状态。
+
+## 当前实现的已知限制
+
+`setup` 会创建空的 `secrets/tunnel_token` 占位文件；当前验收脚本只按该文件是否存在识别 Tunnel。因此仅本机 / SSH 的新部署可能被标为 `cloudflare`，并误报 `service:codex-cloud-tunnel.service` 未运行。它不表示必须启用 Cloudflare，也不表示任务宿主失败。
+
+出现此情形时，先核对 `.env` 的本机入口、占位文件确实为空、所选模式的核心服务及 `/readyz`，再完成浏览器人工项。保留自动失败项并注明识别误报待修复；不要填写假 Token、启动未选择的 Tunnel 或宣称自动检查全绿。其他失败仍逐项排查，不能一并忽略。手动流程见[逐步部署](manual-deployment.md#3-检查安装和启动用户服务)。
 
 [文档目录](README.md) · [部署检查清单](deployment-checklist.md) · [日常维护](operations.md)

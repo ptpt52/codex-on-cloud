@@ -19,7 +19,7 @@
 
 ## 1. 初始化网关
 
-在一台有本仓库、Node.js 和 Python 的维护机器上执行：
+在一台有 Git 克隆的本仓库、Node.js 22+ 和 Python 3.8+ 的维护机器上执行，工具准备见[依赖说明](node-prerequisites.md)。只发布网关的机器不需要安装工作台、桌面、Go 或 Codex；各工作台节点另行安装。以下命令均从仓库根目录运行：
 
 ```sh
 npm run gateway:setup -- \
@@ -43,6 +43,8 @@ npx --yes wrangler@4.158.0 secret bulk data/gateway-build/worker-secrets.json \
 ```
 
 无浏览器环境可使用 Wrangler 的 API Token 认证，通过受保护的环境注入 `CLOUDFLARE_API_TOKEN`；Wrangler 不会自动读取项目的 `secrets/cf_token`。权限要求见[CF 接入](cloudflare.md#凭据与权限)。首次使用 Workers 的账户需先完成控制台初始化。
+
+两条发布命令都成功后再登录网关。首次 `deploy` 到 `secret bulk` 完成之间，密码摘要尚未设置，管理接口暂不可用；不要在这个中间状态登记节点。若第二步失败，保留原构建配置与私有文件，修正权限后完成同一 Worker 的 secret 发布。
 
 部署使用固定版本 Wrangler、SQLite Durable Object 和固定域名 Custom Domain，关闭 `workers.dev` 与预览入口。默认 Worker 名为 `codex-cloud-gateway`；确认自己账户中没有其他部署占用它。
 

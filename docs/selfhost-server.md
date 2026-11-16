@@ -75,9 +75,23 @@ frps
 <domain>  A  <public-ipv4>
 ```
 
+若域名使用 Cloudflare 托管 DNS，此 A 记录应设为“仅 DNS”，不要开启橙云代理；安装器必须能查到 `--public-ip`，frpc 的 7000 端口和 TURN 也需要直达中心。已有 AAAA 记录时另核对该 IPv6 地址的 HTTPS 可达性，避免部分客户端走到错误地址。
+
 ## 中心安装
 
-在中心服务器准备本仓库源码，以及 `curl`、`tar`、`sha256sum`，进入仓库根目录后执行。中心脚本会引导固定 Node 运行时；不需要先在中心运行节点的 `npm run deploy`：
+使用专门承载中心的 Ubuntu 24.04 服务器。安装器会管理 `/opt/codex-selfhost`、`/etc/codex-selfhost` 和对应系统服务，并停用发行版的 `caddy.service`、`coturn.service`，改用 `codex-selfhost-*` 服务。已有网站或 TURN 的主机先安排迁移，不直接接管原服务。
+
+首次准备基础工具及源码：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  git ca-certificates curl tar xz-utils util-linux python3 iproute2 openssl
+git clone https://github.com/ptpt52/codex-on-cloud.git
+cd codex-on-cloud
+```
+
+已有源码时进入原目录，不重复克隆。`flock`、`prlimit` 来自 util-linux，Python 用于安装锁，`ip` 用于识别 TURN 本机地址；它们必须在安装开始前可用。中心脚本会引导固定 Node 运行时；不需要在中心先安装节点的 npm 依赖或运行 `npm run deploy`。保留中心源码仓库供后续更新、回滚和验收，从仓库根目录执行：
 
 ```bash
 sudo ./scripts/selfhost-server.sh install \
@@ -115,6 +129,8 @@ sudo ./scripts/selfhost-server.sh install \
 自动签发模式持续从 `/.well-known/acme-challenge/` 提供 HTTP-01 验证。首次签发只复制证书，写入最终配置后才启用完整服务；续期 hook 显式重启 frps、Caddy 和 coturn。Caddy 保持 `admin off`，不支持 `systemctl reload`。更新证书会短暂断开网络连接，节点桌面、终端后台和任务继续运行。
 
 可选 UFW：
+
+下面选项只自动放行所填来源到 **TCP 22** 的 SSH。使用其他 SSH 端口时先自行配置并验证防火墙，不直接套用该选项；云安全组仍需单独配置。
 
 ```bash
 sudo ./scripts/selfhost-server.sh install \
@@ -214,7 +230,7 @@ sudo systemctl restart codex-selfhost-center.service
 - 中心不设固定授权记录数量上限；单个状态文件最多 256 KiB。最多保留 512 条审计记录，容量紧张时优先裁剪旧审计并为撤销授权预留空间；不足时拒绝新增或扩展记录，不截断现有授权
 - 配置写入与等待合计最多 32 项，其中 4 项为撤销、断开和清理保留；超额返回 503，不自动重试。节点接入和退出先校验凭据，取消后尚未执行的请求跳过处理，落盘前再次校验。此边界不限制节点数量或业务连接数
 
-日志进入 journald。服务以非 root 用户运行；Caddy 仅因监听 80/443 由 systemd 启动。
+日志进入 journald。中心和 frps 使用 `codex-selfhost` 用户，coturn 使用 `turnserver`；当前 Caddy 系统 unit 使用 root，并启用 `NoNewPrivileges`、`PrivateTmp`、`ProtectSystem` 等限制。中心安装命令使用 sudo，不等于在节点上以 root 运行工作台。
 
 ## 验收
 

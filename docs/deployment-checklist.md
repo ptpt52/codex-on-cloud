@@ -18,6 +18,7 @@
 - 从 Git 克隆源码，保留 `.git` 并确认当前仓库、分支和提交。助手构建使用 Git 提交标识；仅解压源码 ZIP 不足以完成这一步，不伪造版本信息。
 - 新部署准备自己的域名、账户、证书或接入授权。CF API Token 默认私有保存于 `secrets/cf_token`（0600）；自建节点接入 key 使用交互隐藏输入，见[凭据对照](access.md#凭据对照)。
 - 维护已有实例先核对工作树、部署模式及入口，保留密码、任务、固定助手 v2 key 和规则。只读环境检查用 `npm run deploy -- --check`，它不启动服务，也不验收公网或助手下载。
+- 新节点可选择一键 `deploy`，或按[手动部署](manual-deployment.md)依次安装依赖、初始化、检查、安装用户服务、启动并验收；`native:install` 本身不启动服务。`setup` 保留已有配置，重复传入口或用户名参数不会改写 `.env`。
 
 ## 2. 完成所选入口的全部步骤
 
@@ -57,6 +58,8 @@ npm run build:forward
 ## 4. 部署结束前逐项核对
 
 节点先运行 `npm run verify:deployment`；需要助手时使用 `npm run verify:deployment -- --forward`，明确检查实际账号登录时再增加 `--login`。中心命令、JSON 输出及完整检查范围见[部署后自动验收](deployment-verification.md)。命令退出 `0` 只证明自动项通过；按报告继续完成下面的人工验收。
+
+仅本机 / SSH 部署还需查看[当前自动验收限制](deployment-verification.md#当前实现的已知限制)：空 Tunnel token 文件可能被误认为已启用 CF。保留失败结果和人工核对记录，不为消除误报启动未选择的服务，也不把报告说成全绿。
 
 | 验收项 | 完成标准 |
 | --- | --- |

@@ -13,6 +13,8 @@ if command -v go >/dev/null 2>&1; then go version; fi
 systemctl --user is-system-running
 ```
 
+`running` 或 `degraded` 表示用户管理器可用；后者可能返回退出码 1，需另外检查失败服务。若提示无法连接 bus，先使用部署用户正常登录 / SSH 登录；WSL 先按[启用 systemd](wsl.md#先启用-systemd)处理。不要通过 sudo 运行 npm 来绕过用户服务问题。
+
 | 工具 | 要求 | 何时需要 |
 | --- | --- | --- |
 | Node.js / npm | Node.js 22+；下文提供固定 24.22.2 | 所有节点 |
@@ -35,6 +37,8 @@ sudo apt-get install -y --no-install-recommends \
 ```
 
 克隆自己的仓库并进入根目录；仓库地址见 [README](../README.md)。构建助手需要 `.git` 中的提交标识，不能仅解压源码 ZIP 后跳过 Git 检查。后续工具安装命令都在该目录执行。已有 Node.js 22+ 且 `npm --version` 正常时，可继续使用，不必换成下文版本。
+
+选好工具后可运行一键部署，或按[手动部署](manual-deployment.md)逐步执行。Python 必须在启动 `deploy` 前可用，部署锁本身使用 Python；`--install-deps` 不能代替这项前置准备。
 
 ## 缺少工具时，安装固定版本
 
@@ -106,6 +110,8 @@ if command -v go >/dev/null 2>&1; then go version; fi
 ```
 
 确认版本后可继续部署。后续终端需重新设置 PATH，或把对应的**实际绝对路径**加入当前用户的 `~/.profile`。不要原样把 `$PWD` 写进登录配置，它在其他目录中会指向不同位置。Node 路径会写入 systemd 用户服务，因此安装目录需要长期保留。
+
+摘要分别对应 [Node.js 24.22.2 的 SHA256 清单](https://nodejs.org/dist/v24.22.2/SHASUMS256.txt)中的 `.tar.xz` 文件，以及 [Go 官方下载元数据](https://go.dev/dl/?mode=json&include=all)中的 Go 1.26.4 Linux 归档。不要将 Node 的 `.tar.gz` 与 `.tar.xz` 摘要混用。
 
 需要系统与网页 Bash 使用相同开发环境时，按[共享 Bash 配置](shell-environment.md)显式接入，并将这些绝对路径整理到共享文件；交互工具选择与后台固定的 Node 路径分别管理。
 
