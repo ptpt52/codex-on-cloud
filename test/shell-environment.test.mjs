@@ -10,8 +10,8 @@ import { setupShellEnvironment, shellEnvironmentHook, SHELL_CONFIG_LIMIT } from 
 const exec = promisify(execFile), terminalRc = resolve('desktop/terminal.bashrc');
 async function home(t) {
   const path = await mkdtemp(join(tmpdir(), "codex-env ' $()-"));
-  // Ubuntu's global bashrc otherwise prints a first-login sudo banner.
-  await writeFile(join(path, '.sudo_as_admin_successful'), '');
+  // Keep distribution login/MOTD and first-login sudo banners out of probes.
+  await writeFile(join(path, '.hushlogin'), '');
   t.after(() => rm(path, { recursive: true, force: true })); return path;
 }
 
