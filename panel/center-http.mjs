@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { constants, closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { X509Certificate } from 'node:crypto';
+import { isLoopbackHostname } from '../selfhost/client-address.mjs';
 
 export const CA_LIMIT = 256 * 1024;
 export function readCenterCA(file, { privateFile = false } = {}) {
@@ -23,7 +24,7 @@ export function readCenterCA(file, { privateFile = false } = {}) {
 // Never installs a global agent or trusts redirects with node credentials.
 export function centerRequest(target, { ca, timeout = 10000, ...options } = {}) {
   const url = new URL(target);
-  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw Error('中心地址必须使用 HTTPS');
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || (url.protocol === 'http:' && !isLoopbackHostname(url.hostname))) throw Error('中心地址必须使用 HTTPS');
   return new Promise((resolve, reject) => {
     let connected = false;
     const request = (url.protocol === 'https:' ? https : http).request(url, { agent: false, ...options, ca, rejectUnauthorized: true, timeout, signal: options.signal }, response => {

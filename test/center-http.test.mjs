@@ -1,15 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import https from 'node:https';
+import http from 'node:http';
 import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { centerClient, readCenterCA } from '../panel/center-http.mjs';
+import { centerClient, centerRequest, readCenterCA } from '../panel/center-http.mjs';
+import { isLoopbackHostname } from '../selfhost/client-address.mjs';
 import { joinNode, leaveNode, nodeDoctor } from '../selfhost/node.mjs';
 
 const openssl = args => execFileSync('openssl', args, { stdio: 'ignore', timeout: 10000 });
+
+test('loopback URL validation agrees on IPv4, localhost and bracketed IPv6 without admitting remote HTTP', () => {
+  for (const host of ['localhost', '127.0.0.1', '[::1]']) assert.equal(isLoopbackHostname(new URL('http://' + host + ':17500').hostname), true);
+  for (const host of ['localhost.example.test', 'evil.localhost', '192.168.1.5', '203.0.113.5', '[::]', '[2001:db8::1]', '[::ffff:127.0.0.1]']) {
+    assert.equal(isLoopbackHostname(new URL('http://' + host).hostname), false);
+    assert.throws(() => centerRequest('http://' + host + '/api/join'), /HTTPS/);
+  }
+});
+
+test('real IPv6 loopback supports node enrollment, public readiness, doctor and leave', async t => {
+  let nodeId = '', origin; const seen = [];
+  const server = http.createServer(async (req, res) => {
+    seen.push(req.url); let text = ''; for await (const chunk of req) text += chunk;
+    if (req.url === '/api/join') {
+      nodeId = JSON.parse(text).node.id;
+      return res.end(JSON.stringify({ credential: 'cocn_' + 'v'.repeat(43), entryBasePath: '/node/ipv6/',
+        frp: { serverAddr: '::1', serverPort: 7000, tlsServerName: 'localhost', token: 'ipv6_test_token_123456' } }));
+    }
+    res.end(JSON.stringify(req.url === '/node/ipv6/readyz' ? { ok: true, host: true, files: true, nodeId } : { ok: true }));
+  });
+  server.listen(0, '::1');
+  try { await once(server, 'listening'); }
+  catch (error) { if (['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) { t.skip('IPv6 loopback unavailable'); return; } throw error; }
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  origin = 'http://[::1]:' + server.address().port;
+  const root = await mkdtemp(join(tmpdir(), 'center-ipv6-')); t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, '.env'), 'PUBLIC_ORIGIN=http://127.0.0.1:36080\n', { mode: 0o600 });
+  const options = { root, server: origin, slug: 'ipv6', mode: 'terminal', panelPort: 36080, configHome: join(root, 'config'),
+    run: async (_file, args) => ({ ok: true, stdout: args.includes('is-active') ? 'active' : args.includes('--value') ? 'yes' : '' }),
+    install: async () => '/opt/isolated-frpc', promptKey: async () => 'coc_' + 'k'.repeat(43) };
+  const joined = await joinNode(options); assert.equal(joined.entryReady, true); assert.equal(joined.connection.origin, origin);
+  assert.equal((await nodeDoctor(options)).ok, true);
+  await leaveNode(options); assert(seen.includes('/api/leave'));
+});
+
 test('real HTTPS enrollment, doctor, rollback recovery and leave share scoped CA trust', async t => {
   const root = await mkdtemp(join(tmpdir(), 'center-tls-'));
   t.after(() => rm(root, { recursive: true, force: true }));

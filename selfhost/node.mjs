@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { centerClient, centerRequest, readCenterCA } from '../panel/center-http.mjs';
+import { isLoopbackHostname } from './client-address.mjs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +26,7 @@ async function command(file, args) {
 function origin(value) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('中心服务器地址必须是 HTTP(S) 根地址');
-  if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw Error('远程节点必须使用 HTTPS 中心服务器');
+  if (url.protocol !== 'https:' && !isLoopbackHostname(url.hostname)) throw Error('远程节点必须使用 HTTPS 中心服务器');
   return url.origin;
 }
 

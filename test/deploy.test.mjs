@@ -352,7 +352,7 @@ test('selfhost readiness keeps the node path and refuses a different node identi
 
 test('default deployment readiness uses the persisted origin and helper port despite stale task environment variables', async t => {
   const root = await mkdtemp(join(tmpdir(), 'codex-health-env-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  for(const folder of ['native','panel','scripts','gateway'])await cp(resolve(folder),join(root,folder),{recursive:true,filter:path=>!path.includes('__pycache__')});
+  for(const folder of ['native','panel','scripts','gateway','selfhost'])await cp(resolve(folder),join(root,folder),{recursive:true,filter:path=>!path.includes('__pycache__')});
   await symlink(resolve('node_modules'),join(root,'node_modules'));await mkdir(join(root,'secrets'));
   for(const name of ['agent_secret','panel_password'])await writeFile(join(root,'secrets',name),'synthetic_health_secret',{mode:0o600});
   const requests=[];

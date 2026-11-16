@@ -1,6 +1,9 @@
 import net from 'node:net';
 
 export const loopbackAddress = address => /^(?:::ffff:)?127\.0\.0\.1$/.test(address || '') || address === '::1';
+// URL.hostname retains brackets around IPv6 literals. This hostname allowlist
+// is shared by HTTP enrollment and the loopback-only frps control endpoint.
+export const isLoopbackHostname = hostname => ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
 
 function canonical(value) {
   if (typeof value !== 'string') return '';

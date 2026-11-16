@@ -4,6 +4,22 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { frpsProxyProbe } from '../selfhost/frps-admin.mjs';
 
+test('frps management accepts bracketed IPv6 loopback and still refuses non-loopback URLs', async t => {
+  for (const endpoint of ['http://localhost.example.test:17500', 'https://203.0.113.5:17500', 'http://[::]:17500', 'http://[2001:db8::1]:17500', 'http://user:secret@[::1]:17500', 'http://[::1]:17500/path']) {
+    assert.throws(() => frpsProxyProbe({ endpoint, password: 'ipv6_frps_test_password' }), /回环/);
+  }
+  const server = http.createServer((req, res) => {
+    assert.equal(req.url, '/api/proxy/http/ipv6'); assert.match(req.headers.authorization, /^Basic /);
+    res.end('{"status":"online"}');
+  });
+  server.listen(0, '::1');
+  try { await once(server, 'listening'); }
+  catch (error) { if (['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) { t.skip('IPv6 loopback unavailable'); return; } throw error; }
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const probe = frpsProxyProbe({ endpoint: 'http://[::1]:' + server.address().port, password: 'ipv6_frps_test_password' });
+  assert.equal(await probe('ipv6'), true);
+});
+
 test('frps proxy probe distinguishes online, offline and missing proxies with loopback Basic auth', async t => {
   const seen = [];
   const server = http.createServer((req, res) => {

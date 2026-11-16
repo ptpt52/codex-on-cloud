@@ -1,10 +1,11 @@
 import { readResponseBytes } from '../native/response-body.mjs';
+import { isLoopbackHostname } from './client-address.mjs';
 
 const MAX_BODY = 16 * 1024;
 
 export function frpsProxyProbe({ endpoint, username = 'admin', password, request = fetch } = {}) {
   const base = new URL(endpoint);
-  if (!['http:', 'https:'].includes(base.protocol) || !['127.0.0.1', 'localhost', '::1'].includes(base.hostname) || base.username || base.password || base.search || base.hash || base.pathname !== '/') throw Error('frps 管理地址必须是回环根地址');
+  if (!['http:', 'https:'].includes(base.protocol) || !isLoopbackHostname(base.hostname) || base.username || base.password || base.search || base.hash || base.pathname !== '/') throw Error('frps 管理地址必须是回环根地址');
   if (typeof username !== 'string' || !username || typeof password !== 'string' || password.length < 16) throw Error('frps 管理凭据无效');
   const authorization = 'Basic ' + Buffer.from(username + ':' + password).toString('base64');
   return async name => {
