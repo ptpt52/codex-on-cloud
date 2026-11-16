@@ -36,9 +36,23 @@ test('eight fixed slots show stable keys and only the selected helper rules; mod
     await expect(page.locator('#forward-rule-dialog')).not.toBeVisible(); await expect(page.locator('#forward-agent-rules')).toContainText('A 新名称');
     await page.getByRole('button', { name: '停用规则', exact: true }).click(); await page.locator('#forward-agent-confirm-accept').click(); await expect(page.locator('#forward-agent-rules')).toContainText('已停用');
     await page.getByRole('button', { name: '启用规则', exact: true }).click(); await expect(page.locator('#forward-agent-rules')).toContainText('已生效');
+    expect((await choose(page, 2)).key).toBe(b.key); await expect(page.locator('#forward-agent-rules')).toContainText('B 的 SSH'); expect(peers[1].ws.readyState).toBe(1);
+    expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { for (const peer of peers) peer.close(); await app.close(); }
+});
+
+// Keep rule editing and key rotation independent within the per-test deadline.
+test('cancelling key rotation preserves the key and rotation isolates the selected helper', async ({ page }) => {
+  const app = await fixture({ rfb: true, forwardPorts: '*' }), peers = [];
+  try {
+    await login(page, app); await open(page);
+    const a = await choose(page, 1); peers.push(await helper(app, a.key)); await add(page, 'A 的 SSH');
+    const b = await choose(page, 2); peers.push(await helper(app, b.key)); await add(page, 'B 的 SSH');
+    await choose(page, 1);
     await page.locator('#forward-agent-rekey').click(); await expect(page.locator('#forward-agent-confirm-cancel')).toBeFocused(); await page.keyboard.press('Enter'); await expect(page.locator('#forward-agent-confirm')).not.toBeVisible(); expect(await page.locator('#forward-agent-key').inputValue()).toBe(a.key);
+    expect(peers[0].ws.readyState).toBe(1);
     await page.locator('#forward-agent-rekey').click(); await page.locator('#forward-agent-confirm-accept').click(); await expect(page.locator('#forward-agent-key')).not.toHaveValue(a.key); await until(() => peers[0].ws.readyState === 3);
-    await expect(page.locator('#forward-agent-rules')).toContainText('A 新名称'); expect((await choose(page, 2)).key).toBe(b.key); await expect(page.locator('#forward-agent-rules')).toContainText('B 的 SSH'); expect(peers[1].ws.readyState).toBe(1);
+    await expect(page.locator('#forward-agent-rules')).toContainText('A 的 SSH'); expect((await choose(page, 2)).key).toBe(b.key); await expect(page.locator('#forward-agent-rules')).toContainText('B 的 SSH'); expect(peers[1].ws.readyState).toBe(1);
     expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
   } finally { for (const peer of peers) peer.close(); await app.close(); }
 });
