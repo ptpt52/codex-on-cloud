@@ -94,6 +94,14 @@ npm run server:join -- \
 
 换到另一个中心或 slug 时，需要管理员为新目标创建 key，并显式增加 `--replace`；它不等同于同一路径的 `--reauthorize`。只有接管本机原有 Cloudflare / 网关入口时才使用 `--switch-existing`，两项用途不同。
 
+## 状态与排障
+
+运行 `npm run server:status` 查看接入配置、服务状态和阶段诊断，使用 `npm run server:doctor` 验证中心及完整节点入口；需要查询未完成的中心接入时增加 `-- --resolve`。机器可读输出可用 `npm run --silent server:doctor -- --resolve`，可直接复制 JSON 用于排障。
+
+`diagnostics` 包含最近命令阶段、固定失败原因码、连续失败后的命令重试次数、最近命令完成时间 `lastSuccessAt`，以及最近接入命令实际验证入口成功的 `lastReadyAt`。它们不是当前连接健康的替代品；当前状态由 `checks.center`、`checks.entry` 和服务状态报告。入口检查区分 DNS、超时、TLS、HTTP 状态、响应格式、错误节点身份及节点尚未就绪。`relay.restartCount` 来自 systemd 的 frpc 自动重启计数，与命令重试分开；服务没有提供计数或时间时显示 `null`。
+
+诊断只保存一个私有 `data/selfhost-node/diagnostics.json`，最多 8 KiB、32 条事件，尝试计数最多一百万；退出接入后保留最后的诊断。记录不包含 key、凭据、接入证明、原始错误正文或工作区路径，输出只允许固定字段。诊断损坏或写入失败会报告不可用，不覆盖原文件或改变实际接入、退出和恢复结果。诊断读取与 `doctor --resolve` 都不改写状态或重发请求。
+
 ## 退出与失败恢复
 
 ```sh

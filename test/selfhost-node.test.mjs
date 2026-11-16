@@ -51,7 +51,10 @@ test('join stores only the node credential, generates bounded frpc and systemd f
   await joinNode({ root: h.root, server: 'https://desk.example.test', slug: 'node-a', mode: 'terminal', panelPort: 36080, configHome: h.configHome,
     request, run: h.run, install: async () => '/opt/frpc', promptKey: async () => { secondPrompt = true; return key; } });
   assert.equal(secondPrompt, false); assert.equal(submitted.body.credential, credential); assert.equal(submitted.body.key, undefined);
-  assert.deepEqual(await nodeStatus({ root: h.root, run: async () => ({ ok: true, stdout: 'active', stderr: '' }) }), { joined: true, origin: 'https://desk.example.test', slug: 'node-a', path: '/node/node-a/', mode: 'terminal', service: 'active', panel: 'active' });
+  const { diagnostics, relay, ...status } = await nodeStatus({ root: h.root, run: async () => ({ ok: true, stdout: 'active', stderr: '' }) });
+  assert.deepEqual(status, { joined: true, origin: 'https://desk.example.test', slug: 'node-a', path: '/node/node-a/', mode: 'terminal', service: 'active', panel: 'active' });
+  assert.equal(diagnostics.status, 'succeeded'); assert.equal(diagnostics.stage, 'complete'); assert(diagnostics.lastSuccessAt > 0);
+  assert.equal(relay.restartCount, null);
 });
 
 test('joining a different center requires an explicit replacement and imported CA paths are private inputs', async t => {
@@ -518,7 +521,7 @@ test('join reports pending entry and doctor requires the correct ready node thro
   assert.equal(joined.entryReady, false); assert(joined.warnings.some(text => text.includes('尚未就绪')));
   const doctor = () => nodeDoctor({ root: h.root, run: h.run, request, secureHealth: async () => true });
   assert.equal((await doctor()).ok, false);
-  ready = true; nodeId = 'b'.repeat(32); assert.equal((await doctor()).ok, false);
+  ready = true; nodeId = 'b'.repeat(32); const mismatch = await doctor(); assert.equal(mismatch.ok, false); assert.equal(mismatch.checks.entry.reason, 'node_identity');
   nodeId = joined.connection.nodeId;
   const verified = await doctor(); assert.equal(verified.entryReady, true); assert.equal(verified.ok, true);
 });

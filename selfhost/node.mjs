@@ -1,47 +1,20 @@
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { centerClient, centerRequest, readCenterCA } from '../panel/center-http.mjs';
-import { isLoopbackHostname } from './client-address.mjs';
-import { mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { parseEnv, promisify } from 'node:util';
-import { readStateFile, removeStateFile, writeStateFile } from '../scripts/state-files.mjs';
+import { removeStateFile, writeStateFile } from '../scripts/state-files.mjs';
 import { acquireDeploymentLease } from '../scripts/deployment-lease.mjs';
 import { installFrpc } from './frpc.mjs';
 import { queryEnrollment } from './enrollment.mjs';
-import { mergeCredentials, mergeEnvironment } from './config-merge.mjs';
-import { CREDENTIAL, KEY, NODE_ID, SELFHOST_LIMITS, SLUG, enrollmentOperation, entryBasePath, randomToken, slug } from './protocol.mjs';
+import { CREDENTIAL, KEY, entryBasePath, randomToken, slug } from './protocol.mjs';
+import { command, NODE_SERVICE, relayState, servicePath, serviceUnit, stopRelay } from './node-service.mjs';
+import { nodeEntryReady } from './node-health.mjs';
+import { trackNodeOperation } from './node-operation.mjs';
+import {
+  json, optional, origin, pathFor, planPanel, planPanelRestore, preflightPanel, readNodeConnection, readRecovery,
+  recoveryPath, releaseCentral, restoreFile, restorePanel, rollbackTransaction, transactionLimits, transactionPaths, validateConnection, validateRecovery, validateTransaction,
+} from './node-state.mjs';
 
-const exec = promisify(execFile);
-export const NODE_SERVICE = 'codex-cloud-selfhost-node.service';
-
-async function command(file, args) {
-  try {
-    const value = await exec(file, args, { timeout: 30000, maxBuffer: 64 * 1024, env: { ...process.env, NO_COLOR: '1' } });
-    return { ok: true, stdout: value.stdout.trim(), stderr: value.stderr.trim() };
-  } catch (error) {
-    return { ok: false, code: error.code, stdout: String(error.stdout || '').trim(), stderr: String(error.stderr || '').trim() };
-  }
-}
-
-function origin(value) {
-  const url = new URL(value);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw Error('中心服务器地址必须是 HTTP(S) 根地址');
-  if (url.protocol !== 'https:' && !isLoopbackHostname(url.hostname)) throw Error('远程节点必须使用 HTTPS 中心服务器');
-  return url.origin;
-}
-
-function validateConnection(value) {
-  if (!value || value.version !== 1 || Object.keys(value).some(key => !['version', 'origin', 'slug', 'name', 'path', 'nodeId', 'mode', 'credential', 'proxyHost', 'turnEndpoint', 'frp'].includes(key))) throw Error('节点接入配置格式无效');
-  if (!equalsOrigin(value.origin) || !NODE_ID.test(value.nodeId) || !CREDENTIAL.test(value.credential) || !['desktop', 'terminal'].includes(value.mode) || value.path !== entryBasePath(value.slug)) throw Error('节点接入配置身份无效');
-  if (value.turnEndpoint !== undefined && value.turnEndpoint !== null && value.turnEndpoint !== value.origin + '/api/turn-credentials') throw Error('节点 TURN 地址必须属于接入中心');
-  if (!value.frp || typeof value.frp.serverAddr !== 'string' || !value.frp.serverAddr || value.frp.serverAddr.length > 255 || !Number.isInteger(value.frp.serverPort) || value.frp.serverPort < 1 || value.frp.serverPort > 65535 || typeof value.frp.tlsServerName !== 'string' || !value.frp.tlsServerName || typeof value.frp.token !== 'string' || value.frp.token.length < 16 || value.frp.token.length > 512 || typeof value.proxyHost !== 'string' && typeof value.proxyHost !== 'undefined') throw Error('节点 frp 配置无效');
-  return value;
-}
-const equalsOrigin = value => { try { return origin(value) === value; } catch { return false; } };
-const pathFor = (root, name) => join(root, 'data', 'selfhost-node', name);
-const json = value => JSON.stringify(value, null, 2) + '\n';
+export { NODE_SERVICE, serviceUnit, readNodeConnection, nodeEntryReady };
+export { nodeStatus, nodeDoctor } from './node-diagnostics.mjs';
 const toml = value => JSON.stringify(value);
 
 export function frpcConfig(connection, { panelPort, caFile } = {}) {
@@ -77,298 +50,15 @@ healthCheck.timeoutSeconds = 3
 `;
 }
 
-function systemdQuote(value) {
-  if (/[\r\n\0]/.test(value)) throw Error('systemd 路径无效');
-  return '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
-}
-
-export function serviceUnit({ frpc, config }) {
-  return `[Unit]
-Description=Codex on Cloud self-host node relay
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=${systemdQuote(frpc)} -c ${systemdQuote(config)}
-Restart=on-failure
-RestartSec=15
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-UMask=0077
-LimitNOFILE=4096
-
-[Install]
-WantedBy=default.target
-`;
-}
-
-async function optional(path, limit = 16384) { try { return await readStateFile(path, limit, true); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }
-
-async function httpsHealth(origin, _serverName, ca) {
-  const response = await centerClient(origin, ca)(origin + '/healthz', { signal: AbortSignal.timeout(5000) });
-  return response.ok && (await response.json()).ok === true;
-}
-
-export async function nodeEntryReady(connection, { request = centerRequest, ca } = {}) {
-  try {
-    const response = await centerClient(connection.origin, ca, request)(connection.origin + connection.path + 'readyz', {
-      headers: { 'x-codex-node': connection.nodeId }, redirect: 'error', signal: AbortSignal.timeout(4000),
-    });
-    if (!response.ok) return false;
-    const value = await response.json();
-    return value?.ok === true && value.host === true && value.files === true && value.nodeId === connection.nodeId;
-  } catch { return false; }
-}
-
-function panelEnvironment(before, connection, caFile) {
-  const values = { PUBLIC_ORIGIN: connection.origin, ENTRY_BASE_PATH: connection.path, SELFHOST_NODE_CONFIG_FILE: './data/selfhost-node/connection.json', SHARED_ENTRY: '0', NODE_ID: connection.nodeId, SELFHOST_CA_FILE: caFile ? './data/selfhost-node/frps-ca.pem' : '' };
-  for (const value of Object.values(values)) if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw Error('Panel 环境配置值无效');
-  const text = mergeEnvironment(before, before, Object.entries(values).map(([key, value]) => key + '=' + value + '\n').join(''));
-  const parsed = parseEnv(text);
-  if (parsed.PUBLIC_ORIGIN !== connection.origin || parsed.ENTRY_BASE_PATH !== connection.path || parsed.SELFHOST_NODE_CONFIG_FILE !== './data/selfhost-node/connection.json' || parsed.SHARED_ENTRY !== '0' || parsed.NODE_ID !== connection.nodeId) throw Error('Panel 环境配置存在冲突，未修改');
-  return text;
-}
-
-function panelTarget(connection) {
-  return { origin: connection.origin, slug: connection.slug, nodeId: connection.nodeId, path: connection.path };
-}
-
-function validPanelTarget(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 4 &&
-    equalsOrigin(value.origin) && typeof value.slug === 'string' && SLUG.test(value.slug) &&
-    NODE_ID.test(value.nodeId) && value.path === entryBasePath(value.slug);
-}
-
-const panelPaths = root => ({
-  env: join(root, '.env'),
-  credentials: join(root, 'secrets', 'credentials.txt'),
-  gateway: join(root, 'data', 'gateway-node.json'),
-  backup: pathFor(root, 'panel-backup.json'),
-});
-
-const recoveryPath = root => pathFor(root, 'join-recovery.json');
-
-function validateRecovery(value) {
-  if ([3, 4].includes(value?.version)) {
-    if (!Number.isSafeInteger(value.at) || value.at <= 0 || !validPanelTarget(value.target) ||
-      value.credential !== null && (typeof value.credential !== 'string' || !CREDENTIAL.test(value.credential)) ||
-      value.ca !== null && (typeof value.ca !== 'string' || Buffer.byteLength(value.ca) > 262144) || typeof value.keepConnection !== 'boolean') throw Error('节点接入意图无效');
-    if (value.version === 4 && value.operation !== null) enrollmentOperation(value.operation);
-    return value;
-  }
-  if (value?.version === 2) return validateTransaction(value);
-  if (!value || value.version !== 1 || !Number.isSafeInteger(value.at) || value.at <= 0 || typeof value.error !== 'string' || value.error.length > 2048 || !value.before || typeof value.before !== 'object' || Array.isArray(value.before)) throw Error('节点接入恢复记录无效');
-  const connection = validateConnection(value.connection);
-  for (const key of ['connection', 'config', 'unit', 'ca']) if (value.before[key] !== null && (typeof value.before[key] !== 'string' || Buffer.byteLength(value.before[key]) > 262144)) throw Error('节点接入恢复文件快照无效');
-  return { version: 1, at: value.at, error: value.error, connection, before: { connection: value.before.connection, config: value.before.config, unit: value.before.unit, ca: value.before.ca } };
-}
-
-async function readRecovery(root) {
-  const text = await optional(recoveryPath(root), 256 * 1024);
-  if (text === null) return null;
-  try { return { text, value: validateRecovery(JSON.parse(text)) }; } catch (error) { throw Error('节点接入恢复记录无法读取：' + error.message); }
-}
-
-async function panelState(root) {
-  const paths = panelPaths(root), env = await optional(paths.env, 65536), credentials = await optional(paths.credentials, 4096), gatewayBefore = await optional(paths.gateway, 4096);
-  if (env === null) throw Error('本机尚未完成 Panel 初始化，请先运行 npm run setup 或现有部署流程');
-  return { paths, env, credentials, gatewayBefore };
-}
-
-async function publicationState(root) {
-  const files = ['gateway-node.json', 'gateway-join.json', 'cloudflare-node.json', 'cloudflare-publication.json', 'cloudflare-activation.json', 'cloudflare-deployment.json'];
-  for (const name of files) if (await optional(join(root, 'data', name), 262144) !== null) return name;
-  return null;
-}
-
-async function planPanel(root, connection, { switchExisting = false, replace = false, previousConnection, caFile } = {}) {
-  const current = await panelState(root), backupText = await optional(current.paths.backup, 131072);
-  let backup, backupChanged = false;
-  if (backupText !== null) {
-    try { backup = JSON.parse(backupText); } catch { throw Error('Panel 切换备份格式无效'); }
-    if (!backup || ![1, 2].includes(backup.version) || typeof backup.envBefore !== 'string' || typeof backup.envAfter !== 'string' || typeof backup.gatewayBefore !== 'string' && backup.gatewayBefore !== null || typeof backup.credentialsBefore !== 'string' && backup.credentialsBefore !== null || typeof backup.credentialsAfter !== 'string' && backup.credentialsAfter !== null) throw Error('Panel 切换备份内容无效');
-    if (backup.version === 1) {
-      if (!previousConnection || !validPanelTarget(panelTarget(previousConnection))) throw Error('旧版 Panel 切换备份缺少可识别的原连接，未覆盖');
-      backup = { ...backup, version: 2, target: panelTarget(previousConnection) }; backupChanged = true;
-    }
-    if (!validPanelTarget(backup.target)) throw Error('Panel 切换备份目标无效');
-  } else {
-    const publication = await publicationState(root);
-    if (publication && !switchExisting) throw Error('检测到现有 Cloudflare/Gateway 发布状态；如需接管，请显式使用 --switch-existing。普通 server:leave 会恢复原配置');
-    backup = {
-      version: 2,
-      target: panelTarget(connection),
-      envBefore: current.env,
-      envAfter: panelEnvironment(current.env, connection, caFile),
-      credentialsBefore: current.credentials,
-      credentialsAfter: current.credentials?.replace(/^工作台：.*$/m, '工作台：' + connection.origin) ?? null,
-      gatewayBefore: current.gatewayBefore,
-    };
-    backupChanged = true;
-  }
-  const previousEnvAfter = backup.envAfter, previousCredentialsAfter = backup.credentialsAfter;
-  const desiredTarget = panelTarget(connection), sameTarget = JSON.stringify(backup.target) === JSON.stringify(desiredTarget);
-  if (!sameTarget && !replace) throw Error('Panel 已绑定其他自建节点；切换中心或 slug 必须显式使用 --replace');
-  const desiredEnvAfter = mergeEnvironment(current.env, previousEnvAfter, panelEnvironment(backup.envBefore, connection, caFile), [backup.envBefore]);
-  const desiredCredentialsAfter = backup.credentialsBefore?.replace(/^工作台：.*$/m, '工作台：' + connection.origin) ?? null;
-  const envBefore = mergeEnvironment(current.env, previousEnvAfter, backup.envBefore, [desiredEnvAfter]);
-  const credentialsBefore = mergeCredentials(current.credentials, previousCredentialsAfter, backup.credentialsBefore, [desiredCredentialsAfter]);
-  const credentialsAfter = mergeCredentials(current.credentials, previousCredentialsAfter, desiredCredentialsAfter, [backup.credentialsBefore]);
-  if (backup.target.origin !== desiredTarget.origin || backup.target.slug !== desiredTarget.slug || backup.target.nodeId !== desiredTarget.nodeId || backup.target.path !== desiredTarget.path || backup.envAfter !== desiredEnvAfter || backup.credentialsAfter !== desiredCredentialsAfter) backupChanged = true;
-  if (backup.envBefore !== envBefore || backup.credentialsBefore !== credentialsBefore || backup.credentialsAfter !== credentialsAfter) backupChanged = true;
-  backup = { ...backup, target: desiredTarget, envBefore, envAfter: desiredEnvAfter, credentialsBefore, credentialsAfter };
-  if (Buffer.byteLength(json(backup)) > 131072) throw Error('Panel 切换备份超过 128 KiB，未修改');
-  return {
-    before: { env: current.env, credentials: current.credentials, gateway: current.gatewayBefore, backup: backupText },
-    after: { env: backup.envAfter, credentials: backup.credentialsAfter, gateway: null, backup: backupChanged ? json(backup) : backupText },
-  };
-}
-
-async function preflightPanel(root, switchExisting) {
-  await panelState(root);
-  if (await optional(panelPaths(root).backup, 131072) !== null) return;
-  const publication = await publicationState(root);
-  if (publication && !switchExisting) throw Error('检测到现有 Cloudflare/Gateway 发布状态；如需接管，请显式使用 --switch-existing。普通 server:leave 会恢复原配置');
-}
-
-async function planPanelRestore(root) {
-  const paths = panelPaths(root), backupText = await optional(paths.backup, 131072);
-  if (backupText === null) return { paths, backupText, files: [] };
-  let backup; try { backup = JSON.parse(backupText); } catch { throw Error('Panel 切换备份损坏，未恢复'); }
-  if (!backup || ![1, 2].includes(backup.version) || ['envBefore', 'envAfter'].some(key => typeof backup[key] !== 'string' || Buffer.byteLength(backup[key]) > 65536) ||
-    ['credentialsBefore', 'credentialsAfter', 'gatewayBefore'].some(key => backup[key] !== null && (typeof backup[key] !== 'string' || Buffer.byteLength(backup[key]) > 4096))) throw Error('Panel 切换备份内容无效，未恢复');
-  const [currentEnv, currentCredentials, currentGateway] = await Promise.all([optional(paths.env, 65536), optional(paths.credentials, 4096), optional(paths.gateway, 4096)]);
-  const restoredEnv = currentEnv === null ? backup.envBefore : mergeEnvironment(currentEnv, backup.envAfter, backup.envBefore);
-  const restoredCredentials = currentCredentials === null ? backup.credentialsBefore : mergeCredentials(currentCredentials, backup.credentialsAfter, backup.credentialsBefore);
-  if (currentGateway !== null && currentGateway !== backup.gatewayBefore) throw Error('Gateway 配置在自建接入后被修改，未覆盖');
-  return { paths, backupText, files: [
-    { path: paths.env, expected: currentEnv, restore: restoredEnv, limit: 65536 },
-    { path: paths.credentials, expected: currentCredentials, restore: restoredCredentials, limit: 4096 },
-    { path: paths.gateway, expected: currentGateway, restore: backup.gatewayBefore, limit: 4096 },
-  ] };
-}
-
-async function restorePanel(root, { run = command, plan } = {}) {
-  plan ??= await planPanelRestore(root);
-  // Revalidate the complete preflight after stopping/contacting the center,
-  // before writing any file. Each atomic write also checks its own snapshot.
-  const { paths, backupText, files } = plan;
-  if (await optional(paths.backup, 131072) !== backupText) throw Error('Panel 切换备份在退出过程中被修改，未恢复');
-  for (const file of files) if (await optional(file.path, file.limit) !== file.expected) throw Error('Panel 配置在退出过程中被修改，未覆盖');
-  if (backupText === null) return false;
-  for (const file of files) {
-    if (file.restore !== null && file.expected !== file.restore) await writeStateFile(file.path, file.restore, { expected: file.expected });
-  }
-  const result = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
-  if (!result.ok) throw Error('Panel 原配置已恢复，但服务重启失败：' + (result.stderr || result.stdout || result.code));
-  await removeStateFile(paths.backup, { expected: backupText });
-  return true;
-}
-
-export async function readNodeConnection(root) {
-  const text = await optional(pathFor(root, 'connection.json'), 16384);
-  if (text === null) return null;
-  try { return validateConnection(JSON.parse(text)); } catch (error) { throw Error('节点接入配置无法读取：' + error.message, { cause: error }); }
-}
-
-function servicePath(configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')) {
-  return join(configHome, 'systemd', 'user', NODE_SERVICE);
-}
-
-async function relayState(run) {
-  const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]);
-  const enabled = await run('systemctl', ['--user', 'is-enabled', NODE_SERVICE]);
-  return { active: active.ok && active.stdout === 'active', enabled: enabled.ok && ['enabled', 'enabled-runtime'].includes(enabled.stdout) };
-}
-
-async function stopRelay(run) {
-  const result = await run('systemctl', ['--user', 'disable', '--now', NODE_SERVICE]);
-  if (result.ok) return result;
-  // A failure before unit creation has nothing to stop. Confirm both systemd
-  // load and active state instead of treating an arbitrary stop error as success.
-  const loaded = await run('systemctl', ['--user', 'show', NODE_SERVICE, '--property=LoadState', '--value']);
-  const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]);
-  return loaded.ok && loaded.stdout === 'not-found' && ['inactive', 'unknown'].includes(active.stdout) ? { ok: true } : result;
-}
-
-async function restoreRelay(before, run) {
-  if (!before) return [];
-  const failures = [];
-  if (before.enabled) {
-    const enabled = await run('systemctl', ['--user', 'enable', NODE_SERVICE]);
-    if (!enabled.ok) failures.push('恢复中继自启动：' + (enabled.stderr || enabled.stdout || enabled.code || 'unknown'));
-  }
-  if (before.active) {
-    const restarted = await run('systemctl', ['--user', 'restart', NODE_SERVICE]);
-    const active = restarted.ok ? await run('systemctl', ['--user', 'is-active', NODE_SERVICE]) : restarted;
-    if (!active.ok || active.stdout !== 'active') failures.push('恢复中继服务：' + (active.stderr || active.stdout || active.code || 'unknown'));
-  }
-  return failures;
-}
-
-const transactionLimits = { env: 65536, credentials: 4096, gateway: 4096, backup: 131072, unit: 65536, config: 262144, connection: 16384, ca: 262144 };
-function transactionPaths(root, configHome) {
-  return { ...panelPaths(root), unit: servicePath(configHome), config: pathFor(root, 'frpc.toml'), connection: pathFor(root, 'connection.json'), ca: pathFor(root, 'frps-ca.pem') };
-}
-function validateTransaction(value) {
-  if (!Number.isSafeInteger(value.at) || value.at <= 0 || !value.before || !value.after || typeof value.relay?.active !== 'boolean' || typeof value.relay?.enabled !== 'boolean') throw Error('接入事务无效');
-  validateConnection(value.connection);
-  if (typeof value.unitPath !== 'string' || !value.unitPath.startsWith('/') || value.unitPath.length > 4096) throw Error('接入中继路径无效');
-  for (const side of ['before', 'after']) for (const [key, limit] of Object.entries(transactionLimits)) {
-    const text = value[side][key];
-    if (text !== null && (typeof text !== 'string' || Buffer.byteLength(text) > limit)) throw Error('接入事务快照无效');
-  }
-  return value;
-}
-async function restoreFile(path, before, limit = 262144, expected) {
-  const current = await optional(path, limit);
-  if (current === before) return;
-  if (expected !== undefined && current !== expected) throw Error('配置在接入后被修改，未覆盖：' + path);
-  if (before === null) await removeStateFile(path, { expected: current });
-  else await writeStateFile(path, before, { expected: current });
-}
-async function rollbackTransaction(root, value, { run, request, configHome }) {
-  const failures = [], paths = transactionPaths(root, configHome);
-  if (paths.unit !== value.unitPath) throw Error('恢复的 systemd 目录与接入时不同，未修改');
-  try { await releaseCentral(value.connection, centerClient(value.connection.origin, value.after.ca || undefined, request)); }
-  catch (error) { failures.push('中心：' + error.message); }
-  const remoteFailures = failures.length;
-  const stopped = await stopRelay(run);
-  if (!stopped.ok) failures.push('无法确认中继已停止');
-  if (stopped.ok) {
-    for (const [key, limit] of Object.entries(transactionLimits)) {
-      try { await restoreFile(paths[key], value.before[key], limit, value.after[key]); }
-      catch (error) { failures.push(error.message); }
-    }
-    if (failures.length === remoteFailures) {
-      const panel = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
-      if (!panel.ok) failures.push('Panel 恢复重启失败');
-      const reloaded = await run('systemctl', ['--user', 'daemon-reload']);
-      if (!reloaded.ok) failures.push('中继单元恢复失败');
-      if (failures.length === remoteFailures) failures.push(...await restoreRelay(value.relay, run));
-    }
-  }
-  return failures;
-}
-
-async function releaseCentral(connection, request) {
-  const response = await request(connection.origin + '/api/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: 1, slug: connection.slug, credential: connection.credential, nodeId: connection.nodeId }), redirect: 'error', signal: AbortSignal.timeout(10000) });
-  if (!response.ok && response.status !== 401) { const value = await response.json().catch(() => ({})); throw Error(value.error || '中心释放节点失败'); }
-}
-
 export async function joinNode(options = {}) {
   if (!options.root) throw Error('节点部署目录未配置');
   const lease = await acquireDeploymentLease(options.root);
-  try { return await joinNodeLocked(options); } finally { await lease.release(); }
+  try { return await trackNodeOperation(options.root, 'join', report => joinNodeLocked({ ...options, report })); } finally { await lease.release(); }
 }
 
 async function joinNodeLocked({
   root, server, slug: wantedSlug, mode = 'desktop', panelPort, caFile, replace = false, reauthorize = false, switchExisting = false,
-  request = centerRequest, run = command, install = installFrpc, promptKey, configHome,
+  request = centerRequest, run = command, install = installFrpc, promptKey, configHome, report,
 } = {}) {
   const nodeSlug = slug(wantedSlug), serverOrigin = origin(server), existingText = await optional(pathFor(root, 'connection.json'), 16384);
   let existing = null;
@@ -384,6 +74,7 @@ async function joinNodeLocked({
     const key = await promptKey?.(); if (!KEY.test(key || '')) throw Error('授权 key 格式无效'); body.key = key;
     body.operation = { id: randomBytes(16).toString('hex'), proof: randomToken('cocj_') };
   }
+  await report('preparing');
   const frpc = await install({ root }), config = pathFor(root, 'frpc.toml'), unit = servicePath(configHome);
   const caPath = pathFor(root, 'frps-ca.pem'), paths = transactionPaths(root, configHome), before = {};
   for (const [name, limit] of Object.entries(transactionLimits)) before[name] = await optional(paths[name], limit);
@@ -401,6 +92,7 @@ async function joinNodeLocked({
   let intentText = json(intent);
   // One private, <=256 KiB journal covers even a lost/malformed HTTP response.
   await writeStateFile(recoveryPath(root), intentText, { expected: null });
+  await report('enrolling');
   let connection;
   try {
     let response;
@@ -414,7 +106,7 @@ async function joinNodeLocked({
     if (!response.ok) {
       // Only explicit pre-commit rejection proves that no enrollment occurred.
       if (joined?.outcome === 'rejected') await removeStateFile(recoveryPath(root), { expected: intentText });
-      throw Error(joined?.error || '中心拒绝节点接入（HTTP ' + response.status + '）');
+      throw Object.assign(Error(joined?.error || '中心拒绝节点接入（HTTP ' + response.status + '）'), { status: response.status });
     }
     if (!joined || typeof joined.credential !== 'string' || !CREDENTIAL.test(joined.credential)) throw Error('中心接入响应缺少有效凭据');
     intent.credential = joined.credential;
@@ -425,7 +117,7 @@ async function joinNodeLocked({
     // No local configuration/service has changed. Preserve an unknown receipt;
     // never replay the join or stop the previous node to recover this stage.
     if (await optional(recoveryPath(root), 262144) !== null) {
-      throw Object.assign(Error(error.message + '；接入结果未确认，恢复记录已保留，请运行 server:doctor'), { outcome: 'unknown' });
+      throw Object.assign(Error(error.message + '；接入结果未确认，恢复记录已保留，请运行 server:doctor', { cause: error }), { outcome: 'unknown', status: error.status });
     }
     throw error;
   }
@@ -448,6 +140,7 @@ async function joinNodeLocked({
     throw error;
   }
   try {
+    await report('applying');
     if (replacingRelay) {
       const stopped = await stopRelay(run);
       if (!stopped.ok) throw Error('无法停止现有节点中继');
@@ -455,6 +148,7 @@ async function joinNodeLocked({
     for (const name of ['ca', 'connection', 'config', 'backup', 'env', 'credentials', 'gateway', 'unit']) {
       if (before[name] !== value.after[name]) await restoreFile(paths[name], value.after[name], transactionLimits[name], before[name]);
     }
+    await report('starting');
     const panel = await run('systemctl', ['--user', 'restart', 'codex-cloud-panel.service']);
     if (!panel.ok) throw Error('Panel 重启失败：' + (panel.stderr || panel.stdout || panel.code));
     for (const args of [['--user', 'daemon-reload'], ['--user', 'reset-failed', NODE_SERVICE], ['--user', 'enable', NODE_SERVICE], ['--user', 'restart', NODE_SERVICE]]) {
@@ -469,6 +163,7 @@ async function joinNodeLocked({
       const enabled = process.env.USER ? await run('loginctl', ['enable-linger', process.env.USER]) : { ok: false };
       if (!enabled.ok) warnings.push('未能启用 systemd user linger；请由管理员执行 loginctl enable-linger ' + (process.env.USER || '<用户>'));
     }
+    await report('verifying');
     const entryReady = await nodeEntryReady(connection, { request, ca: caBytes || undefined });
     if (!entryReady) warnings.push('中继进程已启动，节点入口尚未就绪；请稍后运行 npm run server:doctor 检查隧道、节点身份及任务/文件服务');
     await removeStateFile(recoveryPath(root), { expected: recoveryText });
@@ -484,86 +179,45 @@ async function joinNodeLocked({
   }
 }
 
-export async function nodeStatus({ root, run = command } = {}) {
-  const connection = await readNodeConnection(root); if (!connection) return { joined: false, service: 'missing' };
-  const active = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]), panel = await run('systemctl', ['--user', 'is-active', 'codex-cloud-panel.service']);
-  return { joined: true, origin: connection.origin, slug: connection.slug, path: connection.path, mode: connection.mode, service: active.stdout || 'inactive', panel: panel.stdout || 'inactive' };
-}
-
-export async function nodeDoctor({ root, run = command, request = centerRequest, secureHealth = httpsHealth, resolve = false } = {}) {
-  const recovery = await readRecovery(root), connection = await readNodeConnection(root);
-  if ([3, 4].includes(recovery?.value.version)) {
-    const { target, credential, keepConnection } = recovery.value;
-    let result;
-    if (resolve && !credential && !keepConnection) {
-      try { result = await queryEnrollment(recovery.value, { request }); }
-      catch { result = { state: 'unknown', reason: 'query_failed' }; }
-    }
-    return { ok: false, origin: target.origin, path: target.path, nodeId: target.nodeId,
-      ...(recovery.value.operation ? { operationId: recovery.value.operation.id } : {}),
-      ...(result ? { enrollment: { state: result.state, ...(result.reason ? { reason: result.reason } : {}) } } : {}),
-      issues: [credential || keepConnection || result?.state === 'accepted'
-      ? '存在未完成的中心接入，请运行 server:leave --recover；本地配置尚未改写'
-      : '中心接入结果未确认且尚无凭据；可运行 server:doctor --resolve 查询，或请管理员核对状态；恢复记录已保留，未重发接入请求'], warnings: [] };
-  }
-  if (!connection) return { ok: false, issues: [recovery ? '存在未完成的中继回滚，请运行 server:leave --recover' : '尚未执行 server:join'], warnings: [] };
-  const issues = [], warnings = [];
-  let ca;
-  try {
-    const text = await optional(pathFor(root, 'frps-ca.pem'), 256 * 1024);
-    if (text !== null) {
-      if (text.length < 100 || !text.includes('-----BEGIN CERTIFICATE-----')) throw Error('节点 CA 文件内容无效');
-      ca = text;
-    }
-  } catch (error) { issues.push('节点 CA 文件无效：' + error.message); }
-  const health = issues.length ? false : new URL(connection.origin).protocol === 'https:'
-    ? await secureHealth(connection.origin, connection.frp.tlsServerName, ca).catch(() => false)
-    : await request(connection.origin + '/healthz', { signal: AbortSignal.timeout(5000) }).then(response => response.ok).catch(() => false);
-  if (recovery) issues.push('存在未完成的中继回滚，请运行 server:leave --recover');
-  if (!health) issues.push('中心健康检查失败');
-  const entryReady = health && await nodeEntryReady(connection, { request, ca });
-  if (!entryReady) issues.push('节点入口尚未就绪或节点身份不匹配，请检查 frpc 到中心 7000 端口及节点任务/文件服务');
-  const service = await run('systemctl', ['--user', 'is-active', NODE_SERVICE]), panel = await run('systemctl', ['--user', 'is-active', 'codex-cloud-panel.service']);
-  if (service.stdout !== 'active') issues.push('中继服务未运行');
-  if (panel.stdout !== 'active') issues.push('节点 Panel 未运行');
-  const linger = process.env.USER ? await run('loginctl', ['show-user', process.env.USER, '-p', 'Linger', '--value']) : { stdout: '' };
-  if (linger.stdout !== 'yes') warnings.push('systemd user linger 未启用');
-  return { ok: issues.length === 0, origin: connection.origin, path: connection.path, service: service.stdout || 'inactive', panel: panel.stdout || 'inactive', health, entryReady, issues, warnings };
-}
-
 export async function leaveNode(options = {}) {
   if (!options.root) throw Error('节点部署目录未配置');
   const lease = await acquireDeploymentLease(options.root);
-  try { return await (options.recover ? recoverNodeLocked(options) : leaveNodeLocked(options)); } finally { await lease.release(); }
+  try { return await trackNodeOperation(options.root, options.recover ? 'recover' : 'leave', report => options.recover ? recoverNodeLocked({ ...options, report }) : leaveNodeLocked({ ...options, report })); } finally { await lease.release(); }
 }
 
-async function recoverNodeLocked({ root, request = centerRequest, run = command, configHome } = {}) {
+async function recoverNodeLocked({ root, request = centerRequest, run = command, configHome, report } = {}) {
   let recovery = await readRecovery(root);
   if (!recovery) throw Error('没有待恢复的节点接入记录');
   let value = recovery.value;
   if ([3, 4].includes(value.version)) {
     if (!value.keepConnection) {
       if (!value.credential) {
+        await report('resolving');
         const result = await queryEnrollment(value, { request });
         if (result.state !== 'accepted') throw Error('中心接入结果未确认且尚无凭据；请管理员核对节点状态，恢复记录已保留');
         value = { ...value, credential: result.credential };
         const text = json(value); await writeStateFile(recoveryPath(root), text, { expected: recovery.text }); recovery = { value, text };
       }
+      await report('releasing');
       await releaseCentral({ ...value.target, credential: value.credential }, centerClient(value.target.origin, value.ca || undefined, request));
     }
     await removeStateFile(recoveryPath(root), { expected: recovery.text });
     return { recovered: true, origin: value.target.origin, slug: value.target.slug };
   }
   if (value.version === 2) {
+    await report('restoring');
     const failures = await rollbackTransaction(root, value, { run, request, configHome });
     if (failures.length) throw Error('恢复未完成：' + failures.join('；'));
     await removeStateFile(recoveryPath(root), { expected: recovery.text });
     return { recovered: true, origin: value.connection.origin, slug: value.connection.slug };
   }
   const panelPlan = await planPanelRestore(root);
+  await report('stopping');
   const stopped = await stopRelay(run);
   if (!stopped.ok) throw Error('无法确认节点中继已停止，恢复记录已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
+  await report('releasing');
   await releaseCentral(value.connection, centerClient(value.connection.origin, value.before.ca || undefined, request));
+  await report('restoring');
   await restorePanel(root, { run, plan: panelPlan });
   const targets = [
     [servicePath(configHome), value.before.unit, 65536],
@@ -576,15 +230,18 @@ async function recoverNodeLocked({ root, request = centerRequest, run = command,
   return { recovered: true, origin: value.connection.origin, slug: value.connection.slug };
 }
 
-async function leaveNodeLocked({ root, request = centerRequest, run = command, configHome } = {}) {
+async function leaveNodeLocked({ root, request = centerRequest, run = command, configHome, report } = {}) {
   if (await readRecovery(root)) throw Error('存在未完成的接入，请运行 server:leave --recover');
   const connection = await readNodeConnection(root); if (!connection) throw Error('本机尚未接入自建中心');
   const panelPlan = await planPanelRestore(root);
+  await report('stopping');
   const stopped = await stopRelay(run);
   if (!stopped.ok) throw Error('无法确认节点中继已停止，本机接入配置已保留：' + (stopped.stderr || stopped.stdout || stopped.code || 'unknown'));
+  await report('releasing');
   const client = centerClient(connection.origin, await optional(pathFor(root, 'frps-ca.pem'), 262144) || undefined, request);
   const response = await client(connection.origin + '/api/leave', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: 1, slug: connection.slug, credential: connection.credential, nodeId: connection.nodeId }), redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => null);
   if (response && !response.ok && response.status !== 401) { const value = await response.json().catch(() => ({})); throw Error(value.error || '中心释放节点失败'); }
+  await report('restoring');
   await restorePanel(root, { run, plan: panelPlan });
   const unit = servicePath(configHome), unitText = await optional(unit, 65536); if (unitText !== null) await removeStateFile(unit, { expected: unitText });
   for (const name of ['connection.json', 'frpc.toml', 'frps-ca.pem']) { const path = pathFor(root, name), text = await optional(path, 262144); if (text !== null) await removeStateFile(path, { expected: text }); }
