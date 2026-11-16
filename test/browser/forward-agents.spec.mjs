@@ -124,7 +124,14 @@ test('per-helper mock diagnostics distinguish new routes from existing mixed con
     await page.locator('#forward-diagnostics-copy').click(); const report = await page.evaluate(() => window.managedReport); expect(report).toContain('新连接 直连');
     for (const value of [a.key, a.agent, '192.168.1.23', 'COM3', '直连规则']) expect(report).not.toContain(value);
     await choose(page, 2); await expect(page.locator('#forward-agent-network')).toContainText('直连 0 / 中转 0'); await expect(page.locator('#forward-agent-rules')).not.toContainText('直连规则');
-  } finally { peer?.close(); await app.close(); }
+  } finally {
+    try {
+      // A status poll can still be inside route.fetch after the last assertion.
+      // Drain handlers while the panel is alive, then stop browser polling.
+      await page.unrouteAll({ behavior: 'wait' });
+      await page.close();
+    } finally { peer?.close(); await app.close(); }
+  }
 });
 
 test('a delayed key response cannot replace the key belonging to a subsequently selected assistant', async ({ page }) => {
