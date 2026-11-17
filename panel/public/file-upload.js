@@ -1,4 +1,5 @@
 export const UPLOAD_PROTOCOL = 1;
+export const FILE_DELETE_PROTOCOL = 1;
 export const UPLOAD_CONFIRM_MS = 120000;
 // Existing Unix files may use the full NAME_MAX and literal backslashes.
 // New uploads keep space for a rename suffix and portable names.
@@ -20,6 +21,14 @@ export function uploadResult(value) {
   return value;
 }
 const invalid = message => Object.assign(Error(message || '上传处理方式无效'), { status: 400, outcome: 'rejected' });
+export function fileDeleteOptions(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'name,version' || !validTransferName(value.name) || typeof value.version !== 'string' || !/^[a-f0-9]{64}$/.test(value.version)) throw invalid('删除文件需要有效的文件名和原文件版本');
+  return { name: value.name, version: value.version };
+}
+export function fileDeleteResult(value, name) {
+  if (!value || value.ok !== true || value.name !== name) throw Object.assign(Error('删除结果未确认，请刷新文件列表核对'), { status: 502, outcome: 'unknown' });
+  return value;
+}
 export function uploadOptions(value = { mode: 'create' }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
   const keys = Object.keys(value).sort().join(',');

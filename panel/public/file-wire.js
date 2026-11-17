@@ -21,14 +21,16 @@ export function createFileBuffer(size) {
 }
 // One ordered stream in each direction, with a negotiated 4/8/16-chunk window.
 // Sequence numbers last for the channel, so old chunks/ACKs cannot be replayed.
-export function createFileWire(channel, { control, chunk, failed }) {
+export function createFileWire(channel, { control, chunk, failed }, now = () => performance.now()) {
   let ended = false, sent = 0, received = 0, queued = 0, chain = Promise.resolve(), window = LEGACY_TRANSFER_WINDOW, writable;
+  let ackCount = 0, ackTotal = 0, maxAck = 0, bufferWait = 0;
   const pending = new Map();
   channel.binaryType = 'arraybuffer';
   const failure = message => Object.assign(Error(message || '文件直连已断开；请检查文件状态后手动重试'), { outcome: 'unknown' });
   function finishWritable(error) {
     if (!writable) return;
     const entry = writable; writable = undefined; clearTimeout(entry.timer); clearTimeout(entry.deadline);
+    bufferWait = Math.min(2 ** 40, bufferWait + Math.max(0, now() - entry.started));
     error ? entry.reject(error) : entry.resolve();
   }
   function checkWritable() {
@@ -62,7 +64,8 @@ export function createFileWire(channel, { control, chunk, failed }) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('文件消息格式无效');
         if (value.type === 'ack') {
           if (Object.keys(value).sort().join(',') !== 'seq,type' || !pending.size || pending.keys().next().value !== value.seq) throw failure('文件确认序号无效');
-          const item = pending.get(value.seq); pending.delete(value.seq); clearTimeout(item.timer); item.resolve();
+          const item = pending.get(value.seq); pending.delete(value.seq); clearTimeout(item.timer);
+          const elapsed = Math.max(0, now() - item.started); ackCount++; ackTotal = Math.min(2 ** 40, ackTotal + elapsed); maxAck = Math.max(maxAck, elapsed); item.resolve();
         } else Promise.resolve(control(value)).catch(close);
         return;
       }
@@ -80,6 +83,8 @@ export function createFileWire(channel, { control, chunk, failed }) {
   });
   channel.addEventListener('close', () => close()); channel.addEventListener('error', () => close());
   return { close, send, get ready() { return !ended && channel.readyState === 'open'; }, get window() { return window; },
+    get metrics() { return { windowChunks: window, chunkAckMs: ackCount ? Math.round(ackTotal / ackCount) : 0, chunkMaxAckMs: Math.round(maxAck), bufferWaitMs: Math.round(bufferWait) }; },
+    resetMetrics() { if (pending.size || writable) throw failure('文件测量仍在进行'); ackCount = ackTotal = maxAck = bufferWait = 0; },
     setWindow(value) {
       if (!validTransferWindow(value) || ended || value !== window && (pending.size || queued)) throw failure('文件窗口协商无效');
       window = value;
@@ -88,7 +93,7 @@ export function createFileWire(channel, { control, chunk, failed }) {
       if (ended || channel.readyState !== 'open' || writable || !Number.isInteger(length) || length <= 0 || length > FILE_CHUNK) return Promise.reject(failure('文件发送窗口暂不可用'));
       if (channel.bufferedAmount + length + 4 <= DATA_BUFFER) return Promise.resolve();
       return new Promise((resolve, reject) => {
-        writable = { length, resolve, reject, deadline: setTimeout(() => close(failure('文件发送缓冲等待超时')), 15000) };
+        writable = { length, resolve, reject, started: now(), deadline: setTimeout(() => close(failure('文件发送缓冲等待超时')), 15000) };
         checkWritable();
       });
     },
@@ -96,7 +101,7 @@ export function createFileWire(channel, { control, chunk, failed }) {
       if (ended || channel.readyState !== 'open' || !bytes.length || bytes.length > FILE_CHUNK || pending.size >= window || sent >= 2147483647 || channel.bufferedAmount + bytes.length + 4 > DATA_BUFFER) return Promise.reject(failure('文件发送窗口暂不可用'));
       const seq=++sent, frame=new Uint8Array(bytes.length+4);new DataView(frame.buffer).setUint32(0,seq);frame.set(bytes,4);
       return new Promise((resolve,reject)=>{
-        pending.set(seq,{resolve,reject,timer:setTimeout(()=>close(failure('文件分块确认超时')),15000)});
+        pending.set(seq,{resolve,reject,started:now(),timer:setTimeout(()=>close(failure('文件分块确认超时')),15000)});
         try{channel.send(frame);}catch(err){close(err);}
       });
     },

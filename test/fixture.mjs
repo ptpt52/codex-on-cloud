@@ -43,9 +43,14 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
     if (req.url === '/diag/tunnel') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(tunnel)); }
     if (req.url === '/health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ready: true, version: '模拟桌面 · 仅供测试', uploadProtocol: 1, quotaProtocol: 1 })); }
     if (req.url === '/backend-version') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ protocol: 1, component: 'files', revision: sourceVersions.files, startedAt: fileVersionStartedAt, pid: process.pid })); }
-    if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, quotaProtocol: 1, truncated: files.size > 1000, files: [...files].slice(0, 1000).map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
+    if (req.url === '/files') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ uploadProtocol: 1, deleteProtocol: 1, quotaProtocol: 1, truncated: files.size > 1000, files: [...files].slice(0, 1000).map(([name, content]) => ({ name, size: content.length, modified: 1, version: fileVersion(content) })) })); }
     if (req.url.startsWith('/files/')) {
       const name = decodeURIComponent(req.url.slice('/files/'.length));
+      if (req.method === 'DELETE') {
+        res.setHeader('content-type', 'application/json');
+        if (!files.has(name) || req.headers['if-match'] !== '"' + fileVersion(files.get(name)) + '"') { res.writeHead(412); return res.end(JSON.stringify({ error: '文件已变化，未删除；请刷新后重新选择' })); }
+        files.delete(name); return res.end(JSON.stringify({ ok: true, name }));
+      }
       if (req.method === 'PUT') {
         res.setHeader('content-type', 'application/json');
         let options; try { options = readUploadHeaders(req.headers); } catch (error) { res.writeHead(400); return res.end(JSON.stringify({ error: error.message })); }

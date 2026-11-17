@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import http from 'node:http';
+import { once } from 'node:events';
 import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
 async function login(page, app) { await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click(); await expect(page.locator('#connection-status')).toContainText('终端在线'); }
@@ -44,7 +46,92 @@ test('existing long names work while unsupported names visibly disable their act
       await expect(row.locator('a')).not.toHaveAttribute('href');
       await expect(row.locator('[data-file-copy]')).toBeDisabled();
       await expect(row.locator('[data-file-insert]')).toBeDisabled();
+      await expect(row.locator('[data-file-delete]')).toBeDisabled();
     }
     expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('administrator deletion defaults to cancel, checks the selected version and refreshes confirmed success', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }), name = "资料 '$(never).txt";
+  try {
+    app.files.set(name, Buffer.from('original')); app.files.set('keep.txt', Buffer.from('keep'));
+    await login(page, app); await page.locator('#files-button').click();
+    const remove = page.getByRole('button', { name: `删除 ${name}`, exact: true }), dialog = page.locator('#file-delete-dialog');
+    await remove.click(); await expect(dialog).toBeVisible(); await expect(page.locator('#file-delete-name')).toHaveText(name);
+    await expect(page.locator('#file-delete-cancel')).toBeFocused();
+    await page.keyboard.press('Enter'); await expect(dialog).toBeHidden();
+    await remove.click(); await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
+    expect(app.received.filter(req => req.method === 'DELETE')).toHaveLength(0);
+    await remove.click(); app.files.set(name, Buffer.from('newer'));
+    await page.locator('#file-delete-confirm').click(); await expect(page.locator('#upload-status')).toContainText('文件已变化');
+    expect(app.files.get(name).toString()).toBe('newer');
+    await page.locator('#refresh-files').click(); await remove.click(); await page.locator('#file-delete-confirm').click();
+    await expect(page.locator('#upload-status')).toContainText(`已删除：${name}`);
+    await expect(remove).toHaveCount(0); expect(app.files.get('keep.txt').toString()).toBe('keep');
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('a lost deletion reply is not replayed and the file list can be checked manually', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }); let calls = 0;
+  try {
+    app.files.set('delete.txt', Buffer.from('delete')); await login(page, app);
+    await page.route('**/api/files/delete', async route => { calls++; await route.fetch(); await route.abort(); });
+    await page.locator('#files-button').click(); await page.getByRole('button', { name: '删除 delete.txt', exact: true }).click();
+    await page.locator('#file-delete-confirm').click();
+    await expect(page.locator('#upload-status')).toContainText('删除结果未确认'); expect(calls).toBe(1); expect(app.files.has('delete.txt')).toBe(false);
+    await page.locator('#refresh-files').click(); await expect(page.locator('#file-list')).toContainText('还没有中转文件');
+    expect(calls).toBe(1); expect(app.received.filter(req => req.method === 'DELETE')).toHaveLength(1);
+  } finally { await app.close(); }
+});
+
+test('an uncertain service deletion stays unknown without retrying through HTTPS', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal', webrtc: true }); let deletes = 0, publicDeletes = 0;
+  app.files.set('uncertain.txt', Buffer.from('file'));
+  const helper = http.createServer((req, res) => {
+    req.resume(); res.setHeader('content-type', 'application/json');
+    if (req.method === 'DELETE') {
+      deletes++; app.files.delete('uncertain.txt'); res.writeHead(503);
+      return res.end(JSON.stringify({ error: '保存状态无法确认' }));
+    }
+    res.end(JSON.stringify({ deleteProtocol: 1, files: [...app.files].map(([name, bytes]) => ({ name, size: bytes.length, modified: 1, version: 'a'.repeat(64) })) }));
+  });
+  helper.listen(0, '127.0.0.1'); await once(helper, 'listening'); app.config.fileAgentUrl = 'http://127.0.0.1:' + helper.address().port;
+  page.on('request', req => { if (req.method() === 'POST' && req.url().endsWith('/api/files/delete')) publicDeletes++; });
+  try {
+    await login(page, app); await page.locator('#files-button').click();
+    await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /, { timeout: 15000 });
+    await page.getByRole('button', { name: '删除 uncertain.txt', exact: true }).click(); await page.locator('#file-delete-confirm').click();
+    await expect(page.locator('#upload-status')).toContainText('删除结果未确认');
+    expect(deletes).toBe(1); expect(publicDeletes).toBe(0); expect(app.files.has('uncertain.txt')).toBe(false);
+    await page.locator('#refresh-files').click(); await expect(page.locator('#file-list')).toContainText('还没有中转文件');
+    expect(deletes).toBe(1); expect(publicDeletes).toBe(0); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); await new Promise(resolve => { helper.close(resolve); helper.closeAllConnections(); }); }
+});
+
+test('deletion confirmation expires or cancels offline, and older helpers cannot enable deletion', async ({ page, context }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    app.files.set('keep.txt', Buffer.from('keep')); await login(page, app); await page.clock.install();
+    await page.locator('#files-button').click(); const remove = page.getByRole('button', { name: '删除 keep.txt', exact: true });
+    await remove.click(); await page.clock.fastForward(120001); await expect(page.locator('#file-delete-dialog')).toBeHidden();
+    await remove.click(); await context.setOffline(true); await expect(page.locator('#file-delete-dialog')).toBeHidden();
+    await context.setOffline(false); await page.locator('#refresh-files').click();
+    await page.route('**/api/files', async route => { const response = await route.fetch(), body = await response.json(); delete body.deleteProtocol; await route.fulfill({ json: body }); });
+    await page.locator('#refresh-files').click(); await expect(remove).toBeDisabled(); await expect(remove).toHaveAttribute('title', /更新/);
+    expect(app.received.filter(req => req.method === 'DELETE')).toHaveLength(0); expect(app.files.has('keep.txt')).toBe(true);
+  } finally { await context.setOffline(false); await app.close(); }
+});
+
+test('temporary file sharing hides deletion controls', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    await app.login(); await app.claim(); await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'temporary-test-password' } });
+    app.files.set('shared.txt', Buffer.from('shared'));
+    await page.goto(app.config.origin); await page.locator('#username').fill('visitor'); await page.locator('#password').fill('temporary-test-password'); await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('临时访问'); await page.locator('#files-button').click();
+    await expect(page.locator('#file-list')).toContainText('shared.txt'); await expect(page.locator('[data-file-delete]')).toBeHidden();
+    expect(app.received.filter(req => req.method === 'DELETE')).toHaveLength(0);
   } finally { await app.close(); }
 });

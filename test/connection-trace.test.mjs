@@ -78,6 +78,16 @@ test('debugging defaults off, disabling cancels queued persistence and clears on
   trace.setEnabled(true); assert.deepEqual(trace.snapshot(), []);
 });
 
+test('upload logs expose transport, byte counts, deadline or HTTP failure without file names or error bodies', () => {
+  const trace = createConnectionTrace(undefined, { enabled: true });
+  trace.add({ type: 'file-ended', route: 'https', loadedBytes: 1048576, totalBytes: 5242880, durationMs: 30000, reason: 'http-status', status: 524, outcome: 'unknown', windowChunks:16, chunkAckMs:100, chunkMaxAckMs:300, bufferWaitMs:5, fileReadMs:12, name: 'PRIVATE_FILENAME', error: 'PRIVATE_RESPONSE', content: 'PRIVATE_BYTES' }, { mode: 'service' });
+  const event = trace.snapshot()[0];
+  assert.match(traceDescription(event), /HTTPS.*1048576 \/ 5242880.*结果未知/);
+  assert.equal(event.status, 524); assert.equal(event.durationMs, 30000);
+  assert.match(traceDescription(event), /分块确认 100 ms.*文件读取 12 ms/);
+  assert.ok(!trace.text().includes('PRIVATE_'));
+});
+
 test('capture metadata explains bounded history, duplicate lifecycle events and page reloads', () => {
   let time = 1700000000000, saved;
   const storage = { getItem: () => saved, setItem: (_key, value) => { saved = value; } };

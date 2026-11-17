@@ -2,7 +2,7 @@ import { directRetry } from './transport-policy.js';
 import { desktopTransport } from '/rtc-transport.js';
 import { createFileClient } from './file-client.js';
 import { createRTCRecheck } from './rtc-recheck.js';
-const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'GET /api/forward': 'forward-list' };
+const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'POST /api/files/delete': 'file-delete', 'GET /api/forward': 'forward-list' };
 export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
 
 // Separate authenticated service link: no frame, desktop claim or input replay.
@@ -32,13 +32,24 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     }, { window: candidate.features?.filesWindow || 4 });
     files = client; channel.addEventListener('open', publish, { once: true });
   }
+  function keepFileProgress(version, peer) {
+    if (!files?.progressing) return false;
+    healthMisses = 0; state.issue = '';
+    if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-delayed', { path: 'direct', reason: 'file-progress', waitMs: 3000 }); }
+    timer = setTimeout(() => void monitor(version, peer), 3000); publish(); return true;
+  }
   async function monitor(version, peer) {
     if (!running || epoch !== version || current !== peer || checking) return;
     if (!document.hidden) {
+      // Authenticated file data/ACKs prove this shared SCTP association is
+      // alive. Do not queue an idle probe behind it and retire a working file.
+      // If progress stops for six seconds, resume normal heartbeat checks.
+      if (keepFileProgress(version, peer)) return;
       checking = true;
       try { await peer.health.ping({ confirmation: healthMisses > 0 }); const route = await peer.stats(); if (current === peer && epoch === version) { healthMisses = 0; state.issue = ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
       catch (error) {
         if (current === peer) {
+          if (error.code === 'heartbeat_timeout' && keepFileProgress(version, peer)) return;
           if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 0); }
           else { retire('connection'); schedule(1000); }
         }

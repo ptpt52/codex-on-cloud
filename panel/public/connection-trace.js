@@ -13,6 +13,7 @@ export const TRACE_LABELS = Object.freeze({
   'rtc-route': '选中的 WebRTC 路径',
   'view-start': '准备查看连接', 'view-reused': '复用待命视图', 'view-discarded': '释放待命视图',
   'request-failed': '节点请求失败', 'request-recovered': '节点请求已恢复',
+  'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束',
   'capture-start': '开始记录网络调试日志',
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
@@ -28,24 +29,28 @@ export const TRACE_REASONS = Object.freeze({
   history: '正在查找、复制或查看历史', 'target-switch': '正在切换终端', cooldown: '连接路径切换冷却期', 'quality-warming': '等待延迟采样',
   quality: '当前路径质量更好', 'handoff-refused': '当前界面暂未允许切换', aborted: '请求已取消', network: '请求未收到响应',
   'page-hidden': '页面已挂起', 'page-restored': '从浏览器缓存恢复页面',
+  'http-status': '上传请求返回错误状态',
+  file_busy: '文件服务正在处理另一项上传或删除', file_exists: '已有同名文件，未覆盖',
+  'file-progress': '文件数据或确认仍在推进，连接保持活跃',
   'handoff-busy': '另一项连接切换仍在处理', 'input-unconfirmed': '等待已发送数据确认，不重发输入', 'output-draining': '等待终端完成当前画面',
 });
 const reasons = ['unsupported', 'disabled', 'signaling', 'negotiation', 'timeout', 'signaling-timeout', 'gathering-timeout', 'ice-timeout', 'channel-timeout',
   ...Object.keys(TRACE_REASONS)];
 const number = value => Number.isInteger(value) && value >= 0 && value <= 2 ** 40;
-const routes = { lan: '局域网直连', ipv6: 'IPv6 直连', nat: 'NAT 打洞', vpn: 'VPN', 'public-ipv4': '公网 IPv4', turn: 'TURN 中继', wss: 'WebSocket 中转', https: 'HTTPS', unknown: '类型待确认' };
+const routes = { lan: '局域网直连', ipv6: 'IPv6 直连', nat: 'NAT 打洞', vpn: 'VPN', 'public-ipv4': '公网 IPv4', turn: 'TURN 中继', wss: 'WebSocket 中转', https: 'HTTPS', direct: 'WebRTC', unknown: '类型待确认' };
 function clean(value) {
   if (!value || !Object.hasOwn(TRACE_LABELS, value.type)) return null;
   const result = { type: value.type };
   if (['relay', 'direct'].includes(value.path)) result.path = value.path;
   if (Object.hasOwn(routes, value.route)) result.route = value.route;
+  if (['confirmed', 'rejected', 'unknown', 'canceled'].includes(value.outcome)) result.outcome = value.outcome;
   if (Object.hasOwn(TRACE_STAGES, value.stage)) result.stage = value.stage;
   if (reasons.includes(value.reason)) result.reason = value.reason;
   if (['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed', 'gathering', 'complete'].includes(value.state)) result.state = value.state;
   if (['ice', 'peer', 'gathering'].includes(value.phase)) result.phase = value.phase;
   if (['state', 'terminals', 'files', 'forward', 'access', 'desktop', 'input', 'other'].includes(value.operation)) result.operation = value.operation;
   if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status;
-  for (const key of ['durationMs', 'waitMs', 'budgetMs', 'queuedBytes', 'rttMs', 'jitterMs', 'ackMs', 'penaltyMs', 'attempt', 'host', 'reflexive', 'relay', 'candidateMs', 'currentMs', 'pendingInputs', 'inputAgeMs']) if (number(value[key])) result[key] = value[key];
+  for (const key of ['durationMs', 'waitMs', 'budgetMs', 'queuedBytes', 'rttMs', 'jitterMs', 'ackMs', 'penaltyMs', 'attempt', 'host', 'reflexive', 'relay', 'candidateMs', 'currentMs', 'pendingInputs', 'inputAgeMs', 'loadedBytes', 'totalBytes', 'windowChunks', 'chunkAckMs', 'chunkMaxAckMs', 'bufferWaitMs', 'fileReadMs']) if (number(value[key])) result[key] = value[key];
   return result;
 }
 // No text, addresses, IDs, SDP or credentials cross this diagnostic interface.
@@ -176,6 +181,9 @@ export function traceDescription(event, now = Date.now()) {
   if (event.operation) parts.push(({ state: '状态查询', terminals: '终端管理', files: '文件传输', forward: '端口映射', access: '访问验证', desktop: '桌面控制', input: '输入通道', other: '节点接口' })[event.operation]);
   if (event.status) parts.push(`HTTP ${event.status}`);
   if (event.route) parts.push(routes[event.route]);
+  if (event.totalBytes !== undefined) parts.push(`已报告接收 ${event.loadedBytes || 0} / ${event.totalBytes} 字节`);
+  if (event.windowChunks !== undefined) parts.push(`窗口 ${event.windowChunks} 块，分块确认 ${event.chunkAckMs || 0} ms（最长 ${event.chunkMaxAckMs || 0} ms），发送缓冲等待 ${event.bufferWaitMs || 0} ms，文件读取 ${event.fileReadMs || 0} ms`);
+  if (event.outcome) parts.push(({ confirmed: '已确认完成', rejected: '请求被拒绝', unknown: '结果未知，不自动重试', canceled: '已取消' })[event.outcome]);
   if (event.attempt) parts.push(`第 ${event.attempt} 次尝试`);
   if (event.durationMs !== undefined) parts.push(`${event.durationMs} ms`);
   if (event.budgetMs !== undefined) parts.push(`最多等待 ${event.budgetMs} ms`);

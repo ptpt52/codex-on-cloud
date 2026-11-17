@@ -17,7 +17,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
- function reject(entry,err){if(active!==entry)return;recoverable=[404,409,410,412,413,429,507].includes(err.status);try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
+ function reject(entry,err){if(active!==entry)return;recoverable=[404,409,410,412,413,429,507].includes(err.status);try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
  async function control(value){
   // A ready frame may already have released upload chunks when HTTP rejects
   // the request. Drain that ordered tail during the fixed retirement window;
@@ -52,7 +52,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
     const chunks=[];let total=0;res.on('data',bytes=>{total+=bytes.length;if(total>4096)res.destroy(fault(502,'文件响应过大'));else chunks.push(bytes);});
     res.once('end',()=>{
      if(active!==entry)return;
-     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw fault(res.statusCode,result.error||'上传失败');entry.result={name:uploadResult(result).name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
+     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw Object.assign(fault(res.statusCode,result.error||'上传失败'),{fileCode:result.fileCode});entry.result={name:uploadResult(result).name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
     });
    });
    req.once('error',err=>reject(entry,err));

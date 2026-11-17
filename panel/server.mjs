@@ -22,7 +22,7 @@ import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
 import { createForwardAgents } from './forward-agents.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
-import { readUploadHeaders, uploadHeaders, validTransferName, UPLOAD_PROTOCOL } from './public/file-upload.js';
+import { readUploadHeaders, uploadHeaders, validTransferName, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './public/file-upload.js';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
 import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
@@ -52,7 +52,7 @@ function visitorScheme(value) {
 }
 
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, fileCode) { super(message); this.status = status; this.fileCode = fileCode; }
 }
 async function jsonBody(req, limit = 128 * 1024) {
   if (!(req.headers['content-type'] || '').startsWith('application/json')) throw new HttpError(415, '请使用 JSON 请求');
@@ -678,6 +678,23 @@ export async function createPanel(config) {
       requireSession(req);
       const result = await agent('/files'); requireSession(req); return reply(res, 200, { ...result, fileProgressProtocol: 1 });
     }
+    if (path === '/api/files/delete' && req.method === 'POST') {
+      if (requireWrite(req).role === 'temporary') throw new HttpError(403, '删除文件需要管理员账号');
+      const { name, version } = fileDeleteOptions(await jsonBody(req, 1024));
+      requireWrite(req);
+      const token = cookieToken(req.headers.cookie), transfer = fileTransfers.begin(req, res, () => !!auth.get(token));
+      const signal = AbortSignal.any([transfer.signal, AbortSignal.timeout(8000)]);
+      try {
+        const listed = await agent('/files', { signal }); transfer.check(); requireWrite(req);
+        if (listed.deleteProtocol !== FILE_DELETE_PROTOCOL) throw new HttpError(503, '文件服务需要更新后才能删除文件');
+        const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
+          method: 'DELETE', headers: { authorization: `Bearer ${config.agentSecret}`, 'if-match': '"' + version + '"' }, signal,
+        });
+        const result = await response.json(); transfer.check(); requireWrite(req);
+        if (response.status === 200) fileDeleteResult(result, name);
+        return reply(res, response.status, result);
+      } finally { transfer.finish(); }
+    }
     if (path.startsWith('/api/file-progress/') && req.method === 'GET') {
       requireSession(req);
       const id = path.slice('/api/file-progress/'.length);
@@ -702,7 +719,7 @@ export async function createPanel(config) {
         if (listed.uploadProtocol !== UPLOAD_PROTOCOL) throw new HttpError(503, '文件服务需要更新后才能安全上传；未发送文件内容');
         if (!Array.isArray(listed.files)) throw new HttpError(503, '共享目录状态暂不可用');
         const existing = listed.files.find(file => file.name === name);
-        if (upload.mode === 'create' && existing) throw new HttpError(409, '已有同名文件，未覆盖；请选择替换或自动改名');
+        if (upload.mode === 'create' && existing) throw new HttpError(409, '已有同名文件，未覆盖；请选择替换或自动改名', 'file_exists');
         if (upload.mode === 'replace' && (!existing || existing.version !== upload.version)) throw new HttpError(412, '原文件已变化，未替换；请刷新后重新选择');
         if (session.role === 'temporary') {
           if (listed.quotaProtocol !== 1) throw new HttpError(503, '文件助手需要更新后才能核算临时上传配额');
@@ -720,7 +737,10 @@ export async function createPanel(config) {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
-        const result = await response.json(); transfer.check(); return reply(res, response.status, result);
+        const result = await response.json(); transfer.check();
+        // Older helpers omit the outcome on their explicit pre-commit errors.
+        if ([400, 409, 412, 413, 429, 507].includes(response.status) && result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
+        return reply(res, response.status, result);
       }
       const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: transfer.signal });
       transfer.check();
@@ -763,6 +783,7 @@ export async function createPanel(config) {
     route(req, res).catch(error => {
       if (!error.status) console.error(`[panel] ${error.name}: request failed`); // No bodies, cookies or credentials.
       reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown'),
+        ...(['file_busy', 'file_exists'].includes(error.fileCode) ? { fileCode: error.fileCode } : {}),
         ...(error.code && error.access ? { code: error.code, access: error.access } : {}) });
     });
   };

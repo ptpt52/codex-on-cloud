@@ -7,13 +7,17 @@ test('temporary uploads and downloads use the dedicated encrypted data channel w
  const app=await fixture({webrtc:true});const requests=[];
  try{
   await page.addInitScript(()=>{
-   window.fileWindows=[];const send=RTCDataChannel.prototype.send;
+   window.fileWindows=[];window.fileReadSizes=[];const send=RTCDataChannel.prototype.send,read=Blob.prototype.arrayBuffer;
+   Blob.prototype.arrayBuffer=async function(){if(window.measureFileReads){window.fileReadSizes.push(this.size);await new Promise(resolve=>setTimeout(resolve,30));}return read.call(this);};
    RTCDataChannel.prototype.send=function(value){if(this.label==='codex-files'&&typeof value==='string'){const record=JSON.parse(value);if(record.type==='start')window.fileWindows.push(record.window??4);}return send.call(this,value);};
   });
   await page.route('**/api/files/**',r=>{requests.push(r.request().method());return r.abort();});await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
-  const bytes=Buffer.alloc(1024*1024);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
+  const bytes=Buffer.alloc(4479340);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
+  await page.evaluate(()=>{window.measureFileReads=true;});
   await page.locator('#upload-input').setInputFiles({name:'中文.bin',mimeType:'application/octet-stream',buffer:bytes});await expect(page.locator('#upload-status')).toContainText('上传完成',{timeout:20000});
   expect(hash(app.files.get('中文.bin'))).toBe(hash(bytes));
+  const reads=await page.evaluate(()=>{window.measureFileReads=false;return window.fileReadSizes;});
+  expect(reads).toHaveLength(18);expect(Math.max(...reads)).toBeLessThanOrEqual(256*1024);expect(reads.reduce((total,size)=>total+size,0)).toBe(bytes.length);
   const downloading=page.waitForEvent('download');await page.locator('.file-row a').click();const download=await downloading;expect(download.suggestedFilename()).toBe('中文.bin');
   const stream=await download.createReadStream(),chunks=[];for await(const chunk of stream)chunks.push(chunk);expect(hash(Buffer.concat(chunks))).toBe(hash(bytes));expect(requests).toEqual([]);expect(await page.evaluate(()=>window.fileWindows)).toEqual([16,16]);expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
  }finally{await app.close();}
@@ -65,5 +69,22 @@ test('an administrator opens file direct on demand while the original desktop an
   await expect(page.locator('#diag-transport')).toContainText('WebRTC',{timeout:15000});const source=await page.locator('#desktop-frame').getAttribute('src');
   await page.locator('#files-button').click();await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});await page.locator('#upload-input').setInputFiles({name:'admin.txt',mimeType:'text/plain',buffer:Buffer.from('independent file peer')});await expect(page.locator('#upload-status')).toContainText('上传完成');await page.locator('#close-files').click();
   await expect(page.locator('#connection-status')).toContainText('桌面在线');expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);expect(app.vncConnections).toBe(1);expect(app.inputCalls).toEqual([]);expect(app.managementStats.restarts).toBe(0);
+ }finally{await app.close();}
+});
+
+test('a progressing file upload survives service heartbeats queued behind file traffic', async ({ page }) => {
+ const app=await fixture({webrtc:true});let signals=0;page.on('request',request=>{if(request.url().endsWith('/api/service/rtc'))signals++;});
+ try{
+  await page.addInitScript(()=>{
+   const send=RTCDataChannel.prototype.send,listen=RTCDataChannel.prototype.addEventListener,read=Blob.prototype.arrayBuffer;
+   RTCDataChannel.prototype.send=function(value){if(this.label==='codex-files'&&typeof value==='string'){const record=JSON.parse(value);if(record.type==='start'&&record.direction==='upload')window.uploadTimingActive=true;}return send.call(this,value);};
+   RTCDataChannel.prototype.addEventListener=function(type,listener,options){if(this.label==='codex-health'&&type==='message')return listen.call(this,type,event=>{if(window.uploadTimingActive){window.queuedFilePongs=(window.queuedFilePongs||0)+1;setTimeout(()=>listener.call(this,event),2500);}else listener.call(this,event);},options);return listen.call(this,type,listener,options);};
+   Blob.prototype.arrayBuffer=async function(){if(window.uploadTimingActive)await new Promise(resolve=>setTimeout(resolve,Math.ceil(this.size/16380)*60));return read.call(this);};
+  });
+  await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
+  const bytes=Buffer.alloc(2*1024*1024,137);await page.locator('#upload-input').setInputFiles({name:'queued-heartbeat.bin',mimeType:'application/octet-stream',buffer:bytes});
+  await expect(page.locator('#upload-status')).toContainText('上传完成',{timeout:20000});
+  await page.evaluate(()=>{window.uploadTimingActive=false;});expect(await page.evaluate(()=>window.queuedFilePongs||0)).toBe(0);
+  expect(hash(app.files.get('queued-heartbeat.bin'))).toBe(hash(bytes));expect(signals).toBe(1);expect(app.inputCalls).toEqual([]);
  }finally{await app.close();}
 });

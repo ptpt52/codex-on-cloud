@@ -57,6 +57,16 @@ class AgentTests(unittest.TestCase):
     def test_requires_internal_secret(self):
         self.assertEqual(self.request('GET', '/files', auth=False)[0], 401)
 
+    def test_disconnected_error_responses_do_not_escape_request_dispatch(self):
+        for failure in [agent.AgentError(400, '上传未完成'), OSError('storage unavailable')]:
+            handler = agent.Handler.__new__(agent.Handler)
+            handler.command, handler.path = 'PUT', '/files/test'
+            handler.handle_request = Mock(side_effect=failure)
+            handler.json = Mock(side_effect=BrokenPipeError())
+            handler.dispatch()
+            self.assertTrue(handler.close_connection)
+            self.assertEqual(handler.json.call_count, 1)
+
     def test_listing_skips_deleted_entries_and_keeps_other_files(self):
         path = self.desktop.transfer_dir / 'keep'
         path.write_bytes(b'keep')
@@ -170,11 +180,65 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(listing['uploadProtocol'], 1)
         return next(file['version'] for file in listing['files'] if file['name'] == name)
 
+    def test_delete_requires_auth_and_exact_version_and_preserves_changed_files(self):
+        name = '资料.txt'
+        target = self.desktop.transfer_dir / name
+        target.write_bytes(b'original')
+        path = '/files/' + quote(name)
+        version = self.version(name)
+        headers = {'If-Match': '"' + version + '"'}
+        self.assertEqual(json.loads(self.request('GET', '/files')[1])['deleteProtocol'], 1)
+        self.assertEqual(self.request('DELETE', path, auth=False, headers=headers)[0], 401)
+        self.assertEqual(self.request('DELETE', path)[0], 400)
+        self.assertEqual(self.request('DELETE', path, headers={'If-Match': '*'})[0], 400)
+        target.write_bytes(b'changed')
+        self.assertEqual(self.request('DELETE', path, headers=headers)[0], 412)
+        self.assertEqual(target.read_bytes(), b'changed')
+        headers['If-Match'] = '"' + self.version(name) + '"'
+        status, body = self.request('DELETE', path, headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {'ok': True, 'name': name})
+        self.assertFalse(target.exists())
+        self.assertEqual(self.request('DELETE', path, headers=headers)[0], 412)
+
+    def test_delete_rejects_non_regular_entries_and_serializes_with_uploads(self):
+        target = self.desktop.transfer_dir / 'keep'
+        target.write_bytes(b'keep')
+        headers = {'If-Match': '"' + self.version('keep') + '"'}
+        self.desktop.upload_lock.acquire()
+        try:
+            status, body = self.request('DELETE', '/files/keep', headers=headers)
+            self.assertEqual(status, 409)
+            self.assertEqual(json.loads(body)['fileCode'], 'file_busy')
+            self.assertEqual(json.loads(body)['outcome'], 'rejected')
+        finally:
+            self.desktop.upload_lock.release()
+        directory = self.desktop.directory()
+        try:
+            agent.fcntl.flock(directory, agent.fcntl.LOCK_EX | agent.fcntl.LOCK_NB)
+            self.assertEqual(self.request('DELETE', '/files/keep', headers=headers)[0], 409)
+        finally:
+            os.close(directory)
+        (self.desktop.transfer_dir / 'link').symlink_to(target)
+        (self.desktop.transfer_dir / 'dir').mkdir()
+        os.mkfifo(str(self.desktop.transfer_dir / 'pipe'))
+        for name in ['link', 'dir', 'pipe']:
+            self.assertEqual(self.request('DELETE', '/files/' + name, headers=headers)[0], 412)
+        self.assertEqual(target.read_bytes(), b'keep')
+        self.assertEqual(self.request('DELETE', '/files/.upload-private', headers=headers)[0], 400)
+        for name in ['literal\\backslash', '中' * 81 + '.txt', 'x' * 255]:
+            (self.desktop.transfer_dir / name).write_bytes(b'delete')
+            match = {'If-Match': '"' + self.version(name) + '"'}
+            self.assertEqual(self.request('DELETE', '/files/' + quote(name), headers=match)[0], 200)
+
     def test_default_create_and_versioned_replace(self):
         self.assertEqual(self.request('PUT', '/files/keep', b'original')[0], 200)
         version = self.version('keep')
         self.assertRegex(version, r'^[a-f0-9]{64}$')
         self.assertEqual(self.request('PUT', '/files/keep', b'unconfirmed')[0], 409)
+        conflict = json.loads(self.request('PUT', '/files/keep', b'unconfirmed')[1])
+        self.assertEqual(conflict['fileCode'], 'file_exists')
+        self.assertEqual(conflict['outcome'], 'rejected')
         self.assertEqual(self.request('GET', '/files/keep')[1], b'original')
         headers = {'X-Codex-Upload-Mode': 'replace', 'If-Match': '"' + version + '"'}
         self.assertEqual(self.request('PUT', '/files/keep', b'confirmed', headers=headers)[0], 200)
@@ -411,6 +475,10 @@ class AgentProcessTests(unittest.TestCase):
         unrelated = self.transfer / '.upload-user-file'
         unrelated.write_bytes(b'keep too')
         self.start(port)
+        for _ in range(100):
+            if not pending.exists():
+                break
+            time.sleep(0.01)
         self.assertFalse(pending.exists(), 'interrupted helper temporary file was not recovered')
         self.assertTrue(link.is_symlink())
         self.assertEqual(target.read_bytes(), b'keep')
@@ -435,9 +503,80 @@ class AgentProcessTests(unittest.TestCase):
             (self.transfer / ('.upload-' + format(index, '024x'))).touch()
         with patch.dict(os.environ, {'FILE_AGENT_ONLY': '1'}):
             desktop = agent.Desktop(self.secret.read_text(), self.transfer)
+        stop = Mock(); stop.is_set.return_value = False; stop.wait.return_value = True
         with patch.object(agent, 'MAX_DIRECTORY_ENTRIES', 3):
-            agent.recover_uploads(desktop)
+            agent.recover_uploads(desktop, stop)
         self.assertEqual(len(list(self.transfer.iterdir())), 2)
+        stop.wait.assert_called_once_with(0.25)
+
+    def test_recovery_continues_past_a_batch_and_waits_for_live_upload_lock(self):
+        for index in range(10):
+            (self.transfer / ('.upload-' + format(index, '024x'))).touch()
+        (self.transfer / 'committed').write_bytes(b'keep')
+        (self.transfer / '.upload-user-file').write_bytes(b'keep')
+        (self.transfer / ('.upload-' + 'f' * 24)).symlink_to(self.transfer / 'committed')
+        with patch.dict(os.environ, {'FILE_AGENT_ONLY': '1'}):
+            desktop = agent.Desktop(self.secret.read_text(), self.transfer)
+        stop = threading.Event()
+        directory = desktop.directory()
+        agent.fcntl.flock(directory, agent.fcntl.LOCK_EX | agent.fcntl.LOCK_NB)
+        worker = threading.Thread(target=agent.recover_uploads, args=(desktop, stop))
+        try:
+            with patch.object(agent, 'MAX_DIRECTORY_ENTRIES', 3):
+                worker.start()
+                time.sleep(0.3)
+                self.assertEqual(len(list(self.transfer.iterdir())), 13)
+                os.close(directory); directory = None
+                worker.join(timeout=4)
+                self.assertFalse(worker.is_alive(), 'recovery did not finish later batches')
+            self.assertEqual(sorted(path.name for path in self.transfer.iterdir()), ['.upload-' + 'f' * 24, '.upload-user-file', 'committed'])
+            self.assertEqual((self.transfer / 'committed').read_bytes(), b'keep')
+        finally:
+            stop.set(); worker.join(timeout=2)
+            if directory is not None:
+                os.close(directory)
+
+    def test_service_start_recovers_orphans_beyond_the_actual_directory_batch_limit(self):
+        for index in range(agent.MAX_DIRECTORY_ENTRIES + 3):
+            (self.transfer / ('.upload-' + format(index, '024x'))).touch()
+        (self.transfer / 'keep').write_bytes(b'committed')
+        _, port = self.start()
+        for _ in range(200):
+            if not list(self.transfer.glob('.upload-*')):
+                break
+            time.sleep(0.02)
+        self.assertEqual(list(self.transfer.glob('.upload-*')), [])
+        self.assertEqual(self.request(port, 'GET', '/files/keep'), (200, b'committed'))
+
+    def test_interrupted_partial_replace_cleans_temporary_file_and_preserves_original(self):
+        _, port = self.start()
+        target = self.transfer / 'keep'
+        target.write_bytes(b'original')
+        version = agent.file_version(target.stat())
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=3)
+        connection.putrequest('PUT', '/files/keep')
+        connection.putheader('Authorization', 'Bearer ' + self.secret.read_text())
+        connection.putheader('Content-Length', '65536')
+        connection.putheader('X-Codex-Upload-Mode', 'replace')
+        connection.putheader('If-Match', '"' + version + '"')
+        connection.endheaders(); connection.send(b'incomplete' * 100)
+        try:
+            for _ in range(100):
+                if list(self.transfer.glob('.upload-*')):
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail('partial replacement did not reach file helper')
+        finally:
+            connection.close()
+        for _ in range(100):
+            if not list(self.transfer.glob('.upload-*')):
+                break
+            time.sleep(0.01)
+        self.assertEqual(list(self.transfer.glob('.upload-*')), [])
+        self.assertEqual(target.read_bytes(), b'original')
+        self.assertEqual(agent.file_version(target.stat()), version)
+        self.assertEqual(self.request(port, 'PUT', '/files/next', b'next')[0], 200)
 
 
 if __name__ == '__main__':

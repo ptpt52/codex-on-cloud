@@ -735,8 +735,7 @@ function renderConnection() {
   $('diag-frame').textContent = !owned ? '等待接管' : views.active.state === 'connected' ? '已连接' : views.active.state === 'reconnecting' ? '重连中' : '等待连接';
   $('diag-transport').textContent = views.active.state !== 'connected' ? '等待连接' : views.active.transport === 'terminal' ? 'HTTPS / WebSocket 文字终端' : views.active.transport === 'direct' ? rtcRouteLabel(route) + (terminalMode() ? ' · 文字终端' : '') : 'HTTPS / WebSocket 中转';
   $('diag-input-transport').textContent = views.active.state !== 'connected' ? '等待连接' : views.active.transport === 'terminal' ? '网页终端加密通道' : controlReady ? rtcRouteLabel(route) : 'HTTPS';
-  $('file-transport').textContent = serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（最多 50 MiB）` : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测 WebRTC' : '文件内容：HTTPS';
-  $('diag-file-transport').textContent = $('file-transport').textContent.replace(/^文件内容：/, '');
+  renderFileTransport();
   const endpoint = value => `${value.address === null ? '浏览器隐藏地址' : value.address.includes(':') ? `[${value.address}]` : value.address}${value.port ? `:${value.port}` : ''}（${({ host: '主机地址', srflx: 'NAT 映射地址', prflx: '对端发现地址', relay: 'TURN 中继地址' })[value.type] || '类型未知'}）`;
   $('diag-network').textContent = route ? `${route.family} / ${route.protocol}` : views.active.transport === 'direct' && views.active.state === 'connected' ? '浏览器尚未提供路径详情' : '当前未使用 WebRTC';
   $('diag-peer').textContent = route ? `${endpoint(route.local)} ↔ ${endpoint(route.remote)}` : '—';
@@ -925,7 +924,9 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
   }
   if (!response.ok) {
     if (!signal?.aborted && data.access) updateAccess(data.access);
-    const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome; error.status = response.status; error.code = data.code; throw error;
+    const error = new Error(data.error || `请求失败（${response.status}）`); error.outcome = data.outcome || (method !== 'GET' && response.status >= 500 ? 'unknown' : undefined); error.status = response.status; error.code = data.code;
+    if (['file_busy', 'file_exists'].includes(data.fileCode)) error.fileCode = data.fileCode;
+    throw error;
   }
   if (path === '/api/state' && !signal?.aborted) panelRoute = 'https';
   return data;
@@ -1714,8 +1715,18 @@ function canOpenTransferDirectory() {
   return !terminalOnly && !terminalMode() && canManageTerminals() && canInput(true) && !inputComposing && !views.active.composing && !confirmation;
 }
 function renderFileControls() { fileWorkbench?.update(); }
+function renderFileTransport() {
+  const active = fileWorkbench?.transferPath;
+  $('file-transport').textContent = active === 'https' ? '文件内容：HTTPS（本次传输）'
+    : active === 'direct' ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（本次传输）`
+    : serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（下次传输可用，最多 50 MiB）`
+    : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测 WebRTC' : '文件内容：HTTPS';
+  $('diag-file-transport').textContent = $('file-transport').textContent.replace(/^文件内容：/, '');
+}
 function saveDirectFile(blob, name) { fileWorkbench.saveDownload(blob, name); }
 fileWorkbench = createWorkbenchFiles({ $, api, action, toast, serviceLink,
+  changed: renderFileTransport,
+  trace: (type, detail) => recordConnection(type, detail, 'service'),
   state: () => ({ loggedIn, accessExpired, generation: uiGeneration, directory: transferDirectory, temporary: permissions.role === 'temporary', terminalOnly, terminalMode: terminalMode() }),
   startService: () => { if (serviceProtocol === 1) serviceLink.start(); }, canInsert: canInsertFilePath, canOpenDirectory: canOpenTransferDirectory,
   insertDraft(path) {

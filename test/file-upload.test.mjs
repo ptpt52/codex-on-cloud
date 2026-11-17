@@ -76,6 +76,8 @@ test('HTTP uploads preserve same-name content, enforce versions, rename and reta
   const version = (await (await app.request('/api/files')).json()).files[0].version;
   const put = (mode, bytes, extra = {}) => app.request('/api/files/keep.txt', { method: 'PUT', raw: bytes, headers: { ...uploadHeaders(mode), ...extra } });
   assert.equal((await put({ mode: 'create' }, 'unconfirmed')).status, 409);
+  const rejection = await (await put({ mode: 'create' }, 'unconfirmed')).json();
+  assert.equal(rejection.outcome, 'rejected'); assert.equal(rejection.fileCode, 'file_exists');
   assert.equal(app.files.get('keep.txt').toString(), 'original');
   assert.equal(app.received.filter(r => r.method === 'PUT').length, 0);
   assert.equal((await put({ mode: 'replace', version }, 'blocked', { 'x-csrf-token': '' })).status, 403);
@@ -87,6 +89,19 @@ test('HTTP uploads preserve same-name content, enforce versions, rename and reta
   assert.equal((await put({ mode: 'replace', version }, 'stale')).status, 412);
   assert.equal(app.files.get('keep.txt').toString(), 'confirmed');
   assert.match((await app.request('/api/files/keep.txt')).headers.get('etag'), /^"[a-f0-9]{64}"$/);
+});
+
+test('HTTP helper busy errors are rejected without losing structured reasons or retrying content', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); let puts = 0;
+  const busy = http.createServer(async (req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'PUT') { puts++; for await (const _chunk of req) {} res.writeHead(409); return res.end(JSON.stringify({ error: '正在上传其他文件，请稍后重试', fileCode: 'file_busy' })); }
+    res.end(JSON.stringify({ uploadProtocol: 1, files: [] }));
+  });
+  busy.listen(0, '127.0.0.1'); await once(busy, 'listening'); t.after(() => new Promise(resolve => { busy.close(resolve); busy.closeAllConnections(); }));
+  app.config.fileAgentUrl = 'http://127.0.0.1:' + busy.address().port;
+  const result = await app.request('/api/files/new', { method: 'PUT', raw: 'test' });
+  assert.equal(result.status, 409); const body = await result.json(); assert.equal(body.outcome, 'rejected'); assert.equal(body.fileCode, 'file_busy'); assert.equal(puts, 1);
 });
 
 test('an old helper cannot silently bypass safe uploads', async t => {

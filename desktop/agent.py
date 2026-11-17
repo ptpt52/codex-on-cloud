@@ -60,24 +60,42 @@ def scan_files(directory):
     return entries, truncated
 
 
-def recover_uploads(desktop):
+def recover_uploads(desktop, stop=None):
     # Directory locks cover creation, quota checks and cleanup across helpers,
     # including a desktop helper sharing a workspace with a files unit.
     # No lock file is created; process termination releases the kernel lock.
-    directory = desktop.directory()
+    # A single cursor uses constant memory. In the service, continue in bounded
+    # batches so old partial files beyond the listing limit are not starved.
+    stop = stop or threading.Event()
+    directory, entries = desktop.directory(), None
     try:
-        try:
-            fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return  # Another helper is receiving/committing an upload.
-        with os.scandir(directory) as entries:
-            for item in islice(entries, MAX_DIRECTORY_ENTRIES):
-                if re.fullmatch(r'\.upload-[a-f0-9]{24}', item.name) and item.is_file(follow_symlinks=False):
-                    try:
-                        os.unlink(item.name, dir_fd=directory)
-                    except FileNotFoundError:
-                        pass
+        while not stop.is_set():
+            try:
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if stop.wait(0.25):
+                    return  # Never advance the cursor during a live upload.
+                continue
+            try:
+                if entries is None:
+                    entries = os.scandir(directory)
+                scanned = 0
+                for item in islice(entries, MAX_DIRECTORY_ENTRIES):
+                    scanned += 1
+                    if re.fullmatch(r'\.upload-[a-f0-9]{24}', item.name) and item.is_file(follow_symlinks=False):
+                        try:
+                            os.unlink(item.name, dir_fd=directory)
+                        except FileNotFoundError:
+                            pass
+                if scanned < MAX_DIRECTORY_ENTRIES:
+                    return
+            finally:
+                fcntl.flock(directory, fcntl.LOCK_UN)
+            if stop.wait(0.25):
+                return
     finally:
+        if entries is not None:
+            entries.close()
         os.close(directory)
 
 
@@ -116,8 +134,8 @@ KEYS = {
 
 
 class AgentError(Exception):
-    def __init__(self, status, message):
-        self.status, self.message = status, message
+    def __init__(self, status, message, file_code=None):
+        self.status, self.message, self.file_code = status, message, file_code
 
 
 class Desktop:
@@ -239,13 +257,35 @@ class Handler(BaseHTTPRequestHandler):
             directory = desktop.directory()
             try:
                 entries, truncated = scan_files(directory)
-                return self.json(200, {'files': sorted(entries, key=lambda item: item['modified'], reverse=True), 'uploadProtocol': UPLOAD_PROTOCOL, 'quotaProtocol': 1, 'truncated': truncated})
+                return self.json(200, {'files': sorted(entries, key=lambda item: item['modified'], reverse=True), 'uploadProtocol': UPLOAD_PROTOCOL, 'deleteProtocol': 1, 'quotaProtocol': 1, 'truncated': truncated})
             finally:
                 os.close(directory)
-        if path.startswith('/files/') and self.command in ('GET', 'PUT'):
+        if path.startswith('/files/') and self.command in ('GET', 'PUT', 'DELETE'):
             name = self.filename(path)
             directory = desktop.directory()
             try:
+                if self.command == 'DELETE':
+                    expected = self.headers.get('If-Match', '')
+                    if not re.fullmatch(r'"[a-f0-9]{64}"', expected) or self.headers.get('If-None-Match') is not None:
+                        raise AgentError(400, '删除文件需要有效的原文件版本')
+                    if not desktop.upload_lock.acquire(blocking=False):
+                        raise AgentError(409, '正在处理其他文件，请稍后重试', 'file_busy')
+                    try:
+                        try:
+                            fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            raise AgentError(409, '正在处理其他文件，请稍后重试', 'file_busy')
+                        try:
+                            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                        except FileNotFoundError:
+                            raise AgentError(412, '文件已不存在，未执行删除；请刷新列表核对')
+                        if not stat.S_ISREG(info.st_mode) or file_version(info) != expected[1:-1]:
+                            raise AgentError(412, '文件已变化，未删除；请刷新后重新选择')
+                        os.unlink(name, dir_fd=directory)
+                    finally:
+                        fcntl.flock(directory, fcntl.LOCK_UN)
+                        desktop.upload_lock.release()
+                    return self.json(200, {'ok': True, 'name': name})
                 if self.command == 'GET':
                     try:
                         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -275,13 +315,13 @@ class Handler(BaseHTTPRequestHandler):
                 if quota not in (None, 'temporary-v1'):
                     raise AgentError(400, '上传配额参数无效')
                 if not desktop.upload_lock.acquire(blocking=False):
-                    raise AgentError(409, '正在上传其他文件，请稍后重试')
+                    raise AgentError(409, '正在上传其他文件，请稍后重试', 'file_busy')
                 temp = None
                 try:
                     try:
                         fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
-                        raise AgentError(409, '正在上传其他文件，请稍后重试')
+                        raise AgentError(409, '正在上传其他文件，请稍后重试', 'file_busy')
                     temp = '.upload-' + os.urandom(12).hex()
                     def check_target():
                         try:
@@ -291,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
                                 raise AgentError(412, '原文件已不存在，未替换；请刷新后重新选择')
                             return
                         if mode == 'create':
-                            raise AgentError(409, '已有同名文件，未覆盖；请选择替换或自动改名')
+                            raise AgentError(409, '已有同名文件，未覆盖；请选择替换或自动改名', 'file_exists')
                         if mode == 'replace' and (not stat.S_ISREG(info.st_mode) or file_version(info) != expected):
                             raise AgentError(412, '原文件已变化，未替换；请刷新后重新选择')
 
@@ -341,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
                                 break
                             except FileExistsError:
                                 if mode == 'create':
-                                    raise AgentError(409, '已有同名文件，未覆盖；请选择替换或自动改名')
+                                    raise AgentError(409, '已有同名文件，未覆盖；请选择替换或自动改名', 'file_exists')
                         else:
                             raise AgentError(409, '自动改名已尝试100个名称，请修改文件名后重试')
                 finally:
@@ -375,17 +415,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self):
         try:
-            self.handle_request()
-        except AgentError as error:
-            self.json(error.status, {'error': error.message})
+            try:
+                self.handle_request()
+            except AgentError as error:
+                data = {'error': error.message}
+                if self.command in ('PUT', 'DELETE') and urlsplit(self.path).path.startswith('/files/'):
+                    # These explicit business errors occur before commit. A
+                    # disconnected reply or an unexpected I/O error stays unknown.
+                    data['outcome'] = 'rejected'
+                    if error.file_code is not None:
+                        data['fileCode'] = error.file_code
+                self.json(error.status, data)
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                raise
+            except Exception:
+                self.json(503, {'error': '桌面操作暂时不可用'})
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            # The peer may already be gone when an incomplete upload's error
+            # response is written. Cleanup has run; do not emit a traceback.
             self.close_connection = True
-        except Exception:
-            self.json(503, {'error': '桌面操作暂时不可用'})
 
     do_GET = dispatch
     do_POST = dispatch
     do_PUT = dispatch
+    do_DELETE = dispatch
 
 
 class AgentServer(ThreadingHTTPServer):
@@ -420,7 +473,9 @@ if __name__ == '__main__':
     desktop = Desktop(secret, os.environ['TRANSFER_DIR'])
     # Reject a duplicate listener before touching any upload temporary file.
     with AgentServer(('127.0.0.1', int(os.environ.get('AGENT_PORT', '36902'))), desktop) as server:
-        recover_uploads(desktop)
+        recovery_stop = threading.Event()
+        recovery = threading.Thread(target=recover_uploads, args=(desktop, recovery_stop), daemon=True)
+        recovery.start()
         if desktop.files_only:
             # A crashed wrapper closes the private pipe, including outside systemd.
             def parent_closed():
@@ -428,4 +483,8 @@ if __name__ == '__main__':
                 server.shutdown()
             threading.Thread(target=parent_closed, daemon=True).start()
         print('终端与文件内部接口已启动' if desktop.terminal_only else '桌面内部接口已启动', flush=True)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            recovery_stop.set()
+            recovery.join(timeout=2)

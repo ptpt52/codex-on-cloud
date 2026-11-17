@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { fixture } from './fixture.mjs';
 import { serviceClient } from './support/service-client.mjs';
 import { createFileClient } from '../panel/public/file-client.js';
-import { FILE_MAX } from '../panel/public/file-wire.js';
+import { FILE_CHUNK,FILE_MAX } from '../panel/public/file-wire.js';
 import { attachServiceFiles } from '../panel/service-files.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
@@ -82,7 +82,8 @@ test('helper source records cannot select arbitrary paths, URLs, methods or over
 for(const window of [4,16])test(`dedicated file channel with window ${window} transfers 8 MiB and empty files over real DTLS, hashes match and desktop remains untouched`,async t=>{
  const {app,c}=await setup(t),files=await fileClient(c,window),features=(await c.rpc('ping')).value;assert.equal(features.filesProtocol,1);assert.equal(features.filesWindow,16);
  const bytes=Buffer.alloc(8*1024*1024);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
- const uploaded=[],downloaded=[];await files.upload(new File([bytes],'中文.bin'),undefined,undefined,n=>uploaded.push(n));const blob=await files.download('中文.bin',bytes.length,undefined,n=>downloaded.push(n));assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));
+ let metrics;const uploaded=[],downloaded=[];await files.upload(new File([bytes],'中文.bin'),undefined,undefined,(n,_total,value)=>{uploaded.push(n);if(value)metrics=value;assert.equal(files.progressing,true);});assert.equal(files.progressing,false);const blob=await files.download('中文.bin',bytes.length,undefined,n=>downloaded.push(n));assert.equal(hash(Buffer.from(await blob.arrayBuffer())),hash(bytes));
+ assert.equal(metrics.windowChunks,window);for(const key of ['chunkAckMs','chunkMaxAckMs','bufferWaitMs','fileReadMs'])assert.ok(Number.isInteger(metrics[key])&&metrics[key]>=0);
  assert.equal(uploaded[0],0);assert.equal(uploaded.at(-1),bytes.length);assert.equal(downloaded[0],0);assert.equal(downloaded.at(-1),bytes.length);
  await files.upload(new File([],'empty'));assert.equal((await files.download('empty',0)).size,0);
  assert.equal((await c.rpc('files')).value.files.length,2);assert.equal((await(await app.request('/api/state')).json()).mine,true);assert.equal(app.vncConnections,0);assert.deepEqual(app.inputCalls,[]);
@@ -105,7 +106,7 @@ test('explicit file cancellation preserves the encrypted service and permits a f
  let recovered;const closed=new Promise(resolve=>{recovered=resolve;});
  const {app,c}=await setup(t),failures=[],files=await fileClient(c,4,value=>{failures.push(value);recovered();});
  let release,entered;const hold=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});const controller=new AbortController();
- const upload=files.upload({name:'cancelled.bin',size:32760,slice(offset){return{async arrayBuffer(){if(offset){entered();await hold;}return new Uint8Array(16380).buffer;}};}},undefined,controller.signal);void upload.catch(()=>{});
+ const upload=files.upload({name:'cancelled.bin',size:32*FILE_CHUNK,slice(offset,end){return{async arrayBuffer(){if(offset){entered();await hold;}return new Uint8Array(end-offset).buffer;}};}},undefined,controller.signal);void upload.catch(()=>{});
  try {
   await started;controller.abort(Error('user canceled'));await assert.rejects(upload,/user canceled/);release();await closed;
   assert.deepEqual(failures,[true]);assert.equal((await c.rpc('ping')).ok,true);
@@ -127,7 +128,7 @@ test('revoking a guest during a stalled direct upload aborts its transfer and se
  const {app,c}=await setup(t),files=await fileClient(c);let release,started;const waiting=new Promise(r=>release=r),entered=new Promise(r=>started=r);
  app.files.set('interrupted',Buffer.from('original'));
  const version=(await c.rpc('files')).value.files.find(f=>f.name==='interrupted').version;
- const upload=files.upload({name:'interrupted',size:32760,slice(offset){return{async arrayBuffer(){if(offset){started();await waiting;}return new Uint8Array(16380).buffer;}};}},{mode:'replace',version});void upload.catch(()=>{});await entered;
+ const upload=files.upload({name:'interrupted',size:32*FILE_CHUNK,slice(offset,end){return{async arrayBuffer(){if(offset){started();await waiting;}return new Uint8Array(end-offset).buffer;}};}},{mode:'replace',version});void upload.catch(()=>{});await entered;
  for(let n=0;n<100&&!app.received.some(r=>r.method==='PUT'&&r.url==='/files/interrupted');n++)await new Promise(r=>setTimeout(r,10));
  const quota=await fetch(app.config.origin+'/api/files/second',{method:'PUT',headers:{...c.headers,'content-type':'application/octet-stream'},body:'second'});assert.equal(quota.status,503);
  await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:false}});await assert.rejects(upload);release();
@@ -143,7 +144,7 @@ test('real Python file helper preserves disk bytes and atomic replacement when d
  const files=await fileClient(c),bytes=Buffer.alloc(128*1024,173);await files.upload(new File([bytes],'disk.bin'));assert.equal(hash(await readFile(directory+'/disk.bin')),hash(bytes));assert.equal(hash(Buffer.from(await(await files.download('disk.bin',bytes.length)).arrayBuffer())),hash(bytes));
  await writeFile(directory+'/keep','original');let release,entered;const gate=new Promise(r=>release=r),started=new Promise(r=>entered=r);
  const version=(await c.rpc('files')).value.files.find(f=>f.name==='keep').version;
- const uploading=files.upload({name:'keep',size:32760,slice(offset){return{async arrayBuffer(){if(offset){entered();await gate;}return new Uint8Array(16380).buffer;}};}},{mode:'replace',version});void uploading.catch(()=>{});await started;
+ const uploading=files.upload({name:'keep',size:32*FILE_CHUNK,slice(offset,end){return{async arrayBuffer(){if(offset){entered();await gate;}return new Uint8Array(end-offset).buffer;}};}},{mode:'replace',version});void uploading.catch(()=>{});await started;
  for(let n=0;n<100&&!(await readdir(directory)).some(f=>f.startsWith('.upload-'));n++)await new Promise(r=>setTimeout(r,10));
  await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:false}});await assert.rejects(uploading);release();
  for(let n=0;n<100&&(await readdir(directory)).some(f=>f.startsWith('.upload-'));n++)await new Promise(r=>setTimeout(r,10));

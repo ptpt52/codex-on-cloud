@@ -1,7 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileDownload, observeUploadProgress } from '../panel/public/file-transfer.js';
+import { readFileDownload, observeUploadProgress, createUploadTrace } from '../panel/public/file-transfer.js';
 import { createFileBuffer, FILE_MAX } from '../panel/public/file-wire.js';
+
+test('upload diagnostics keep the final partial byte count and reason with bounded sampling and no file reference', () => {
+  let now = 100; const events = [], trace = createUploadTrace((type, value) => events.push({ type, ...value }), () => now);
+  trace.start('https', 5 * 1024 * 1024);
+  for (let loaded = 1; loaded <= 10000; loaded++) { now++; trace.progress(loaded, 5 * 1024 * 1024); }
+  trace.end('http-status', 524, 'unknown'); trace.end('network', 502, 'unknown');
+  assert.deepEqual(events.map(event => event.type), ['file-start', 'file-progress', 'file-progress', 'file-ended']);
+  assert.deepEqual(events.at(-1), { type: 'file-ended', route: 'https', loadedBytes: 10000, totalBytes: 5 * 1024 * 1024, durationMs: 10000, reason: 'http-status', status: 524, outcome: 'unknown' });
+  const broken = createUploadTrace(() => { throw Error('debug storage failed'); });
+  assert.doesNotThrow(() => { broken.start('https', 1); broken.progress(1, 1); broken.end(undefined, 200, 'confirmed'); });
+});
+
+test('upload trace preserves only bounded timing counters in sampled and final events', () => {
+  const events=[],trace=createUploadTrace((type,value)=>events.push({type,...value}));
+  trace.start('direct',3);
+  trace.progress(3,3,{windowChunks:16,chunkAckMs:123,chunkMaxAckMs:500,bufferWaitMs:42,fileReadMs:17,filename:'PRIVATE_FILENAME'});
+  trace.end(undefined,undefined,'confirmed');
+  const event=events.at(-1);assert.equal(event.chunkAckMs,123);assert.equal(event.fileReadMs,17);assert.equal(event.windowChunks,16);assert.ok(!JSON.stringify(events).includes('PRIVATE_'));
+});
 
 test('file buffering handles tiny chunks, empty files and incomplete or oversized bodies with fixed byte bounds', async () => {
   const buffer = createFileBuffer(70000);

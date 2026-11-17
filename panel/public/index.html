@@ -448,6 +448,10 @@
     <h2 id="file-conflict-title">已存在同名文件</h2><p id="file-conflict-name" class="file-conflict-name"></p><p id="file-conflict-detail" class="muted"></p>
     <div class="confirmation-actions"><button id="file-conflict-cancel" class="secondary" type="button" autofocus>取消</button><button id="file-conflict-rename" class="primary" type="button">自动改名上传</button><button id="file-conflict-replace" class="secondary interrupt-key" type="button">替换文件</button></div>
   </dialog>
+  <dialog id="file-delete-dialog" class="files-dialog action-confirmation" aria-labelledby="file-delete-title" aria-describedby="file-delete-name file-delete-detail">
+    <h2 id="file-delete-title">删除中转文件</h2><p id="file-delete-name" class="file-conflict-name"></p><p id="file-delete-detail" class="muted">将删除节点主机共享目录中的这份文件，无法从网页恢复。</p>
+    <div class="confirmation-actions"><button id="file-delete-cancel" class="secondary" type="button" autofocus>取消</button><button id="file-delete-confirm" class="secondary interrupt-key" type="button">删除文件</button></div>
+  </dialog>
   <dialog id="draft-leave-dialog" class="files-dialog action-confirmation draft-leave-dialog" aria-labelledby="draft-leave-title" aria-describedby="draft-leave-description"><div class="dialog-heading"><h2 id="draft-leave-title">草稿尚未安全保存</h2></div><p id="draft-leave-description" class="muted">部分文字仅保留在当前页面。离开前请复制当前草稿，或导出本节点全部草稿。</p><div class="draft-leave-backup"><button id="copy-leave-draft" class="secondary" type="button">复制当前草稿</button><button id="export-leave-drafts" class="secondary" type="button">导出本节点草稿</button></div><textarea id="draft-leave-preview" readonly rows="5" aria-label="手动复制当前草稿" hidden></textarea><p id="draft-leave-status" class="muted" role="status"></p><div class="confirmation-actions"><button id="cancel-draft-leave" class="primary" type="button" autofocus>留在当前页面</button><button id="confirm-draft-leave" class="secondary interrupt-key" type="button">仍然离开</button></div></dialog>
   <div id="toast" class="toast" role="status" hidden></div>
   <script type="module" src="/app.js"></script>

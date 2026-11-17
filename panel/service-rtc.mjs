@@ -5,6 +5,7 @@ import { normalizeEntryBasePath } from './entry-path.mjs';
 
 const error = (status, message, outcome = 'rejected') => Object.assign(Error(message), { status, outcome });
 export const SERVICE_ACTIONS = Object.freeze({ state: ['GET', '/api/state'], diagnostics: ['GET', '/api/diagnostics'], files: ['GET', '/api/files'],
+  'file-delete': ['POST', '/api/files/delete'],
   'forward-list': ['GET', '/api/forward'] });
 
 // Fixed loopback requests reuse the HTTP authorization and quota checks. The
@@ -23,7 +24,7 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
       res.on('data', chunk => { size += chunk.length; if (size > 240 * 1024) res.destroy(error(503, '服务响应过大，请使用 HTTPS')); else chunks.push(chunk); });
       res.once('error', reject); res.once('end', () => {
         try { const result = JSON.parse(Buffer.concat(chunks).toString());
-          if (res.statusCode !== 200) throw error(res.statusCode, result.error || '服务操作失败', result.outcome || 'rejected');
+          if (res.statusCode !== 200) throw error(res.statusCode, result.error || '服务操作失败', result.outcome || (method === 'POST' && res.statusCode >= 500 ? 'unknown' : 'rejected'));
           resolve(result);
         } catch (err) { reject(err); }
       });

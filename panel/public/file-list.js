@@ -28,7 +28,7 @@ export function createFileListReader({ request, valid, render, status }) {
         if (pending !== entry || !valid()) return;
         if (controller.signal.aborted) throw Error('文件列表读取已取消');
         if (!Array.isArray(value?.files) || value.files.length > 1000) throw Error('文件列表响应无效，请手动刷新');
-        render(value.files);
+        render(value.files, value);
         status(value.truncated ? '仅展示部分文件；目录超过核算范围，临时上传已暂停。' : '');
       } catch (error) {
         if (pending !== entry || !valid()) return;

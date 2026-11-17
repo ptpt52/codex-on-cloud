@@ -1,7 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFileWire,sendFileChunks,FILE_CHUNK } from '../panel/public/file-wire.js';
+import { createFileClient } from '../panel/public/file-client.js';
 class Wire extends EventTarget{readyState='open';bufferedAmount=0;send(data){queueMicrotask(()=>{if(this.peer.readyState==='open')this.peer.dispatchEvent(new MessageEvent('message',{data:typeof data==='string'?data:data.slice().buffer}));});}close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}}
+test('file metrics separate chunk acknowledgement latency and buffer waits without changing credits or retaining prior transfers', async () => {
+ const a=new Wire(),b=new Wire();a.peer=b;b.peer=a;let now=10;
+ const wire=createFileWire(a,{control(){},chunk(){},failed(){}},()=>now);
+ try{
+  const pending=wire.data(new Uint8Array(1));assert.throws(()=>wire.resetMetrics(),/测量/);
+  now=75;b.send(JSON.stringify({type:'ack',seq:1}));await pending;
+  assert.deepEqual(wire.metrics,{windowChunks:4,chunkAckMs:65,chunkMaxAckMs:65,bufferWaitMs:0});
+  a.bufferedAmount=512*1024;now=100;const waiting=wire.waitWritable(1);
+  now=150;a.bufferedAmount=0;a.dispatchEvent(new Event('bufferedamountlow'));await waiting;
+  assert.equal(wire.metrics.bufferWaitMs,50);wire.resetMetrics();
+  assert.deepEqual(wire.metrics,{windowChunks:4,chunkAckMs:0,chunkMaxAckMs:0,bufferWaitMs:0});
+ }finally{wire.close();}
+});
+test('file activity proves liveness for six seconds, renews only on valid progress and stops after completion', async t => {
+ let now=100;t.mock.method(performance,'now',()=>now);
+ const channel=Object.assign(new EventTarget(),{readyState:'open',bufferedAmount:0,send(){},close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}});
+ const client=createFileClient(channel),send=value=>channel.dispatchEvent(new MessageEvent('message',{data:typeof value==='string'?value:JSON.stringify(value)}));
+ const pending=client.download('test',1);void pending.catch(()=>{});
+ try{
+  assert.equal(client.progressing,false);send({type:'ready',id:1,size:1});assert.equal(client.progressing,true);
+  now=6099;assert.equal(client.progressing,true);now=6100;assert.equal(client.progressing,false);
+  const bytes=new Uint8Array(5);new DataView(bytes.buffer).setUint32(0,1);bytes[4]=7;
+  now=6200;channel.dispatchEvent(new MessageEvent('message',{data:bytes.buffer}));await new Promise(resolve=>setImmediate(resolve));assert.equal(client.progressing,true);
+  send({type:'done',id:1,size:1});const blob=await pending;assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())],[7]);assert.equal(client.progressing,false);
+ }finally{client.close();}
+});
 test('each file ACK releases receive credit before an immediate peer replenishes the full window', async () => {
   const channel = new Wire(), acknowledgements = [], failures = [];
   let sent = 0, chunks = 0;

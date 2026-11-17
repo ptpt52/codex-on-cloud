@@ -6,6 +6,32 @@ export function transferSize(value) {
   return `${(value / 1048576).toFixed(1)} MiB`;
 }
 
+// One transfer, no filename or payload. Progress events are limited to one per
+// five seconds plus the final byte count; the shared debug log owns storage.
+export function createUploadTrace(report = () => {}, now = () => performance.now()) {
+  let active;
+  function emit(type, detail = {}) {
+    if (!active) return;
+    try { report(type, { route: active.route, loadedBytes: active.loaded, totalBytes: active.total, durationMs: Math.max(0, Math.round(now() - active.started)), ...active.metrics, ...detail }); } catch { /* Diagnostics cannot stop a transfer. */ }
+  }
+  return {
+    start(route, total) {
+      if (!['https', 'direct'].includes(route) || !Number.isSafeInteger(total) || total < 0 || total > FILE_MAX) throw Error('上传诊断参数无效');
+      active = { route, total, loaded: 0, started: now(), logged: now() }; emit('file-start');
+    },
+    progress(loaded, total, metrics) {
+      if (!active || total !== active.total || !Number.isSafeInteger(loaded) || loaded <= active.loaded || loaded > total) return;
+      active.loaded = loaded;
+      if (metrics) {
+        active.metrics = {};
+        for (const key of ['windowChunks', 'chunkAckMs', 'chunkMaxAckMs', 'bufferWaitMs', 'fileReadMs']) if (Number.isInteger(metrics[key]) && metrics[key] >= 0 && metrics[key] <= 2 ** 40) active.metrics[key] = metrics[key];
+      }
+      if (now() - active.logged >= 5000 || loaded === total) { active.logged = now(); emit('file-progress'); }
+    },
+    end(reason, status, outcome) { emit('file-ended', { reason, status, outcome }); active = undefined; },
+  };
+}
+
 // One visible transfer, one paint timer, no queue or retained file contents.
 export function createFileProgress({ panel, title, meter, detail, cancel }, now = () => performance.now()) {
   let active, timer, disposed = false;
@@ -18,7 +44,8 @@ export function createFileProgress({ panel, title, meter, detail, cancel }, now 
     title.textContent = `${entry.direction === 'upload' ? '上传' : '下载'}：${entry.name}`;
     if (entry.phase) {
       if (entry.done) meter.value = entry.complete ? 100 : entry.total ? Math.floor(entry.loaded / entry.total * 100) : 0; else meter.removeAttribute('value');
-      detail.textContent = entry.complete ? `${entry.route} · ${transferSize(entry.total)} / ${transferSize(entry.total)} · 100% · ${entry.phase}` : entry.phase;
+      detail.textContent = entry.complete ? `${entry.route} · ${transferSize(entry.total)} / ${transferSize(entry.total)} · 100% · ${entry.phase}`
+        : entry.done ? `${entry.route} · ${transferSize(entry.loaded)} / ${transferSize(entry.total)} · ${entry.phase}` : entry.phase;
     }
     else {
       meter.value = entry.total ? Math.min(100, Math.floor(entry.loaded / entry.total * 100)) : entry.done ? 100 : 0;
