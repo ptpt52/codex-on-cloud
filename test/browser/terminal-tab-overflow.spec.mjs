@@ -34,14 +34,14 @@ test('desktop top tabs and compact picker activate the same tasks without replac
     } else {
       await page.setViewportSize({ width: 768, height: 900 });
       await picker(page).click(); await expect(page.locator('#terminal-switch-title')).toHaveText('选择桌面终端');
-      expect(await visibleChoices(list(page))).toEqual(ids);
+      await expectChoices(list(page), ids);
       await list(page).locator('[data-terminal-choice=aux7]').click();
     }
     await expect(page.locator('#input-terminal')).toHaveValue('aux7');
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(picker(page)).toContainText('辅助终端 7 的任务');
     await expect(page.locator('#terminal-session-actions')).toBeVisible();
-    await picker(page).click(); expect(await visibleChoices(list(page))).toEqual(ids);
+    await picker(page).click(); await expectChoices(list(page), ids);
     await list(page).locator('[data-terminal-choice=main]').click(); await expect(page.locator('#input-terminal')).toHaveValue('main');
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
     await page.screenshot({ path: info.outputPath('desktop-terminal-picker.png') });
@@ -61,6 +61,12 @@ const tab = (page, id) => page.locator(`#terminal-tabs [data-terminal-choice=${i
 const picker = page => page.locator('#terminal-session-button');
 const list = page => page.locator('#terminal-switch-list');
 const visibleChoices = parent => parent.locator('[data-terminal-choice]:visible').evaluateAll(buttons => buttons.map(button => button.dataset.terminalChoice));
+async function expectChoices(parent, ids) {
+  // WebKit can finish the click before the dialog and responsive layout are
+  // visible. Wait for both states without clicking again or replaying a task.
+  await expect(parent).toBeVisible();
+  await expect.poll(() => visibleChoices(parent)).toEqual(ids);
+}
 async function choose(page, id) {
   if (await tab(page, id).isVisible()) await tab(page, id).click();
   else { await picker(page).click(); await list(page).locator(`[data-terminal-choice=${id}]`).click(); }
@@ -164,7 +170,7 @@ test('an open terminal list adapts between partial desktop overflow and the full
     const ids = (await app.controls.listTerminals()).terminals.map(item => item.id).concat('new');
     await picker(page).click(); await list(page).locator('[data-terminal-choice=aux7]').focus();
     await page.setViewportSize({ width: 768, height: 900 });
-    await expect(page.locator('#terminal-switch-title')).toHaveText('选择终端'); expect(await visibleChoices(list(page))).toEqual(ids);
+    await expect(page.locator('#terminal-switch-title')).toHaveText('选择终端'); await expectChoices(list(page), ids);
     await list(page).locator('[data-terminal-choice=main]').focus();
     await page.setViewportSize({ width: 1280, height: 900 }); await expect(page.locator('#terminal-switch-title')).toHaveText('更多终端');
     await expect(list(page).locator('[data-terminal-choice=main]')).toBeHidden();
@@ -172,7 +178,7 @@ test('an open terminal list adapts between partial desktop overflow and the full
     await page.setViewportSize({ width: 1920, height: 900 }); await expect(page.locator('#terminal-switch-dialog')).toBeHidden();
     await expect(tab(page, 'main')).toBeFocused();
     await page.setViewportSize({ width: 320, height: 800 }); await picker(page).click();
-    expect(await visibleChoices(list(page))).toEqual(ids); await page.locator('#close-terminal-switch').click();
+    await expectChoices(list(page), ids); await page.locator('#close-terminal-switch').click();
     await page.locator('#terminal-session-actions').focus(); await page.setViewportSize({ width: 1920, height: 900 });
     await expect(page.locator('#terminal-tabs [data-terminal-actions=main]')).toBeFocused();
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
@@ -197,7 +203,7 @@ test('recovery can open the full chooser even when every desktop tab fits', asyn
     await page.setViewportSize({ width: 1800, height: 900 });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(page.locator('#terminal-switch-dialog')).toBeVisible();
-    expect(await visibleChoices(list(page))).toEqual(['main', 'aux1', 'new']);
+    await expectChoices(list(page), ['main', 'aux1', 'new']);
     await list(page).locator('[data-terminal-choice=aux1]').click();
     await expect(page.locator('#input-terminal')).toHaveValue('aux1'); await expect(page.locator('#connection-status')).toContainText('终端在线');
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
