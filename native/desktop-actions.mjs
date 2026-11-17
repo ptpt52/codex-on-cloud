@@ -128,7 +128,7 @@ export function desktopActionClient(socketPath, secret) {
       headers: { authorization: 'Bearer ' + secret, 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, res => {
       const chunks = []; let size = 0;
       res.on('data', chunk => { size += chunk.length; if (size > 2048) res.destroy(Error('response too large')); else chunks.push(chunk); });
-      res.once('error', fail); res.once('end', () => { try { const value = JSON.parse(Buffer.concat(chunks).toString()); if (res.statusCode !== 200) throw Object.assign(Error(value.error), { outcome: value.outcome, status: res.statusCode }); resolve(value); } catch (error) { fail(error); } });
+      res.once('error', fail); res.once('end', () => { try { const value = JSON.parse(Buffer.concat(chunks).toString()); if (res.statusCode !== 200) throw Object.assign(Error(value.error), { outcome: value.outcome || (res.statusCode >= 500 ? 'unknown' : 'rejected'), status: res.statusCode }); resolve(value); } catch (error) { fail(error); } });
     });
     req.once('error', () => fail(Object.assign(Error('桌面执行服务未就绪，本次操作未重试'), { outcome: 'unknown' }))); req.end(payload);
   });

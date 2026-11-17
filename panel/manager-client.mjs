@@ -16,7 +16,7 @@ export function managerRequest(config, path, body, timeout = 6000) {
       response.once('end', () => {
         try {
           const data = JSON.parse(Buffer.concat(chunks).toString());
-          if (response.statusCode >= 400) { const error = new Error(data.error || '桌面管理操作失败'); error.status = response.statusCode; error.outcome = data.outcome; reject(error); }
+          if (response.statusCode >= 400) { const error = new Error(data.error || '桌面管理操作失败'); error.status = response.statusCode; error.outcome = data.outcome || (payload !== null && response.statusCode >= 500 ? 'unknown' : 'rejected'); reject(error); }
           else resolve(data);
         } catch { reject(transportError()); }
       });

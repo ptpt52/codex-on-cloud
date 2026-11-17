@@ -250,12 +250,12 @@ export async function createPanel(config) {
   }
   async function agent(path, { method = 'GET', body, signal } = {}) {
     const response = await fetch(`${path === '/files' ? config.fileAgentUrl || config.agentUrl : config.agentUrl}${path}`, {
-      method, signal: signal || AbortSignal.timeout(6000),
+      method, signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(6000)]),
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await response.json();
-    if (!response.ok) throw new HttpError(response.status, data.error || '桌面操作失败');
+    if (!response.ok) throw Object.assign(new HttpError(response.status, data.error || '桌面操作失败'), { outcome: data.outcome || (method !== 'GET' && response.status >= 500 ? 'unknown' : 'rejected') });
     return data;
   }
   async function desktopHealth() {

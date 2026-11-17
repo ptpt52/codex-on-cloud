@@ -64,6 +64,9 @@ func (p *transportPool) available() bool {
 	return p.conn != nil && p.ctx.Err() == nil
 }
 func (p *transportPool) write(kind int, data []byte, expected *websocket.Conn) error {
+	return p.writeDeadline(kind, data, expected, time.Time{})
+}
+func (p *transportPool) writeDeadline(kind int, data []byte, expected *websocket.Conn, deadline time.Time) error {
 	p.mu.Lock()
 	conn := p.conn
 	p.mu.Unlock()
@@ -74,8 +77,15 @@ func (p *transportPool) write(kind int, data []byte, expected *websocket.Conn) e
 	if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 2 {
 		queue, timeout = p.data, 15*time.Second
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, timeout)
+	limit := time.Now().Add(timeout)
+	if !deadline.IsZero() && deadline.Before(limit) {
+		limit = deadline
+	}
+	ctx, cancel := context.WithDeadline(p.ctx, limit)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	request := poolWrite{ctx: ctx, kind: kind, data: data, conn: conn, done: make(chan error, 1)}
 	select {
 	case queue <- request:
@@ -288,6 +298,9 @@ type relayChannel struct {
 }
 
 func (c *relayChannel) frame(op byte, data []byte) error {
+	return c.frameDeadline(op, data, time.Time{})
+}
+func (c *relayChannel) frameDeadline(op byte, data []byte, deadline time.Time) error {
 	if len(data) > chunkSize {
 		return failure("buffer_limit")
 	}
@@ -295,7 +308,14 @@ func (c *relayChannel) frame(op byte, data []byte) error {
 	frame[0] = op
 	binary.BigEndian.PutUint32(frame[1:5], c.id)
 	copy(frame[5:], data)
-	return c.pool.write(websocket.BinaryMessage, frame, c.conn)
+	return c.pool.writeDeadline(websocket.BinaryMessage, frame, c.conn, deadline)
+}
+func (c *relayChannel) sendDeadline(data []byte, text bool, deadline time.Time) error {
+	op := byte(2)
+	if text {
+		op = 1
+	}
+	return c.frameDeadline(op, data, deadline)
 }
 func (c *relayChannel) Send(data []byte) error     { return c.frame(2, data) }
 func (c *relayChannel) SendText(data string) error { return c.frame(1, []byte(data)) }

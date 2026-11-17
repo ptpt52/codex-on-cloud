@@ -1,6 +1,81 @@
 import { test,expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
+for (const cause of ['hidden', 'offline']) test(`service heartbeat pauses across ${cause} without retiring the peer or accepting an old nonce`, async ({ page }) => {
+ const app = await fixture();
+ try {
+  await page.route('**/rtc-transport.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'export async function desktopTransport(...args) { return window.nextServiceTransport(...args); }' }));
+  await page.goto(app.config.origin); await page.clock.install();
+  await page.evaluate(async () => {
+   const { createHealthClient } = await import('/health.js'), { createServiceLink } = await import('/service-link.js');
+   const channel = new EventTarget(); channel.readyState = 'open'; channel.bufferedAmount = 0;
+   window.servicePings = []; window.serviceEvents = []; window.serviceClosed = false;
+   const reply = bytes => channel.dispatchEvent(new MessageEvent('message', { data: bytes.slice(0) }));
+   channel.send = bytes => { window.servicePings.push(bytes); if (window.servicePings.length === 1) queueMicrotask(() => reply(bytes)); };
+   channel.close = () => {};
+   window.serviceReply = index => reply(window.servicePings[index]);
+   window.nextServiceTransport = async () => ({ features: {}, health: createHealthClient(channel), async start() {}, async stats() { return null; }, close() { window.serviceClosed = true; } });
+   window.auditService = createServiceLink({ viewer: 'isolated-lifecycle-test', options: () => ({}), changed() {}, trace: type => window.serviceEvents.push(type) });
+   window.auditService.start();
+  });
+  await expect.poll(() => page.evaluate(() => window.auditService.ready)).toBe(true);
+  await page.clock.runFor(3100);
+  expect(await page.evaluate(() => window.servicePings.length)).toBe(2);
+  await page.evaluate(cause => {
+   if (cause === 'hidden') { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); }
+   else { Object.defineProperty(navigator, 'onLine', { configurable: true, value: false }); window.dispatchEvent(new Event('offline')); }
+  }, cause);
+  await page.clock.runFor(10000);
+  expect(await page.evaluate(() => ({ ready: window.auditService.ready, closed: window.serviceClosed, pings: window.servicePings.length }))).toEqual({ ready: true, closed: false, pings: 2 });
+  await page.evaluate(cause => {
+   if (cause === 'hidden') { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); }
+   else { Object.defineProperty(navigator, 'onLine', { configurable: true, value: true }); window.dispatchEvent(new Event('online')); }
+  }, cause);
+  await page.clock.runFor(110);
+  expect(await page.evaluate(() => window.servicePings.length)).toBe(3);
+  await page.evaluate(() => window.serviceReply(1));
+  await page.clock.runFor(300);
+  const result = await page.evaluate(() => {
+   window.serviceReply(2);
+   const result = { ready: window.auditService.ready, lost: window.serviceEvents.includes('path-lost'), closed: window.serviceClosed };
+   window.auditService.stop(); return result;
+  });
+  expect(result).toEqual({ ready: true, lost: false, closed: false });
+  expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+ } finally { await app.close(); }
+});
+test('a retired monitor cannot clear the new foreground check while its stats resolve late', async ({ page }) => {
+ const app = await fixture();
+ try {
+  await page.route('**/rtc-transport.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'export async function desktopTransport(...args) { return window.nextServiceTransport(...args); }' }));
+  await page.goto(app.config.origin); await page.clock.install();
+  await page.evaluate(async () => {
+   const { createServiceLink } = await import('/service-link.js'); let stats = 0;
+   window.monitorPings = 0; window.monitorClosed = false;
+   window.nextServiceTransport = async () => ({ features: {}, health: { cancel() {}, ping() {
+    if (++window.monitorPings < 3) return Promise.resolve();
+    return new Promise(resolve => { window.releaseForegroundPing = resolve; });
+   } }, async start() {}, stats() {
+    if (++stats === 2) return new Promise(resolve => { window.releaseRetiredStats = resolve; });
+    return Promise.resolve(null);
+   }, close() { window.monitorClosed = true; } });
+   window.auditService = createServiceLink({ viewer: 'isolated-generation-test', options: () => ({}), changed() {} }); window.auditService.start();
+  });
+  await expect.poll(() => page.evaluate(() => window.auditService.ready)).toBe(true);
+  await page.clock.runFor(3100);
+  await page.evaluate(() => {
+   Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+   Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.clock.runFor(110);
+  expect(await page.evaluate(() => window.monitorPings)).toBe(3);
+  await page.evaluate(async () => { window.releaseRetiredStats(null); await Promise.resolve(); await Promise.resolve(); window.dispatchEvent(new Event('online')); });
+  await page.clock.runFor(200);
+  expect(await page.evaluate(() => ({ pings: window.monitorPings, closed: window.monitorClosed, ready: window.auditService.ready }))).toEqual({ pings: 3, closed: false, ready: true });
+  await page.evaluate(() => { window.releaseForegroundPing(); window.auditService.stop(); });
+ } finally { await app.close(); }
+});
+
 for (const cause of ['stop', 'busy']) test(`mocked delayed service stats cannot enable a recheck after ${cause}`, async ({ page }) => {
  const app = await fixture();
  try {

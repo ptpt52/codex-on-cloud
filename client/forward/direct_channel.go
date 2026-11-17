@@ -105,6 +105,16 @@ func (c *directChannel) finish(err error) {
 		delete(c.held, id)
 	}
 	close(c.done)
+	// Closing is an admission barrier, including records already queued by
+	// SCTP. They must never reach a target after revocation or reconnection.
+drain:
+	for {
+		select {
+		case <-c.queue:
+		default:
+			break drain
+		}
+	}
 	c.mu.Unlock()
 	if c.budget != nil {
 		c.budget.release(released, bulk)
@@ -169,7 +179,7 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 			var fields map[string]json.RawMessage
 			json.Unmarshal(message.Data, &fields)
 			c.mu.Lock()
-			valid := len(fields) == 2 && record.ID > c.acked && record.ID <= c.sent
+			valid := !c.ended && len(fields) == 2 && record.ID > c.acked && record.ID <= c.sent
 			released, bulk := 0, 0
 			if valid {
 				c.acked = record.ID
@@ -209,8 +219,8 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 		window = 4
 	}
 	valid := !c.ended && id <= 2147483647 && id-c.credited <= uint32(window)
-	c.mu.Unlock()
 	if !valid {
+		c.mu.Unlock()
 		c.finish(failure("buffer_limit"))
 		return
 	}
@@ -220,12 +230,19 @@ func (c *directChannel) receive(message webrtc.DataChannelMessage) {
 	}
 	select {
 	case c.queue <- directRecord{kind: kind, bytes: append([]byte(nil), message.Data...), id: id}:
+		c.mu.Unlock()
 	default:
+		c.mu.Unlock()
 		c.finish(failure("buffer_limit"))
 	}
 }
 func (c *directChannel) ReadMessage() (int, []byte, error) {
 	c.mu.Lock()
+	if c.ended {
+		err := c.cause
+		c.mu.Unlock()
+		return 0, nil, err
+	}
 	id := c.delivered
 	credit := id > c.credited
 	if credit {
@@ -261,6 +278,11 @@ func (c *directChannel) ReadMessage() (int, []byte, error) {
 		case record := <-c.queue:
 			timer.Stop()
 			c.mu.Lock()
+			if c.ended {
+				err := c.cause
+				c.mu.Unlock()
+				return 0, nil, err
+			}
 			c.delivered = record.id
 			c.mu.Unlock()
 			return record.kind, record.bytes, nil
@@ -285,9 +307,13 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	defaultDeadline := time.Now().Add(15 * time.Second)
 	for {
 		c.mu.Lock()
 		deadline := c.writeDeadline
+		if deadline.IsZero() {
+			deadline = defaultDeadline
+		}
 		window := c.window
 		if window == 0 {
 			window = 4
@@ -335,9 +361,6 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 				return c.unavailable()
 			}
 			return nil
-		}
-		if deadline.IsZero() {
-			deadline = time.Now().Add(15 * time.Second)
 		}
 		timer := time.NewTimer(max(time.Until(deadline), 0))
 		select {

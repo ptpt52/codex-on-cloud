@@ -1,11 +1,66 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gatewayFixture } from './gateway-fixture.mjs';
-import { gatewayConfig, gatewayBackend, gatewayProxyHeaders, gatewayNode, gatewayHex, GATEWAY_LIMITS } from '../gateway/protocol.mjs';
+import { gatewayConfig, gatewayBackend, gatewayProxyHeaders, gatewayNode, gatewayHex, GATEWAY_LIMITS, gatewayDeadline, gatewayJSON } from '../gateway/protocol.mjs';
 
 const entry = number => ({ id: number.toString(16).padStart(32, '0'), name: '动态节点 ' + number, backendOrigin: `https://node-${number}.example.test`, mode: 'terminal' });
 const key = number => number.toString(16).padStart(64, '0');
 const setup = async options => { const h = await gatewayFixture({ probe: async () => true, ...options }); await h.login(); const code = await h.code(); return { ...h, codeValue: code }; };
+
+test('gateway propagates cancellation through registry control, routing and the selected upstream', async () => {
+  let dispatched; const seen = [], h = await setup({ request: request => {
+    seen.push(request); dispatched(request);
+    return new Promise((_, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }));
+  } });
+  await h.register(entry(1), key(1), h.codeValue.key); await h.select(entry(1).id);
+  const registry = h.registry;
+  for (const path of ['/__nodes/api/nodes', '/api/state']) {
+    let started; const ready = new Promise(resolve => { started = resolve; });
+    h.env.GATEWAY_REGISTRY.get = () => ({ fetch: request => {
+      started(request); return new Promise((_, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }));
+    } });
+    const controller = new AbortController(), response = h.fetch(h.origin + path, { signal: controller.signal });
+    const forwarded = await ready; controller.abort(); await response;
+    assert.equal(forwarded.signal.aborted, true); assert.equal(seen.length, 0);
+  }
+  h.env.GATEWAY_REGISTRY.get = () => registry;
+  const ready = new Promise(resolve => { dispatched = resolve; });
+  const controller = new AbortController();
+  const response = h.fetch(h.origin + '/api/state', { signal: controller.signal });
+  const forwarded = await ready; controller.abort(); await response;
+  assert.equal(forwarded.signal.aborted, true);
+  await h.fetch(h.origin + '/api/input', { method: 'POST', signal: controller.signal });
+  assert.equal(seen.length, 1, 'an already canceled mutation must not be dispatched');
+});
+
+test('gateway control deadline includes a dripping response body and cancels its reader', async () => {
+  let canceled = false, interval;
+  const response = new Response(new ReadableStream({ start(controller) { interval = setInterval(() => controller.enqueue(new TextEncoder().encode(' ')), 10); }, cancel() { canceled = true; clearInterval(interval); } }));
+  try { await assert.rejects(gatewayDeadline(undefined, 80, signal => gatewayJSON(response, 4096, signal)), /超时/); assert(canceled); }
+  finally { clearInterval(interval); }
+});
+
+test('canceling an incomplete control upload never dispatches it or waits for a stuck body cleanup', async () => {
+  const h = await setup(); let pulling, canceled = false, dispatches = 0;
+  const reading = new Promise(resolve => { pulling = resolve; });
+  const body = new ReadableStream({ pull() { pulling(); return new Promise(() => {}); }, cancel() { canceled = true; return new Promise(() => {}); } });
+  h.env.GATEWAY_REGISTRY.get = () => ({ fetch() { dispatches++; throw Error('must not dispatch incomplete JSON'); } });
+  const controller = new AbortController();
+  const pending = h.fetch(h.origin + '/__nodes/api/codes', { method: 'POST', headers: { origin: h.origin, 'content-type': 'application/json' }, body, duplex: 'half', signal: controller.signal });
+  await reading; controller.abort();
+  let timer;
+  try { const response = await Promise.race([pending, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('canceled request stuck in cleanup')), 1000); })]); assert.equal(response.status, 408); }
+  finally { clearTimeout(timer); }
+  assert(canceled); assert.equal(dispatches, 0);
+});
+
+test('a registry commit followed by a lost storage acknowledgement is unknown and not repeated', async () => {
+  const h = await setup(), transaction = h.storage.transaction.bind(h.storage), before = h.storage.value.codes.length;
+  h.storage.transaction = async fn => { await transaction(fn); throw Error('injected lost commit acknowledgement'); };
+  const response = await h.api('codes', { method: 'POST', body: { name: 'Committed once' } });
+  assert.equal(response.status, 503); assert.equal((await response.json()).outcome, 'unknown');
+  assert.equal(h.storage.value.codes.length, before + 1);
+});
 
 test('native helper control and data stay on their authorized node while browser selection changes', async () => {
   const calls = [], h = await setup({ request: async request => {

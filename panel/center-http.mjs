@@ -25,22 +25,27 @@ export function readCenterCA(file, { privateFile = false } = {}) {
 export function centerRequest(target, { ca, timeout = 10000, ...options } = {}) {
   const url = new URL(target);
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || (url.protocol === 'http:' && !isLoopbackHostname(url.hostname))) throw Error('中心地址必须使用 HTTPS');
+  if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 300000) throw Error('中心请求期限无效');
   return new Promise((resolve, reject) => {
-    let connected = false;
+    let connected = false, timer;
+    const finish = (error, value) => { clearTimeout(timer); error ? reject(error) : resolve(value); };
     const request = (url.protocol === 'https:' ? https : http).request(url, { agent: false, ...options, ca, rejectUnauthorized: true, timeout, signal: options.signal }, response => {
       const chunks = []; let size = 0;
       response.on('data', chunk => { size += chunk.length; if (size > 16384) response.destroy(Error('中心响应超过 16 KiB')); else chunks.push(chunk); });
       response.on('end', () => {
-        try { resolve(new Response([204, 205, 304].includes(response.statusCode) ? null : Buffer.concat(chunks), { status: response.statusCode, headers: response.headers })); }
-        catch (error) { reject(error); }
+        try { finish(null, new Response([204, 205, 304].includes(response.statusCode) ? null : Buffer.concat(chunks), { status: response.statusCode, headers: response.headers })); }
+        catch (error) { finish(error); }
       });
-      response.on('error', reject);
+      response.on('error', error => finish(error));
     });
+    // Socket inactivity alone lets a slow drip extend a control operation
+    // indefinitely. One absolute budget includes DNS, TLS, headers and body.
+    timer = setTimeout(() => request.destroy(Error('中心请求超时')), timeout);
     request.on('timeout', () => request.destroy(Error('中心请求超时')));
     // agent:false always creates a new socket. Before TCP/TLS establishment no
     // HTTP request can have reached the center; later errors remain unknown.
     request.on('socket', socket => socket.once(url.protocol === 'https:' ? 'secureConnect' : 'connect', () => { connected = true; }));
-    request.on('error', error => { if (!connected) error.outcome = 'rejected'; reject(error); }); request.end(options.body);
+    request.on('error', error => { if (!connected) error.outcome = 'rejected'; finish(error); }); request.end(options.body);
   });
 }
 

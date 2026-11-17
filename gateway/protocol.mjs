@@ -41,20 +41,42 @@ export function gatewaySessionCookie(header = '') {
 export function gatewayProxyHeaders(node, origin) {
   return { 'x-codex-gateway-secret': node.secret, 'x-codex-gateway-origin': origin, 'x-codex-gateway-node': node.id, 'x-codex-gateway-hop': '1' };
 }
-export async function gatewayJSON(response, limit = 4096) {
+// Control work has one deadline, including fetch and response consumption.
+// A canceled caller can stop waiting even when a DO/storage operation has
+// already started; that does not imply the mutation was rolled back.
+export async function gatewayDeadline(parent, timeout, operation) {
+  const controller = new AbortController(); let timer, abort;
+  const cancel = () => controller.abort(parent.reason);
+  parent?.addEventListener('abort', cancel, { once: true });
+  if (parent?.aborted) cancel();
+  timer = setTimeout(() => controller.abort(Error('网关控制请求超时')), timeout);
+  const signal = controller.signal;
+  try {
+    signal.throwIfAborted();
+    const canceled = new Promise((_, reject) => { abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true }); });
+    return await Promise.race([operation(signal), canceled]);
+  } finally { clearTimeout(timer); parent?.removeEventListener('abort', cancel); if (abort) signal.removeEventListener('abort', abort); }
+}
+
+export async function gatewayJSON(response, limit = 4096, signal) {
   if (!response.body) throw Error('响应为空');
   const reader = response.body.getReader(), parts = []; let size = 0;
+  const cancel = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
-    while (true) { const item = await reader.read(); if (item.done) break; size += item.value.byteLength; if (size > limit) throw Error('响应超过大小限制'); parts.push(item.value); }
-  } finally { await reader.cancel().catch(() => {}); }
+    signal?.throwIfAborted();
+    while (true) { const item = await reader.read(); signal?.throwIfAborted(); if (item.done) break; size += item.value.byteLength; if (size > limit) throw Error('响应超过大小限制'); parts.push(item.value); }
+  } finally { signal?.removeEventListener('abort', cancel); cancel(); }
   const bytes = new Uint8Array(size); let offset = 0; for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw Error('响应 JSON 无效'); }
 }
 export async function gatewayProbe(node, origin, request = fetch) {
   try {
-    const response = await request(node.backendOrigin + '/readyz', { headers: gatewayProxyHeaders(node, origin), redirect: 'manual', signal: AbortSignal.timeout(GATEWAY_LIMITS.probeMs), cache: 'no-store' });
-    const value = await gatewayJSON(response);
-    return response.status === 200 && value.ok === true && value.host === true && value.files === true && value.nodeId === node.id;
+    return await gatewayDeadline(undefined, GATEWAY_LIMITS.probeMs, async signal => {
+      const response = await request(node.backendOrigin + '/readyz', { headers: gatewayProxyHeaders(node, origin), redirect: 'manual', signal, cache: 'no-store' });
+      const value = await gatewayJSON(response, 4096, signal);
+      return response.status === 200 && value.ok === true && value.host === true && value.files === true && value.nodeId === node.id;
+    });
   } catch { return false; }
 }
 export function encodeGatewayCode(origin, key) {

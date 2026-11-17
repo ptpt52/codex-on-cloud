@@ -100,7 +100,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
       } else if (value.type === 'result' && requests.has(value.id)) {
         const clientId = requests.get(value.id); requests.delete(value.id);
         if (typeof clientId !== 'number') return close();
-        if (clientId) { busy = false; send({ type: 'result', id: clientId, ok: value.ok === true, outcome: value.ok ? 'success' : 'rejected' }); }
+        if (clientId) { busy = false; send({ type: 'result', id: clientId, ok: value.ok === true, outcome: value.ok ? 'success' : value.outcome === 'rejected' ? 'rejected' : 'unknown' }); }
         if (value.ok !== true) return close();
       } else return close();
     }

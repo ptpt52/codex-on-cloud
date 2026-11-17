@@ -1,4 +1,4 @@
-import { GATEWAY_PREFIX, GATEWAY_LIMITS, gatewayConfig, gatewayNode, gatewaySecret, gatewayDigest, gatewayProxyHeaders, gatewayJSON } from './protocol.mjs';
+import { GATEWAY_PREFIX, GATEWAY_LIMITS, gatewayConfig, gatewayNode, gatewaySecret, gatewayDigest, gatewayProxyHeaders, gatewayJSON, gatewayDeadline } from './protocol.mjs';
 
 export function createGateway({ config: source, assets = {}, request: upstream = fetch }) {
   const config = gatewayConfig(source);
@@ -11,16 +11,20 @@ export function createGateway({ config: source, assets = {}, request: upstream =
     if (!request.headers.get('content-type')?.startsWith('application/json') || !request.body) throw Object.assign(Error('请使用 JSON 请求'), { status: 415 });
     let timer; const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(Error('timeout')), 5000); });
     const reader = request.body.getReader(); let size = 0; const chunks = [];
+    const cancel = () => { void reader.cancel().catch(() => {}); };
+    request.signal.addEventListener('abort', cancel, { once: true });
     try {
+      request.signal.throwIfAborted();
       while (true) {
-        const item = await Promise.race([reader.read(), timeout]); if (item.done) break;
+        const item = await Promise.race([reader.read(), timeout]); request.signal.throwIfAborted(); if (item.done) break;
         size += item.value.byteLength; if (size > GATEWAY_LIMITS.body) throw Object.assign(Error('请求超过 8 KiB'), { status: 413 }); chunks.push(item.value);
       }
       const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; } return bytes;
     } catch (failure) { if (failure.status) throw failure; throw Object.assign(Error('读取请求超时'), { status: 408 }); }
-    finally { clearTimeout(timer); await reader.cancel().catch(() => {}); }
+    finally { clearTimeout(timer); request.signal.removeEventListener('abort', cancel); cancel(); }
   }
   return { async fetch(request, env) {
+    if (request.signal.aborted) return error(408, '请求已取消，本次未转发');
     const url = new URL(request.url);
     if (url.origin !== config.origin || request.headers.has('host') && request.headers.get('host').toLowerCase() !== new URL(config.origin).host) return error(400, '网关地址不匹配');
     if (request.headers.has('x-codex-gateway-hop')) return error(508, '检测到网关转发循环');
@@ -39,8 +43,11 @@ export function createGateway({ config: source, assets = {}, request: upstream =
         const forwarded = new Headers({ 'content-type': 'application/json', cookie: request.headers.get('cookie') || '', 'x-csrf-token': request.headers.get('x-csrf-token') || '',
           'x-gateway-client': (await gatewayDigest(request.headers.get('cf-connecting-ip') || 'unknown')).slice(0, 32) });
         try {
-          const result = await stub.fetch(new Request('https://registry.internal' + path + url.search, { method: request.method, headers: forwarded, body }));
-          return reply(result.status, result.body, 'application/json; charset=utf-8', result.headers.has('set-cookie') ? { 'set-cookie': result.headers.get('set-cookie') } : {});
+          return await gatewayDeadline(request.signal, 10000, async signal => {
+            const result = await stub.fetch(new Request('https://registry.internal' + path + url.search, { method: request.method, headers: forwarded, body, signal }));
+            const value = await gatewayJSON(result, 16384, signal);
+            return reply(result.status, value, 'application/json; charset=utf-8', result.headers.has('set-cookie') ? { 'set-cookie': result.headers.get('set-cookie') } : {});
+          });
         } catch { return error(503, '控制请求结果未知，请刷新状态核对；不会自动重试', request.method === 'GET' ? 'rejected' : 'unknown'); }
       }
       if (!['GET', 'HEAD'].includes(request.method)) return error(405, '请求方法不支持');
@@ -50,8 +57,10 @@ export function createGateway({ config: source, assets = {}, request: upstream =
     const pinned = /^\/forward\/(?:agent|helper|resume|data|transport)$/.test(url.pathname) && request.headers.get('x-codex-forward-node');
     try {
       if (pinned && (!/^[a-f0-9]{32}$/.test(pinned) || !/^Bearer (?:[a-f0-9]{32}\.)?[A-Za-z0-9_-]{43}$/.test(request.headers.get('authorization') || ''))) return error(400, '助手节点身份无效');
-      const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : '')));
-      if (!result.ok) throw Error(); node = await gatewayJSON(result, 2048);
+      node = await gatewayDeadline(request.signal, 4000, async signal => {
+        const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : ''), { signal }));
+        if (!result.ok) throw Error(); return gatewayJSON(result, 2048, signal);
+      });
       // During a deferred DO update an older registry may ignore ?node and
       // return the browser default. Never forward a pinned request there.
       if (pinned && node?.id !== pinned) throw Error();
@@ -67,7 +76,8 @@ export function createGateway({ config: source, assets = {}, request: upstream =
     for (const [name, value] of Object.entries(gatewayProxyHeaders(node, config.origin))) forwarded.set(name, value);
     forwarded.set('x-codex-gateway-client', request.headers.get('cf-connecting-ip') || '');
     try {
-      const result = await upstream(new Request(destination, { method: request.method, headers: forwarded, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, redirect: 'manual', duplex: 'half' }));
+      request.signal.throwIfAborted();
+      const result = await upstream(new Request(destination, { method: request.method, headers: forwarded, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, redirect: 'manual', duplex: 'half', signal: request.signal }));
       // A 101 Response retains its WebSocket object and streams frames directly.
       if (result.status === 101) return result;
       if (result.headers.get('x-codex-node-id') !== node.id) { await result.body?.cancel().catch(() => {}); throw Error('unexpected upstream identity'); }

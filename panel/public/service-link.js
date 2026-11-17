@@ -9,10 +9,11 @@ export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' 
 export function createServiceLink({ viewer, options, changed, canReplace = () => true, trace = () => {} }) {
   let running = false, epoch = 0, current, files, pending, retry, timer, delay = 15000, busy = false, checking = false;
   let attempts = 0, halted = false, healthMisses = 0, retryDue = 0, probeAt = -Infinity;
-  let replacing = false, heartbeatLoggedAt = -Infinity;
+  let replacing = false, heartbeatLoggedAt = -Infinity, monitorGeneration = 0;
   const state = { ready: false, issue: '', route: null };
   const publish = () => changed({ ...state });
-  function retire(issue = '') { clearTimeout(timer); healthMisses = 0; const old = current, oldFiles = files; current = files = undefined; state.ready = false; state.route = null; state.issue = issue; if (old) trace('path-lost', { path: 'direct', reason: issue || 'closed' }); oldFiles?.close(); old?.close(); publish(); }
+  function cancelMonitor() { ++monitorGeneration; clearTimeout(timer); checking = false; current?.health.cancel?.(); }
+  function retire(issue = '') { cancelMonitor(); healthMisses = 0; const old = current, oldFiles = files; current = files = undefined; state.ready = false; state.route = null; state.issue = issue; if (old) trace('path-lost', { path: 'direct', reason: issue || 'closed' }); oldFiles?.close(); old?.close(); publish(); }
   function schedule(ms = delay) {
     if (!running || halted || document.hidden || !navigator.onLine) return;
     const due = performance.now() + ms; if (retry && retryDue <= due) return;
@@ -39,25 +40,27 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     timer = setTimeout(() => void monitor(version, peer), 3000); publish(); return true;
   }
   async function monitor(version, peer) {
-    if (!running || epoch !== version || current !== peer || checking) return;
-    if (!document.hidden) {
+    if (!running || epoch !== version || current !== peer || checking || document.hidden || !navigator.onLine) return;
+    const generation = ++monitorGeneration;
+    const active = () => running && epoch === version && current === peer && generation === monitorGeneration && !document.hidden && navigator.onLine;
+    {
       // Authenticated file data/ACKs prove this shared SCTP association is
       // alive. Do not queue an idle probe behind it and retire a working file.
       // If progress stops for six seconds, resume normal heartbeat checks.
       if (keepFileProgress(version, peer)) return;
       checking = true;
-      try { await peer.health.ping({ confirmation: healthMisses > 0 }); const route = await peer.stats(); if (current === peer && epoch === version) { healthMisses = 0; state.issue = ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
+      try { await peer.health.ping({ confirmation: healthMisses > 0 }); if (!active()) return; const route = await peer.stats(); if (active()) { healthMisses = 0; state.issue = ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
       catch (error) {
-        if (current === peer) {
+        if (active()) {
           if (error.code === 'heartbeat_timeout' && keepFileProgress(version, peer)) return;
           if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 0); }
           else { retire('connection'); schedule(1000); }
         }
         return;
       }
-      finally { checking = false; }
+      finally { if (generation === monitorGeneration) checking = false; }
     }
-    if (current === peer && epoch === version) timer = setTimeout(() => void monitor(version, peer), 3000);
+    if (active()) timer = setTimeout(() => void monitor(version, peer), 3000);
   }
   async function probe() {
     clearTimeout(retry); retry = undefined;
@@ -85,7 +88,16 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       }
     } finally { if (pending === controller) pending = undefined; }
   }
-  function wake() { if (!running) return; if (current && !checking) { clearTimeout(timer); timer = setTimeout(() => void monitor(epoch, current), 100); } else if (!current) schedule(Math.max(100, 5000 - (performance.now() - probeAt))); }
+  function wake() {
+    if (!running) return;
+    if (document.hidden || !navigator.onLine) {
+      cancelMonitor(); healthMisses = 0; clearTimeout(retry); retry = undefined; recheck.cancel();
+      if (!current) pending?.abort();
+      return;
+    }
+    if (current && !checking) { clearTimeout(timer); timer = setTimeout(() => void monitor(epoch, current), 100); }
+    else if (!current) schedule(Math.max(100, 5000 - (performance.now() - probeAt)));
+  }
   const recheck = createRTCRecheck({
     allowed: () => running && !pending,
     idle: () => !busy && !files?.busy && !checking && !replacing && canReplace(),
@@ -107,7 +119,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
         if (!eligible()) return;
         if (candidate.promoteRequired) await candidate.control.request('promote', {});
         if (!eligible()) return;
-        clearTimeout(timer); const old = current, oldFiles = files;
+        cancelMonitor(); const old = current, oldFiles = files;
         current = candidate; files = undefined; state.ready = true; state.issue = ''; state.route = route; trace('path-active', { path: 'direct' });
         oldFiles?.close(); old?.close(); healthMisses = 0; publish();
         if (candidate.features?.filesProtocol === 1) openFiles(candidate);
@@ -116,7 +128,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       } finally { replacing = false; }
     },
   });
-  window.addEventListener('online', wake); navigator.connection?.addEventListener('change', wake);
+  window.addEventListener('online', wake); window.addEventListener('offline', wake); navigator.connection?.addEventListener('change', wake);
   document.addEventListener('visibilitychange', wake);
   return { state, get running() { return running; }, get ready() { return !!current && state.ready; }, get busy() { return busy; },
     get rttMs() { return current?.health.rttMs ?? null; },

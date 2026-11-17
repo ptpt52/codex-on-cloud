@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { attachTerminal } from '../panel/terminal-bridge.mjs';
 
-function helper(t, outputWindow = 65536) {
+function helper(t, outputWindow = 65536, result = { ok: true }) {
   const child = new EventEmitter(), ws = new EventEmitter(), responses = [], commands = [];
   child.stdin = new PassThrough(); child.stdout = new PassThrough();
   child.kill = () => { queueMicrotask(() => child.emit('close')); };
@@ -13,10 +13,17 @@ function helper(t, outputWindow = 65536) {
   const bridge = attachTerminal(ws, { socketPath: '/isolated/flow.sock', terminalId: 'main', terminalToken: 'isolated', valid: () => true, verify: async () => true, launch: () => child });
   t.after(() => bridge.close());
   const emit = value => child.stdout.write(JSON.stringify(value) + '\n');
-  child.stdin.on('data', bytes => { const value = JSON.parse(bytes.toString()); commands.push(value); if (value.id) emit({ type: 'result', id: value.id, ok: true }); });
+  child.stdin.on('data', bytes => { const value = JSON.parse(bytes.toString()); commands.push(value); if (value.id) emit({ type: 'result', id: value.id, ...result }); });
   emit({ type: 'ready', outputWindow });
   return { child, ws, bridge, responses, commands, emit, message: value => ws.emit('message', Buffer.from(JSON.stringify(value)), false) };
 }
+
+for (const outcome of ['unknown', 'rejected', undefined]) test(`terminal bridge preserves a helper's ${outcome || 'missing'} input outcome without replay`, async t => {
+  const app = helper(t, 65536, { ok: false, outcome }); await delay(0);
+  app.message({ type: 'control', id: 1, action: 'key', key: 'Enter' }); await delay(0);
+  assert.deepEqual(app.responses.find(value => value.type === 'result'), { type: 'result', id: 1, ok: false, outcome: outcome === 'rejected' ? 'rejected' : 'unknown' });
+  assert.equal(app.commands.length, 1); assert.equal(app.ws.readyState, 3);
+});
 
 test('render backpressure leaves control results, sizes and view changes flowing on the same helper', async t => {
   const app = helper(t); await delay(0);

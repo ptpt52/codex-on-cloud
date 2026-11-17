@@ -10,6 +10,15 @@ import { executeInput } from '../native/input.mjs';
 import { serviceUnits } from '../native/service-units.mjs';
 import { fixture } from './fixture.mjs';
 
+test('a desktop action 5xx without an outcome stays unknown after dispatch', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'codex-actions-lost-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const socketPath = join(dir, 'actions.sock'); let calls = 0;
+  const server = http.createServer(async (req, res) => { for await (const _ of req) {} calls++; res.writeHead(503); res.end('{"error":"lost action result"}'); });
+  server.listen(socketPath); await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)));
+  await assert.rejects(desktopActionClient(socketPath, 'synthetic_secret')('/terminal', {}), { status: 503, outcome: 'unknown' });
+  assert.equal(calls, 1);
+});
+
 test('opening the fixed transfer directory requires owner, Origin and CSRF and never accepts a path', async t => {
   const app = await fixture(); t.after(() => app.close());
   const path = '/api/desktop/transfer-directory', options = { method: 'POST', body: {} };

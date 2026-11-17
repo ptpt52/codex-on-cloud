@@ -520,7 +520,10 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       clearTimeout(relayTimer); relayTimer = undefined;
       for (const peer of peers.values()) { clearTimeout(peer.timer); peer.timer = undefined; clearTimeout(peer.deadline); peer.ping = 0; peer.progressAt = -Infinity; peer.transport?.health.cancel(); peer.latency.clear(); peer.quality.clear(); peer.health.cancel(); }
       measured();
-      if (!navigator.onLine) for (const peer of [...peers.values()]) lost(peer);
+      // The browser's connectivity hint can describe its default route while
+      // an established LAN/VPN peer still works. Suspend admission until a
+      // fresh foreground echo; native close/ICE events still retire dead paths.
+      if (!navigator.onLine && active) { active.heartbeatPaused = true; pause(true); }
       return;
     }
     for (const peer of peers.values()) if (peer.ready && !peer.ping) heartbeat(peer, 250);

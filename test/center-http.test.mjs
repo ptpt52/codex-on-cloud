@@ -13,6 +13,17 @@ import { joinNode, leaveNode, nodeDoctor } from '../selfhost/node.mjs';
 
 const openssl = args => execFileSync('openssl', args, { stdio: 'ignore', timeout: 10000 });
 
+test('center deadline covers a response that keeps sending bytes', async t => {
+  const server = http.createServer((_req, res) => {
+    const interval = setInterval(() => res.write(' '), 10);
+    const end = setTimeout(() => res.end('{}'), 500);
+    res.on('close', () => { clearInterval(interval); clearTimeout(end); });
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  await assert.rejects(centerRequest(`http://127.0.0.1:${server.address().port}`, { timeout: 80, signal: AbortSignal.timeout(1500) }), /中心请求超时/);
+});
+
 test('loopback URL validation agrees on IPv4, localhost and bracketed IPv6 without admitting remote HTTP', () => {
   for (const host of ['localhost', '127.0.0.1', '[::1]']) assert.equal(isLoopbackHostname(new URL('http://' + host + ':17500').hostname), true);
   for (const host of ['localhost.example.test', 'evil.localhost', '192.168.1.5', '203.0.113.5', '[::]', '[2001:db8::1]', '[::ffff:127.0.0.1]']) {

@@ -760,7 +760,7 @@ def main():
             if master in writable and writes:
                 ident, content, offset = writes[0]
                 if not verify():
-                    emit({'type': 'result', 'id': ident, 'ok': False, 'outcome': 'rejected'})
+                    emit({'type': 'result', 'id': ident, 'ok': False, 'outcome': 'unknown' if offset else 'rejected'})
                     return
                 try:
                     count = os.write(master, content[offset:])

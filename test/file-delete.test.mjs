@@ -61,3 +61,22 @@ test('old helpers reject deletion and incomplete successful deletion is unknown 
   supported = true;
   const result = await remove(); assert.equal(result.status, 502); assert.equal((await result.json()).outcome, 'unknown'); assert.equal(deletes, 1);
 });
+
+test('a caller cancellation budget cannot extend the local helper deadline before deletion', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  let deletes = 0;
+  const helper = http.createServer((req, res) => {
+    if (req.method === 'DELETE') deletes++;
+    // Keep the response active so only a total deadline can end the wait.
+    res.writeHead(200, { 'content-type': 'application/json' }); res.write(' ');
+    const interval = setInterval(() => res.write(' '), 100);
+    res.once('close', () => clearInterval(interval));
+  });
+  helper.listen(0, '127.0.0.1'); await once(helper, 'listening');
+  t.after(() => new Promise(resolve => { helper.close(resolve); helper.closeAllConnections(); }));
+  app.config.fileAgentUrl = 'http://127.0.0.1:' + helper.address().port;
+  const start = performance.now();
+  const response = await app.request('/api/files/delete', { method: 'POST', body: { name: 'keep', version: 'a'.repeat(64) } });
+  assert.equal(response.status, 502); assert.equal(deletes, 0);
+  assert(performance.now() - start < 7500, 'the delete caller\'s 8 second budget replaced the helper\'s 6 second deadline');
+});

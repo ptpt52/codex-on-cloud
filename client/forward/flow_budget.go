@@ -67,6 +67,12 @@ func (b *flowBudget) grant() {
 	}
 }
 func (b *flowBudget) acquire(size int, done <-chan struct{}, deadline time.Time) error {
+	if deadline.IsZero() {
+		deadline = time.Now().Add(15 * time.Second)
+	}
+	if !time.Now().Before(deadline) {
+		return failure("rtc_health_timeout")
+	}
 	b.mu.Lock()
 	if b.closed || size < 0 || size > b.limit || len(b.waiting) >= 32 {
 		b.mu.Unlock()
@@ -76,9 +82,6 @@ func (b *flowBudget) acquire(size int, done <-chan struct{}, deadline time.Time)
 	b.waiting = append(b.waiting, request)
 	b.grant()
 	b.mu.Unlock()
-	if deadline.IsZero() {
-		deadline = time.Now().Add(15 * time.Second)
-	}
 	timer := time.NewTimer(max(0, time.Until(deadline)))
 	defer timer.Stop()
 	cancel := func() {
@@ -102,6 +105,10 @@ func (b *flowBudget) acquire(size int, done <-chan struct{}, deadline time.Time)
 	case <-request.ready:
 		if request.err != nil {
 			return request.err
+		}
+		if !time.Now().Before(deadline) {
+			cancel()
+			return failure("rtc_health_timeout")
 		}
 		select {
 		case <-done:

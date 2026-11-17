@@ -45,6 +45,15 @@ async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
   return { center, directory, origin, port, closed, request, login, legacyToken, get cookie() { return cookie; }, get csrf() { return csrf; } };
 }
 
+test('center reports unknown when an unexpected failure follows a committed mutation', async t => {
+  const h = await setup(t); await h.login();
+  const create = h.center.registry.createKey.bind(h.center.registry); let calls = 0;
+  h.center.registry.createKey = async (...args) => { calls++; await create(...args); throw Error('injected lost result'); };
+  const response = await h.request('/admin/api/keys', { method: 'POST', body: { name: 'Committed once', slug: 'committed-once' } });
+  assert.equal(response.status, 503); assert.equal((await response.json()).outcome, 'unknown');
+  assert.equal(calls, 1); assert.equal((await h.center.registry.snapshot()).keys.filter(key => key.slug === 'committed-once').length, 1);
+});
+
 test('a lost enrollment response is resolved over authenticated HTTP without repeating the join or changing node services', async t => {
   const h = await setup(t), key = await h.center.registry.createKey({ name: 'Lost response', slug: 'receipt' });
   const root = join(h.directory, 'node'); await mkdir(root);

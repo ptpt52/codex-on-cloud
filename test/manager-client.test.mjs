@@ -32,3 +32,14 @@ test('unconnected writes and explicit manager rejections stay rejected', async t
   const response = await app.request('/api/terminals', { method: 'POST', body: { action: 'close', terminalId: 'main', terminalToken: '%999:1234', confirm: true } });
   assert.equal(response.status, 409); assert.equal((await response.json()).outcome, 'rejected');
 });
+
+test('a legacy manager 503 cannot turn a dispatched mutation into a safe rejection', async t => {
+  const app = await fixture(); t.after(() => app.close());
+  const path = join(app.directory, 'legacy-manager.sock'); let writes = 0;
+  const server = http.createServer(async (req, res) => { for await (const _ of req) {} if (req.method === 'POST') writes++; res.writeHead(503); res.end('{"error":"lost operation result"}'); });
+  server.listen(path); await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)));
+  const config = { ...app.config, managerSocket: path };
+  await assert.rejects(managerRequest(config, '/terminals', { action: 'create' }), { status: 503, outcome: 'unknown' });
+  await assert.rejects(managerRequest(config, '/status'), { status: 503, outcome: 'rejected' });
+  assert.equal(writes, 1);
+});

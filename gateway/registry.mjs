@@ -165,6 +165,6 @@ export class GatewayRegistry {
         }
         throw gatewayError(404, '接口不存在');
       });
-    } catch (error) { return Response.json({ error: error.status ? error.message : '网关状态暂不可用', outcome: 'rejected' }, { status: error.status || 503 }); }
+    } catch (error) { return Response.json({ error: error.status ? error.message : '网关状态暂不可用', outcome: error.outcome || (error.status || ['GET', 'HEAD'].includes(request.method) ? 'rejected' : 'unknown') }, { status: error.status || 503 }); }
   }
 }

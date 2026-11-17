@@ -17,6 +17,67 @@ ROOT = Path(__file__).parents[1]
 
 @unittest.skipUnless(shutil.which('tmux'), 'requires tmux')
 class TerminalFlowTests(unittest.TestCase):
+    def test_target_revoked_after_a_partial_pty_write_reports_unknown(self):
+        with tempfile.TemporaryDirectory(prefix='codex-partial-input-') as directory:
+            socket = str(Path(directory) / 'tmux.sock')
+            env = dict(os.environ, TMUX='')
+            def tmux(*args):
+                return subprocess.run(['tmux', '-S', socket, *args], env=env, check=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3).stdout
+            tmux('-f', str(ROOT / 'desktop/tmux.conf'), 'new-session', '-d', '-s', 'codex', 'sleep 30')
+            token = tmux('display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}').decode().strip()
+            # Real private PTY + tmux, with one forced short write and a
+            # subsequent target revocation. No production session or input.
+            wrapper = '''import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location('terminal', sys.argv.pop(1))
+terminal = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(terminal)
+clients, write = terminal.client_list, os.write
+revoked = False
+def live(*args, **kwargs):
+    return [] if revoked else clients(*args, **kwargs)
+def short_write(fd, data):
+    global revoked
+    if data == b'partial-test':
+        count = write(fd, data[:1])
+        revoked = count > 0
+        return count
+    return write(fd, data)
+terminal.client_list, terminal.os.write = live, short_write
+terminal.main()
+'''
+            child = subprocess.Popen([sys.executable, '-c', wrapper, str(ROOT / 'desktop/web-terminal.py'), socket, 'main', token],
+                                     env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 8
+                pending, records, sent = bytearray(), [], False
+                while child.poll() is None or select.select([child.stdout], [], [], 0)[0]:
+                    self.assertLess(time.monotonic(), deadline, 'partial input response deadline')
+                    if not select.select([child.stdout], [], [], .05)[0]:
+                        continue
+                    data = os.read(child.stdout.fileno(), 65536)
+                    if not data:
+                        break
+                    pending.extend(data)
+                    self.assertLess(len(pending), 128 * 1024)
+                    while b'\n' in pending:
+                        line, _, rest = pending.partition(b'\n'); pending = bytearray(rest)
+                        value = json.loads(line); records.append(value)
+                        if value['type'] == 'ready' and not sent:
+                            child.stdin.write(json.dumps({'action': 'input', 'id': 1, 'data': base64.b64encode(b'partial-test').decode()}).encode() + b'\n')
+                            child.stdin.flush(); sent = True
+                self.assertEqual([value for value in records if value['type'] == 'result'],
+                                 [{'type': 'result', 'id': 1, 'ok': False, 'outcome': 'unknown'}],
+                                 (records, child.stderr.read().decode()))
+            finally:
+                child.terminate()
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.wait(timeout=3)
+                child.stdin.close(); child.stdout.close(); child.stderr.close()
+                tmux('kill-server')
+
     def test_exhausted_output_credit_keeps_real_helper_controls_responsive(self):
         with tempfile.TemporaryDirectory(prefix='codex-flow-') as directory:
             socket = str(Path(directory) / 'tmux.sock')

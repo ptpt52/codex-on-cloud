@@ -15,6 +15,10 @@ async function login(page, app) {
       createDataChannel(label, options) {
         const channel = super.createDataChannel(label, options);
         if (label === 'codex-health') { const send = channel.send.bind(channel); channel.send = bytes => { window.streamHealthPings++; send(bytes); }; }
+        if (label === 'codex-terminal') { const send = channel.send.bind(channel); channel.send = bytes => {
+          try { if (JSON.parse(new TextDecoder().decode(bytes.subarray(4))).type === 'health') window.streamHealthPings++; } catch {}
+          send(bytes);
+        }; }
         channel.addEventListener('message', event => {
           if (!event.isTrusted || !(event.data instanceof ArrayBuffer)) return;
           if (label === 'codex-health' && window.dropHealthPongs) event.stopImmediatePropagation();
@@ -39,6 +43,27 @@ async function login(page, app) {
   await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
+
+for (const seamless of [true, false]) test(`an offline hint preserves a working ${seamless ? 'unified' : 'legacy'} LAN peer and resumes with a fresh heartbeat`, async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless, fastConnect: true, webrtc: true });
+  try {
+    const frame = await login(page, app); await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    const before = await frame.evaluate(() => {
+      window.retainedNetworkPeers = [...window.streamPeers];
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: false }); window.dispatchEvent(new Event('offline'));
+      return { peers: window.streamPeers.length, pings: window.streamHealthPings };
+    });
+    await page.waitForTimeout(2500);
+    expect(await frame.evaluate(() => window.retainedNetworkPeers.every(peer => peer.connectionState === 'connected'))).toBe(true);
+    expect(await frame.evaluate(() => window.streamPeers.length)).toBe(before.peers);
+    expect(await frame.evaluate(() => window.streamHealthPings)).toBe(before.pings);
+    await frame.evaluate(() => { Object.defineProperty(navigator, 'onLine', { configurable: true, value: true }); window.dispatchEvent(new Event('online')); });
+    await expect.poll(() => frame.evaluate(() => window.streamHealthPings), { timeout: 5000 }).toBeGreaterThan(before.pings);
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC');
+    expect(await frame.evaluate(() => window.streamPeers.length)).toBe(before.peers);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
 
 test('a burst of small output chunks does not exhaust the input record limit while relay acknowledgments are in flight', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true, fastConnect: true });

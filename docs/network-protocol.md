@@ -2,6 +2,8 @@
 
 本页面向开发与深入排障，保留候选过滤、输入不重发、连接交接与资源上限。部署参数和日常排障见[直连与中转](lan.md)，端口映射的独立协议见[映射协议](forward-protocol.md)。
 
+跨 HTTP、RTC/WSS、文件和原生助手的审核发现、统一期限及验证顺序见[网络可靠性审核与统一设计](network-reliability.md)。
+
 自动发现接受私有 IPv4、普通公网 IPv4 / IPv6 的 UDP host 和反射候选，允许通过 STUN / ICE 打洞；未显式指定时丢弃运营商共享段和 ULA；仍丢弃未指定地址、链路本地、文档、基准测试、多播及保留公网 IPv4 候选。自建中心模式额外允许中心签发的 TURN 公网 IPv4 与 relay 端口范围。TURN 凭据、配置与强制 relay 验证见[自建中心](selfhost-server.md#turn)。`WEBRTC_STUN_URL` 仍只配置 STUN，不能把 TURN 凭据直接填进该项。
 
 ## 地址提示与接口选择
