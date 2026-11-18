@@ -18,7 +18,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   const socket = new EventTarget(), peers = new Map(), routes = routePolicy(), inputSizes = new Map();
   let active, ended = false, opened = false, out = 0, epoch = 0, sent = 0, inputAck = 0, inputBytes = 0, isPaused = false, claiming = false, transitioning = false, prepareSequence = 0;
   let relayTimer, directTimer, directDue = 0, promotionTimer, recoveryTimer, directController, relayDelay = 250, probeDelay = 15000, terminalText = '';
-  let heldOutput = [], heldBytes = 0, draining = false;
+  let heldOutput = [], heldBytes = 0, draining = false, activationController, committingPeer;
   let directExpedited = false, directHalted = false, directAttempts = 0, pauseTerminal = false;
   let directStopReason = '', lastWaitReason = '', lastWaitAt = -Infinity;
   const inputProgress = () => ({ pendingInputs: inputSizes.size, queuedBytes: inputBytes,
@@ -97,7 +97,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     const notice = ['input-unknown', 'input-pressure', 'target-unknown'].includes(reason) ? reason : uncertainInput ? 'input-unknown' : '';
     if (notice) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason: notice, eventId: id, path: active?.kind || lastPath }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
-    ended = true; recheck.cancel(); directController?.abort();
+    ended = true; activationController?.abort(); recheck.cancel(); directController?.abort();
     for (const [id, pending] of panelRequests) finishPanel(id, panelFailure(pending.action, '连接已关闭，操作结果请核对终端列表'));
     finishTarget(uncertainTarget ? failure('终端切换结果未知，请重新选择') : switchBusy('连接已关闭，切换未发送；恢复后请再点目标终端'));
     for (const timer of [relayTimer, directTimer, promotionTimer, recoveryTimer]) clearTimeout(timer);
@@ -279,6 +279,9 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
         if (!peer.wait || !integer(value.epoch) || !integer(value.out) || value.out > out || value.input !== sent) throw new Error();
         trace('path-active', { path: peer.kind, queuedBytes: inputBytes });
         epoch = value.epoch; active = peer; lastPath = peer.kind; peer.epoch = epoch; inputAck = value.input; inputSizes.clear(); inputBytes = 0;
+        // A committed switch may finish after backgrounding. Keep its result,
+        // but require a fresh foreground echo before admitting more input.
+        if (document.hidden || !navigator.onLine) peer.heartbeatPaused = true;
         heldOutput = []; heldBytes = 0;
         clearTimeout(recoveryTimer); recoveryTimer = undefined;
         const waiter = peer.wait; peer.wait = undefined; claiming = false;
@@ -319,13 +322,14 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       waiting(targetPending || peer.syncing ? 'target-switch' : peer.health.suspect ? 'heartbeat-suspect' : 'handoff-busy', { path: peer.kind, ...inputProgress() }); return false;
     }
     transitioning = true;
+    const controller = activationController = new AbortController(), signal = controller.signal;
     let approved = false, heldPeer, handoff, committing = false; const wasOpened = opened, previous = active;
+    const eligible = () => !signal.aborted && !ended && !peer.gone && peer.writable() && active === previous && !document.hidden && navigator.onLine;
     try {
       if (planned) {
         if (!idle()) { waiting(waitReason(), { path: peer.kind }); return false; }
         if (peer.networkProbePending || routes.remaining() && !peer.networkProbe) return false;
-        const controller = new AbortController();
-        approved = await prepare(controller.signal); if (!approved || ended || peer.gone || document.hidden || !navigator.onLine) { waiting('handoff-refused', { path: peer.kind }); return false; }
+        approved = await prepare(signal); if (!approved || !eligible()) { waiting('handoff-refused', { path: peer.kind }); return false; }
       }
       // A busy output stream keeps producing consumption ACKs. Admit an idle
       // user's switch before waiting for zero in-flight records, then hold
@@ -337,8 +341,9 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       const budget = planned ? Math.max(3000, Math.min(8000, (active?.latency.value || 0) * 2 + 1000)) : 1500;
       const deadline = performance.now() + budget;
       if (planned && inputAck !== sent) waiting('input-unconfirmed', { path: peer.kind, budgetMs: Math.round(budget), ...inputProgress() });
-      while (active && (inputAck !== sent || (planned && !settled())) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      while (eligible() && active && (inputAck !== sent || (planned && !settled())) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
       draining = false;
+      if (!eligible()) return false;
       if (planned && (inputAck !== sent || !settled())) {
         waiting(inputAck !== sent ? 'input-unconfirmed' : 'output-draining', { path: peer.kind, ...inputProgress() }); return false;
       }
@@ -348,23 +353,32 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
           if (prepareSequence >= 2 ** 40) throw new Error('handoff limit');
           handoff = ++prepareSequence;
           await new Promise((resolve, reject) => {
-            const finish = error => { clearTimeout(timer); peer.prepareWait = undefined; error ? reject(error) : resolve(); };
+            const abort = () => finish(new Error('cancelled'));
+            const finish = error => { clearTimeout(timer); signal.removeEventListener('abort', abort); peer.prepareWait = undefined; error ? reject(error) : resolve(); };
             const timer = setTimeout(() => finish(new Error('prepare timeout')), 2500);
             peer.prepareWait = { id: handoff, resolve: () => finish(), reject: finish };
+            signal.addEventListener('abort', abort, { once: true });
             try { send(peer, { type: 'prepare', id: handoff, epoch, out, input: sent }); } catch (error) { finish(error); }
           });
         } else {
           heldPeer = active;
           await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => { heldPeer.holdWait = undefined; reject(new Error('hold timeout')); }, 2000);
-            heldPeer.holdWait = () => { clearTimeout(timer); resolve(); };
+            const abort = () => finish(new Error('cancelled'));
+            const finish = error => { clearTimeout(timer); signal.removeEventListener('abort', abort); heldPeer.holdWait = undefined; error ? reject(error) : resolve(); };
+            const timer = setTimeout(() => finish(new Error('hold timeout')), 2000);
+            heldPeer.holdWait = () => finish(); signal.addEventListener('abort', abort, { once: true });
             send(heldPeer, { type: 'hold', epoch });
           });
         }
       }
+      if (!eligible()) return false;
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => { peer.wait = undefined; reject(new Error('activation timeout')); }, 2500);
         peer.wait = { handoff, resolve: () => { clearTimeout(timer); resolve(); }, reject: error => { clearTimeout(timer); reject(error); } };
+        // From dispatch onwards the server may have retired the old writer.
+        // Lifecycle hints must let the bounded activation confirmation settle.
+        if (activationController === controller) activationController = undefined;
+        committingPeer = peer;
         try { send(peer, { type: 'activate', epoch, out, input: sent, ...(handoff === undefined ? {} : { handoff }) }); committing = true; }
         catch (error) { peer.wait.reject(error); peer.wait = undefined; }
       });
@@ -372,10 +386,13 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       if (peer.kind === 'direct') directExpedited = false;
       if (wasOpened) routes.changed(); relayDelay = 250; return true;
     } catch (error) {
-      if (error.message !== 'busy') { lost(peer); if (committing && active === previous) { active = undefined; pause(true); } }
+      if (!(signal.aborted && !committing) && error.message !== 'busy') { lost(peer); if (committing && active === previous) { active = undefined; pause(true); } }
       return false;
     }
     finally {
+      if (activationController === controller) activationController = undefined;
+      if (committingPeer === peer) committingPeer = undefined;
+      controller.abort();
       draining = false; claiming = false; transitioning = false;
       if (handoff !== undefined && active !== peer && !peer.gone) { try { send(peer, { type: 'cancel-prepare', epoch, id: handoff }); } catch { lost(peer); } }
       if (heldPeer && active === heldPeer && !heldPeer.gone) { try { send(heldPeer, { type: 'unhold', epoch }); } catch { lost(heldPeer); } }
@@ -521,6 +538,8 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     if (ended) return;
     trace('network-change', { reason: document.hidden ? 'hidden' : !navigator.onLine ? 'offline' : event?.type === 'visibilitychange' ? 'visible' : event?.type === 'online' ? 'online' : 'changed' });
     if (document.hidden || !navigator.onLine) {
+      activationController?.abort();
+      if (committingPeer) committingPeer.heartbeatPaused = true;
       recheck.cancel();
       directExpedited = false;
       if (targetPending && !targetPending.sent) cancelTarget(switchBusy('页面已隐藏或离线，切换未发送；返回后请再点目标终端'));

@@ -169,3 +169,108 @@ test('returning to a reachable network probes and promotes before the old thirty
     expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
+
+
+for (const phase of ['drain', 'prepared', 'committed']) for (const hint of phase === 'prepared' ? ['hidden', 'offline'] : ['hidden', 'offline', 'visibility-pulse']) test(`a ${hint} hint cancels a ${phase} handoff before dispatch or retains its committed result`, async ({ page }) => {
+  const app = await fixture({ seamless: true, fastConnect: true, webrtc: true }); let releaseOffer;
+  const offer = new Promise(resolve => { releaseOffer = resolve; });
+  try {
+    // Real loopback navigation supplies the browser's local address space.
+    // Only the app entrypoint is blocked; this test owns one stream and PTY.
+    await page.route('**/app.js*', route => route.abort());
+    await page.route('**/api/terminal/rtc', async route => { await offer; await route.continue(); });
+    await page.goto(app.config.origin);
+    await page.evaluate(async ({ username, password, phase }) => {
+      const login = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+      const settings = await login.json(), viewer = 'c'.repeat(32), headers = { 'content-type': 'application/json', 'x-csrf-token': settings.csrf, 'x-viewer-id': viewer };
+      const claim = await fetch('/api/desktop/claim', { method: 'POST', headers, body: JSON.stringify({ viewer }) }); if (!claim.ok) throw Error('claim failed');
+      const terminal = (await (await fetch('/api/terminals', { headers })).json()).terminals[0];
+      window.handoffEvents = []; window.handoffRecords = []; window.handoffPeers = []; window.canSettle = true; window.finishedHandoffs = 0; window.unsafeHandoffResumes = 0;
+      window.addEventListener('message', event => { if (event.data?.type === 'codex-direct-finished') window.finishedHandoffs++; });
+      const PC = RTCPeerConnection;
+      window.RTCPeerConnection = class extends PC {
+        constructor(...args) { super(...args); window.handoffPeers.push(this); }
+        createDataChannel(label, options) {
+          const channel = super.createDataChannel(label, options), send = channel.send.bind(channel);
+          if (label === 'codex-health') {
+            let foregroundNonce;
+            channel.send = bytes => {
+              if (window.backgroundSeen && !document.hidden && navigator.onLine) foregroundNonce = new DataView(bytes).getUint32(0);
+              return send(bytes);
+            };
+            channel.addEventListener('message', event => { if (foregroundNonce && new DataView(event.data).getUint32(0) === foregroundNonce) window.freshHandoffEcho = true; });
+          }
+          if (label === 'codex-stream') {
+            channel.send = value => {
+              // The one-byte renderer readiness marker is not a JSON record.
+              if (value.length > 4) {
+                const record = JSON.parse(new TextDecoder().decode(value.subarray(4)));
+                if (['prepare', 'activate', 'cancel-prepare'].includes(record.type)) window.handoffRecords.push(record.type);
+              }
+              return send(value);
+            };
+            // Hold one genuine reply, keeping ICE, DTLS, heartbeats and the
+            // established relay live. Releasing it also exercises late replies.
+            channel.addEventListener('message', event => {
+              const record = JSON.parse(new TextDecoder().decode(new Uint8Array(event.data, 4)));
+              if (!window.replyHeld && record.type === (phase === 'prepared' ? 'prepared' : phase === 'committed' ? 'active' : '')) {
+                window.replyHeld = true; event.stopImmediatePropagation();
+                window.releaseHandoffReply = () => channel.dispatchEvent(new MessageEvent('message', { data: event.data }));
+              }
+            });
+          }
+          return channel;
+        }
+      };
+      const WS = WebSocket;
+      window.WebSocket = class extends WS {
+        addEventListener(type, callback, options) { return super.addEventListener(type, type === 'message' ? event => {
+          if (JSON.parse(event.data).type === 'pong') setTimeout(() => callback(event), 700); else callback(event);
+        } : callback, options); }
+      };
+      const { createStreamClient } = await import('/desktop/stream-client.js');
+      window.handoffClient = createStreamClient({ viewer, csrf: settings.csrf, terminal: { terminalId: terminal.id, terminalToken: terminal.token }, bootstrap: () => settings,
+        idle: () => true, settled: () => window.canSettle,
+        prepare: async () => { window.plannedHandoff = true; return true; },
+        paused: value => {
+          if (value && window.plannedHandoff) window.drainEntered = true;
+          if (!value && phase === 'committed' && window.backgroundSeen && !window.freshHandoffEcho) window.unsafeHandoffResumes++;
+        },
+        trace: (type, detail) => window.handoffEvents.push({ type, ...detail }) }); window.handoffClient.start();
+    }, { username: app.config.username, password: app.config.password, phase });
+    const selected = () => page.evaluate(() => window.handoffEvents.filter(event => event.type === 'path-active').map(event => event.path));
+    await expect.poll(selected).toEqual(['relay']);
+    if (phase === 'drain') await page.evaluate(() => { window.canSettle = false; });
+    releaseOffer();
+    await expect.poll(() => page.evaluate(phase => phase === 'drain' ? window.drainEntered : window.replyHeld, phase), { timeout: 15000 }).toBe(true);
+    await page.evaluate(hint => {
+      window.backgroundSeen = true;
+      if (hint !== 'offline') {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+        if (hint === 'visibility-pulse') { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); }
+      }
+      else { Object.defineProperty(navigator, 'onLine', { configurable: true, value: false }); window.dispatchEvent(new Event('offline')); }
+      window.canSettle = true;
+      if (window.handoffRecords.includes('activate')) window.releaseHandoffReply();
+    }, hint);
+    await expect.poll(() => page.evaluate(() => window.finishedHandoffs), { timeout: 1000 }).toBe(1);
+    if (phase === 'committed') {
+      expect(await selected()).toEqual(['relay', 'direct']);
+      if (hint !== 'visibility-pulse') expect(await page.evaluate(() => window.handoffClient.paused)).toBe(true);
+    } else {
+      expect(await selected()).toEqual(['relay']);
+      expect(await page.evaluate(() => window.handoffRecords)).toEqual(phase === 'prepared' ? ['prepare', 'cancel-prepare'] : []);
+    }
+    await page.evaluate(hint => {
+      if (hint !== 'offline') { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); }
+      else { Object.defineProperty(navigator, 'onLine', { configurable: true, value: true }); window.dispatchEvent(new Event('online')); }
+      if (!window.handoffRecords.includes('activate')) window.releaseHandoffReply?.();
+    }, hint);
+    await expect.poll(selected, { timeout: 10000 }).toEqual(['relay', 'direct']);
+    await expect.poll(() => page.evaluate(() => window.handoffClient.paused)).toBe(false);
+    expect(await page.evaluate(() => window.unsafeHandoffResumes)).toBe(0);
+    expect(await page.evaluate(() => window.handoffRecords.filter(type => type === 'activate').length)).toBe(1);
+    expect(await page.evaluate(() => window.handoffPeers.length)).toBe(1);
+    expect(app.terminalConnections).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { releaseOffer(); await page.evaluate(() => window.handoffClient?.close()).catch(() => {}); await app.close(); }
+});
