@@ -70,6 +70,30 @@ test('relay candidates require the trusted address and port range', () => {
   assert(rtcOffer({ type: 'offer', sdp }, { relay: { addresses: ['47.119.157.242'], minPort: 49160, maxPort: 49223 } }).sdp.includes('47.119.157.242 49160 typ relay'));
 });
 
+test('TURN credentials support real IPv6 loopback HTTP without relaxing remote HTTPS requirements', async t => {
+  let hits = 0;
+  const node = { slug: 'node-a', nodeId: 'a'.repeat(32), credential: 'cocn_' + 'b'.repeat(43) };
+  const server = http.createServer(async (req, res) => {
+    hits++; const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    assert.deepEqual(JSON.parse(Buffer.concat(chunks)), node);
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ expiresAt: now + 3600000, ttlMs: 3600000, iceServers }));
+  });
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  server.listen(0, '::1');
+  try { await once(server, 'listening'); }
+  catch (error) { if (['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) { t.skip('IPv6 loopback unavailable'); return; } throw error; }
+  const origin = `http://[::1]:${server.address().port}`;
+  const value = await requestTurnCredentials({ endpoint: origin + '/api/turn-credentials', node: { ...node, origin }, now });
+  assert.deepEqual(value.iceServers, iceServers); assert.equal(hits, 1);
+  let dispatched = 0;
+  const request = async () => { dispatched++; throw Error('must reject before credential dispatch'); };
+  for (const remote of ['http://center.example.test', 'http://[::]', 'http://[fe80::1]', 'http://[::ffff:127.0.0.1]']) {
+    await assert.rejects(requestTurnCredentials({ endpoint: remote + '/api/turn-credentials', node, request, now }), /HTTPS/);
+  }
+  await assert.rejects(requestTurnCredentials({ endpoint: origin + '/api/turn-credentials', node: { ...node, origin: 'https://other.example.test' }, request, now }), /不匹配/);
+  assert.equal(dispatched, 0);
+});
+
 test('browser ICE sanitizer deduplicates TURN credentials and ignores malformed entries', () => {
   assert.deepEqual(rtcIceServers({ rtcIceServers: [...iceServers, iceServers[0], { urls: ['https://evil.test'], username: 'x', credential: 'y' }, { urls: ['turn:no-credentials.test:3478'] }] }), iceServers);
   assert.deepEqual(rtcIceServers({ rtcStunUrl: 'stun:legacy.example.test:3478' }), [{ urls: ['stun:legacy.example.test:3478'] }]);

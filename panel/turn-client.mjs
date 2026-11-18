@@ -1,5 +1,6 @@
 import { relayPolicy } from './rtc-network.mjs';
 import { centerClient, centerRequest } from './center-http.mjs';
+import { isLoopbackHostname } from '../selfhost/client-address.mjs';
 
 const MAX_BODY = 16 * 1024;
 
@@ -28,7 +29,7 @@ export function createTurnCache(load, now = Date.now) {
 function origin(value, label) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/api/turn-credentials') throw Error(label + ' 无效');
-  if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(url.hostname)) throw Error(label + ' 必须使用 HTTPS');
+  if (url.protocol !== 'https:' && !isLoopbackHostname(url.hostname)) throw Error(label + ' 必须使用 HTTPS');
   return url.origin + url.pathname;
 }
 
