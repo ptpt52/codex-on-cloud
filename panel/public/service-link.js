@@ -10,9 +10,18 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
   let running = false, epoch = 0, current, files, pending, retry, timer, delay = 15000, busy = false, checking = false;
   let attempts = 0, halted = false, healthMisses = 0, retryDue = 0, probeAt = -Infinity;
   let replacing = false, heartbeatLoggedAt = -Infinity, monitorGeneration = 0, fileRecovery;
+  let monitorDue = Infinity, healthDue = 0;
   const state = { ready: false, issue: '', route: null };
   const publish = () => changed({ ...state });
-  function cancelMonitor() { ++monitorGeneration; clearTimeout(timer); checking = false; current?.health.cancel?.(); }
+  function cancelMonitor() { ++monitorGeneration; clearTimeout(timer); timer = undefined; monitorDue = Infinity; healthDue = 0; checking = false; current?.health.cancel?.(); }
+  // One monitor timer. Hints can expedite it, never postpone an earlier check
+  // or exceed one scheduled health probe per second on this association.
+  function queueMonitor(version, peer, delay) {
+    const now = performance.now(), due = Math.max(now + delay, healthDue);
+    if (timer !== undefined && monitorDue <= due) return;
+    clearTimeout(timer); monitorDue = due;
+    timer = setTimeout(() => { timer = undefined; monitorDue = Infinity; void monitor(version, peer); }, Math.max(0, due - now));
+  }
   function retire(issue = '') { cancelMonitor(); healthMisses = 0; const old = current, oldFiles = files; current = files = fileRecovery = undefined; state.ready = false; state.route = null; state.issue = issue; if (old) trace('path-lost', { path: 'direct', reason: issue || 'closed' }); oldFiles?.close(); old?.close(); publish(); }
   function schedule(ms = delay) {
     if (!running || halted || document.hidden || !navigator.onLine) return;
@@ -31,7 +40,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
         // Reuse the one health monitor; never compete with an in-flight ping
         // or admit another file until a fresh echo verifies this association.
         fileRecovery = candidate;
-        if (!checking) { clearTimeout(timer); timer = setTimeout(() => void monitor(epoch, candidate), 0); }
+        if (!checking) queueMonitor(epoch, candidate, 0);
       };
       if (channel.readyState === 'closed') queueMicrotask(reopen);
       else channel.addEventListener('close', reopen, { once: true });
@@ -51,7 +60,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       // to block the next automatic probe.
       if (candidate.features?.filesProtocol === 1) openFiles(candidate);
       if (!running || epoch !== version || current !== candidate || candidate.closed) throw unavailable();
-      timer = setTimeout(() => void monitor(version, candidate), 3000);
+      queueMonitor(version, candidate, 3000);
       state.ready = true; state.issue = ''; state.route = route; healthMisses = 0;
       trace('path-active', { path: 'direct' }); publish();
     } catch (error) {
@@ -63,7 +72,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     if (!files?.progressing) return false;
     healthMisses = 0; state.issue = peer.control?.draining ? 'rpc-timeout' : '';
     if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-delayed', { path: 'direct', reason: 'file-progress', waitMs: 3000 }); }
-    timer = setTimeout(() => void monitor(version, peer), 3000); publish(); return true;
+    queueMonitor(version, peer, 3000); publish(); return true;
   }
   async function monitor(version, peer) {
     if (!running || epoch !== version || current !== peer || checking || replacing || document.hidden || !navigator.onLine) return;
@@ -79,7 +88,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       // If progress stops for six seconds, resume normal heartbeat checks.
       if (keepFileProgress(version, peer)) return;
       checking = true;
-      const checkedAt = performance.now();
+      const checkedAt = performance.now(); healthDue = checkedAt + 1000;
       try {
         await peer.health.ping({ confirmation: healthMisses > 0 }); if (!active()) return;
         const route = await peer.stats();
@@ -94,14 +103,14 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
         if (active()) {
           if (error.code === 'heartbeat_timeout' && keepFileProgress(version, peer)) return;
           if (error.code === 'heartbeat_timeout') trace('heartbeat-timeout', { path: 'direct', reason: 'heartbeat', durationMs: Math.max(0, Math.round(performance.now() - checkedAt)) });
-          if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 0); }
+          if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); queueMonitor(version, peer, 0); }
           else { retire(error.code === 'heartbeat_timeout' ? 'heartbeat' : 'connection'); schedule(1000); }
         }
         return;
       }
       finally { if (generation === monitorGeneration) checking = false; }
     }
-    if (active()) timer = setTimeout(() => void monitor(version, peer), 3000);
+    if (active()) queueMonitor(version, peer, 3000);
   }
   async function probe() {
     clearTimeout(retry); retry = undefined;
@@ -133,7 +142,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (!current) pending?.abort();
       return;
     }
-    if (current && !checking) { clearTimeout(timer); timer = setTimeout(() => void monitor(epoch, current), 100); }
+    if (current && !checking) queueMonitor(epoch, current, 100);
     else if (!current) schedule(Math.max(100, 5000 - (performance.now() - probeAt)));
   }
   const recheck = createRTCRecheck({
@@ -170,7 +179,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       } finally {
         replacing = false;
         if (running && epoch === version && current && current !== candidate) {
-          clearTimeout(timer); timer = setTimeout(() => void monitor(version, current), 100);
+          queueMonitor(version, current, 100);
         }
       }
     },
