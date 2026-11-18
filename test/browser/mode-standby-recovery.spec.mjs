@@ -12,7 +12,7 @@ async function setup(page, app, cachedMode) {
     }
     window.modeSockets = []; const Native = WebSocket;
     window.WebSocket = class extends Native {
-      constructor(...args) { super(...args); if (new URL(this.url).pathname === '/session/connect') window.modeSockets.push(this); }
+      constructor(...args) { super(...args); if (new URL(this.url).pathname === '/session/connect') { this.createdHidden = document.hidden; window.modeSockets.push(this); } }
       send(data) {
         if (typeof data === 'string' && window.holdModeAuth && JSON.parse(data).type === 'auth') { this.heldAuth = data; return; }
         super.send(data);
@@ -75,6 +75,50 @@ test('a parked desktop recovery that exceeds focus admission never sends the old
     await expect(page.locator('#paste-button')).toBeDisabled(); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
     await page.locator('#terminal-tabs [data-terminal-choice=main]').click(); await expect(page.locator('#paste-button')).toBeEnabled();
     expect(attempts).toBe(1); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+for (const direct of [false, true]) test(`screen-off recovery warms the retained desktop before switching (${direct ? 'WebRTC' : 'relay'})`, async ({ page }) => {
+  test.setTimeout(60000);
+  const app = await fixture({ rfb: true, seamless: true, webrtc: direct, fastConnect: direct });
+  try {
+    // New children inherit the parent visibility, as they do on a real phone.
+    await page.addInitScript(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.parent.screenOff === true });
+      const Native = RTCPeerConnection; window.screenPeers = [];
+      window.RTCPeerConnection = class extends Native { constructor(...args) { super(...args); window.screenPeers.push(this); } };
+    });
+    const { frame, source } = await setup(page, app, 'desktop');
+    const terminal = page.frames().find(item => item.url().includes('/terminal/index.html'));
+    const terminalSource = terminal.url();
+    if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    await page.evaluate(() => { window.screenOff = true; document.dispatchEvent(new Event('visibilitychange')); });
+    await expect(page.locator('#standby-frame')).toHaveAttribute('src', source);
+    for (const child of [terminal, frame]) await child.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.parent.screenOff === true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      for (const socket of window.modeSockets) socket.close();
+      for (const peer of window.screenPeers) peer.close();
+    });
+    expect(await Promise.all([terminal, frame].map(child => child.evaluate(() => document.hidden)))).toEqual([true, true]);
+    await expect(page.locator('#connection-status')).not.toContainText('在线');
+    // Cover the old stream's resume timeout, not just a brief tab switch.
+    if (direct) {
+      await page.waitForTimeout(14000);
+      expect((await Promise.all([terminal, frame].map(child => child.evaluate(() => window.modeSockets.map(socket => socket.createdHidden))))).flat().some(Boolean)).toBe(false);
+    }
+    await page.evaluate(() => { window.screenOff = false; document.dispatchEvent(new Event('visibilitychange')); });
+    for (const child of [terminal, frame]) await child.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect.poll(() => frame.evaluate(() => window.modeSockets.some(socket => socket.readyState === WebSocket.OPEN))).toBe(true);
+    await expect(frame.locator('#status')).toBeHidden();
+    await activate(page, 'desktop');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=main]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#draft-status')).not.toContainText('尚未确认切换');
+    expect(terminal.url()).toBe(terminalSource);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
 

@@ -287,7 +287,7 @@ test('prepared modes reuse their iframe and connections, hidden terminal input a
   } finally { await app.close(); }
 });
 
-test('a changed desktop input target retains its parked terminal, while backgrounding releases only standby', async ({ page }) => {
+test('a changed desktop input target and screen-off both retain its parked terminal', async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true });
   await app.controls.manageTerminals({ action: 'create', name: 'standby target', view: 'terminal' });
   try {
@@ -296,9 +296,9 @@ test('a changed desktop input target retains its parked terminal, while backgrou
     await openInput(page); await page.locator('#input-terminal').selectOption('aux1');
     const auxiliary = await prepared(page, 'terminal'); expect(auxiliary.source).toBe(main.source);
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
-    await expect(page.locator('#standby-frame')).toHaveCount(0); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(desktopSource);
+    await expect(page.locator('#standby-frame')).toHaveAttribute('src', auxiliary.source); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(desktopSource);
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); });
-    const refreshed = await prepared(page, 'terminal'); expect(refreshed.source).not.toBe(auxiliary.source);
+    const refreshed = await prepared(page, 'terminal'); expect(refreshed.source).toBe(auxiliary.source);
     await switchMode(page, 'terminal'); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(refreshed.source);
     expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }

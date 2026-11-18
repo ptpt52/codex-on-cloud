@@ -1116,7 +1116,11 @@ function sendStandbyPreferences() {
     terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting }, location.origin);
 }
 function syncModeStandby() {
-  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || document.hidden || pageLeaving || cachedResumePending || !views.active.loaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
+  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || pageLeaving || cachedResumePending || !views.active.loaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
+  // Screen-off suspends both viewers' network work through their own visibility
+  // handlers. Keep the one bounded standby context warm for foreground recovery;
+  // pagehide, revoked ownership and disabling the preference still retire it.
+  if (document.hidden) return;
   const mode = terminalMode() ? 'desktop' : 'terminal', target = mode === 'terminal' ? standbyTarget() : null;
   const key = target ? `${target.id}:${target.token}` : '';
   // A parked terminal can attach the next target on its retained stream when
@@ -1141,7 +1145,7 @@ function receiveStandby(value) {
   updateView(entry, value);
     if (value.type === 'codex-network-event') { recordConnection(value.event?.type, value.event, entry.mode, true, entry.epoch); return; }
   if (value.type === 'codex-desktop') {
-    if (value.state === 'ready') { sendStandbyPreferences(); return; }
+    if (value.state === 'ready') { recordConnection('view-ready', {}, entry.mode, true, entry.epoch); sendStandbyPreferences(); return; }
     if (value.state === 'connected') sendStandbyPreferences();
   } else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
     const record = streamInputNotice(value, { mode: entry.mode, epoch: entry.epoch, standby: true, target: entry.noticeTarget });
@@ -1159,7 +1163,7 @@ function swapStandby(mode) {
   clearTimeout(switchTimer); resetDirectControl(); resetPanelRequests({ preserveView: true });
   views.swap(mode, key, terminalMode() ? noticeTarget() : '');
   const next = views.active;
-  recordConnection('view-reused', { path: next.transport }, mode, false, next.epoch);
+  recordConnection('view-reused', { path: next.transport, state: next.state === 'connected' ? 'connected' : 'connecting' }, mode, false, next.epoch);
   previous.element.id = 'standby-frame'; previous.element.inert = true; previous.element.tabIndex = -1; previous.element.setAttribute('aria-hidden', 'true');
   sendStandbyPreferences();
   next.element.id = 'desktop-frame'; next.element.inert = false; next.element.removeAttribute('aria-hidden'); next.element.removeAttribute('tabindex');
@@ -2054,7 +2058,7 @@ window.addEventListener('message', event => {
     renderDisplayControls(); viewportWaiter?.(); renderConnection(); return;
   }
   if (event.data?.type !== 'codex-desktop') return;
-  if (event.data.state === 'ready') { sendDisplayPreferences(); return; }
+  if (event.data.state === 'ready') { recordConnection('view-ready', {}, displayPreferences.mode); sendDisplayPreferences(); return; }
   if (event.data.state === 'connected') sendDisplayPreferences();
   else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); if (panelRoute === 'direct') panelState = 'offline'; clearClipboard(); renderClipboard(); }
   else if (event.data.state !== 'connecting') return;
@@ -2064,7 +2068,7 @@ document.addEventListener('fullscreenchange', () => shortcutMenu.close());
 document.addEventListener('visibilitychange', () => {
   if (loggedIn) recordConnection('network-change', { reason: document.hidden ? 'hidden' : 'visible' }, displayPreferences.mode);
   if (document.hidden) connectionTrace.flush();
-  syncScreenLock(); if (!document.hidden) void poll(); else { discardStandby(); views.active.latency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection();
+  syncScreenLock(); if (!document.hidden) void poll(); else { views.active.latency.clear(); shortcutMenu.close(); closeConfirmation(); } renderConnection();
 });
 createWorkspaceLifetime(window, { features: [fileWorkbench, clipboardUI], onHide(event) {
   if (loggedIn) recordConnection('network-change', { reason: 'page-hidden' }, displayPreferences.mode);

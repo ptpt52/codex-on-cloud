@@ -13,7 +13,7 @@ export const TRACE_LABELS = Object.freeze({
   'rtc-state': 'WebRTC 状态', 'rtc-candidates': '地址收集结果', 'heartbeat-ok': '心跳复核通过',
   'rtc-stats-timeout': '路径统计暂未返回，继续按心跳检测连接',
   'rtc-route': '选中的 WebRTC 路径',
-  'view-start': '准备查看连接', 'view-reused': '复用待命视图', 'view-discarded': '释放待命视图',
+  'view-start': '准备查看连接', 'view-ready': '查看器模块已加载', 'view-reused': '复用待命视图', 'view-discarded': '释放待命视图',
   'request-failed': '节点请求失败', 'request-recovered': '节点请求已恢复',
   'rpc-failed': '直连控制请求失败', 'rpc-recovered': '迟到回复已排空，控制通道恢复', 'control-closed': '直连控制通道已关闭',
   'recheck-start': '开始手动直连重测', 'recheck-switch': '候选验证完成，准备切换', 'recheck-ended': '手动直连重测结束',
