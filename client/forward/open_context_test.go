@@ -15,7 +15,7 @@ import (
 )
 
 // These are isolated loopback WebSocket fixtures. No target socket is opened.
-func openContextPool(t *testing.T, beforeReady func()) (*transportPool, <-chan []byte) {
+func openContextPool(t *testing.T, beforeReady func(), lifetime ...time.Duration) (*transportPool, <-chan []byte) {
 	t.Helper()
 	packets := make(chan []byte, 16)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +44,11 @@ func openContextPool(t *testing.T, beforeReady func()) (*transportPool, <-chan [
 		server.Close()
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	budget := 5 * time.Second
+	if len(lifetime) > 0 {
+		budget = lifetime[0]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	target, _ := serverURL(server.URL)
 	pool := newTransportPool(ctx, target, agentGrant{}, "", &agentOutput{writer: io.Discard})
 	pool.conn, pool.healthAt = conn, time.Now()

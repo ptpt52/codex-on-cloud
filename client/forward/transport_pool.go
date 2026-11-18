@@ -25,12 +25,23 @@ type pooledRule struct {
 // to one entered key + process instance and survives individual rule changes.
 // Nothing here retries a target-open record or any business bytes.
 type poolWrite struct {
-	ctx  context.Context
-	kind int
-	data []byte
-	conn *websocket.Conn
-	done chan error
+	ctx      context.Context
+	kind     int
+	data     []byte
+	conn     *websocket.Conn
+	done     chan error
+	complete func(error)
 }
+
+func (r poolWrite) finish(err error) {
+	if r.done != nil {
+		r.done <- err
+	}
+	if r.complete != nil {
+		r.complete(err)
+	}
+}
+
 type transportPool struct {
 	mu         sync.Mutex
 	ctx        context.Context
@@ -130,14 +141,14 @@ func (p *transportPool) writer() {
 			return
 		}
 		if err := request.ctx.Err(); err != nil {
-			request.done <- err
+			request.finish(err)
 			continue
 		}
 		p.mu.Lock()
 		current := p.conn == request.conn
 		p.mu.Unlock()
 		if !current {
-			request.done <- failure("helper_reconnecting")
+			request.finish(failure("helper_reconnecting"))
 			continue
 		}
 		deadline, _ := request.ctx.Deadline()
@@ -146,15 +157,42 @@ func (p *transportPool) writer() {
 		if err != nil {
 			request.conn.Close()
 		}
-		request.done <- err
+		request.finish(err)
 	}
 }
-func (p *transportPool) writeJSON(value any) error {
-	data, err := json.Marshal(value)
-	if err != nil || len(data) > 48*1024 {
-		return failure("protocol_error")
+func (p *transportPool) queuePong(conn *websocket.Conn, id uint32) error {
+	p.mu.Lock()
+	current := p.conn == conn
+	p.mu.Unlock()
+	if !current || p.ctx.Err() != nil {
+		return failure("helper_reconnecting")
 	}
-	return p.write(websocket.TextMessage, data, nil)
+	data, _ := json.Marshal(map[string]any{"type": "pool-pong", "id": id})
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	// The existing 128-record control queue bounds Pong work too. The reader
+	// never waits for a socket write; expiry or failure closes only this socket.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	request := poolWrite{ctx: ctx, kind: websocket.TextMessage, data: data, conn: conn, complete: func(err error) {
+		stop()
+		cancel()
+		if err != nil {
+			conn.Close()
+			return
+		}
+		p.mu.Lock()
+		if p.conn == conn {
+			p.healthAt = time.Now()
+		}
+		p.mu.Unlock()
+	}}
+	select {
+	case p.controls <- request:
+		return nil
+	default:
+		stop()
+		cancel()
+		return failure("buffer_limit")
+	}
 }
 func (p *transportPool) run() {
 	defer close(p.done)
@@ -285,14 +323,9 @@ func (p *transportPool) session(conn *websocket.Conn, healthy func()) error {
 		}
 		if value.Type == "pool-ping" && value.ID > 0 && value.ID <= 2147483647 {
 			conn.SetReadDeadline(time.Now().Add(45 * time.Second))
-			if err := p.writeJSON(map[string]any{"type": "pool-pong", "id": value.ID}); err != nil {
+			if err := p.queuePong(conn, value.ID); err != nil {
 				return err
 			}
-			p.mu.Lock()
-			if p.conn == conn {
-				p.healthAt = time.Now()
-			}
-			p.mu.Unlock()
 		} else if value.Type == "rtc_config" || value.Type == "rtc_answer" || value.Type == "rtc_status" {
 			direct.accept(value)
 		} else {
