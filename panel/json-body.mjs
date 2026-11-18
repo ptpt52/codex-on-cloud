@@ -4,10 +4,15 @@ export const JSON_BODY_LIMITS = Object.freeze({ pending: 16, timeoutMs: 10000 })
 
 const failure = (status, message) => Object.assign(Error(message), { status, outcome: 'rejected' });
 
-// Flush a structured rejection before closing its unread body. Draining it
-// would let a client retain a socket without any further application quota.
+export function hasRequestBody(req) {
+  return req.headers['transfer-encoding'] !== undefined || Number(req.headers['content-length']) > 0;
+}
+
+// Flush the response before closing its unread body. Bodyless requests may not
+// have emitted end yet; their framing still permits normal keep-alive reuse.
+// Draining a declared body would retain a socket outside application quotas.
 export function closeUnreadBody(req, res) {
-  if (!req.readableEnded && !res.headersSent && !res.destroyed) {
+  if (hasRequestBody(req) && !req.readableEnded && !res.headersSent && !res.destroyed) {
     res.setHeader('connection', 'close'); res.shouldKeepAlive = false;
     res.once('finish', () => req.destroy());
   }

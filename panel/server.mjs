@@ -35,7 +35,7 @@ import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
 import { requestTurnCredentials, createTurnCache } from './turn-client.mjs';
-import { createJSONBodies, closeUnreadBody } from './json-body.mjs';
+import { createJSONBodies, hasRequestBody, closeUnreadBody } from './json-body.mjs';
 
 const backendVersion = await loadedBackendVersion('panel');
 
@@ -57,9 +57,19 @@ class HttpError extends Error {
 }
 function reply(res, status, data, headers = {}) {
   if (res.headersSent || res.destroyed) return;
-  if (status >= 400) closeUnreadBody(res.req, res);
+  closeUnreadBody(res.req, res);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(data));
+}
+
+// Apply the same admission bounds to TCP and private Tunnel listeners. File
+// streams keep their longer deadline independently of the JSON reader budget.
+function configureHTTP(server) {
+  server.requestTimeout = 310_000;
+  server.headersTimeout = 15_000;
+  server.maxHeadersCount = 64;
+  server.maxConnections = 256;
+  return server;
 }
 
 export async function createPanel(config) {
@@ -294,16 +304,19 @@ export async function createPanel(config) {
     if (config.nodeId) res.setHeader('x-codex-node-id', config.nodeId);
     gatewayIdentity(req);
     if (!hostAllowed(req)) throw new HttpError(400, '访问域名未配置，请检查 PUBLIC_ORIGIN / ALLOWED_HOSTS');
+    if (['GET', 'HEAD'].includes(req.method) && hasRequestBody(req)) throw new HttpError(400, '此请求方法不接受正文');
     if (config.secureCookies && tunnelRequests.has(req) && visitorScheme(req.headers['cf-visitor']) === 'http') {
       const target = new URL(req.url, config.origin);
       target.protocol = 'https:';
       target.host = req.headers.host;
+      closeUnreadBody(req, res);
       res.writeHead(308, { location: target.toString(), 'cache-control': 'no-store' });
       return res.end();
     }
     const url = new URL(req.url, 'http://internal');
     if (entryBasePath !== '/') {
       if (url.pathname === entryBasePath.slice(0, -1)) {
+        closeUnreadBody(req, res);
         res.writeHead(308, { location: entryBasePath + url.search, 'cache-control': 'no-store' });
         return res.end();
       }
@@ -784,14 +797,12 @@ export async function createPanel(config) {
         ...(error.code && error.access ? { code: error.code, access: error.access } : {}) });
     });
   };
-  const server = http.createServer(handleRequest);
-  server.requestTimeout = 310_000;
-  server.headersTimeout = 15_000;
-  server.maxHeadersCount = 64;
+  const server = configureHTTP(http.createServer(handleRequest));
   async function upgrade(req, socket, head) {
     const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\n${config.nodeId ? 'X-Codex-Node-Id: ' + config.nodeId + '\r\n' : ''}Connection: close\r\nContent-Length: 0\r\n\r\n`);
     try { gatewayIdentity(req); } catch { return deny(403); }
     if (!hostAllowed(req) || !originAllowed(req)) return deny(403);
+    if (hasRequestBody(req)) return deny(400);
     const forwardURL = new URL(req.url, 'http://internal');
     if (entryBasePath !== '/') {
       const internalPath = stripEntryPath(forwardURL.pathname, entryBasePath);
@@ -902,9 +913,7 @@ export async function createPanel(config) {
   async function startTunnel(path) {
     if (stopTunnel || tunnelStarting || closing || !server.listening) throw Error('私有 Tunnel 接口无法启动');
     tunnelStarting = true;
-    const ingress = http.createServer((req, res) => { tunnelRequests.add(req); handleRequest(req, res); });
-    ingress.requestTimeout = server.requestTimeout; ingress.headersTimeout = server.headersTimeout;
-    ingress.maxHeadersCount = server.maxHeadersCount; ingress.maxConnections = 256;
+    const ingress = configureHTTP(http.createServer((req, res) => { tunnelRequests.add(req); handleRequest(req, res); }));
     ingress.on('upgrade', (req, socket, head) => { tunnelRequests.add(req); void upgrade(req, socket, head).catch(() => socket.destroy()); });
     try {
       const stop = await listenPrivateHTTP(ingress, path);
