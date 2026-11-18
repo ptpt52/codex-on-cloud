@@ -12,6 +12,7 @@ import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { createReverseForwarding } from './reverse-forward.mjs';
 import { forwardHeartbeat as heartbeat } from './forward-heartbeat.mjs';
 import { createForwardPool } from './forward-pool.mjs';
+import { createForwardPressure } from './forward-pressure.mjs';
 
 export const FORWARD_LIMITS = Object.freeze({ mappings: 32, connections: 8, chunk: 16384, buffer: 256 * 1024, pairMs: 120000, resumeMs: 30000, resumeAttempts: 8, recent: 8, recentMs: 10 * 60000, closing: 8 });
 const fail = (status, message) => Object.assign(new Error(message), { status, outcome: 'rejected' });
@@ -284,6 +285,7 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
     let connected = false, clientFin = false, pending = 0;
     const deadline = setTimeout(() => tcp.destroy(Object.assign(new Error('connect timeout'), { code: 'ETIMEDOUT' })), 5000).unref();
     const abort = (code = 'protocol_error') => { if (live()) item.errorCode = code; tcp.destroy(); retire(ws, code); };
+    const pressure = createForwardPressure(tcp, ws, abort);
     ws.once('close', () => { clearTimeout(deadline); tcp.destroy(); item.streams.delete(stream); });
     tcp.once('connect', () => {
       clearTimeout(deadline);
@@ -300,10 +302,9 @@ export function createForwarding(config, { now = Date.now, createPeer = config.f
         clientFin = true; tcp.end(); return;
       }
       item.sent = Math.min(Number.MAX_SAFE_INTEGER, item.sent + data.length);
-      if (!tcp.write(data)) ws.pause();
+      if (!tcp.write(data)) pressure.pause();
       if (tcp.writableLength > FORWARD_LIMITS.buffer) abort('buffer_limit');
     });
-    tcp.on('drain', () => { if (ws.readyState === 1) ws.resume(); });
     tcp.on('data', data => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
       if (!live()) return tcp.destroy();

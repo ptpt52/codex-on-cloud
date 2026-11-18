@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { forwardHeartbeat } from './forward-heartbeat.mjs';
+import { createForwardPressure } from './forward-pressure.mjs';
 
 // Includes direct preflight, WSS upgrade, server readiness, the five-second
 // target dial and its acknowledgement. Still at most eight pending sockets.
@@ -56,6 +57,7 @@ export function createReverseForwarding({ limits, active, authorized, streamLive
       if (live()) item.errorCode = code;
       tcp.destroy(); retire(ws, code);
     };
+    const pressure = createForwardPressure(tcp, ws, abort);
     if (ws.transport !== 'direct' && !ws.shared) forwardHeartbeat(ws, code => abort(code));
     ws.on('error', () => {});
     ws.once('close', () => { clearTimeout(stream.timer); tcp.destroy(); item.streams.delete(stream); });
@@ -79,10 +81,9 @@ export function createReverseForwarding({ limits, active, authorized, streamLive
       }
       if (!binary) { if (data.toString() !== '{"type":"fin"}') return abort(); clientFin = true; tcp.end(); return; }
       item.received = Math.min(Number.MAX_SAFE_INTEGER, item.received + data.length);
-      if (!tcp.write(data)) ws.pause();
+      if (!tcp.write(data)) pressure.pause();
       if (tcp.writableLength > limits.buffer) abort('buffer_limit');
     });
-    tcp.on('drain', () => { if (ws.readyState === 1) ws.resume(); });
     tcp.on('data', data => {
       if (!authorized(item)) return remove(item, invalidReason(item) || 'authorization_revoked');
       if (!live() || !ready || ws.readyState !== 1) return tcp.destroy();
