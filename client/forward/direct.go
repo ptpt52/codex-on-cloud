@@ -657,6 +657,9 @@ func (m *directManager) negotiate() (reason string) {
 // Open only creates a data channel. No target request or TCP bytes have been
 // sent, so a failed preflight may still choose WSS for this new connection.
 func (m *directManager) Open(ctx context.Context) *directChannel {
+	if ctx.Err() != nil {
+		return nil
+	}
 	m.mu.Lock()
 	p := m.peer
 	if p != nil && p.writer != nil && !p.writer.budget.canOpen() {
@@ -729,24 +732,32 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 	select {
 	case <-opened:
 		if !p.preflight {
+			if ctx.Err() != nil {
+				stream.Close()
+				return nil
+			}
 			stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 			return stream
 		}
 		select {
 		case ready := <-stream.preflight:
-			if ready {
+			if ready && ctx.Err() == nil {
 				stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 				return stream
 			}
 			stream.Close()
 			return nil
 		case <-ctx.Done():
+			stream.Close()
+			return nil
 		case <-stream.done:
 			stream.Close()
 			return nil
 		case <-timer.C:
 		}
 	case <-ctx.Done():
+		stream.Close()
+		return nil
 	case <-stream.done:
 		// A negotiated preflight can decline and close before OnOpen's
 		// callback runs. No target was opened and the peer is still healthy.
@@ -757,6 +768,9 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 	case <-timer.C:
 	}
 	stream.Close()
+	if ctx.Err() != nil {
+		return nil
+	}
 	m.mu.Lock()
 	p.available = false
 	m.mu.Unlock()

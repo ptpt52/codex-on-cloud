@@ -67,6 +67,9 @@ func (p *transportPool) write(kind int, data []byte, expected *websocket.Conn) e
 	return p.writeDeadline(kind, data, expected, time.Time{})
 }
 func (p *transportPool) writeDeadline(kind int, data []byte, expected *websocket.Conn, deadline time.Time) error {
+	return p.writeContext(nil, kind, data, expected, deadline)
+}
+func (p *transportPool) writeContext(scope context.Context, kind int, data []byte, expected *websocket.Conn, deadline time.Time) error {
 	p.mu.Lock()
 	conn := p.conn
 	p.mu.Unlock()
@@ -81,8 +84,16 @@ func (p *transportPool) writeDeadline(kind int, data []byte, expected *websocket
 	if !deadline.IsZero() && deadline.Before(limit) {
 		limit = deadline
 	}
-	ctx, cancel := context.WithDeadline(p.ctx, limit)
+	parent := p.ctx
+	if scope != nil {
+		parent = scope
+	}
+	ctx, cancel := context.WithDeadline(parent, limit)
 	defer cancel()
+	if scope != nil {
+		stop := context.AfterFunc(p.ctx, cancel)
+		defer stop()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -303,6 +314,9 @@ func (c *relayChannel) frame(op byte, data []byte) error {
 	return c.frameDeadline(op, data, time.Time{})
 }
 func (c *relayChannel) frameDeadline(op byte, data []byte, deadline time.Time) error {
+	return c.frameContext(nil, op, data, deadline)
+}
+func (c *relayChannel) frameContext(ctx context.Context, op byte, data []byte, deadline time.Time) error {
 	if len(data) > chunkSize {
 		return failure("buffer_limit")
 	}
@@ -310,14 +324,17 @@ func (c *relayChannel) frameDeadline(op byte, data []byte, deadline time.Time) e
 	frame[0] = op
 	binary.BigEndian.PutUint32(frame[1:5], c.id)
 	copy(frame[5:], data)
-	return c.pool.writeDeadline(websocket.BinaryMessage, frame, c.conn, deadline)
+	return c.pool.writeContext(ctx, websocket.BinaryMessage, frame, c.conn, deadline)
 }
 func (c *relayChannel) sendDeadline(data []byte, text bool, deadline time.Time) error {
+	return c.sendContextDeadline(nil, data, text, deadline)
+}
+func (c *relayChannel) sendContextDeadline(ctx context.Context, data []byte, text bool, deadline time.Time) error {
 	op := byte(2)
 	if text {
 		op = 1
 	}
-	return c.frameDeadline(op, data, deadline)
+	return c.frameContext(ctx, op, data, deadline)
 }
 func (c *relayChannel) Send(data []byte) error     { return c.frame(2, data) }
 func (c *relayChannel) SendText(data string) error { return c.frame(1, []byte(data)) }
@@ -378,11 +395,17 @@ func (p *transportPool) receive(conn *websocket.Conn, frame []byte) error {
 	channel.flow.receive(webrtc.DataChannelMessage{IsString: op == 1, Data: data})
 	return nil
 }
-func (p *transportPool) openRelay(ctx context.Context) (messageSocket, error) {
+func (p *transportPool) openRelay(ctx context.Context) (*directChannel, error) {
 	// Wait only for a transport preflight, never for permission to replay an open.
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if p.ctx.Err() != nil {
+			return nil, failure("helper_reconnecting")
+		}
 		p.mu.Lock()
 		conn := p.conn
 		if conn != nil && time.Since(p.healthAt) < 10*time.Second {
@@ -400,7 +423,15 @@ func (p *transportPool) openRelay(ctx context.Context) (messageSocket, error) {
 			channel.flow.relay = true
 			p.channels[channel.id] = channel
 			p.mu.Unlock()
-			if err := channel.frame(4, nil); err != nil {
+			if err := channel.frameContext(ctx, 4, nil, time.Time{}); err != nil {
+				// An unconfirmed preflight may still be queued. Do not send FIN
+				// for an ID the remote mux may never have admitted. If dispatched,
+				// its empty stream expires under the remote preflight deadline.
+				p.mu.Lock()
+				if p.channels[channel.id] == channel {
+					delete(p.channels, channel.id)
+				}
+				p.mu.Unlock()
 				channel.flow.Close()
 				return nil, err
 			}
@@ -408,7 +439,9 @@ func (p *transportPool) openRelay(ctx context.Context) (messageSocket, error) {
 			select {
 			case <-channel.opened:
 				timer.Stop()
-				return channel.flow, nil
+				if ctx.Err() == nil && p.ctx.Err() == nil {
+					return channel.flow, nil
+				}
 			case <-channel.flow.done:
 				timer.Stop()
 			case <-ctx.Done():
@@ -416,6 +449,9 @@ func (p *transportPool) openRelay(ctx context.Context) (messageSocket, error) {
 			case <-timer.C:
 			}
 			channel.flow.Close()
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, failure("helper_reconnecting")
 		}
 		p.mu.Unlock()
@@ -429,14 +465,23 @@ func (p *transportPool) openRelay(ctx context.Context) (messageSocket, error) {
 	}
 }
 func (p *transportPool) Open(ctx context.Context, mapping, token, reverseID string) (messageSocket, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	direct := p.direct
 	p.mu.Unlock()
-	var stream messageSocket
+	var stream *directChannel
 	if direct != nil {
 		if channel := direct.Open(ctx); channel != nil {
 			stream = channel
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		if stream != nil {
+			stream.Close()
+		}
+		return nil, err
 	}
 	if stream == nil {
 		var err error
@@ -454,7 +499,7 @@ func (p *transportPool) Open(ctx context.Context, mapping, token, reverseID stri
 	stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	// This is the sole target-open attempt. A write error can mean the peer has
 	// already acted: close the stream, never retry it on the other transport.
-	if err := stream.WriteMessage(websocket.TextMessage, bytes); err != nil {
+	if err := stream.writeMessageContext(ctx, websocket.TextMessage, bytes); err != nil {
 		stream.Close()
 		return nil, err
 	}

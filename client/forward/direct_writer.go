@@ -81,6 +81,9 @@ func (w *directWriter) prune() {
 	}
 }
 func (c *scheduledChannel) send(data []byte, text, ack bool, deadline time.Time) error {
+	return c.sendContext(nil, data, text, ack, deadline)
+}
+func (c *scheduledChannel) sendContext(scope context.Context, data []byte, text, ack bool, deadline time.Time) error {
 	w := c.writer
 	priority := c.control || text
 	if len(data) == 0 || len(data) > chunkSize {
@@ -94,8 +97,19 @@ func (c *scheduledChannel) send(data []byte, text, ack bool, deadline time.Time)
 	if !deadline.IsZero() && deadline.Before(limit) {
 		limit = deadline
 	}
-	ctx, cancel := context.WithDeadline(w.ctx, limit)
+	parent := w.ctx
+	if scope != nil {
+		parent = scope
+	}
+	ctx, cancel := context.WithDeadline(parent, limit)
 	defer cancel()
+	if scope != nil {
+		stop := context.AfterFunc(w.ctx, cancel)
+		defer stop()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	request := &directWrite{data: append([]byte(nil), data...), text: text, priority: priority, ack: ack, ctx: ctx, done: make(chan error, 1)}
 	w.mu.Lock()
 	if c.closed || w.ctx.Err() != nil || len(c.queue) >= 32 || c.bytes+len(data) > 512*1024 || w.queued+len(data) > 1024*1024 || priority && w.controls+len(data) > 65536 {
@@ -126,6 +140,9 @@ func (c *scheduledChannel) send(data []byte, text, ack bool, deadline time.Time)
 	case <-c.done:
 		return failure("rtc_unavailable")
 	case <-ctx.Done():
+		if scope != nil {
+			return ctx.Err()
+		}
 		return failure("rtc_health_timeout")
 	}
 }
@@ -138,6 +155,9 @@ func (c *scheduledChannel) SendACK(data string) error {
 }
 func (c *scheduledChannel) sendDeadline(data []byte, text bool, deadline time.Time) error {
 	return c.send(data, text, false, deadline)
+}
+func (c *scheduledChannel) sendContextDeadline(ctx context.Context, data []byte, text bool, deadline time.Time) error {
+	return c.sendContext(ctx, data, text, false, deadline)
 }
 func (c *scheduledChannel) BufferedAmount() uint64 {
 	c.writer.mu.Lock()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"sync"
@@ -302,6 +303,24 @@ func (c *directChannel) ReadMessage() (int, []byte, error) {
 	}
 }
 func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
+	return c.writeMessage(nil, kind, bytes)
+}
+
+// Only admission of the initial target-open belongs to the dial context. Once
+// it has returned, cancelling that context must not revoke business traffic.
+func (c *directChannel) writeMessageContext(ctx context.Context, kind int, bytes []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { c.finish(ctx.Err()) })
+	defer stop()
+	err := c.writeMessage(ctx, kind, bytes)
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+func (c *directChannel) writeMessage(ctx context.Context, kind int, bytes []byte) error {
 	if len(bytes) > chunkSize || (kind != websocket.TextMessage && kind != websocket.BinaryMessage) {
 		return failure("protocol_error")
 	}
@@ -313,6 +332,15 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 		deadline := c.writeDeadline
 		if deadline.IsZero() {
 			deadline = defaultDeadline
+		}
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				c.mu.Unlock()
+				return err
+			}
+			if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+				deadline = limit
+			}
 		}
 		window := c.window
 		if window == 0 {
@@ -346,6 +374,10 @@ func (c *directChannel) WriteMessage(kind int, bytes []byte) error {
 			var err error
 			if c.dc.BufferedAmount() > 512*1024 {
 				err = failure("buffer_limit")
+			} else if sender, ok := c.dc.(interface {
+				sendContextDeadline(context.Context, []byte, bool, time.Time) error
+			}); ok && ctx != nil {
+				err = sender.sendContextDeadline(ctx, bytes, kind == websocket.TextMessage, deadline)
 			} else if sender, ok := c.dc.(interface {
 				sendDeadline([]byte, bool, time.Time) error
 			}); ok {
