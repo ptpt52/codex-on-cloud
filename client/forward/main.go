@@ -127,9 +127,10 @@ func dialHeaders(ctx context.Context, server *url.URL, path, token string, extra
 		readTimeout = dataReadyTimeout
 	}
 	c.SetReadDeadline(time.Now().Add(readTimeout))
+	pongs := &nativePongWriter{conn: c}
 	c.SetPingHandler(func(data string) error {
 		c.SetReadDeadline(time.Now().Add(45 * time.Second))
-		return c.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
+		return pongs.enqueue(data)
 	})
 	return c, nil
 }
