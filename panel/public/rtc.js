@@ -115,21 +115,21 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         const candidates = (peer.localDescription?.sdp || '').split('\n').filter(line => /^a=candidate:/.test(line));
         trace('rtc-candidates', { path: 'direct', host: candidates.filter(line => / typ host(?:\s|$)/.test(line)).length, reflexive: candidates.filter(line => / typ (?:srflx|prflx)(?:\s|$)/.test(line)).length, relay: candidates.filter(line => / typ relay(?:\s|$)/.test(line)).length });
         trace('rtc-stage', { path: 'direct', stage: 'gathering', durationMs: Math.round(performance.now() - stageAt) });
-        stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
         const waitingAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'queued' });
         const release = await requestRTCOffer({ signal: controller.signal, priority: service ? 1 : standby ? 2 : 0, expired: () => controller.abort() });
         trace('rtc-stage', { path: 'direct', stage: 'queued', durationMs: Math.round(performance.now() - waitingAt) });
+        stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         let answer;
         try {
-        if (controller.signal.aborted) throw new Error('连接已取消');
-        const result = await fetch(entryPath(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc'), { method: 'POST', redirect: 'manual', signal: controller.signal,
-          headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...nodeHeaders() },
-          body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(service && recheck ? { recheck: true } : {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
-        });
-        if (!result.ok) { const reason = result.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(result.status); failure(reason, result.status); throw Object.assign(new Error('直连暂不可用'), { reason, status: result.status }); }
-        answer = await result.json();
-        trace('rtc-stage', { path: 'direct', stage: 'signaling', status: result.status, durationMs: Math.round(performance.now() - stageAt) });
+          if (controller.signal.aborted) throw new Error('连接已取消');
+          const result = await fetch(entryPath(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc'), { method: 'POST', redirect: 'manual', signal: controller.signal,
+            headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...nodeHeaders() },
+            body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(service && recheck ? { recheck: true } : {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
+          });
+          if (!result.ok) { const reason = result.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(result.status); failure(reason, result.status); throw Object.assign(new Error('直连暂不可用'), { reason, status: result.status }); }
+          answer = await result.json();
+          trace('rtc-stage', { path: 'direct', stage: 'signaling', status: result.status, durationMs: Math.round(performance.now() - stageAt) });
         } finally { release(); }
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'connecting' });
         deadline('connecting', RTC_CONNECT_TIMEOUT);
@@ -139,7 +139,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         stage = 'ready';
         if (service) features = await control.request('ping', {});
         else if (!probe) await control.request('activate', {});
-      } catch (error) { failure(timedOut ? 'timeout' : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
+      } catch (error) { failure(timedOut ? 'timeout' : error?.reason === 'busy' ? 'busy' : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
     } };
   } catch { failure(timedOut ? 'timeout' : 'signaling'); clearTimeout(timeout); signal?.removeEventListener('abort', cancel); controller.abort(); peer?.close(); return null; }
 }
