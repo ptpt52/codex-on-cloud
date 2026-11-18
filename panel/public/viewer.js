@@ -583,7 +583,7 @@ for (const name of ['mousedown', 'mouseup', 'mousemove']) window.addEventListene
 window.addEventListener('blur', () => { pressedKeys.clear(); pressedPointers.clear(); lastInteraction = performance.now(); reportView(); clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850); });
 function networkChanged() {
   if (streamClient) { streamClient.wake(); return; }
-  if (document.hidden || !navigator.onLine) { stopHealth(); if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
+  if (document.hidden || !navigator.onLine) { legacyRecheck.cancel(); stopHealth(); if (!switching) probeController?.abort(); clearTimeout(probeTimer); probeTimer = null; return; }
   // NetworkInformation also emits RTT/downlink estimate changes. Once a fresh
   // network check is running, further events must not keep canceling its deadline.
   if (viewing && transport && !healthNetworkCheck) { monitorDirect(250); healthNetworkCheck = true; }

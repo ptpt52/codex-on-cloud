@@ -650,10 +650,11 @@ function resume(replaceConnecting = false) {
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return resume(true);
+  legacyRecheck.cancel();
   health?.suspend(); history?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; clearTimeout(connectingTimer); connectingTimer = undefined; inputState();
 });
 window.addEventListener('online', () => resume());
-window.addEventListener('offline', () => { health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session && !ready) retire(socket, null); inputState(); });
+window.addEventListener('offline', () => { legacyRecheck.cancel(); health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session && !ready) retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
 window.addEventListener('pagehide', event => { stopped = true; legacyRecheck.cancel(); history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });

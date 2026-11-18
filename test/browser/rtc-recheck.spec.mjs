@@ -13,6 +13,49 @@ async function login(page, app) {
   await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
 }
 
+for (const mode of ['terminal', 'desktop']) for (const seamless of [false, true]) for (const hint of ['hidden', 'offline']) test(`${mode} ${seamless ? 'unified' : 'legacy'} cancels a manual heartbeat when ${hint} and preserves its live path`, async ({ page }) => {
+  const app = await fixture({ mode, rfb: true, webrtc: true, fastConnect: seamless, seamless });
+  try {
+    await page.addInitScript(mode => {
+      window.recheckPeers = []; window.manualHealthSends = 0;
+      const PC = RTCPeerConnection;
+      window.RTCPeerConnection = class extends PC {
+        constructor(...args) { super(...args); this.manual = window.holdManual === true; window.recheckPeers.push(this); }
+        createDataChannel(label, options) {
+          const channel = super.createDataChannel(label, options);
+          if (this.manual && label === 'codex-health') {
+            const send = channel.send.bind(channel);
+            channel.send = data => { window.manualHealthSends++; send(data); };
+            // Lose only the manual candidate's health reply; its ICE/DTLS and
+            // the existing viewer's association and application traffic stay real.
+            channel.addEventListener('message', event => event.stopImmediatePropagation());
+          }
+          return channel;
+        }
+      };
+      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode }));
+    }, mode);
+    await login(page, app);
+    const frame = page.frames().find(frame => frame.url().includes(`/${mode}/index.html`));
+    await frame.evaluate(() => { window.holdManual = true; });
+    await hints(page);
+    await expect.poll(() => frame.evaluate(() => window.manualHealthSends), { timeout: 10000 }).toBe(1);
+    await frame.evaluate(hint => {
+      if (hint === 'hidden') {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+      } else {
+        Object.defineProperty(navigator, 'onLine', { configurable: true, value: false }); window.dispatchEvent(new Event('offline'));
+      }
+    }, hint);
+    await expect.poll(() => frame.evaluate(() => window.recheckPeers.find(peer => peer.manual)?.connectionState), { timeout: 1000 }).toBe('closed');
+    await expect(page.locator('#save-direct-hints')).toBeEnabled({ timeout: 1000 });
+    expect(await frame.evaluate(() => window.manualHealthSends)).toBe(1);
+    expect(await frame.evaluate(() => window.recheckPeers[0].connectionState)).toBe('connected');
+    expect(mode === 'terminal' ? app.terminalConnections : app.vncConnections).toBe(1);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 for (const mode of ['terminal', 'desktop']) for (const fault of ['lost reply', 'refusal']) test(`legacy ${mode} recheck recovers from activation ${fault} without replaying input`, async ({ page }) => {
   const app = await fixture({ mode, rfb: true, webrtc: true });
   try {

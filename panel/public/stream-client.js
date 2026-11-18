@@ -521,6 +521,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     if (ended) return;
     trace('network-change', { reason: document.hidden ? 'hidden' : !navigator.onLine ? 'offline' : event?.type === 'visibilitychange' ? 'visible' : event?.type === 'online' ? 'online' : 'changed' });
     if (document.hidden || !navigator.onLine) {
+      recheck.cancel();
       directExpedited = false;
       if (targetPending && !targetPending.sent) cancelTarget(switchBusy('页面已隐藏或离线，切换未发送；返回后请再点目标终端'));
       clearTimeout(directTimer); directTimer = undefined;
