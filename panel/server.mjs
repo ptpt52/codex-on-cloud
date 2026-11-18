@@ -57,6 +57,7 @@ class HttpError extends Error {
 }
 function reply(res, status, data, headers = {}) {
   if (res.headersSent || res.destroyed) return;
+  if (status >= 400) closeUnreadBody(res.req, res);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(data));
 }
@@ -698,6 +699,7 @@ export async function createPanel(config) {
       const token = cookieToken(req.headers.cookie), progressId = req.headers['x-codex-transfer-id'];
       if (progressId !== undefined && (req.method !== 'PUT' || typeof progressId !== 'string' || !/^[a-f0-9]{32}$/.test(progressId))) throw new HttpError(400, '上传进度标识无效');
       const transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT', progressId ? { id: progressId, owner: token, size: Number(req.headers['content-length']) } : undefined);
+      let uploadStream;
       try {
       if (req.method === 'PUT') {
         const length = Number(req.headers['content-length']);
@@ -720,7 +722,7 @@ export async function createPanel(config) {
           }
           if (total - replaced + length > 1024 * 1024 * 1024) throw new HttpError(413, '共享目录已达到临时上传的 1 GiB 容量上限');
         }
-        const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; try { if (this.total > MAX_UPLOAD) throw Error('文件过大'); transfer.advance(chunk.length); callback(null, chunk); } catch (error) { callback(error); } } });
+        const limiter = uploadStream = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; try { if (this.total > MAX_UPLOAD) throw Error('文件过大'); transfer.advance(chunk.length); callback(null, chunk); } catch (error) { callback(error); } } });
         transfer.dispatch();
         const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
@@ -738,7 +740,10 @@ export async function createPanel(config) {
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}), ...(/^"[a-f0-9]{64}"$/.test(etag || '') ? { etag } : {}) });
       await pipeline(response.body, res);
       return;
-      } finally { transfer.finish(); }
+      } finally {
+        if (uploadStream) { req.unpipe(uploadStream); uploadStream.destroy(); }
+        transfer.finish();
+      }
     }
     if (path.startsWith('/desktop/') || path.startsWith('/terminal/')) {
       const session = requireSession(req);
@@ -773,7 +778,6 @@ export async function createPanel(config) {
 
   const handleRequest = (req, res) => {
     route(req, res).catch(error => {
-      closeUnreadBody(req, res);
       if (!error.status) console.error(`[panel] ${error.name}: request failed`); // No bodies, cookies or credentials.
       reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown'),
         ...(['file_busy', 'file_exists'].includes(error.fileCode) ? { fileCode: error.fileCode } : {}),

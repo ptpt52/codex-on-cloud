@@ -104,6 +104,65 @@ test('HTTP helper busy errors are rejected without losing structured reasons or 
   assert.equal(result.status, 409); const body = await result.json(); assert.equal(body.outcome, 'rejected'); assert.equal(body.fileCode, 'file_busy'); assert.equal(puts, 1);
 });
 
+for (const status of [409, 507]) test(`early HTTP helper rejection ${status} flushes its result and closes incomplete uploads`, { timeout: 15000 }, async t => {
+  const app = await fixture({ mode: 'terminal' }); t.after(() => app.close()); await app.login();
+  const outgoing = [], incoming = []; let puts = 0;
+  t.after(() => { for (const req of outgoing) req.destroy(); });
+  app.panel.server.on('request', req => {
+    if (req.method === 'PUT') incoming.push({ req, closed: new Promise(resolve => req.once('close', resolve)) });
+  });
+  const helper = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method !== 'PUT') return res.end(JSON.stringify({ uploadProtocol: 1, files: [] }));
+    puts++;
+    // Native quota/disk checks can reject before reading any of the body.
+    res.writeHead(status); res.end(JSON.stringify({ error: 'early rejection', ...(status === 409 ? { fileCode: 'file_busy' } : {}) }));
+  });
+  helper.listen(0, '127.0.0.1'); await once(helper, 'listening');
+  t.after(() => new Promise(resolve => { helper.close(resolve); helper.closeAllConnections(); }));
+  app.config.fileAgentUrl = 'http://127.0.0.1:' + helper.address().port;
+  for (let index = 0; index < 8; index++) {
+    const result = await new Promise((resolve, reject) => {
+      const req = http.request(app.config.origin + '/api/files/incomplete-' + index, { method: 'PUT', agent: false, headers: {
+        origin: app.config.origin, cookie: app.cookie, 'x-csrf-token': app.csrf, 'content-length': 1024 * 1024, connection: 'keep-alive',
+      } }, res => {
+        const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('error', reject);
+        res.once('end', () => resolve({ status: res.statusCode, connection: res.headers.connection, body: JSON.parse(Buffer.concat(chunks)) }));
+      });
+      outgoing.push(req); req.on('error', reject); req.write('a'); // Deliberately never finish the body.
+    });
+    assert.equal(result.status, status); assert.equal(result.connection, 'close');
+    assert.equal(result.body.error, 'early rejection'); assert.equal(result.body.outcome, 'rejected');
+    if (status === 409) assert.equal(result.body.fileCode, 'file_busy');
+  }
+  let timer;
+  try {
+    await Promise.race([Promise.all(incoming.map(item => item.closed)), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('incomplete upload connections remained open')), 3000); })]);
+  } finally { clearTimeout(timer); }
+  assert.equal(incoming.length, 8); assert.equal(puts, 8, 'one helper write per upload, without replay');
+  assert.ok(incoming.every(({ req }) => req.destroyed && req.socket.destroyed && !req.complete));
+  assert.ok(incoming.every(({ req }) => req.listenerCount('data') === 0), 'upload transforms must be unpiped');
+});
+
+test('successful HTTP uploads preserve bytes and reuse their keep-alive connection', async t => {
+  const app = await fixture({ mode: 'terminal' }); t.after(() => app.close()); await app.login();
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 }); t.after(() => agent.destroy());
+  for (let index = 0; index < 2; index++) {
+    const bytes = Buffer.alloc(64 * 1024, index + 1), name = 'complete-' + index;
+    const result = await new Promise((resolve, reject) => {
+      const req = http.request(app.config.origin + '/api/files/' + name, { method: 'PUT', agent, headers: {
+        origin: app.config.origin, cookie: app.cookie, 'x-csrf-token': app.csrf, 'content-length': bytes.length,
+      } }, res => {
+        res.on('error', reject); res.resume();
+        res.once('end', () => resolve({ status: res.statusCode, connection: res.headers.connection, reused: req.reusedSocket }));
+      });
+      req.on('error', reject); req.end(bytes);
+    });
+    assert.equal(result.status, 200); assert.equal(result.connection, 'keep-alive'); assert.equal(result.reused, index > 0);
+    assert.deepEqual(app.files.get(name), bytes);
+  }
+});
+
 test('an old helper cannot silently bypass safe uploads', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); let puts = 0;
   const old = http.createServer((req, res) => { if (req.method === 'PUT') puts++; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ files: [] })); });
