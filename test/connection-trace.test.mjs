@@ -136,7 +136,7 @@ test('upload logs expose transport, byte counts, deadline or HTTP failure withou
   assert.ok(!trace.text().includes('PRIVATE_'));
 });
 
-for (const reason of ['file_read_failed', 'file_ack_timeout', 'file_buffer_timeout']) test(`${reason} survives private log persistence with a distinct readable cause`, () => {
+for (const reason of ['file_read_failed', 'file_read_busy', 'file_read_timeout', 'file_ack_timeout', 'file_buffer_timeout']) test(`${reason} survives private log persistence with a distinct readable cause`, () => {
   let saved;
   const storage = { getItem: () => saved, setItem: (_key, value) => { saved = value; } };
   const trace = createConnectionTrace(undefined, { enabled: true, storage, scope: 'node:fixture' });
@@ -145,7 +145,7 @@ for (const reason of ['file_read_failed', 'file_ack_timeout', 'file_buffer_timeo
   trace.flush();
   const restored = createConnectionTrace(undefined, { enabled: true, storage, scope: 'node:fixture' });
   const event = restored.snapshot().find(value => value.type === 'file-ended');
-  assert.equal(event.reason, reason); assert.match(traceDescription(event), /本机文件读取失败|文件分块确认超时|文件发送缓冲超时/);
+  assert.equal(event.reason, reason); assert.match(traceDescription(event), /本机文件读取失败|本机文件读取超时|本机仍有未结束的文件读取|文件分块确认超时|文件发送缓冲超时/);
   assert.ok(!restored.text().includes('PRIVATE_'));
   trace.setEnabled(false); restored.setEnabled(false);
 });

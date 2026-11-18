@@ -3,6 +3,41 @@ import { createHash } from 'node:crypto';
 import { fixture } from '../fixture.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 async function login(app,page){await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});await page.goto(app.config.origin);await page.locator('#username').fill('visitor');await page.locator('#password').fill('temporary-test-password');await page.locator('#login-button').click();await expect(page.locator('#user-label')).toContainText('临时访问');await page.locator('#files-button').click();}
+test('blocked native file reads stay bounded across canceled uploads and late reads cannot send file data',async({page})=>{
+ const app=await fixture({webrtc:true});
+ await page.addInitScript(()=>{
+  const read=Blob.prototype.arrayBuffer,create=RTCPeerConnection.prototype.createDataChannel;window.heldFileReads=[];window.pendingFileReads=0;window.blockFileReads=true;window.fileChannelOpens=0;
+  RTCPeerConnection.prototype.createDataChannel=function(label,options){const channel=create.call(this,label,options);if(label==='codex-files')channel.addEventListener('open',()=>window.fileChannelOpens++);return channel;};
+  Blob.prototype.arrayBuffer=function(){
+   if(!window.blockFileReads)return read.call(this);
+   window.pendingFileReads++;
+   return new Promise((resolve,reject)=>window.heldFileReads.push(()=>read.call(this).then(bytes=>{window.pendingFileReads--;resolve(bytes);},reject)));
+  };
+ });
+ try{
+  await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
+  for(let n=0;n<2;n++){
+   await page.locator('#upload-input').setInputFiles({name:`blocked-${n}.bin`,mimeType:'application/octet-stream',buffer:Buffer.alloc(4096,n)});
+   await expect.poll(()=>page.evaluate(()=>window.pendingFileReads)).toBe(n+1);
+   await page.locator('#cancel-file-transfer').click();
+   await expect(page.locator('#upload-input')).toBeEnabled();
+   await expect.poll(()=>page.evaluate(()=>window.fileChannelOpens),{timeout:10000}).toBe(n+2);
+   await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:10000});
+  }
+  await page.locator('#upload-input').setInputFiles({name:'refused.bin',mimeType:'application/octet-stream',buffer:Buffer.from('never sent')});
+  await expect(page.locator('#upload-status')).toContainText('仍有未结束的本机文件读取');
+  expect(await page.evaluate(()=>window.pendingFileReads)).toBe(2);
+  expect(app.files.size).toBe(0);
+  await page.evaluate(()=>{window.blockFileReads=false;window.heldFileReads.shift()();});
+  await expect.poll(()=>page.evaluate(()=>window.pendingFileReads)).toBe(1);
+  await page.locator('#upload-input').setInputFiles({name:'fresh.bin',mimeType:'application/octet-stream',buffer:Buffer.from('fresh')});
+  await expect(page.locator('#upload-status')).toContainText('上传完成');
+  expect([...app.files.keys()]).toEqual(['fresh.bin']);expect(app.files.get('fresh.bin').toString()).toBe('fresh');
+  await page.evaluate(()=>window.heldFileReads.shift()());
+  await expect.poll(()=>page.evaluate(()=>window.pendingFileReads)).toBe(0);
+  expect([...app.files.keys()]).toEqual(['fresh.bin']);expect(app.inputCalls).toEqual([]);
+ }finally{await page.evaluate(()=>{for(const release of window.heldFileReads||[])release();}).catch(()=>{});await app.close();}
+});
 test('temporary uploads and downloads use the dedicated encrypted data channel without browser HTTP file bodies',async({page})=>{
  const app=await fixture({webrtc:true});const requests=[];
  try{

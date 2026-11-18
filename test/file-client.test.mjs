@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createFileClient } from '../panel/public/file-client.js';
+import { createFileClient, FILE_READ_LIMITS } from '../panel/public/file-client.js';
 import { createFileWire,FILE_CHUNK,FILE_MAX } from '../panel/public/file-wire.js';
 
 class Channel extends EventTarget {
@@ -9,6 +9,41 @@ class Channel extends EventTarget {
  send(data){queueMicrotask(()=>{if(this.peer.readyState==='open')this.peer.dispatchEvent(new MessageEvent('message',{data:typeof data==='string'?data:data.slice().buffer}));});}
  close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}
 }
+
+test('canceled and closed file clients keep pending native reads charged across retries until settlement', async t => {
+ const releases=[],controllers=[],peers=[];let reads=0;
+ try{
+  for(let n=0;n<FILE_READ_LIMITS.pending;n++){
+   const peer=receiver(t),controller=new AbortController();peers.push(peer);controllers.push(controller);
+   let entered;const started=new Promise(resolve=>entered=resolve);
+   const file={name:'blocked.bin',size:4,slice(){return{arrayBuffer(){reads++;entered();return new Promise(resolve=>releases.push(()=>resolve(new ArrayBuffer(4))));}};}};
+   const upload=peer.client.upload(file,undefined,controller.signal);void upload.catch(()=>{});await started;
+   if(n%2)peer.client.close();else controller.abort(Error('cancel read'));
+   await assert.rejects(upload);await new Promise(setImmediate);
+  }
+  const next=receiver(t);let invoked=false;
+  await assert.rejects(next.client.upload({name:'new.bin',size:4,slice(){invoked=true;}}),{code:'file_read_busy',outcome:'rejected'});
+  assert.equal(invoked,false);assert.equal(next.controls.length,0);assert.equal(reads,FILE_READ_LIMITS.pending);
+  releases.shift()();await new Promise(setImmediate);
+  await next.client.upload(new File(['fresh'],'fresh.bin'));
+  assert.equal(Buffer.concat(next.chunks).toString(),'fresh');
+  for(const peer of peers){assert.equal(peer.chunks.length,0);assert.equal(peer.controls.some(value=>value.type==='end'),false);}
+ }finally{for(const controller of controllers)controller.abort();for(const release of releases)release();await new Promise(setImmediate);}
+});
+
+test('a blocked file provider hits its own read deadline and cancels without waiting five minutes', async t => {
+ t.mock.timers.enable({apis:['setTimeout']});
+ const peer=receiver(t);let entered,release;
+ const started=new Promise(resolve=>entered=resolve);
+ const file={name:'blocked.bin',size:4,slice(){return{arrayBuffer(){entered();return new Promise(resolve=>release=()=>resolve(new ArrayBuffer(4)));}};}};
+ const upload=peer.client.upload(file);void upload.catch(()=>{});
+ try{
+  await started;t.mock.timers.tick(FILE_READ_LIMITS.timeoutMs);
+  await assert.rejects(upload,{code:'file_read_timeout',outcome:'unknown'});await new Promise(setImmediate);
+  assert.equal(peer.controls.filter(value=>value.type==='cancel').length,1);assert.equal(peer.chunks.length,0);assert.deepEqual(peer.failures,[true]);
+  release();await new Promise(setImmediate);assert.equal(peer.chunks.length,0);assert.equal(peer.controls.some(value=>value.type==='end'),false);
+ }finally{release?.();}
+});
 for (const acknowledge of [false, true]) test(`a stalled upload retires its file channel after ${acknowledge ? 'confirmed' : 'missing'} cancellation without replay`, async t => {
  t.mock.timers.enable({ apis: ['setTimeout'] });
  const a = new Channel(), b = new Channel(), controls = [], failed = []; a.peer = b; b.peer = a;

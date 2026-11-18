@@ -212,7 +212,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       progress.end('上传已确认完成。', true);
       try { await loadFiles(controller.signal); } catch { if (current()) $('upload-status').textContent = `上传完成：${name}；列表刷新失败，请手动刷新，不要重复上传。`; }
     } catch (error) {
-      uploadTrace.end(controller.signal.aborted ? ['timeout', 'offline', 'auth', 'page-hidden'].includes(controller.signal.reason) ? controller.signal.reason : 'aborted' : error.code === 'file_read_failed' || fileTimeoutCode(error.code) ? error.code : error.fileCode || (error.status ? 'http-status' : 'network'), error.status,
+      uploadTrace.end(controller.signal.aborted ? ['timeout', 'offline', 'auth', 'page-hidden'].includes(controller.signal.reason) ? controller.signal.reason : 'aborted' : ['file_read_failed', 'file_read_busy', 'file_read_timeout'].includes(error.code) || fileTimeoutCode(error.code) ? error.code : error.fileCode || (error.status ? 'http-status' : 'network'), error.status,
         error.outcome === 'rejected' ? 'rejected' : 'unknown');
       progress.end(controller.signal.aborted ? sending ? '上传已中断；请刷新列表核对服务器结果。' : '已取消，未发送文件内容。'
         : error.outcome === 'rejected' ? `${error.message}；本次上传已拒绝，未保存文件。` : '本次上传未完成，请核对文件列表；不会自动重试。');

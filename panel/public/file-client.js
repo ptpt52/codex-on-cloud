@@ -3,13 +3,37 @@ import { uploadOptions, uploadResult, recoverableFileStatus } from './file-uploa
 import { FORWARD_CLIENTS } from './forward-platform.js';
 import { validTransferWindow } from './transfer-window.js';
 // Amortize File/provider access over one maximum window, independently of
-// the negotiated send credits. Keep only one read in flight, at most 256 KiB.
+// the negotiated send credits. Each transfer reads one block at a time,
+// at most 256 KiB; canceled native reads also count toward the shared limit.
 const FILE_READ_BLOCK = 16 * FILE_CHUNK;
+export const FILE_READ_LIMITS = Object.freeze({ pending: 2, timeoutMs: 15000 });
+let pendingReads = 0;
+const readError = (code, outcome = 'unknown') => Object.assign(Error(code === 'file_read_busy' ? '仍有未结束的本机文件读取，请等待或刷新页面后重新选择文件' : code === 'file_read_timeout' ? '本机文件读取超时，上传已取消；请重新选择文件后手动重试' : '本机文件读取失败，上传已取消；请重新选择文件后手动重试'), { code, outcome });
+// File.arrayBuffer has no abort API. Stop waiting promptly, but keep charging
+// its slot until actual settlement, across canceled/recreated file channels.
+function readBlock(file, start, end, signal) {
+ if (signal.aborted) return Promise.reject(signal.reason);
+ if (pendingReads >= FILE_READ_LIMITS.pending) return Promise.reject(readError('file_read_busy'));
+ pendingReads++;
+ return new Promise((resolve, reject) => {
+  let done = false;
+  const finish = (error, bytes) => { if (done) return; done = true; clearTimeout(timer); signal.removeEventListener('abort', abort); error ? reject(error) : resolve(bytes); };
+  const abort = () => finish(signal.reason || readError('file_read_failed'));
+  const timer = setTimeout(() => finish(readError('file_read_timeout')), FILE_READ_LIMITS.timeoutMs);
+  signal.addEventListener('abort', abort, { once: true });
+  Promise.resolve().then(async () => {
+   if (signal.aborted || done) throw signal.reason || readError('file_read_timeout');
+   const bytes = await file.slice(start, end).arrayBuffer();
+   if (!(bytes instanceof ArrayBuffer) || bytes.byteLength !== end - start) throw readError('file_read_failed');
+   return bytes;
+  }).then(bytes => { pendingReads--; finish(null, bytes); }, () => { pendingReads--; finish(readError('file_read_failed')); });
+ });
+}
 export function createFileClient(channel, failed = () => {}, { window = 4 } = {}) {
  if (!validTransferWindow(window)) throw Error('文件窗口能力无效');
  let active,id=0,recoverable=false,cancelingId=0,cancelTimer;
  const unknown=()=>Object.assign(Error('文件直连已断开，结果未知；请检查文件状态后手动重试'),{outcome:'unknown'});
- const settle=(err,result)=>{if(!active)return;const entry=active;active=null;clearTimeout(entry.timer);entry.signal?.removeEventListener('abort',entry.abort);err?entry.reject(err):entry.resolve(result);};
+ const settle=(err,result)=>{if(!active)return;const entry=active;active=null;clearTimeout(entry.timer);entry.signal?.removeEventListener('abort',entry.abort);entry.readController?.abort(err);err?entry.reject(err):entry.resolve(result);};
  const wire=createFileWire(channel,{timedOut(err){if(active)cancel(active,err);else wire.close(err);},failed(err){clearTimeout(cancelTimer);settle(err);failed(recoverable);},chunk(bytes){
   if(cancelingId)return;
   if(!active||active.direction!=='download'||!active.started||active.received+bytes.length>active.size||active.received+bytes.length>FILE_MAX)throw unknown();
@@ -34,8 +58,8 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
       if(active!==entry)throw unknown();
       const end=Math.min(entry.size,offset+FILE_READ_BLOCK),at=performance.now();
       let bytes;
-      try{bytes=await entry.file.slice(offset,end).arrayBuffer();if(bytes.byteLength!==end-offset)throw unknown();}
-      catch{cancel(entry,Object.assign(Error('本机文件读取失败，上传已取消；请重新选择文件后手动重试'),{code:'file_read_failed',outcome:'unknown'}));throw unknown();}
+      try{bytes=await readBlock(entry.file,offset,end,entry.readController.signal);}
+      catch(error){cancel(entry,error);throw unknown();}
       entry.readMs+=performance.now()-at;
       if(active!==entry)throw unknown();
       yield new Uint8Array(bytes);
@@ -62,10 +86,11 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
  function transfer(direction,name,size,file,upload,signal,helper,progress){
   if(signal?.aborted)return Promise.reject(signal.reason||unknown());
   if(!wire.ready||active||cancelingId||id>=2147483647||!Number.isSafeInteger(size)||size<0||size>FILE_MAX)return Promise.reject(Object.assign(Error('文件直连繁忙、未就绪或文件超过 50 MiB'),{outcome:'rejected'}));
+  if(direction==='upload'&&size>0&&pendingReads>=FILE_READ_LIMITS.pending)return Promise.reject(readError('file_read_busy','rejected'));
   wire.resetMetrics();
   return new Promise((resolve,reject)=>{
    const abort=()=>cancel(entry,signal?.reason||unknown());
-   const entry=active={id:++id,direction,size,file,helper:!!helper,received:0,readMs:0,started:false,endSent:false,signal,abort,progress,resolve,reject,timer:setTimeout(abort,300000)};
+   const entry=active={id:++id,direction,size,file,helper:!!helper,received:0,readMs:0,started:false,endSent:false,readController:direction==='upload'?new AbortController():undefined,signal,abort,progress,resolve,reject,timer:setTimeout(abort,300000)};
    signal?.addEventListener('abort',abort,{once:true});
    try{wire.send({type:'start',id:entry.id,direction,name,size,...(window>4?{window}:{}),...(direction==='upload'?{upload:uploadOptions(upload)}:{}),...(helper?{helper}:{})});}catch(err){settle(err);wire.close();}
   });
