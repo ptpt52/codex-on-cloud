@@ -28,32 +28,41 @@ async function prepared(page, mode) {
   return { frame, source };
 }
 
-test('foreground and standby offers share one cancelable signaling permit', async ({ page }) => {
-  test.setTimeout(45000);
-  const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
-  let releaseFirst, active = 0, peak = 0, terminalOffers = 0, desktopOffers = 0;
-  const held = new Promise(resolve => { releaseFirst = resolve; });
-  await page.addInitScript(() => { if (window === parent) {
-    window.offerRequests = [];
-    window.addEventListener('message', event => { if (event.origin === location.origin && event.data?.type === 'codex-rtc-offer-request' && window.offerRequests.length < 16) window.offerRequests.push(event.data.frame); });
-  } });
-  await page.route(/\/api\/(terminal|desktop)\/rtc$/, async route => {
-    if (route.request().method() !== 'POST') return route.continue();
-    active++; peak = Math.max(peak, active);
-    if (route.request().url().includes('/terminal/')) { terminalOffers++; if (terminalOffers === 1) await held; } else desktopOffers++;
-    try { await route.fulfill({ response: await route.fetch() }); } finally { active--; }
+test.describe('signaling admission', () => {
+  // This test owns and holds SDP requests through page.route(). Service
+  // Workers can bypass that interception in WebKit, invalidating the counters.
+  test.use({ serviceWorkers: 'block' });
+  test('foreground and standby offers share one cancelable signaling permit', async ({ page }) => {
+    test.setTimeout(45000);
+    const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
+    let releaseFirst, active = 0, peak = 0, terminalOffers = 0, desktopOffers = 0;
+    const held = new Promise(resolve => { releaseFirst = resolve; });
+    await page.addInitScript(() => { if (window === parent) {
+      window.offerRequests = [];
+      window.addEventListener('message', event => { if (event.origin === location.origin && event.data?.type === 'codex-rtc-offer-request' && window.offerRequests.length < 16) window.offerRequests.push(event.data.frame); });
+    } });
+    await page.route(/\/api\/(terminal|desktop)\/rtc$/, async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      active++; peak = Math.max(peak, active);
+      if (route.request().url().includes('/terminal/')) { terminalOffers++; if (terminalOffers === 1) await held; } else desktopOffers++;
+      try { await route.fulfill({ response: await route.fetch() }); } finally { active--; }
+    });
+    try {
+      await login(page, app, { mode: 'terminal', modeStandby: true });
+      // WebKit can deliver both admission messages before dispatching the first
+      // HTTP request. Observe the held request itself before checking exclusion.
+      await expect.poll(() => terminalOffers, { timeout: 15000 }).toBe(1);
+      await expect.poll(() => page.evaluate(() => new Set(window.offerRequests).size), { timeout: 15000 }).toBe(2);
+      expect(terminalOffers).toBe(1); expect(desktopOffers).toBe(0);
+      releaseFirst();
+      await expect.poll(() => desktopOffers, { timeout: 15000 }).toBeGreaterThan(0);
+      await prepared(page, 'desktop');
+      await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+      expect(peak).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+    } finally { releaseFirst(); await app.close(); }
   });
-  try {
-    await login(page, app, { mode: 'terminal', modeStandby: true });
-    await expect.poll(() => page.evaluate(() => new Set(window.offerRequests).size), { timeout: 15000 }).toBe(2);
-    expect(terminalOffers).toBe(1); expect(desktopOffers).toBe(0);
-    releaseFirst();
-    await expect.poll(() => desktopOffers, { timeout: 15000 }).toBeGreaterThan(0);
-    await prepared(page, 'desktop');
-    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
-    expect(peak).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
-  } finally { releaseFirst(); await app.close(); }
 });
+
 
 for (const direct of [false, true]) for (const mode of ['desktop', 'terminal']) test(`${mode} ${direct ? 'direct' : 'relay'}: changing standby preference preserves the active renderer and connection`, async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, seamless: true, webrtc: direct, fastConnect: direct });
