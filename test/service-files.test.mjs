@@ -78,6 +78,21 @@ test('an early HTTP rejection drains already-sent file frames until the rejectio
 });
 async function setup(t,options={}){const app=await fixture({webrtc:true,...options});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
 async function fileClient(c,window=4,failed=()=>{}){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter,failed,{window});for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
+test('the real HTTP busy gate rejects a DTLS upload without retiring either service or replaying the file',async t=>{
+ const {app,c}=await setup(t),other=await serviceClient(app);t.after(()=>other.close());
+ const first=await fileClient(c,16),recovered=[],second=await fileClient(other,16,value=>recovered.push(value));
+ let release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+ const uploading=first.upload({name:'held.bin',size:32*FILE_CHUNK,slice(offset,end){return{async arrayBuffer(){if(offset){entered();await gate;}return new Uint8Array(end-offset).buffer;}};}});void uploading.catch(()=>{});
+ try{
+  await started;
+  await assert.rejects(second.upload(new File(['manual'],'busy.bin')),error=>error.status===503&&error.outcome==='rejected');
+  assert.deepEqual(recovered,[true]);assert.equal((await other.rpc('ping')).ok,true);assert.equal((await c.rpc('ping')).ok,true);
+  assert.equal(app.received.filter(value=>value.method==='PUT'&&value.url==='/files/busy.bin').length,0);
+  release();await uploading;
+  const replacement=await fileClient(other,16);await replacement.upload(new File(['manual'],'busy.bin'));
+  assert.equal(app.files.get('busy.bin').toString(),'manual');assert.equal(app.received.filter(value=>value.method==='PUT'&&value.url==='/files/busy.bin').length,1);assert.deepEqual(app.inputCalls,[]);
+ }finally{release();}
+});
 test('a temporary service peer downloads the published helper rather than a same-named shared file, and stale versions preserve service authorization',async t=>{
  const directory=await mkdtemp(join(tmpdir(),'codex-helper-direct-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const arch='windows-amd64',name=FORWARD_FILES[arch],bytes=Buffer.alloc(1024*1024,137);

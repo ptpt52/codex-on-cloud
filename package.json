@@ -54,6 +54,7 @@
     "test:forward": "node test/forward-native.mjs",
     "test:forward:agents": "node test/forward-agent-native.mjs",
     "test:forward:bench": "node test/forward-throughput-native.mjs",
+    "test:files:bench": "node test/file-throughput-native.mjs",
     "test:forward:package": "node test/forward-package-native.mjs",
     "test:forward:publication": "node test/forward-publication-native.mjs",
     "demo": "node scripts/demo.mjs"

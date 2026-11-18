@@ -105,6 +105,8 @@ WebRTC 上传日志还包含 `windowChunks`（协商窗口）、`chunkAckMs` / `
 | WebRTC 发送缓冲 | 512 KiB 上限，预留 4 KiB 控制消息空间；最多一个缓冲等待，15 秒未恢复则结束传输，不重发 |
 | HTTPS 上传进度 | 仅附着于最多四项活跃传输，绑定原登录会话；结束即移除，无历史表。浏览器最多一个在途查询，间隔 500 毫秒，单次最多等待 2.5 秒 |
 
+吞吐排查与隔离测量见[文件传输性能基线](file-performance.md)。
+
 `GET /api/files` 声明 `uploadProtocol: 1` 并返回文件 `version`；panel 同时声明 `fileProgressProtocol: 1`。HTTPS 上传可携带随机 32 位十六进制 `X-Codex-Transfer-Id`，通过只读 `/api/file-progress/<id>` 查询节点已接收字节，仅原登录会话可读。
 
 支持删除的列表另声明 `deleteProtocol: 1`。管理员向 `/api/files/delete` 发送 POST JSON `{name, version}`，保留会话、Origin 和 CSRF 校验；已有服务直连通过固定 `file-delete` 控制动作复用相同 API。panel 调用私有文件服务的 DELETE，并携带精确 `If-Match` 版本；没有版本或额外字段返回 400，变化或缺失返回 412，文件上传繁忙返回 409。成功回复必须包含 `ok: true` 和原文件名；请求已发出后不切换通道重试。

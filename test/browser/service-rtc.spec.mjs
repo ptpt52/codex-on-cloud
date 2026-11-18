@@ -1,6 +1,65 @@
 import { test,expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
+async function startIsolatedService(page,app) {
+ await page.goto(app.config.origin);
+ await page.evaluate(async credentials => {
+  const response=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(credentials)});
+  if(!response.ok)throw Error('isolated service login failed');
+  const settings=await(await fetch('/api/me')).json(),{createServiceLink}=await import('/service-link.js');
+  window.auditService=createServiceLink({viewer:crypto.randomUUID(),options:()=>settings,changed(){}});window.auditService.start();
+ },{username:app.config.username,password:app.config.password});
+ await expect.poll(()=>page.evaluate(()=>!!window.auditService?.files),{timeout:15000}).toBe(true);
+}
+test('real service RPC cancellation drains its delayed HTTP reply while an independent DTLS upload completes once',async({page})=>{
+ let release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+ const app=await fixture({webrtc:true,serviceDiagnostics:async()=>{entered();await gate;return{available:false};}});
+ try{
+  await startIsolatedService(page,app);
+  await page.evaluate(()=>{
+   window.auditCancel=new AbortController();
+   window.auditReply=window.auditService.request('diagnostics',{},window.auditCancel.signal).catch(error=>({outcome:error.outcome}));
+   window.auditUpload=window.auditService.files.upload({name:'real-boundary.bin',size:4,slice(){return{arrayBuffer:()=>new Promise(resolve=>{window.releaseAuditRead=()=>resolve(new TextEncoder().encode('safe').buffer);})};}});void window.auditUpload.catch(()=>{});
+  });
+  await started;await expect.poll(()=>page.evaluate(()=>typeof window.releaseAuditRead)).toBe('function');
+  await page.evaluate(()=>window.auditCancel.abort());release();
+  expect(await page.evaluate(async()=>({reply:await window.auditReply,ready:window.auditService.ready,fileBusy:window.auditService.files?.busy}))).toEqual({reply:{outcome:'unknown'},ready:true,fileBusy:true});
+  await page.evaluate(async()=>{window.releaseAuditRead();await window.auditUpload;await window.auditService.request('files',{});window.auditService.stop();});
+  expect(app.files.get('real-boundary.bin').toString()).toBe('safe');expect(app.received.filter(value=>value.method==='PUT'&&value.url==='/files/real-boundary.bin')).toHaveLength(1);
+  expect(app.inputCalls).toEqual([]);expect(app.vncConnections).toBe(0);
+ }finally{release();await app.close();}
+});
+test('a real server promotion retires the old peer before a hidden page receives and adopts its held confirmation',async({page})=>{
+ const app=await fixture({webrtc:true});
+ try{
+  await page.addInitScript(()=>{
+   const create=RTCPeerConnection.prototype.createDataChannel;let services=0;
+   RTCPeerConnection.prototype.createDataChannel=function(label,...args){
+    const channel=create.call(this,label,...args);if(label!=='codex-service'||++services!==2)return channel;
+    const send=channel.send.bind(channel),listen=channel.addEventListener.bind(channel);let holding=false;const held=[];
+    channel.send=bytes=>{try{const value=JSON.parse(new TextDecoder().decode(new Uint8Array(bytes.buffer||bytes,bytes.byteOffset||0,bytes.byteLength).subarray(4)));if(value.action==='promote')holding=true;}catch{}return send(bytes);};
+    channel.addEventListener=(type,listener,options)=>listen(type,type==='message'?event=>{if(holding){if(held.length>=2)throw Error('held confirmation bound');held.push(()=>listener.call(channel,event));window.releaseRealPromotion=()=>{holding=false;for(const reply of held.splice(0))reply();};}else listener.call(channel,event);}:listener,options);
+    return channel;
+   };
+  });
+  await startIsolatedService(page,app);
+  await page.evaluate(()=>{
+   window.auditOld=window.auditService.transport;
+   // Select the real candidate independently of runner RTT jitter; only the
+   // admission score is fixed, never the HTTP/DTLS/promotion result under test.
+   Object.defineProperty(window.auditOld.health,'rttMs',{get:()=>1000});
+   window.auditRecheck=window.auditService.recheck();
+  });
+  await expect.poll(()=>page.evaluate(()=>typeof window.releaseRealPromotion),{timeout:15000}).toBe('function');
+  await expect.poll(()=>page.evaluate(()=>window.auditOld.control.ready)).toBe(false);
+  const result=await page.evaluate(async()=>{
+   Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));
+   window.releaseRealPromotion();await window.auditRecheck;
+   const result={ready:window.auditService.ready,replaced:window.auditService.transport!==window.auditOld,files:(await window.auditService.request('files',{})).files};window.auditService.stop();return result;
+  });
+  expect(result).toEqual({ready:true,replaced:true,files:[]});expect(app.inputCalls).toEqual([]);expect(app.vncConnections).toBe(0);
+ }finally{await app.close();}
+});
 for (const action of ['state', 'file-delete']) test(`a late successful ${action} after caller cancellation preserves the service and its active file`, async ({ page }) => {
  const app = await fixture();
  try {
