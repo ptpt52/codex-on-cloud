@@ -6,6 +6,13 @@ import { fixture } from './fixture.mjs';
 import { serviceClient } from './support/service-client.mjs';
 import { localServiceRequest } from '../panel/service-rtc.mjs';
 async function setup(app){await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});}
+test('an oversized reply cannot classify an already committed service mutation as rejected', async t => {
+ let committed=0,calls=0;
+ const server=http.createServer((req,res)=>{req.resume();calls++;if(req.method==='POST')committed++;res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true,padding:'x'.repeat(241*1024)}));});
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ for(const action of ['file-delete','files'])await assert.rejects(localServiceRequest(server.address().port,{},action,{name:'once',version:'a'.repeat(64)},new AbortController().signal),{status:503,outcome:action==='file-delete'?'unknown':'rejected'});
+ assert.equal(committed,1);assert.equal(calls,2);
+});
 for(const afterHeaders of [false,true])test(`local HTTP failure ${afterHeaders?'during the body':'before headers'} retains a distinct diagnostic code`,async t=>{
  const server=http.createServer((req,res)=>{req.resume();if(afterHeaders){res.writeHead(200,{'content-type':'application/json'});res.write('{');setImmediate(()=>res.destroy());}else req.socket.destroy();});
  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});

@@ -27,7 +27,7 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
     const req = http.request({ host: '127.0.0.1', port, path: prefix + path, method, signal: requestSignal,
       headers: { ...headers, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
       const chunks = []; let size = 0;
-      res.on('data', chunk => { size += chunk.length; if (size > 240 * 1024) res.destroy(error(503, '服务响应过大，请使用 HTTPS')); else chunks.push(chunk); });
+      res.on('data', chunk => { size += chunk.length; if (size > 240 * 1024) res.destroy(error(503, '服务响应过大，请使用 HTTPS', method === 'POST' ? 'unknown' : 'rejected')); else chunks.push(chunk); });
       res.once('error', err => reject(transportError(err))); res.once('end', () => {
         try { const result = JSON.parse(Buffer.concat(chunks).toString());
           if (res.statusCode !== 200) throw error(res.statusCode, result.error || '服务操作失败', result.outcome || (method === 'POST' && res.statusCode >= 500 ? 'unknown' : 'rejected'));
