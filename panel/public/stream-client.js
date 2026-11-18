@@ -486,6 +486,7 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
   }
   let preparedProbe;
   const recheck = createRTCRecheck({
+    trace,
     allowed: () => !ended && !!active?.ready && !targetPending && !directController,
     idle: () => idle() && settled() && inputAck === sent && !creating() && !targetPending && !transitioning && !claiming && healthy(peers.get('relay')),
     current: () => active && ({ rttMs: active.quality.rttMs ?? socket.rttMs }),

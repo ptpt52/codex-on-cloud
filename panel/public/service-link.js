@@ -137,6 +137,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     else if (!current) schedule(Math.max(100, 5000 - (performance.now() - probeAt)));
   }
   const recheck = createRTCRecheck({
+    trace,
     allowed: () => running && !pending,
     idle: () => !busy && !files?.busy && !checking && !replacing && canReplace(),
     current: () => current && !current.control?.draining && ({ rttMs: current.health.rttMs }),

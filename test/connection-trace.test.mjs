@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createConnectionTrace, createTraceReporter, TRACE_LIMITS, TRACE_STORAGE_KEY, traceDescription } from '../panel/public/connection-trace.js';
+test('recheck phases and results are whitelisted, readable and cannot expose raw errors', () => {
+  const trace = createConnectionTrace(undefined, { enabled: true });
+  trace.add({ type: 'recheck-ended', step: 'commit', result: 'failed', outcome: 'unknown', reason: 'rpc-timeout', durationMs: 8000, error: 'PRIVATE_ERROR', candidate: 'PRIVATE_ADDRESS' }, { mode: 'service' });
+  trace.add({ type: 'recheck-ended', step: 'PRIVATE_STEP', result: 'PRIVATE_RESULT', reason: 'PRIVATE_REASON', status: 409 }, { mode: 'terminal' });
+  trace.add({ type: 'path-lost', step: 'commit', result: 'failed' }, { mode: 'desktop' });
+  const events = trace.snapshot();
+  assert.match(traceDescription(events[0]), /开始提交切换.*本次重测失败.*结果未知/);
+  assert.equal(events[1].step, undefined); assert.equal(events[1].result, undefined);
+  assert.equal(events[2].step, undefined); assert.equal(events[2].result, undefined);
+  assert.equal(trace.text().includes('PRIVATE_'), false);
+});
 test('RPC reasons and fixed action names survive export while arbitrary actions and sensitive fields do not', () => {
   const trace = createConnectionTrace(undefined, { enabled: true });
   trace.add({ type: 'rpc-failed', path: 'direct', reason: 'local-http-timeout', action: 'diagnostics', status: 504, outcome: 'unknown', durationMs: 6000, body: 'PRIVATE_BODY', error: 'PRIVATE_MESSAGE' }, { mode: 'service' });

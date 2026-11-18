@@ -17,7 +17,10 @@ for (const mode of ['terminal', 'desktop']) for (const fault of ['lost reply', '
   const app = await fixture({ mode, rfb: true, webrtc: true });
   try {
     await page.addInitScript(({ mode, fault }) => {
-      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode }));
+      if (window === parent) {
+        localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode, networkDebug: true }));
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.recheckLog = value; } } });
+      }
       window.recheckPeers = []; window.recheckFaultReplies = 0; window.oldHealthSends = 0;
       const record = data => {
         const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -74,6 +77,13 @@ for (const mode of ['terminal', 'desktop']) for (const fault of ['lost reply', '
     }
     await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
     expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    await page.locator('#connection-trace > summary').click();
+    await expect(page.locator('#connection-trace-list')).toContainText('手动直连重测结束');
+    await page.locator('#copy-connection-trace').click();
+    const events = JSON.parse(await page.evaluate(() => window.recheckLog)).events.filter(event => event.mode === mode && event.type.startsWith('recheck-'));
+    expect(events.map(event => event.type)).toEqual(['recheck-start', 'recheck-switch', 'recheck-ended']);
+    expect(events.at(-1)).toMatchObject({ step: 'switch', result: 'failed', outcome: fault === 'refusal' ? 'rejected' : 'unknown' });
+    if (fault === 'refusal') expect(events.at(-1).status).toBe(400);
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });

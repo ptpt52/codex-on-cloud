@@ -563,6 +563,7 @@ async function probeDirect() {
   }
 }
 const legacyRecheck = createRTCRecheck({
+  trace,
   allowed: () => ready && !stopped && !standby && !switching && !candidateController,
   idle: idleForSwitch,
   current: () => ({ rttMs: health?.rttMs }),

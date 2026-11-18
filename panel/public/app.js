@@ -1766,7 +1766,7 @@ $('connection-dialog').addEventListener('close', stopDiagnostics);
 $('refresh-connection').addEventListener('click', () => { void poll(); void loadDiagnostics(); });
 const hintProbeLabels = { probing: '正在验证新候选，当前连接继续运行。', waiting: '候选已验证，等待操作空闲及备用通道就绪。', switching: '正在选择并切换可用路径。',
   selected: '新连接已启用，实际路径见下方。', verified: '新候选已验证并待命，按路径质量选择。', kept: '已验证候选，保留当前更快的连接。',
-  deferred: '当前切换条件尚未满足，保留可用连接，可稍后重新探测。', failed: '本次探测未成功，继续使用可用连接。', cancelled: '本次探测已结束，保留可用连接。', busy: '已有协商或操作进行中，可稍后重新探测。', unavailable: '当前未具备探测条件，提示将在后续协商使用。' };
+  deferred: '当前切换条件尚未满足，保留可用连接，可稍后重新探测。', failed: '本次探测未成功，请以下方实际连接状态为准。', cancelled: '本次探测已结束，请以下方实际连接状态为准。', busy: '已有协商或操作进行中，可稍后重新探测。', unavailable: '当前未具备探测条件，提示将在后续协商使用。' };
 function finishHintProbe() {
   clearTimeout(hintProbe?.timer); hintProbe = undefined;
   for (const id of ['save-direct-hints', 'save-direct-hints-only', 'import-direct-hints', 'clear-direct-hints']) $(id).disabled = false;

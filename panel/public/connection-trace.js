@@ -16,10 +16,13 @@ export const TRACE_LABELS = Object.freeze({
   'view-start': '准备查看连接', 'view-reused': '复用待命视图', 'view-discarded': '释放待命视图',
   'request-failed': '节点请求失败', 'request-recovered': '节点请求已恢复',
   'rpc-failed': '直连控制请求失败', 'rpc-recovered': '迟到回复已排空，控制通道恢复', 'control-closed': '直连控制通道已关闭',
+  'recheck-start': '开始手动直连重测', 'recheck-switch': '候选验证完成，准备切换', 'recheck-ended': '手动直连重测结束',
   'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束',
   'capture-start': '开始记录网络调试日志',
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
+export const TRACE_RECHECK_STEPS = Object.freeze({ candidate: '创建候选', connect: '建立候选连接', health: '验证候选心跳', stats: '比较路径质量', idle: '等待操作空闲', switch: '切换与接管', commit: '开始提交切换' });
+export const TRACE_RECHECK_RESULTS = Object.freeze({ selected: '新连接已启用', verified: '候选已验证并待命', kept: '保留当前路径', deferred: '暂未切换', failed: '本次重测失败', cancelled: '本次重测已取消' });
 export const TRACE_REASONS = Object.freeze({
   unsupported: '浏览器不支持 WebRTC', disabled: '直连功能未启用', signaling: '协商请求未完成', negotiation: '协商未成功', timeout: '连接超时',
   'signaling-timeout': '交换连接信息超时', 'gathering-timeout': '地址收集超时', 'ice-timeout': '网络路径探测超时', 'channel-timeout': '加密数据通道建立超时',
@@ -54,6 +57,8 @@ function clean(value) {
   if (Object.hasOwn(routes, value.route)) result.route = value.route;
   if (['confirmed', 'rejected', 'unknown', 'canceled'].includes(value.outcome)) result.outcome = value.outcome;
   if (Object.hasOwn(TRACE_STAGES, value.stage)) result.stage = value.stage;
+  if (value.type.startsWith('recheck-') && Object.hasOwn(TRACE_RECHECK_STEPS, value.step)) result.step = value.step;
+  if (value.type === 'recheck-ended' && Object.hasOwn(TRACE_RECHECK_RESULTS, value.result)) result.result = value.result;
   if (reasons.includes(value.reason)) result.reason = value.reason;
   if (['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed', 'gathering', 'complete'].includes(value.state)) result.state = value.state;
   if (['ice', 'peer', 'gathering'].includes(value.phase)) result.phase = value.phase;
@@ -188,6 +193,8 @@ function cleanCurrent(value) {
 export function traceDescription(event, now = Date.now()) {
   const states = { new: '新建', checking: '正在探测', connecting: '正在连接', connected: '已连接', completed: '已完成', disconnected: '暂时断开', failed: '失败', closed: '已关闭', gathering: '正在收集', complete: '收集完成' };
   const parts = [TRACE_LABELS[event.type], event.stage && TRACE_STAGES[event.stage], event.phase && ({ ice: 'ICE 路径', peer: '加密连接', gathering: '候选收集' })[event.phase], event.state && states[event.state], event.reason && TRACE_REASONS[event.reason]];
+  if (event.step) parts.push(TRACE_RECHECK_STEPS[event.step]);
+  if (event.result) parts.push(TRACE_RECHECK_RESULTS[event.result]);
   if (event.operation) parts.push(({ state: '状态查询', terminals: '终端管理', files: '文件传输', forward: '端口映射', access: '访问验证', desktop: '桌面控制', input: '输入通道', other: '节点接口' })[event.operation]);
   if (event.action) parts.push(({ ping: '服务探针', promote: '服务连接切换', activate: '启用通道', state: '状态查询', diagnostics: '连接诊断', files: '文件列表', 'file-delete': '删除文件', 'forward-list': '映射列表', clipboard: '剪贴板', paste: '粘贴', key: '按键', edit: '编辑', terminal: '终端输入', terminals: '终端列表', 'create-terminal': '新建终端', 'open-terminal': '打开终端' })[event.action]);
   if (event.status) parts.push(`HTTP ${event.status}`);

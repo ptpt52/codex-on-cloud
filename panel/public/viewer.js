@@ -30,6 +30,7 @@ const screen = document.getElementById('screen');
 const panLayer = document.getElementById('pan-layer');
 const preferences = { standby: false, zoom: 'fit', pan: false, blocked: true, revision: -1, pointerMode: 'touch', scrollTarget: 'viewport' };
 const legacyRecheck = createRTCRecheck({
+  trace,
   allowed: () => viewing && !stopping && !preferences.standby && !switching && !probeController,
   idle: idleForSwitch,
   current: () => transport && ({ rttMs: transport.health.rttMs }),

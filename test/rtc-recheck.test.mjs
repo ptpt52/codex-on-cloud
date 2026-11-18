@@ -1,0 +1,67 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRTCRecheck } from '../panel/public/rtc-recheck.js';
+import { createConnectionTrace } from '../panel/public/connection-trace.js';
+
+function browser(t) {
+  for (const [name, value] of Object.entries({ document: { hidden: false }, navigator: { onLine: true } })) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+    t.after(() => { if (original) Object.defineProperty(globalThis, name, original); else delete globalThis[name]; });
+  }
+}
+function probe(t, overrides = {}) {
+  browser(t);
+  const trace = createConnectionTrace(undefined, { enabled: true }); let closes = 0;
+  const candidate = { start: async () => {}, health: { ping: async () => {}, rttMs: 1 }, stats: async () => null, close: () => closes++ };
+  const recheck = createRTCRecheck({ open: async () => candidate, current: () => null, allowed: () => true, idle: () => true,
+    replace: async () => ({ retained: true, state: 'selected' }), trace: (type, value) => trace.add({ type, ...value }, { mode: 'terminal' }), ...overrides });
+  return { recheck, candidate, trace, get closes() { return closes; } };
+}
+
+for (const step of ['candidate', 'connect', 'health', 'stats', 'switch', 'commit']) test(`recheck failure at ${step} records its phase and preserves uncertainty after dispatch`, async t => {
+  const p = probe(t), error = Object.assign(Error('PRIVATE_ERROR_BODY'), { code: step === 'health' ? 'heartbeat_timeout' : step === 'commit' ? 'rpc_timeout' : 'PRIVATE_CODE', reason: 'PRIVATE_REASON' });
+  const fail = async () => { throw error; };
+  if (step === 'candidate') p.recheck = createRTCRecheck({ open: fail, current: () => null, allowed: () => true, idle: () => true, replace: fail,
+    trace: (type, value) => p.trace.add({ type, ...value }, { mode: 'terminal' }) });
+  else if (step === 'connect') p.candidate.start = fail;
+  else if (step === 'health') p.candidate.health.ping = fail;
+  else if (step === 'stats') p.candidate.stats = fail;
+  else p.recheck = createRTCRecheck({ open: async () => p.candidate, current: () => null, allowed: () => true, idle: () => true,
+    replace: async (_candidate, _signal, commit) => { if (step === 'commit') assert.equal(commit(), true); throw error; },
+    trace: (type, value) => p.trace.add({ type, ...value }, { mode: 'terminal' }) });
+  const reports = []; await p.recheck.run(value => reports.push(value));
+  const end = p.trace.snapshot().at(-1);
+  assert.equal(end.type, 'recheck-ended'); assert.equal(end.step, step); assert.equal(end.result, 'failed');
+  assert.equal(end.outcome, ['switch', 'commit'].includes(step) ? 'unknown' : 'rejected');
+  assert.equal(end.reason, step === 'health' ? 'heartbeat' : step === 'commit' ? 'rpc-timeout' : 'connection');
+  assert.equal(p.closes, step === 'candidate' ? 0 : 1); assert.equal(p.recheck.running, false);
+  assert.equal(reports.at(-1).state, 'failed'); assert.equal(p.trace.text().includes('PRIVATE_'), false);
+  assert.ok(p.trace.snapshot().length <= 3);
+});
+
+test('a refused activation keeps its explicit rejected result rather than reporting an unknown commit', async t => {
+  const p = probe(t, { replace: async (_candidate, _signal, commit) => { commit(); throw Object.assign(Error('PRIVATE_REFUSAL'), { status: 409, outcome: 'rejected' }); } });
+  await p.recheck.run(); const end = p.trace.snapshot().at(-1);
+  assert.equal(end.step, 'commit'); assert.equal(end.status, 409); assert.equal(end.reason, 'http-status'); assert.equal(end.outcome, 'rejected');
+  assert.equal(p.trace.text().includes('PRIVATE_'), false);
+});
+
+test('recheck cancellation before a handoff is canceled while cancellation after dispatch stays unknown', async t => {
+  browser(t);
+  for (const committed of [false, true]) {
+    const events = []; let recheck;
+    recheck = createRTCRecheck({ allowed: () => true, idle: () => true, current: () => null,
+      open: async () => ({ start: async () => {}, health: { ping: async () => {} }, stats: async () => { if (!committed) recheck.cancel(); }, close() {} }),
+      replace: async (_candidate, _signal, commit) => { commit(); recheck.cancel({ force: true }); throw Error('cancelled'); },
+      trace: (type, value) => events.push({ type, ...value }) });
+    await recheck.run(); const end = events.at(-1);
+    assert.equal(end.result, 'cancelled'); assert.equal(end.reason, 'aborted'); assert.equal(end.outcome, committed ? 'unknown' : 'canceled');
+  }
+});
+
+test('a failing diagnostic sink cannot stop a successful candidate adoption', async t => {
+  const p = probe(t, { trace() { throw Error('diagnostic sink unavailable'); } });
+  const reports = []; await p.recheck.run(value => reports.push(value));
+  assert.equal(p.closes, 0); assert.equal(p.recheck.running, false); assert.equal(reports.at(-1).state, 'selected');
+});
