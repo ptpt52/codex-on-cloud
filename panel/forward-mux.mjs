@@ -57,7 +57,10 @@ export function createForwardMux(ws, { valid, healthy, connect }) {
       if (id <= last || bytes.length) throw Error('Reused mux stream');
       last = id;
       if (performance.now() - openedAt >= 10000) { openedAt = performance.now(); opens = 0; }
-      if (++opens > MUX_LIMITS.opens) throw Error('Mux open rate');
+      // This ID is consumed even when admission is denied. Limit only the
+      // new stream; existing rule traffic still belongs to the healthy WSS.
+      if (opens >= MUX_LIMITS.opens) { send(3, id); return; }
+      opens++;
       if (!healthy() || channels.size >= MUX_LIMITS.streams) { send(3, id); return; }
       const channel = { readyState: 'open', get bufferedAmount() { return (queues.get(id)?.bytes || 0) + (writing?.id === id ? writing.bytes : 0); }, onMessage: signal(), stateChange: signal(), error: signal(),
         send(value) { send(Buffer.isBuffer(value) ? 2 : 1, id, Buffer.from(value)); },

@@ -4,7 +4,7 @@ import net from 'node:net';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { fixture } from './fixture.mjs';
-import { createForwardMux } from '../panel/forward-mux.mjs';
+import { createForwardMux, MUX_LIMITS } from '../panel/forward-mux.mjs';
 
 const until = async probe => { const end = Date.now() + 5000; while (!await probe()) { if (Date.now() > end) throw Error('pool test deadline'); await new Promise(resolve => setTimeout(resolve, 10)); } };
 const frame = (op, id, bytes = '') => { const body = Buffer.from(bytes), result = Buffer.alloc(5 + body.length); result[0] = op; result.writeUInt32BE(id, 1); body.copy(result, 5); return result; };
@@ -161,6 +161,65 @@ test('one paused or over-credit WSS stream cannot block or close another rule on
     assert.equal(sockets[0].readyState, 3); assert.equal(sockets[1].readyState, 1);
     assert.equal(mux.streams, 1);
   } finally { mux.close(); }
+});
+
+test('aggregate preflight limits reject only new streams, consume IDs and reset after ten seconds', async t => {
+  let now = 1; t.mock.method(performance, 'now', () => now);
+  const packets = [], counts = Array(9).fill(0); let retained;
+  const ws = { readyState: 1, bufferedAmount: 0, send(bytes, callback) { packets.push(bytes); callback?.(); }, terminate() { assert.fail('admission pressure must preserve the physical WSS'); } };
+  const mux = createForwardMux(ws, { valid: () => true, healthy: () => true, connect(socket, record) {
+    counts[parseInt(record.mapping, 16) - 1]++;
+    if (!retained) { retained = socket; socket.on('message', bytes => socket.send(bytes)); }
+  } });
+  try {
+    for (let id = 1; id <= MUX_LIMITS.opens; id++) {
+      mux.receive(frame(4, id)); mux.receive(frame(1, id, JSON.stringify({ type: 'open', mapping: ((id - 1) % 9 + 1).toString(16), token: 'a'.repeat(43) })));
+      if (id !== 1) mux.receive(frame(3, id));
+    }
+    assert.equal(counts.reduce((sum, value) => sum + value, 0), 256); assert(Math.max(...counts) < 32);
+    const denied = MUX_LIMITS.opens + 1;
+    mux.receive(frame(4, denied)); mux.receive(frame(3, denied));
+    await new Promise(resolve => setImmediate(resolve));
+    assert(packets.some(bytes => bytes[0] === 3 && bytes.readUInt32BE(1) === denied));
+    assert(!packets.some(bytes => bytes[0] === 5 && bytes.readUInt32BE(1) === denied));
+    assert.equal(retained.readyState, 1); assert.equal(mux.streams, 1);
+    mux.receive(frame(2, 1, 'existing flow still works'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert(packets.some(bytes => bytes[0] === 2 && bytes.readUInt32BE(1) === 1 && bytes.subarray(5).toString() === 'existing flow still works'));
+    assert.throws(() => mux.receive(frame(4, denied)), /Reused/);
+    now += 10000; mux.receive(frame(4, denied + 1));
+    await new Promise(resolve => setImmediate(resolve));
+    assert(packets.some(bytes => bytes[0] === 5 && bytes.readUInt32BE(1) === denied + 1));
+    assert.equal(mux.streams, 2);
+  } finally { mux.close(); }
+});
+
+test('a real pooled WebSocket keeps its established TCP stream after excess preflight requests', { timeout: 10000 }, async t => {
+  t.mock.method(performance, 'now', () => 1); // Keep only the admission clock fixed.
+  const app = await fixture({ forwardPorts: '*' }), clients = [], targets = new Set(); let accepted = 0;
+  const echo = net.createServer(tcp => { accepted++; targets.add(tcp); tcp.on('error', () => {}); tcp.once('close', () => targets.delete(tcp)); tcp.pipe(tcp); });
+  echo.listen(0, '127.0.0.1'); await once(echo, 'listening');
+  try {
+    await app.login(); await app.claim();
+    const helper = await agent(app); clients.push(helper.ws);
+    const mapping = await rule(app, helper, echo.address().port, 22001); clients.push(mapping.ws);
+    const transport = await pool(app, helper); clients.push(transport.ws);
+    const id = await transport.open(mapping.ready.id, mapping.ready.streamToken);
+    await until(() => transport.packets.some(value => value.op === 1 && value.id === id && value.data.toString() === '{"type":"ready"}'));
+    await transport.echo(id, 'before limit');
+    const refused = new Promise((resolve, reject) => {
+      transport.ws.once('close', () => reject(Error('admission limit closed an established TCP stream')));
+      transport.ws.on('message', (bytes, binary) => { if (binary && bytes[0] === 3 && bytes.readUInt32BE(1) === MUX_LIMITS.opens + 1) resolve(); });
+    });
+    for (let next = 2; next <= MUX_LIMITS.opens + 1; next++) { transport.ws.send(frame(4, next)); transport.ws.send(frame(3, next)); }
+    await refused;
+    const echoed = new Promise(resolve => transport.ws.on('message', (bytes, binary) => {
+      if (binary && bytes[0] === 2 && bytes.readUInt32BE(1) === id && bytes.subarray(5).toString() === 'after limit') resolve();
+    }));
+    transport.ws.send(frame(2, id, 'after limit')); await echoed;
+    assert.equal(accepted, 1); assert.equal(transport.ws.readyState, 1);
+    assert.deepEqual(app.inputCalls, []); assert.equal(app.vncConnections, 0);
+  } finally { for (const ws of clients) ws.terminate(); for (const tcp of targets) tcp.destroy(); await new Promise(resolve => echo.close(resolve)); await app.close(); }
 });
 
 test('shared WSS serializes writes, prioritizes a new preflight over bulk backlog, and keeps FIN after its own data', async () => {
