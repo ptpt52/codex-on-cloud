@@ -35,12 +35,16 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
   }
   function keepFileProgress(version, peer) {
     if (!files?.progressing) return false;
-    healthMisses = 0; state.issue = '';
+    healthMisses = 0; state.issue = peer.control?.draining ? 'rpc-timeout' : '';
     if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-delayed', { path: 'direct', reason: 'file-progress', waitMs: 3000 }); }
     timer = setTimeout(() => void monitor(version, peer), 3000); publish(); return true;
   }
   async function monitor(version, peer) {
     if (!running || epoch !== version || current !== peer || checking || replacing || document.hidden || !navigator.onLine) return;
+    // An unanswered RPC cannot hold an idle service forever. While a bounded
+    // file transfer is active, preserve its separate channel and use HTTPS for
+    // new controls. Retire after completion unless the late reply has drained.
+    if (peer.control?.draining && !files?.busy) { retire('rpc-timeout'); schedule(1000); return; }
     const generation = ++monitorGeneration;
     const active = () => running && epoch === version && current === peer && generation === monitorGeneration && !document.hidden && navigator.onLine;
     {
@@ -49,7 +53,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       // If progress stops for six seconds, resume normal heartbeat checks.
       if (keepFileProgress(version, peer)) return;
       checking = true;
-      try { await peer.health.ping({ confirmation: healthMisses > 0 }); if (!active()) return; const route = await peer.stats(); if (active()) { healthMisses = 0; state.issue = ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
+      try { await peer.health.ping({ confirmation: healthMisses > 0 }); if (!active()) return; const route = await peer.stats(); if (active()) { healthMisses = 0; state.issue = peer.control?.draining ? 'rpc-timeout' : ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
       catch (error) {
         if (active()) {
           if (error.code === 'heartbeat_timeout' && keepFileProgress(version, peer)) return;
@@ -101,7 +105,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
   const recheck = createRTCRecheck({
     allowed: () => running && !pending,
     idle: () => !busy && !files?.busy && !checking && !replacing && canReplace(),
-    current: () => current && ({ rttMs: current.health.rttMs }),
+    current: () => current && !current.control?.draining && ({ rttMs: current.health.rttMs }),
     open: async signal => {
       let candidate; const promoteRequired = !!current;
       candidate = await desktopTransport(viewer, () => {}, { service: true, recheck: promoteRequired, probe: true, trace, signal, bootstrap: options,
@@ -142,7 +146,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
   });
   window.addEventListener('online', wake); window.addEventListener('offline', wake); navigator.connection?.addEventListener('change', wake);
   document.addEventListener('visibilitychange', wake);
-  return { state, get running() { return running; }, get ready() { return !!current && state.ready; }, get busy() { return busy; },
+  return { state, get running() { return running; }, get ready() { return !!current && state.ready && !current.control?.draining; }, get busy() { return busy; },
     get rttMs() { return current?.health.rttMs ?? null; },
     get transport() { return current; },
     get files() { return !replacing && files?.ready ? files : null; },
@@ -152,12 +156,18 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     stop() { running = false; epoch++; recheck.cancel({ force: true }); clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },
     async request(action, body, signal) {
       const peer = current;
-      if (!peer || !state.ready || busy || replacing || signal?.aborted) throw Object.assign(Error('服务直连未就绪，本次操作未发送'), { outcome: 'rejected' });
+      if (!peer || !state.ready || peer.control?.draining || busy || replacing || signal?.aborted) throw Object.assign(Error('服务直连未就绪，本次操作未发送'), { outcome: 'rejected' });
       busy = true;
       let value;
       try {
         value = await peer.control.request(action, body);
-      } catch (err) { if (!err.status && current === peer) { retire('connection'); schedule(1000); } throw err; }
+      } catch (err) {
+        if (!err.status && current === peer) {
+          if (err.code === 'rpc_timeout' && files?.busy) { state.issue = 'rpc-timeout'; publish(); }
+          else { retire(err.code === 'rpc_timeout' ? 'rpc-timeout' : 'connection'); schedule(1000); }
+        }
+        throw err;
+      }
       finally { busy = false; }
       // Drain the one admitted RPC before releasing its slot. Caller cancellation
       // does not undo a dispatched action or invalidate the shared file channel.

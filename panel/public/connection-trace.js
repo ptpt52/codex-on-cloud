@@ -24,6 +24,7 @@ export const TRACE_REASONS = Object.freeze({
   online: '设备恢复联网', visible: '页面返回前台', changed: '设备报告网络变化', busy: '服务端协商繁忙', auth: '访问权限需要重新确认', target: '终端或查看会话身份发生变化',
   protocol: '协商参数未被接受', closed: '连接已关闭', 'input-unknown': '输入结果无法确认', 'input-pressure': '输入队列达到上限', 'target-unknown': '切换结果无法确认',
   'resume-timeout': '恢复查看连接超时', 'session-expired': '查看会话已失效', 'signal-failed': '协商服务暂不可达',
+  'rpc-timeout': '控制请求超时，操作结果待确认',
   standby: '后台待命视图禁止切换路径', 'keyboard-open': '远程键盘仍处于开启状态', 'frame-loading': '等待桌面首帧或尺寸恢复',
   'input-active': '等待输入空闲', composition: '输入法正在选字', 'keys-held': '等待按键或指针释放', 'ui-busy': '等待界面操作完成',
   history: '正在查找、复制或查看历史', 'target-switch': '正在切换终端', cooldown: '连接路径切换冷却期', 'quality-warming': '等待延迟采样',

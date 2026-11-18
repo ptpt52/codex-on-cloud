@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { controlDecoder, sendControl, CONTROL_LIMIT } from '../panel/public/control.js';
+import { controlDecoder, sendControl, CONTROL_LIMIT, createControlClient } from '../panel/public/control.js';
 import { attachRTCControl } from '../panel/rtc-control.mjs';
 
 function channel() {
@@ -15,6 +15,38 @@ function receive(channel, value) {
   const sender = { readyState: 'open', bufferedAmount: 0, send: bytes => channel.emit(bytes) };
   sendControl(sender, value);
 }
+
+function clientChannel() {
+  const wire = new EventTarget();
+  Object.assign(wire, { readyState: 'open', bufferedAmount: 0, packets: [], send(bytes) { this.packets.push(bytes); }, close() { if (this.readyState === 'closed') return; this.readyState = 'closed'; this.dispatchEvent(new Event('close')); } });
+  return wire;
+}
+function reply(wire, value) { sendControl({ readyState: 'open', bufferedAmount: 0, send: data => wire.dispatchEvent(new MessageEvent('message', { data })) }, value); }
+
+test('a service RPC timeout quarantines one ID, rejects new work and drains its late reply without replay', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const wire = clientChannel(), states = [], client = createControlClient(wire, ready => states.push(ready), { keepOnTimeout: true });
+  const pending = client.request('file-delete', { name: 'once' });
+  const rejected = assert.rejects(pending, { code: 'rpc_timeout', outcome: 'unknown' });
+  t.mock.timers.tick(8000); await rejected;
+  assert.equal(wire.readyState, 'open'); assert.equal(client.ready, false); assert.equal(client.draining, true);
+  await assert.rejects(client.request('state', {}), { outcome: 'rejected' }); assert.equal(wire.packets.length, 1);
+  reply(wire, { id: 1, ok: true, value: { ok: true } });
+  assert.equal(client.ready, true); assert.equal(client.draining, false);
+  const next = client.request('state', {}); reply(wire, { id: 2, ok: true, value: { fresh: true } });
+  assert.deepEqual(await next, { fresh: true }); assert.equal(wire.packets.length, 2); assert.deepEqual(states, [false, true]); client.close();
+});
+
+test('desktop controls still close after timeout and invalid late service replies fail closed', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const service of [false, true]) {
+    const wire = clientChannel(), client = createControlClient(wire, () => {}, { keepOnTimeout: service });
+    const rejected = assert.rejects(client.request('state', {}), { outcome: 'unknown' });
+    t.mock.timers.tick(8000); await rejected;
+    if (service) reply(wire, { id: 2, ok: true, value: {} });
+    assert.equal(wire.readyState, 'closed');
+  }
+});
 
 test('control records preserve bounded UTF-8 and escaped clipboard text across small SCTP messages', () => {
   for (const value of [{ id: 1, body: { text: '中文😀\r\n$(literal)' } }, { id: 2, text: '\x01'.repeat(32768) }]) {

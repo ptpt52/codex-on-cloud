@@ -29,6 +29,49 @@ test('real service RPC cancellation drains its delayed HTTP reply while an indep
   expect(app.inputCalls).toEqual([]);expect(app.vncConnections).toBe(0);
  }finally{release();await app.close();}
 });
+for (const replyMode of ['late', 'missing']) test(`an eight-second ${replyMode} control reply preserves a progressing DTLS upload without replay`, async ({ page }) => {
+ const app = await fixture({ webrtc: true });
+ try {
+  await page.addInitScript(() => {
+   const create = RTCPeerConnection.prototype.createDataChannel;
+   RTCPeerConnection.prototype.createDataChannel = function (label, ...args) {
+    const channel = create.call(this, label, ...args); if (label !== 'codex-service') return channel;
+    const send = channel.send.bind(channel), listen = channel.addEventListener.bind(channel); let holding = false; const held = [];
+    channel.send = bytes => {
+     try { const value = JSON.parse(new TextDecoder().decode(bytes.subarray(4))); if (value.action === 'diagnostics') holding = true; } catch {}
+     return send(bytes);
+    };
+    channel.addEventListener = (type, listener, options) => listen(type, type === 'message' ? event => {
+     if (!holding) return listener.call(channel, event);
+     if (held.length >= 2) throw Error('held control reply bound');
+     held.push(() => listener.call(channel, event));
+     window.releaseHeldControl = () => { holding = false; for (const reply of held.splice(0)) reply(); };
+    } : listener, options);
+    return channel;
+   };
+  });
+  await startIsolatedService(page, app);
+  await page.evaluate(() => {
+   const bytes = new Uint8Array(4 * 1024 * 1024); window.auditOld = window.auditService.transport;
+   window.auditReply = window.auditService.request('diagnostics', {}).catch(error => ({ code: error.code, outcome: error.outcome }));
+   window.auditUpload = window.auditService.files.upload({ name: 'rpc-timeout.bin', size: bytes.length, slice(start, end) {
+    return { async arrayBuffer() { await new Promise(resolve => setTimeout(resolve, 700)); return bytes.slice(start, end).buffer; } };
+   } }, undefined, undefined, loaded => { window.auditLoaded = loaded; }); void window.auditUpload.catch(() => {});
+  });
+  expect(await page.evaluate(() => window.auditReply)).toEqual({ code: 'rpc_timeout', outcome: 'unknown' });
+  expect(await page.evaluate(() => ({ samePeer: window.auditService.transport === window.auditOld, busy: window.auditService.files?.busy, ready: window.auditService.ready, progressed: window.auditLoaded > 0 }))).toEqual({ samePeer: true, busy: true, ready: false, progressed: true });
+  if (replyMode === 'late') {
+   await page.evaluate(() => window.releaseHeldControl());
+   await expect.poll(() => page.evaluate(() => window.auditService.ready)).toBe(true);
+  }
+  await page.evaluate(() => window.auditUpload);
+  if (replyMode === 'missing') await expect.poll(() => page.evaluate(() => window.auditService.transport !== window.auditOld && window.auditService.ready), { timeout: 10000 }).toBe(true);
+  await page.evaluate(async () => { await window.auditService.request('files', {}); window.auditService.stop(); });
+  expect(app.files.get('rpc-timeout.bin').equals(Buffer.alloc(4 * 1024 * 1024))).toBe(true);
+  expect(app.received.filter(value => value.method === 'PUT' && value.url === '/files/rpc-timeout.bin')).toHaveLength(1);
+  expect(app.inputCalls).toEqual([]); expect(app.vncConnections).toBe(0);
+ } finally { await app.close(); }
+});
 test('a real server promotion retires the old peer before a hidden page receives and adopts its held confirmation',async({page})=>{
  const app=await fixture({webrtc:true});
  try{

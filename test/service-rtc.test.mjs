@@ -6,6 +6,13 @@ import { fixture } from './fixture.mjs';
 import { serviceClient } from './support/service-client.mjs';
 import { localServiceRequest } from '../panel/service-rtc.mjs';
 async function setup(app){await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});}
+test('a local service timeout returns an unknown HTTP outcome before the browser deadline without retrying', { timeout: 10000 }, async t => {
+ let calls=0;
+ const server=http.createServer((req,_res)=>{calls++;req.resume();});server.listen(0,'127.0.0.1');await once(server,'listening');
+ t.after(()=>{server.closeAllConnections();server.close();});
+ await assert.rejects(localServiceRequest(server.address().port,{},'file-delete',{name:'once',version:'a'.repeat(64)},new AbortController().signal),{status:504,code:'local_http_timeout',outcome:'unknown'});
+ assert.equal(calls,1);
+});
 test('a service deletion without an explicit 5xx outcome remains unknown and is never retried',async t=>{
  let calls=0,status=503,result={error:'reply after an uncertain mutation'};
  const server=http.createServer((req,res)=>{calls++;assert.equal(req.url,'/api/files/delete');assert.equal(req.method,'POST');req.resume();res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(result));});

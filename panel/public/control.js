@@ -38,10 +38,10 @@ export function controlDecoder(receive, fail) {
   } };
 }
 
-export function createControlClient(channel, changed) {
+export function createControlClient(channel, changed, { keepOnTimeout = false } = {}) {
   channel.binaryType = 'arraybuffer';
-  let pending, disposed = false, sequence = 0;
-  const unavailable = () => Object.assign(new Error('直连操作结果未知，请先查看桌面确认'), { outcome: 'unknown' });
+  let pending, disposed = false, sequence = 0, drainingId = 0;
+  const unavailable = code => Object.assign(new Error('直连操作结果未知，请先查看桌面确认'), { outcome: 'unknown', ...(code ? { code } : {}) });
   const finish = (error, value) => {
     if (!pending) return;
     const current = pending; pending = undefined;
@@ -50,22 +50,28 @@ export function createControlClient(channel, changed) {
   };
   const close = () => {
     if (disposed) return;
-    disposed = true; decoder.reset(); finish(unavailable()); channel.close(); changed(false);
+    disposed = true; drainingId = 0; decoder.reset(); finish(unavailable()); channel.close(); changed(false);
   };
   const decoder = controlDecoder(value => {
+    // A service RPC deadline settles its caller once. Keep only its numeric ID
+    // until the late reply drains; no new RPC can overtake server-side work.
+    if (drainingId && value.id === drainingId && typeof value.ok === 'boolean') { drainingId = 0; changed(true); return; }
     if (!pending || value.id !== pending.id || typeof value.ok !== 'boolean') { close(); return; }
-    finish(value.ok ? null : Object.assign(new Error(value.error?.message || '直连操作失败'), { status: value.error?.status, outcome: value.error?.outcome || 'unknown' }), value.value);
+    finish(value.ok ? null : Object.assign(new Error(value.error?.message || '直连操作失败'), { status: value.error?.status, outcome: value.error?.outcome || 'unknown', code: value.error?.code }), value.value);
   }, close);
   channel.addEventListener('message', event => { if (!disposed) decoder.push(event.data); });
   channel.addEventListener('open', () => { if (!disposed) changed(true); });
   channel.addEventListener('close', close);
   channel.addEventListener('error', close);
-  return { close, get ready() { return !disposed && channel.readyState === 'open'; },
+  return { close, get draining() { return !!drainingId; }, get ready() { return !disposed && !drainingId && channel.readyState === 'open'; },
     request(action, body) {
-      if (pending || disposed || channel.readyState !== 'open' || sequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连控制通道繁忙或未就绪，本次操作未发送'), { outcome: 'rejected' }));
+      if (pending || drainingId || disposed || channel.readyState !== 'open' || sequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连控制通道繁忙或未就绪，本次操作未发送'), { outcome: 'rejected' }));
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        pending = { id, resolve, reject, timer: setTimeout(close, 8000) };
+        pending = { id, resolve, reject, timer: setTimeout(() => {
+          if (!keepOnTimeout) { close(); return; }
+          drainingId = id; finish(unavailable('rpc_timeout')); changed(false);
+        }, 8000) };
         try { sendControl(channel, { id, action, body }); } catch { close(); }
       });
     },

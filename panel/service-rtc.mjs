@@ -18,7 +18,10 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
   const data = method === 'POST' ? JSON.stringify(body) : '';
   if (method === 'POST' && (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.byteLength(data) > 1024)) return Promise.reject(error(400, '服务参数无效或过大'));
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: prefix + path, method, signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
+    // Leave two seconds for framing, shared SCTP queues and the return trip
+    // before the browser's eight-second RPC deadline.
+    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(6000)]);
+    const req = http.request({ host: '127.0.0.1', port, path: prefix + path, method, signal: requestSignal,
       headers: { ...headers, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
       const chunks = []; let size = 0;
       res.on('data', chunk => { size += chunk.length; if (size > 240 * 1024) res.destroy(error(503, '服务响应过大，请使用 HTTPS')); else chunks.push(chunk); });
@@ -29,7 +32,9 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
         } catch (err) { reject(err); }
       });
     });
-    req.once('error', err => reject(err.status ? err : error(502, '服务连接中断，操作结果未知，请刷新状态确认', 'unknown')));
+    req.once('error', err => reject(err.status ? err : requestSignal.reason?.name === 'TimeoutError'
+      ? Object.assign(error(504, '服务操作超时，结果未知，请刷新状态确认', 'unknown'), { code: 'local_http_timeout' })
+      : error(502, '服务连接中断，操作结果未知，请刷新状态确认', 'unknown')));
     req.end(data);
   });
 }

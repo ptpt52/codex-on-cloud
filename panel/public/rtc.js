@@ -57,7 +57,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       if (value) { clearTimeout(timeout); resolveReady(); }
       else rejectReady(new Error('直连已关闭'));
       controlChanged(value);
-    });
+    }, { keepOnTimeout: service });
     const health = createHealthClient(peer.createDataChannel('codex-health', { ordered: true, protocol: 'codex-health-v1' }));
     const video = () => channel ||= peer.createDataChannel(streamId ? 'codex-stream' : terminal ? 'codex-terminal' : 'codex-vnc', { ordered: true, protocol: streamId ? 'stream-v1' : terminal ? 'terminal-v1' : 'rfb-ready-v1' });
     const viewerReady = () => {
