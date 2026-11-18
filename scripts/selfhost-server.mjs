@@ -146,7 +146,7 @@ async function installBinaries({ caddyFile, frpsFile } = {}) {
 export async function copyApplicationFiles(next) {
   await cp(join(project, 'selfhost'), join(next, 'selfhost'), { recursive: true, force: true, dereference: false });
   await mkdir(join(next, 'panel', 'public'), { recursive: true, mode: 0o755 });
-  for (const file of ['auth.mjs', 'login-identity.mjs', 'rtc-network.mjs']) await cp(join(project, 'panel', file), join(next, 'panel', file), { force: true });
+  for (const file of ['auth.mjs', 'login-identity.mjs', 'rtc-network.mjs', 'json-body.mjs']) await cp(join(project, 'panel', file), join(next, 'panel', file), { force: true });
   await cp(join(project, 'panel', 'public', 'rtc-address.js'), join(next, 'panel', 'public', 'rtc-address.js'), { force: true });
   await mkdir(join(next, 'scripts'), { recursive: true, mode: 0o755 });
   await cp(join(project, 'scripts', 'state-files.mjs'), join(next, 'scripts', 'state-files.mjs'), { force: true });

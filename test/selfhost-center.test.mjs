@@ -6,7 +6,8 @@ import net from 'node:net';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSelfhostCenter } from '../selfhost/center.mjs';
+import { createSelfhostCenter, CENTER_REQUEST_LIMITS } from '../selfhost/center.mjs';
+import { JSON_BODY_LIMITS } from '../panel/json-body.mjs';
 import { joinNode, leaveNode, nodeDoctor } from '../selfhost/node.mjs';
 import { centerRequest } from '../panel/center-http.mjs';
 import { createAuth } from '../panel/auth.mjs';
@@ -44,6 +45,112 @@ async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
   };
   return { center, directory, origin, port, closed, request, login, legacyToken, get cookie() { return cookie; }, get csrf() { return csrf; } };
 }
+
+async function onlineCenter(t) {
+  const h = await setup(t), key = await h.center.registry.createKey({ name: 'Reserved capacity', slug: 'capacity' });
+  const joined = await h.center.registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } });
+  const metas = { slug: key.slug, credential: joined.credential, nodeId: 'a'.repeat(32), mode: 'terminal' };
+  const plugin = (op, content, extra = {}) => h.request('/internal/frp-plugin?op=' + op, { method: 'POST', authenticated: false, body: { content, ...extra } });
+  assert.equal((await (await plugin('Login', { metas, run_id: 'capacity-run', client_address: '127.0.0.1' })).json()).reject, false);
+  assert.equal((await (await plugin('NewProxy', { user: { metas, run_id: 'capacity-run' }, proxy_name: 'node-capacity', proxy_type: 'http', custom_domains: ['desk.example.test'], locations: ['/node/capacity/'] })).json()).reject, false);
+  return { ...h, ping: extra => plugin('Ping', { user: { metas, run_id: 'capacity-run' } }, extra), route: () => h.request('/internal/route-auth?path=/node/capacity/', { authenticated: false }) };
+}
+
+function incompleteCenterBody(h, path) {
+  let request;
+  const response = new Promise((resolve, reject) => {
+    request = http.request(h.origin + path, { method: 'POST', headers: { origin: h.origin, 'content-type': 'application/json', 'content-length': 100 } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.once('error', reject);
+      res.once('end', () => resolve({ status: res.statusCode, connection: res.headers.connection, value: JSON.parse(Buffer.concat(chunks)) }));
+    });
+    request.once('error', reject); request.write('{');
+  });
+  void response.catch(() => {});
+  return { request, response };
+}
+
+test('public JSON saturation preserves separate plugin bodies and internal route authorization', { timeout: 5000 }, async t => {
+  const h = await onlineCenter(t), pending = [];
+  try {
+    for (let index = 0; index < JSON_BODY_LIMITS.pending; index++) {
+      const reading = once(h.center.server, 'request'); pending.push(incompleteCenterBody(h, '/api/join-result')); await reading;
+    }
+    const overflow = incompleteCenterBody(h, '/api/join-result'); pending.push(overflow);
+    assert.deepEqual(await overflow.response, { status: 429, connection: 'close', value: { error: '请求内容读取繁忙，请稍后重试', outcome: 'rejected' } });
+    // Plugin payloads keep their existing 128 KiB cap, separate from public
+    // endpoint caps and body slots. Authentication and node identity are real.
+    assert.equal((await (await h.ping({ padding: 'x'.repeat(100 * 1024) })).json()).reject, false);
+    assert.equal((await h.route()).status, 204);
+    const oversized = await h.request('/api/join-result', { method: 'POST', body: { padding: 'x'.repeat(4096) }, authenticated: false });
+    assert.equal(oversized.status, 413); assert.equal((await oversized.json()).outcome, 'rejected');
+  } finally { for (const item of pending) item.request.destroy(); }
+});
+
+test('public operation saturation leaves independent admission for authenticated node heartbeats and routing', { timeout: 5000 }, async t => {
+  const h = await onlineCenter(t); await h.login();
+  let release, entered = 0, ready;
+  const gate = new Promise(resolve => { release = resolve; }), admitted = new Promise(resolve => { ready = resolve; });
+  const snapshot = h.center.registry.snapshot.bind(h.center.registry);
+  h.center.registry.snapshot = async (...args) => { if (++entered === CENTER_REQUEST_LIMITS.public) ready(); await gate; return snapshot(...args); };
+  const pending = Array.from({ length: CENTER_REQUEST_LIMITS.public }, () => h.request('/admin/api/overview'));
+  for (const response of pending) void response.catch(() => {});
+  let timeout;
+  try {
+    await Promise.race([admitted, new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('public requests did not enter')), 3000); })]);
+    clearTimeout(timeout);
+    const excess = await h.request('/admin/api/overview'); assert.equal(excess.status, 503); assert.equal((await excess.json()).outcome, 'rejected');
+    assert.equal((await (await h.ping()).json()).reject, false);
+    assert.equal((await h.route()).status, 204);
+    release(); assert((await Promise.all(pending)).every(response => response.status === 200));
+    assert.equal((await h.request('/healthz')).status, 200);
+  } finally { clearTimeout(timeout); release(); await Promise.allSettled(pending); }
+});
+
+test('incomplete plugin bodies cannot consume public JSON or internal GET admission', { timeout: 5000 }, async t => {
+  const h = await onlineCenter(t), pending = [], received = [];
+  h.center.server.on('request', req => { if (req.url.startsWith('/internal/frp-plugin')) received.push(req); });
+  try {
+    for (let index = 0; index < JSON_BODY_LIMITS.pending; index++) {
+      const reading = once(h.center.server, 'request'); pending.push(incompleteCenterBody(h, '/internal/frp-plugin?op=Ping')); await reading;
+    }
+    const excess = incompleteCenterBody(h, '/internal/frp-plugin?op=Ping'); pending.push(excess);
+    const result = await excess.response; assert.equal(result.status, 429); assert.equal(result.value.outcome, 'rejected'); assert.equal(result.connection, 'close');
+    assert.equal((await h.route()).status, 204);
+    const publicBody = await h.request('/api/join-result', { method: 'POST', authenticated: false, body: {} });
+    assert.equal(publicBody.status, 400);
+    const closed = received.slice(0, JSON_BODY_LIMITS.pending).map(req => new Promise(resolve => req.once('close', resolve)));
+    for (const item of pending) item.request.destroy(); await Promise.all(closed);
+    assert.equal((await (await h.ping()).json()).reject, false);
+  } finally { for (const item of pending) item.request.destroy(); }
+});
+
+test('internal operation admission is bounded without consuming public capacity', { timeout: 5000 }, async t => {
+  const h = await onlineCenter(t);
+  let release, entered = 0, ready, timeout;
+  const gate = new Promise(resolve => { release = resolve; }), admitted = new Promise(resolve => { ready = resolve; });
+  const routeAllowed = h.center.registry.routeAllowed.bind(h.center.registry);
+  h.center.registry.routeAllowed = async (...args) => { if (++entered === CENTER_REQUEST_LIMITS.internal) ready(); await gate; return routeAllowed(...args); };
+  const pending = Array.from({ length: CENTER_REQUEST_LIMITS.internal }, () => h.route());
+  for (const response of pending) void response.catch(() => {});
+  try {
+    await Promise.race([admitted, new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('internal requests did not enter')), 3000); })]);
+    clearTimeout(timeout);
+    const excess = await h.route(); assert.equal(excess.status, 503); assert.equal((await excess.json()).outcome, 'rejected');
+    assert.equal((await h.request('/healthz')).status, 200);
+    release(); assert((await Promise.all(pending)).every(response => response.status === 204));
+  } finally { clearTimeout(timeout); release(); await Promise.allSettled(pending); }
+});
+
+test('both center JSON classes enforce the absolute deadline and recover their admission', { timeout: 18000 }, async t => {
+  const h = await onlineCenter(t), pending = [];
+  try {
+    pending.push(incompleteCenterBody(h, '/api/join-result'), incompleteCenterBody(h, '/internal/frp-plugin?op=Ping'));
+    for (const response of await Promise.all(pending.map(item => item.response))) {
+      assert.equal(response.status, 408); assert.equal(response.value.outcome, 'rejected'); assert.equal(response.connection, 'close');
+    }
+    assert.equal((await (await h.ping()).json()).reject, false); assert.equal((await h.route()).status, 204);
+  } finally { for (const item of pending) item.request.destroy(); }
+});
 
 test('center reports unknown when an unexpected failure follows a committed mutation', async t => {
   const h = await setup(t); await h.login();

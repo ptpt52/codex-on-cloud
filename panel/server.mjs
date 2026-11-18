@@ -35,7 +35,7 @@ import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
 import { requestTurnCredentials, createTurnCache } from './turn-client.mjs';
-import { createJSONBodies } from './json-body.mjs';
+import { createJSONBodies, closeUnreadBody } from './json-body.mjs';
 
 const backendVersion = await loadedBackendVersion('panel');
 
@@ -773,12 +773,7 @@ export async function createPanel(config) {
 
   const handleRequest = (req, res) => {
     route(req, res).catch(error => {
-      // Do not drain an unbounded rejected body or leave it on a keep-alive
-      // socket. Flush the structured rejection before closing the connection.
-      if (!req.readableEnded && !res.headersSent && !res.destroyed) {
-        res.setHeader('connection', 'close'); res.shouldKeepAlive = false;
-        res.once('finish', () => req.destroy());
-      }
+      closeUnreadBody(req, res);
       if (!error.status) console.error(`[panel] ${error.name}: request failed`); // No bodies, cookies or credentials.
       reply(res, error.status || 502, { error: error.status ? error.message : '服务暂时不可用，请稍后重试', outcome: error.outcome || (error.status ? 'rejected' : 'unknown'),
         ...(['file_busy', 'file_exists'].includes(error.fileCode) ? { fileCode: error.fileCode } : {}),

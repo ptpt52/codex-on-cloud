@@ -12,6 +12,7 @@ import { clientAddress, loopbackAddress } from './client-address.mjs';
 import { frpsProxyProbe } from './frps-admin.mjs';
 import { HELP_PAGE_CSP, readHelpPage } from './help-page.mjs';
 import { loadedBackendVersion } from '../native/backend-version.mjs';
+import { createJSONBodies, closeUnreadBody } from '../panel/json-body.mjs';
 
 const backendVersion = await loadedBackendVersion('center');
 
@@ -25,26 +26,12 @@ const ASSETS = new Map([
   ['/admin/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
 const BODY_LIMIT = 16 * 1024, PLUGIN_LIMIT = 128 * 1024;
+export const CENTER_REQUEST_LIMITS = Object.freeze({ public: 32, internal: 32 });
 
 function reply(res, status, value, headers = {}) {
   if (res.headersSent || res.destroyed) return;
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(value));
-}
-
-async function jsonBody(req, limit) {
-  if (!(req.headers['content-type'] || '').startsWith('application/json')) throw selfhostError(415, '请使用 JSON 请求');
-  const chunks = []; let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > limit) throw selfhostError(413, '请求内容过大');
-    chunks.push(chunk);
-  }
-  try {
-    const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error();
-    return value;
-  } catch { throw selfhostError(400, 'JSON 格式无效'); }
 }
 
 async function assets(helpFile, login) {
@@ -84,6 +71,11 @@ export async function createSelfhostCenter({
   const registry = await new SelfhostRegistry({ file: stateFile, host: publicHost, onClose: closeTunnel }).open();
   const proxyOnline = frpsAdmin ? frpsProxyProbe(frpsAdmin) : undefined;
   const failures = new Map(), joinRequests = new Map(), turnRequests = new Map(), publicRequests = new Map();
+  // Public bodies and operations cannot consume the slots for frps Ping/Login
+  // and Caddy's internal route authorization. Both classes have fixed bounds.
+  const bodies = { public: createJSONBodies(), internal: createJSONBodies() };
+  const requests = { public: 0, internal: 0 }, admitted = new WeakMap();
+  const jsonBody = (req, limit) => bodies[admitted.get(req)].read(req, limit);
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
   let closing = false, timer, loginBusy = 0;
@@ -237,16 +229,26 @@ export async function createSelfhostCenter({
     throw selfhostError(404, '资源不存在');
   }
 
-  const server = http.createServer((req, res) => route(req, res).catch(error => {
-    if (!error.status) console.error(`[selfhost] ${error.name}: request failed`);
-    reply(res, error.status || 503, { error: error.status ? error.message : '中心服务暂时不可用', outcome: error.outcome || (['GET', 'HEAD'].includes(req.method) ? 'rejected' : 'unknown') });
-  }));
+  const server = http.createServer((req, res) => {
+    const reject = error => {
+      closeUnreadBody(req, res);
+      if (!error.status) console.error(`[selfhost] ${error.name}: request failed`);
+      reply(res, error.status || 503, { error: error.status ? error.message : '中心服务暂时不可用', outcome: error.outcome || (['GET', 'HEAD'].includes(req.method) ? 'rejected' : 'unknown') });
+    };
+    let path;
+    try { path = new URL(req.url, 'http://internal').pathname; } catch { reject(selfhostError(400, '请求路径无效')); return; }
+    const kind = ['/internal/frp-plugin', '/internal/route-auth'].includes(path) ? 'internal' : 'public';
+    if (closing || requests[kind] >= CENTER_REQUEST_LIMITS[kind]) { reject(selfhostError(503, '中心请求繁忙或正在关闭，请稍后重试')); return; }
+    requests[kind]++; admitted.set(req, kind);
+    void route(req, res).catch(reject).finally(() => { requests[kind]--; admitted.delete(req); });
+  });
   server.requestTimeout = 30_000; server.headersTimeout = 10_000; server.maxHeadersCount = 64; server.maxConnections = 256;
   timer = setInterval(() => { if (!closing) void registry.sweep().catch(() => {}); }, 5000); timer.unref();
   return {
     server, registry,
     async close() {
       if (closing) return; closing = true; clearInterval(timer);
+      bodies.public.close(); bodies.internal.close();
       if (server.listening) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
       await auth.close();
     },

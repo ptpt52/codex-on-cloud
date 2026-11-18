@@ -1,14 +1,23 @@
 // Control requests have a separate budget from five-minute file streams and
-// password verification. There is no waiting queue; each panel owns its slots.
+// password verification. There is no waiting queue; each server owns its slots.
 export const JSON_BODY_LIMITS = Object.freeze({ pending: 16, timeoutMs: 10000 });
 
-const failure = (status, message) => Object.assign(Error(message), { status });
+const failure = (status, message) => Object.assign(Error(message), { status, outcome: 'rejected' });
+
+// Flush a structured rejection before closing its unread body. Draining it
+// would let a client retain a socket without any further application quota.
+export function closeUnreadBody(req, res) {
+  if (!req.readableEnded && !res.headersSent && !res.destroyed) {
+    res.setHeader('connection', 'close'); res.shouldKeepAlive = false;
+    res.once('finish', () => req.destroy());
+  }
+}
 
 export function createJSONBodies({ pending = JSON_BODY_LIMITS.pending, timeoutMs = JSON_BODY_LIMITS.timeoutMs } = {}) {
   const active = new Set();
   let closed = false;
   function read(req, limit = 128 * 1024) {
-    if (closed) return Promise.reject(failure(503, '面板正在关闭，请稍后重试'));
+    if (closed) return Promise.reject(failure(503, '服务正在关闭，请稍后重试'));
     if (!(req.headers['content-type'] || '').startsWith('application/json')) return Promise.reject(failure(415, '请使用 JSON 请求'));
     if (Number(req.headers['content-length']) > limit) return Promise.reject(failure(413, '请求内容过大'));
     if (active.size >= pending) return Promise.reject(failure(429, '请求内容读取繁忙，请稍后重试'));
@@ -34,7 +43,7 @@ export function createJSONBodies({ pending = JSON_BODY_LIMITS.pending, timeoutMs
         finish(null, body);
       }
       function aborted() { finish(failure(400, '请求内容读取已中断')); }
-      function cancel() { finish(failure(503, '面板正在关闭，请稍后重试')); }
+      function cancel() { finish(failure(503, '服务正在关闭，请稍后重试')); }
       // An absolute deadline: trickling bytes cannot renew the reservation.
       const timer = setTimeout(() => finish(failure(408, '请求内容读取超时，请重试')), timeoutMs).unref();
       active.add(cancel);
