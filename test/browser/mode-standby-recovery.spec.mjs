@@ -32,6 +32,35 @@ async function setup(page, app, cachedMode) {
 async function activate(page, mode) {
   await closePanels(page); await page.locator(`#${mode}-mode`).click(); await page.locator('#accept-confirmation').click();
 }
+
+test('a fresh terminal page loads the standby desktop while its catalog is pending, then starts its connection after the terminal', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true });
+  let release, entered; const held = new Promise(resolve => { release = resolve; }), requested = new Promise(resolve => { entered = resolve; });
+  const desktops = [];
+  page.on('websocket', socket => { const url = new URL(socket.url()); if (url.pathname === '/session/connect' && url.searchParams.get('mode') === 'desktop') desktops.push(socket); });
+  await page.addInitScript(() => {
+    if (window !== parent) return;
+    localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, modeStandby: true, mode: 'terminal' }));
+    window.addEventListener('message', event => { if (event.origin === location.origin && event.source === document.querySelector('#standby-frame')?.contentWindow && event.data?.type === 'codex-desktop' && event.data.state === 'ready') window.standbyLoaded = true; });
+  });
+  await page.route('**/api/terminals', async route => { if (route.request().method() === 'GET') { entered(); await held; } await route.continue(); });
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await requested;
+    await expect.poll(() => page.evaluate(() => window.standbyLoaded)).toBe(true);
+    const source = await page.locator('#standby-frame').getAttribute('src');
+    expect(source).toContain('/desktop/index.html'); expect(desktops).toHaveLength(0);
+    release(); await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect.poll(() => desktops.length).toBe(1);
+    const frame = page.frames().find(child => child.url().endsWith(source));
+    await expect(frame.locator('#status')).toBeHidden();
+    await activate(page, 'desktop');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { release(); await app.close(); }
+});
+
 for (const mode of ['terminal', 'desktop']) test(`a recovering cached ${mode} keeps input paused until its real relay resumes`, async ({ page }) => {
   const app = await fixture({ rfb: true, seamless: true });
   const writes = []; page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/terminals') writes.push(request.postDataJSON()); });

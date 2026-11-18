@@ -1111,12 +1111,14 @@ function standbyTarget() {
 function sendStandbyPreferences() {
   const entry = views.standby; if (!entry || !owned) return;
   entry.element.contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(entry.epoch), standby: true,
-    rtc: { ...rtcConfig, hints: directHints.value }, csrf, zoom: displayPreferences.zoom, pan: displayPreferences.pan, networkDebug: displayPreferences.networkDebug,
+    // Load modules alongside the active viewer, but admit a new standby stream
+    // only after the active connection. Its initial offer keeps priority.
+    rtc: { ...rtcConfig, hints: directHints.value }, ...(views.active.state === 'connected' ? { csrf } : {}), zoom: displayPreferences.zoom, pan: displayPreferences.pan, networkDebug: displayPreferences.networkDebug,
     blocked: true, busy: true, revision: displayRevision, pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
     terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting }, location.origin);
 }
 function syncModeStandby() {
-  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || pageLeaving || cachedResumePending || !views.active.loaded || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
+  if (!standbyEnabled() || !loggedIn || !owned || accessExpired || pageLeaving || cachedResumePending || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
   // Screen-off suspends both viewers' network work through their own visibility
   // handlers. Keep the one bounded standby context warm for foreground recovery;
   // pagehide, revoked ownership and disabling the preference still retire it.
@@ -1127,7 +1129,7 @@ function syncModeStandby() {
   // foregrounded. Changing the desktop selection must not tear that stream down.
   if (views.standby && (views.standby.mode !== mode || views.standby.key !== key &&
     (!streamProtocolEnabled || terminalCatalogVerified && !terminalCatalog.some(item => item.supported && `${item.id}:${item.token}` === views.standby.key)))) discardStandby();
-  if (views.standby || mode === 'terminal' && !target || views.active.state !== 'connected' || terminalBusy) return;
+  if (views.standby || mode === 'terminal' && (!target || terminalBusy) || !streamProtocolEnabled && (views.active.state !== 'connected' || terminalBusy)) return;
   const element = document.createElement('iframe');
   element.id = 'standby-frame'; element.inert = true; element.setAttribute('aria-hidden', 'true'); element.tabIndex = -1;
   element.referrerPolicy = 'same-origin'; element.allow = $('desktop-frame').allow;
@@ -1623,6 +1625,9 @@ function syncTerminalView(explicit = false) {
   const terminal = terminalCatalog.find(item => item.id === selectedTerminal && item.supported);
   if (!terminal || terminal.token !== selectedTerminalToken) return;
   if (views.active.loaded && views.active.key === `${terminal.id}:${terminal.token}` && (!explicit || !views.active.terminalAttachment || views.active.attachmentState === 'ready')) return;
+  // The catalog can arrive after the other mode's modules have warmed. There
+  // is no old terminal to retire on first open, so preserve that standby frame.
+  if (!views.active.loaded) { openFrame(); return; }
   stopFrame(); openFrame(); renderConnection();
 }
 function modeChangeBusy() {
