@@ -5,6 +5,10 @@ import { normalizeEntryBasePath } from './entry-path.mjs';
 import { FORWARD_FILES, ARTIFACT_LIMITS } from '../native/forward-artifacts.mjs';
 import { validTransferWindow } from './public/transfer-window.js';
 const fault=(status,message)=>Object.assign(Error(message),{status});
+const rejectedStatuses=[400,404,409,410,412,413,429,507];
+const responseError=(status,result,message)=>Object.assign(fault(status,result?.error||message),{
+ outcome:['rejected','unknown'].includes(result?.outcome)?result.outcome:rejectedStatuses.includes(status)?'rejected':'unknown',fileCode:result?.fileCode,
+});
 // Fixed authenticated APIs on loopback only: shared files keep their four-stream
 // and guest-upload quotas; published helpers keep the two-download limit.
 export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entryBasePath='/'}){
@@ -17,7 +21,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
- function reject(entry,err){if(active!==entry)return;recoverable=[404,409,410,412,413,429,507].includes(err.status);try{wire.send({type:'error',id:entry.id,status:err.status||502,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
+ function reject(entry,err){if(active!==entry)return;recoverable=[404,409,410,412,413,429,503,507].includes(err.status);const outcome=['rejected','unknown'].includes(err.outcome)?err.outcome:rejectedStatuses.includes(err.status)?'rejected':'unknown';try{wire.send({type:'error',id:entry.id,status:err.status||502,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
  async function control(value){
   // A ready frame may already have released upload chunks when HTTP rejects
   // the request. Drain that ordered tail during the fixed retirement window;
@@ -52,7 +56,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
     const chunks=[];let total=0;res.on('data',bytes=>{total+=bytes.length;if(total>4096)res.destroy(fault(502,'文件响应过大'));else chunks.push(bytes);});
     res.once('end',()=>{
      if(active!==entry)return;
-     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw Object.assign(fault(res.statusCode,result.error||'上传失败'),{fileCode:result.fileCode});entry.result={name:uploadResult(result).name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
+     try{check(entry);const result=JSON.parse(Buffer.concat(chunks));if(res.statusCode!==200)throw responseError(res.statusCode,result,'上传失败');entry.result={name:uploadResult(result).name};entry.response=true;if(entry.ended)finish(entry,entry.result);}catch(err){reject(entry,err);}
     });
    });
    req.once('error',err=>reject(entry,err));
@@ -70,7 +74,11 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   catch(err){if(!recoverable)throw err;}
  }
  async function download(entry,res){
-  check(entry);if(res.statusCode!==200){res.resume();throw fault(res.statusCode,entry.helper?(res.statusCode===410?'助手版本已更新，请刷新下载列表':res.statusCode===409?'助手入口已变化，请重新构建并下载':'助手下载失败，请刷新列表后手动重试'):'下载失败，文件可能已不存在');}
+  check(entry);if(res.statusCode!==200){
+   const chunks=[];let size=0;for await(const bytes of res){check(entry);size+=bytes.length;if(size>4096)throw fault(502,'文件响应过大');chunks.push(bytes);}
+   let result;try{result=JSON.parse(Buffer.concat(chunks));}catch{}
+   throw responseError(res.statusCode,result,entry.helper?(res.statusCode===410?'助手版本已更新，请刷新下载列表':res.statusCode===409?'助手入口已变化，请重新构建并下载':'助手下载失败，请刷新列表后手动重试'):'下载失败，文件可能已不存在');
+  }
   const length=Number(res.headers['content-length']);if(!Number.isSafeInteger(length)||length<0||length>FILE_MAX)throw fault(413,'此文件请使用 HTTPS 下载');
   if(entry.helper&&(length!==entry.size||length>ARTIFACT_LIMITS.file))throw fault(409,'助手大小已变化，请刷新下载列表');
   wire.send({type:'ready',id:entry.id,size:length,...(entry.window===undefined?{}:{window:entry.window})});let total=0;

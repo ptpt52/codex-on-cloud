@@ -16,6 +16,32 @@ import { FILE_CHUNK,FILE_MAX } from '../panel/public/file-wire.js';
 import { attachServiceFiles } from '../panel/service-files.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
+test('file HTTP outcomes survive both RTC directions independently of channel recovery',async t=>{
+ for(const direction of ['upload','download'])for(const sample of [
+  {status:503,outcome:'rejected',expected:'rejected',recoverable:true},
+  {status:503,outcome:'unknown',expected:'unknown',recoverable:true},
+  {status:503,expected:'unknown',recoverable:true},
+  {status:409,outcome:'unknown',expected:'unknown',recoverable:true},
+  {status:409,expected:'rejected',recoverable:true},
+  {status:500,outcome:'rejected',expected:'rejected',recoverable:false},
+ ])await t.test(`${direction} HTTP ${sample.status}, outcome ${sample.outcome||'legacy'}`,async t=>{
+  let requests=0,recoverable,frame;
+  const upstream=http.createServer((req,res)=>{requests++;req.resume();res.writeHead(sample.status,{'content-type':'application/json'});res.end(JSON.stringify({error:'isolated failure',...(sample.outcome?{outcome:sample.outcome}:{})}));});
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));
+  const signal=()=>{const handlers=new Set();return{subscribe(fn){handlers.add(fn);return{unSubscribe(){handlers.delete(fn);}};},emit(value){for(const fn of [...handlers])fn(value);}};};
+  const native={readyState:'open',bufferedAmount:0,onMessage:signal(),stateChange:signal(),error:signal()},browser=Object.assign(new EventTarget(),{readyState:'open',bufferedAmount:0});
+  const close=()=>{if(native.readyState==='closed')return;native.readyState=browser.readyState='closed';native.stateChange.emit('closed');browser.dispatchEvent(new Event('close'));};
+  native.close=browser.close=close;
+  native.send=data=>{if(typeof data==='string'&&JSON.parse(data).type==='error')frame=JSON.parse(data);queueMicrotask(()=>browser.dispatchEvent(Object.assign(new Event('message'),{data})));};
+  browser.send=data=>queueMicrotask(()=>native.onMessage.emit(typeof data==='string'?data:Buffer.from(data)));
+  const controller=new AbortController(),server=attachServiceFiles(native,{valid:()=>true,headers:{},port:()=>upstream.address().port,signal:controller.signal,fail(){}});
+  t.after(()=>{server.close();controller.abort();});
+  const client=createFileClient(browser,value=>{recoverable=value;});
+  const pending=direction==='upload'?client.upload(new File(['x'],'isolated.bin')):client.download('isolated.bin',1);
+  await assert.rejects(pending,error=>error.status===sample.status&&error.outcome===sample.expected);
+  assert.equal(frame.outcome,sample.expected);assert.equal(recoverable,sample.recoverable);assert.equal(requests,1,'a rejected or unknown file is never replayed');
+ });
+});
 test('recoverable file channel closures release abort and native subscriptions before replacement',async t=>{
  const upstream=http.createServer((_req,res)=>{res.writeHead(404,{'content-type':'application/json'});res.end('{"error":"missing"}');});
  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));

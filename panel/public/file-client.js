@@ -18,8 +18,9 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
   if(cancelingId){if(value.type==='cancelled'&&value.id===cancelingId)wire.close();return;}
   const entry=active;if(!entry||value.id!==entry.id)throw unknown();
   if(value.type==='error'){
-   recoverable=value.recoverable===true&&[404,409,410,412,413,429,507].includes(value.status);
-   settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome:recoverable?'rejected':'unknown',...(['file_busy','file_exists'].includes(value.fileCode)?{fileCode:value.fileCode}:{})}));wire.close();return;
+   recoverable=value.recoverable===true&&[404,409,410,412,413,429,503,507].includes(value.status);
+   const outcome=['rejected','unknown'].includes(value.outcome)?value.outcome:[404,409,410,412,413,429,507].includes(value.status)?'rejected':'unknown';
+   settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome,...(['file_busy','file_exists'].includes(value.fileCode)?{fileCode:value.fileCode}:{})}));wire.close();return;
   }
   if(value.type==='ready'){
    if(entry.started||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX||(entry.direction==='upload'||entry.helper)&&value.size!==entry.size)throw unknown();
