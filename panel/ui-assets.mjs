@@ -31,6 +31,7 @@ export const ASSETS = new Map([
   ['/rtc-recheck.js', ['rtc-recheck.js', 'text/javascript; charset=utf-8']],
   ['/rtc-hints.js', ['rtc-hints.js', 'text/javascript; charset=utf-8']],
   ['/rtc-ice.js', ['rtc-ice.js', 'text/javascript; charset=utf-8']],
+  ['/rtc-offers.js', ['rtc-offers.js', 'text/javascript; charset=utf-8']],
   ['/service-link.js', ['service-link.js', 'text/javascript; charset=utf-8']],
   ['/file-wire.js', ['file-wire.js', 'text/javascript; charset=utf-8']],
   ['/transfer-window.js', ['transfer-window.js', 'text/javascript; charset=utf-8']],

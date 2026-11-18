@@ -20,7 +20,7 @@ export const TRACE_LABELS = Object.freeze({
   'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束',
   'capture-start': '开始记录网络调试日志',
 });
-export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
+export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', queued: '等待协商名额', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
 export const TRACE_RECHECK_STEPS = Object.freeze({ candidate: '创建候选', connect: '建立候选连接', health: '验证候选心跳', stats: '比较路径质量', idle: '等待操作空闲', switch: '切换与接管', commit: '开始提交切换' });
 export const TRACE_RECHECK_RESULTS = Object.freeze({ selected: '新连接已启用', verified: '候选已验证并待命', kept: '保留当前路径', deferred: '暂未切换', failed: '本次重测失败', cancelled: '本次重测已取消' });
 export const TRACE_REASONS = Object.freeze({

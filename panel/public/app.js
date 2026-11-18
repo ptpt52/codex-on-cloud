@@ -22,10 +22,17 @@ import { createInputNotices } from './input-notices.js';
 import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
 import { entryPath, entryBasePath } from './entry-path.js';
 import { rtcIceServers } from './rtc-ice.js';
+import { createOfferBridge } from './rtc-offers.js';
 import { rtcRouteKind, rtcRouteLabel, rtcDirectKind } from './rtc-stats.js';
 
 const $ = id => document.getElementById(id);
 const views = createViewLifecycle($('desktop-frame'));
+const offerBridge = createOfferBridge({
+  priority: entry => entry === views.active ? 0 : 2,
+  allowed: entry => loggedIn && owned && !accessExpired && !pageLeaving && !cachedResumePending && !document.hidden && [views.active, views.standby].includes(entry),
+  reply: (entry, value) => entry.element.contentWindow?.postMessage(value, location.origin),
+});
+window.addEventListener('pagehide', () => offerBridge.clear());
 let csrf = '', viewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), pollTimer, toastTimer, owned = false, loggedIn = false, pollController = null;
 let forwardingUI;
 let accessUI;
@@ -993,6 +1000,7 @@ function overlay(title, description, takeover = false) {
   $('desktop-overlay').hidden = false;
 }
 function stopFrame({ keepLogout = false, replaceElement = false } = {}) {
+  offerBridge.cancel(views.active);
   if (hintProbe?.phase === 'workspace') finishHintProbe();
   discardStandby();
   historyToolsPortal.reset();
@@ -1099,6 +1107,7 @@ function standbyCapable() { return modeStandbyEnabled && !terminalOnly; }
 function standbyEnabled() { return standbyCapable() && displayPreferences.modeStandby; }
 function discardStandby() {
   const previous = views.discard(); if (!previous) return;
+  offerBridge.cancel(previous);
   recordConnection('view-discarded', { path: previous.transport, reason: document.hidden ? 'hidden' : 'closed' }, previous.mode, true, previous.epoch);
   previous.element.src = 'about:blank'; previous.element.remove();
 }
@@ -1981,6 +1990,7 @@ window.addEventListener('message', event => {
   if (event.origin !== location.origin || !owned || pageLeaving) return;
   const entry = views.match(event.source, event.data?.frame);
   if (!entry) return;
+  if (offerBridge.message(entry, event.data)) return;
   if (entry === views.standby) { receiveStandby(event.data); return; }
   const wasReady = entry.panelReady;
   updateView(entry, event.data);

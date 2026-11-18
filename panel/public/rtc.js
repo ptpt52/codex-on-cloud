@@ -6,6 +6,7 @@ import { rtcHints, createRTCHints } from '/rtc-hints.js';
 import { nodeHeaders, nodeIdentity } from '/node-scope.js';
 import { entryPath, entryBasePath } from '/entry-path.js';
 import { rtcIceServers, rtcCredentialsNeedRefresh } from '/rtc-ice.js';
+import { requestRTCOffer } from '/rtc-offers.js';
 
 let enabled = true;
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
@@ -116,13 +117,20 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         trace('rtc-stage', { path: 'direct', stage: 'gathering', durationMs: Math.round(performance.now() - stageAt) });
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         deadline('signaling', RTC_SIGNAL_TIMEOUT);
+        const waitingAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'queued' });
+        const release = await requestRTCOffer({ signal: controller.signal, priority: service ? 1 : standby ? 2 : 0, expired: () => controller.abort() });
+        trace('rtc-stage', { path: 'direct', stage: 'queued', durationMs: Math.round(performance.now() - waitingAt) });
+        let answer;
+        try {
+        if (controller.signal.aborted) throw new Error('连接已取消');
         const result = await fetch(entryPath(service ? '/api/service/rtc' : terminal ? '/api/terminal/rtc' : '/api/desktop/rtc'), { method: 'POST', redirect: 'manual', signal: controller.signal,
           headers: { 'content-type': 'application/json', 'x-csrf-token': csrf, 'x-viewer-id': viewer, ...nodeHeaders() },
           body: JSON.stringify({ type: 'offer', sdp: peer.localDescription.sdp, ...(terminal || {}), ...(service && recheck ? { recheck: true } : {}), ...(streamId ? { streamId, ...(standby ? { standby: true } : {}) } : {}), ...(hints.server || hints.browser ? { hints } : {}) }),
         });
         if (!result.ok) { const reason = result.type === 'opaqueredirect' ? 'auth' : rtcFailureStatus(result.status); failure(reason, result.status); throw Object.assign(new Error('直连暂不可用'), { reason, status: result.status }); }
-        const answer = await result.json();
+        answer = await result.json();
         trace('rtc-stage', { path: 'direct', stage: 'signaling', status: result.status, durationMs: Math.round(performance.now() - stageAt) });
+        } finally { release(); }
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'connecting' });
         deadline('connecting', RTC_CONNECT_TIMEOUT);
         await peer.setRemoteDescription(answer);
