@@ -39,6 +39,7 @@ export const TRACE_REASONS = Object.freeze({
   quality: '当前路径质量更好', 'handoff-refused': '当前界面暂未允许切换', aborted: '请求已取消', network: '请求未收到响应',
   'page-hidden': '页面已挂起', 'page-restored': '从浏览器缓存恢复页面',
   'native-busy': '浏览器原生协商仍有挂起调用，等待释放',
+  'queue-timeout': '等待本页协商名额超时', 'negotiation-timeout': '本次直连协商总时限已到',
   'http-status': '请求返回错误状态',
   file_busy: '文件服务正在处理另一项上传或删除', file_exists: '已有同名文件，未覆盖',
   file_read_failed: '本机文件读取失败，请重新选择文件',

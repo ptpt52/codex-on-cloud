@@ -1,12 +1,12 @@
 import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute, rtcRouteKind, rtcDirectKind } from './rtc-stats.js';
-import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureStatus, createRTCNativeWaiter } from './transport-policy.js';
+import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, RTC_NEGOTIATION_TIMEOUT, rtcFailureStatus, createRTCNativeWaiter } from './transport-policy.js';
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
 import { nodeHeaders, nodeIdentity } from '/node-scope.js';
 import { entryPath, entryBasePath } from '/entry-path.js';
 import { rtcIceServers, rtcCredentialsNeedRefresh } from '/rtc-ice.js';
-import { requestRTCOffer } from '/rtc-offers.js';
+import { requestRTCOffer, OFFER_LIMITS } from '/rtc-offers.js';
 
 let enabled = true;
 const native = createRTCNativeWaiter();
@@ -23,12 +23,14 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
   let timedOut = false, failureReported = false, lastFailure = '', stage = 'signaling';
   const failure = (reason, status) => { if (!failureReported && !signal?.aborted) { failureReported = true; lastFailure = reason; trace('path-lost', { path: 'direct', reason, stage, ...(status ? { status } : {}) }); failed(reason); } };
   let timeout;
+  const expire = reason => { timedOut = true; failure(reason); controller.abort(); };
+  // Per-phase budgets never extend the bounded lifetime of this negotiation.
+  const totalTimeout = setTimeout(() => expire('negotiation-timeout'), RTC_NEGOTIATION_TIMEOUT);
+  const clearDeadlines = () => { clearTimeout(timeout); clearTimeout(totalTimeout); };
   const deadline = (nextStage, ms) => {
     stage = nextStage; clearTimeout(timeout); timeout = setTimeout(() => {
-      timedOut = true;
-      failure(stage === 'signaling' ? 'signaling-timeout' : stage === 'connecting' ?
+      expire(stage === 'queued' ? 'queue-timeout' : stage === 'signaling' ? 'signaling-timeout' : stage === 'connecting' ?
         ['connected', 'completed'].includes(peer?.iceConnectionState) ? 'channel-timeout' : 'ice-timeout' : stage === 'gathering' ? 'gathering-timeout' : 'timeout');
-      controller.abort();
     }, ms);
   };
   deadline('signaling', RTC_SIGNAL_TIMEOUT);
@@ -47,7 +49,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     }
     const { csrf, webrtc, rtcStunUrl } = settings;
     if (controller.signal.aborted) throw new Error('连接已取消');
-    if (!webrtc) { failure('disabled'); enabled = false; clearTimeout(timeout); signal?.removeEventListener('abort', cancel); return null; }
+    if (!webrtc) { failure('disabled'); enabled = false; clearDeadlines(); signal?.removeEventListener('abort', cancel); return null; }
     peer = new RTCPeerConnection({ iceServers: rtcIceServers(settings, { now: Date.now() }) });
     for (const [name, phase, property] of [['iceconnectionstatechange', 'ice', 'iceConnectionState'], ['connectionstatechange', 'peer', 'connectionState'], ['icegatheringstatechange', 'gathering', 'iceGatheringState']]) {
       peer.addEventListener(name, () => trace('rtc-state', { path: 'direct', phase, state: peer[property] }));
@@ -98,7 +100,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     }
     const close = () => {
       if (ended) return;
-      ended = true; grace?.close(); clearTimeout(timeout); signal?.removeEventListener('abort', cancel);
+      ended = true; grace?.close(); clearDeadlines(); signal?.removeEventListener('abort', cancel);
       statsResolve?.(null);
       rejectReady(new Error('直连已关闭')); controller.abort(); control.close(); health.close(); peer.close();
     };
@@ -117,10 +119,11 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         const candidates = (peer.localDescription?.sdp || '').split('\n').filter(line => /^a=candidate:/.test(line));
         trace('rtc-candidates', { path: 'direct', host: candidates.filter(line => / typ host(?:\s|$)/.test(line)).length, reflexive: candidates.filter(line => / typ (?:srflx|prflx)(?:\s|$)/.test(line)).length, relay: candidates.filter(line => / typ relay(?:\s|$)/.test(line)).length });
         trace('rtc-stage', { path: 'direct', stage: 'gathering', durationMs: Math.round(performance.now() - stageAt) });
-        deadline('signaling', RTC_SIGNAL_TIMEOUT);
+        deadline('queued', OFFER_LIMITS.waitMs);
         const waitingAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'queued' });
         const release = await requestRTCOffer({ signal: controller.signal, priority: service ? 1 : standby ? 2 : 0, expired: () => controller.abort() });
         trace('rtc-stage', { path: 'direct', stage: 'queued', durationMs: Math.round(performance.now() - waitingAt) });
+        deadline('signaling', RTC_SIGNAL_TIMEOUT);
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'signaling' });
         let answer;
         try {
@@ -137,12 +140,12 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         deadline('connecting', RTC_CONNECT_TIMEOUT);
         await native.wait(() => peer.setRemoteDescription(answer), controller.signal);
         await ready;
-        clearTimeout(timeout);
+        clearDeadlines();
         trace('rtc-stage', { path: 'direct', stage: 'connecting', durationMs: Math.round(performance.now() - stageAt) });
         stage = 'ready';
         if (service) features = await control.request('ping', {});
         else if (!probe) await control.request('activate', {});
-      } catch (error) { failure(timedOut ? 'timeout' : ['busy', 'native-busy'].includes(error?.reason) ? error.reason : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
+      } catch (error) { failure(timedOut ? 'timeout' : ['busy', 'native-busy', 'queue-timeout'].includes(error?.reason) ? error.reason : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
     } };
-  } catch { failure(timedOut ? 'timeout' : 'signaling'); clearTimeout(timeout); signal?.removeEventListener('abort', cancel); controller.abort(); peer?.close(); return null; }
+  } catch { failure(timedOut ? 'timeout' : 'signaling'); clearDeadlines(); signal?.removeEventListener('abort', cancel); controller.abort(); peer?.close(); return null; }
 }

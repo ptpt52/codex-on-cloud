@@ -4,6 +4,7 @@ export const ROUTE_COOLDOWN = 30000;
 export const NETWORK_PROBE_INTERVAL = 5000;
 export const RTC_SIGNAL_TIMEOUT = 12000;
 export const RTC_CONNECT_TIMEOUT = 12000;
+export const RTC_NEGOTIATION_TIMEOUT = 32000;
 export const HEARTBEAT_CONGESTION_GRACE = 4000;
 export const RTC_NATIVE_LIMIT = 4;
 
@@ -89,8 +90,9 @@ export function rtcFailureStatus(status) {
 export function directRetry(reason, attempt = 0, random = Math.random) {
   if (['auth', 'target', 'protocol', 'disabled', 'unsupported'].includes(reason)) return { stop: true, delay: 0 };
   const count = Math.max(0, Math.min(8, Number.isInteger(attempt) ? attempt : 0));
-  const jitter = Math.floor(Math.max(0, Math.min(1, random())) * (reason === 'busy' ? 250 : 1000));
-  return { stop: false, delay: Math.min(reason === 'busy' ? 5000 : 60000, (reason === 'busy' ? 500 : 15000) * 2 ** Math.min(count, reason === 'busy' ? 4 : 2) + jitter) };
+  const queued = ['busy', 'queue-timeout'].includes(reason);
+  const jitter = Math.floor(Math.max(0, Math.min(1, random())) * (queued ? 250 : 1000));
+  return { stop: false, delay: Math.min(queued ? 5000 : 60000, (queued ? 500 : 15000) * 2 ** Math.min(count, queued ? 4 : 2) + jitter) };
 }
 
 // One bounded deadline, shared by browser and native WebRTC adapters.

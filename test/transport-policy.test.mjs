@@ -19,6 +19,11 @@ test('aborted native waits release their caller while retaining bounded native s
   await assert.rejects(native.wait(() => { invoked = true; }, controller.signal), { name: 'AbortError' }); assert.equal(invoked, false);
   await assert.rejects(native.wait(() => { throw Error('native failure'); }), /native failure/); assert.equal(native.pending, 0);
 });
+test('local signaling queue timeouts use bounded admission backoff rather than a network failure delay', () => {
+  assert.deepEqual(directRetry('queue-timeout', 0, () => 0), { stop: false, delay: 500 });
+  assert.deepEqual(directRetry('queue-timeout', 8, () => 1), { stop: false, delay: 5000 });
+  assert.deepEqual(directRetry('negotiation-timeout', 0, () => 0), { stop: false, delay: 15000 });
+});
 test('path quality uses fresh repeated samples, favors comparable direct paths and requires a margin for TURN or switching back', () => {
   let time = 1000; const quality = createPathQuality(() => time);
   quality.sample(100); assert.equal(quality.rttMs, null); quality.sample(120); assert.equal(quality.rttMs, 110);

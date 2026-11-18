@@ -43,8 +43,15 @@ for (const operation of ['offer', 'remote-description']) test(`a never-settling 
   try {
     await isolatedService(page, app, false, true);
     await expect.poll(() => page.evaluate(() => typeof window.releaseNative)).toBe('function');
+    // Native ICE uses real time. Let the held description open its channels
+    // before advancing browser timers, so this does not strand an unrelated
+    // server-side ICE candidate during the simulated twelve-second pause.
+    if (operation === 'remote-description') await expect.poll(() => page.evaluate(() => window.serviceEvents.some(event => event.phase === 'peer' && event.state === 'connected'))).toBe(true);
     await page.clock.runFor(operation === 'offer' ? 5000 : 13000);
-    expect(await page.evaluate(reason => window.serviceEvents.some(event => event.reason === reason), operation === 'offer' ? 'gathering-timeout' : 'channel-timeout')).toBe(true);
+    expect(await page.evaluate(() => window.serviceEvents.find(event => event.type === 'path-lost' && event.stage))).toMatchObject({
+      stage: operation === 'offer' ? 'gathering' : 'connecting',
+      reason: operation === 'offer' ? 'gathering-timeout' : 'channel-timeout',
+    });
     await page.evaluate(() => {
       Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
       Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange'));

@@ -3,6 +3,7 @@
 export const OFFER_LIMITS = Object.freeze({ requests: 4, waitMs: 12000, leaseMs: 13000 });
 const aborted = () => Object.assign(new Error('连接协商已取消'), { name: 'AbortError' });
 const busy = () => Object.assign(new Error('连接协商正在排队'), { reason: 'busy' });
+const queueTimeout = () => Object.assign(new Error('等待连接协商名额超时'), { reason: 'queue-timeout' });
 export function createOfferQueue({ waitMs = OFFER_LIMITS.waitMs, leaseMs = OFFER_LIMITS.leaseMs } = {}) {
   const waiting = []; let active;
   function pump() {
@@ -26,7 +27,7 @@ export function createOfferQueue({ waitMs = OFFER_LIMITS.waitMs, leaseMs = OFFER
       } };
       const cancel = () => item.finish();
       signal?.addEventListener('abort', cancel, { once: true });
-      item.timer = setTimeout(() => { reject(busy()); item.finish(); }, waitMs);
+      item.timer = setTimeout(() => { reject(queueTimeout()); item.finish(); }, waitMs);
       waiting.push(item); pump();
     });
   }, get size() { return waiting.length + Number(!!active); } };
@@ -51,9 +52,9 @@ export function requestRTCOffer({ signal, priority = 1, expired = () => {} } = {
       const value = event.data;
       if (event.origin !== location.origin || event.source !== parent || value?.type !== 'codex-rtc-offer-result' || value.frame !== frame || value.id !== id || done) return;
       if (value.ok === true && !granted) { granted = true; clearTimeout(timer); resolve(finish); }
-      else if (value.ok !== true) { if (granted) expired(); else reject(busy()); finish(); }
+      else if (value.ok !== true) { if (granted) expired(); else reject(value.reason === 'queue-timeout' ? queueTimeout() : busy()); finish(); }
     };
-    const timer = setTimeout(() => { reject(busy()); finish(); }, OFFER_LIMITS.waitMs);
+    const timer = setTimeout(() => { reject(queueTimeout()); finish(); }, OFFER_LIMITS.waitMs);
     window.addEventListener('message', receive); signal?.addEventListener('abort', cancel, { once: true });
     post('codex-rtc-offer-request');
   });
@@ -73,7 +74,7 @@ export function createOfferBridge({ priority = () => 2, allowed = () => true, re
     if (!Number.isSafeInteger(value.id) || value.id < 1) return true;
     const existing = entries.get(entry);
     if (value.type !== 'codex-rtc-offer-request') { if (existing?.id === value.id) cancel(entry, false); return true; }
-    const respond = ok => reply(entry, { type: 'codex-rtc-offer-result', frame: String(entry.epoch), id: value.id, ok });
+    const respond = (ok, reason) => reply(entry, { type: 'codex-rtc-offer-result', frame: String(entry.epoch), id: value.id, ok, ...(reason === 'queue-timeout' ? { reason } : {}) });
     if (!allowed(entry) || existing || entries.size >= 2) { respond(false); return true; }
     const item = { id: value.id, controller: new AbortController() }; entries.set(entry, item);
     queue.acquire({ signal: item.controller.signal, priority: () => priority(entry), expired: () => cancel(entry) }).then(release => {
@@ -81,7 +82,7 @@ export function createOfferBridge({ priority = () => 2, allowed = () => true, re
       if (entries.get(entry) !== item) { release(); return; }
       if (!allowed(entry)) { cancel(entry); return; }
       respond(true);
-    }, () => { if (entries.get(entry) === item) { entries.delete(entry); respond(false); } });
+    }, error => { if (entries.get(entry) === item) { entries.delete(entry); respond(false, error?.reason); } });
     return true;
   } };
 }

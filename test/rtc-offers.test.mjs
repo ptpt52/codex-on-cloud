@@ -28,7 +28,7 @@ test('offer cancellation and lease expiry release the active permit exactly once
   const controller = new AbortController(); await queue.acquire({ signal: controller.signal });
   controller.abort(); assert.equal(queue.size, 0);
   const bounded = createOfferQueue({ waitMs: 10, leaseMs: 100 });
-  const done = await bounded.acquire(); await assert.rejects(bounded.acquire(), { reason: 'busy' }); done();
+  const done = await bounded.acquire(); await assert.rejects(bounded.acquire(), { reason: 'queue-timeout' }); done();
   assert.equal(bounded.size, 0);
 });
 
@@ -43,4 +43,16 @@ test('frame bridge ignores malformed and stale releases, refuses duplicates, and
   assert.equal(replies.some(value => value.id === 3), false);
   bridge.cancel(entry); await Promise.resolve(); assert.equal(replies.at(-1).id, 3); assert.equal(replies.at(-1).ok, true);
   bridge.clear();
+});
+
+test('frame admission reports queue expiry distinctly from an immediate capacity refusal', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const replies = [], active = { epoch: 1 }, queued = { epoch: 2 };
+  const bridge = createOfferBridge({ reply: (entry, value) => replies.push({ entry, ...value }) });
+  try {
+    bridge.message(active, { type: 'codex-rtc-offer-request', id: 1 }); await Promise.resolve();
+    bridge.message(queued, { type: 'codex-rtc-offer-request', id: 2 });
+    t.mock.timers.tick(OFFER_LIMITS.waitMs); await Promise.resolve();
+    assert.deepEqual(replies.at(-1), { entry: queued, type: 'codex-rtc-offer-result', frame: '2', id: 2, ok: false, reason: 'queue-timeout' });
+  } finally { bridge.clear(); }
 });
