@@ -27,6 +27,33 @@ async function isolatedService(page, app, instrument = false, clock = false) {
 }
 async function stop(page, app) { await page.evaluate(() => window.serviceLink?.stop()).catch(() => {}); await app.close(); }
 
+test('hiding during a manual heartbeat releases the candidate promptly and preserves the live service', async ({ page }) => {
+  const app = await fixture({ webrtc: true });
+  try {
+    await isolatedService(page, app);
+    await expect.poll(() => page.evaluate(() => window.serviceLink.ready)).toBe(true);
+    await page.evaluate(() => {
+      window.originalService = window.serviceLink.transport;
+      const create = RTCPeerConnection.prototype.createDataChannel;
+      window.candidatePings = 0;
+      RTCPeerConnection.prototype.createDataChannel = function(label, options) {
+        const channel = create.call(this, label, options);
+        if (label === 'codex-health') {
+          const send = channel.send.bind(channel);
+          channel.send = data => { window.candidatePings++; send(data); };
+          channel.addEventListener('message', event => event.stopImmediatePropagation());
+        }
+        return channel;
+      };
+      window.manualRecheck = window.serviceLink.recheck().then(() => { window.manualEnded = true; });
+    });
+    await expect.poll(() => page.evaluate(() => window.candidatePings), { timeout: 10000 }).toBe(1);
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
+    await expect.poll(() => page.evaluate(() => window.manualEnded), { timeout: 1000 }).toBe(true);
+    expect(await page.evaluate(() => ({ same: window.originalService === window.serviceLink.transport, ready: window.serviceLink.ready, pings: window.candidatePings }))).toEqual({ same: true, ready: true, pings: 1 });
+  } finally { await stop(page, app); }
+});
+
 for (const operation of ['offer', 'remote-description']) test(`a never-settling native ${operation} times out, permits foreground recovery and ignores its late result`, async ({ page }) => {
   const app = await fixture({ webrtc: true });
   await page.addInitScript(operation => {

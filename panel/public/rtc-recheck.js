@@ -14,19 +14,37 @@ export function createRTCRecheck({ open, current, allowed, idle, replace, trace 
     if (!allowed() || document.hidden || !navigator.onLine) { report({ state: 'unavailable' }); return; }
     const controller = pending = new AbortController(), timer = setTimeout(() => controller.abort(), 26000);
     let candidate, retained = false, step = 'candidate', result = 'failed', reason, outcome, status;
+    let candidateClosed = false;
+    const closeCandidate = () => { if (candidate && !retained && !candidateClosed) { candidateClosed = true; try { candidate.close(); } catch {} } };
+    const cancelled = () => Object.assign(Error('直连重测已取消'), { name: 'AbortError' });
+    let rejectAbort;
+    const aborted = new Promise((_, reject) => { rejectAbort = reject; }); void aborted.catch(() => {});
+    const abort = () => { try { closeCandidate(); } finally { rejectAbort(cancelled()); } };
+    controller.signal.addEventListener('abort', abort, { once: true });
+    const wait = async run => {
+      if (controller.signal.aborted) throw cancelled();
+      const value = await Promise.race([Promise.resolve().then(() => { if (controller.signal.aborted) throw cancelled(); return run(); }), aborted]);
+      if (controller.signal.aborted) throw cancelled();
+      return value;
+    };
     const startedAt = performance.now();
     const log = type => { try { trace(type, { path: 'direct', step, durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
       ...(type === 'recheck-ended' ? { result, reason, outcome, status, ...probeStatus() } : {}) }); } catch { /* Diagnostics never control adoption. */ } };
     try {
       log('recheck-start');
-      report({ state: 'probing' }); candidate = await open(controller.signal);
+      report({ state: 'probing' });
+      await wait(async () => {
+        const opened = await open(controller.signal);
+        if (controller.signal.aborted) { opened?.close(); throw cancelled(); }
+        candidate = opened;
+      });
       if (!candidate) throw Error('candidate unavailable');
       step = 'connect';
-      await candidate.start();
+      await wait(() => candidate.start());
       step = 'health';
-      for (let n = 0; n < 3; n++) await candidate.health.ping();
+      for (let n = 0; n < 3; n++) await wait(() => candidate.health.ping());
       step = 'stats';
-      const route = await candidate.stats(), previous = await current();
+      const route = await wait(() => candidate.stats()), previous = await wait(current);
       if (controller.signal.aborted || !allowed() || document.hidden || !navigator.onLine) throw Error('cancelled');
       if (previous && Number.isFinite(previous.rttMs) && !pathPreferred({ candidateMs: candidate.health.rttMs, currentMs: previous.rttMs, candidate: 'direct', turn: rtcRouteKind(route) !== 'direct' })) {
         result = 'kept'; reason = 'quality'; outcome = 'confirmed'; report({ state: result, reason }); return;
@@ -35,7 +53,7 @@ export function createRTCRecheck({ open, current, allowed, idle, replace, trace 
       report({ state: 'waiting' });
       while (!idle()) {
         if (controller.signal.aborted || !allowed() || document.hidden || !navigator.onLine) throw Error('cancelled');
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await wait(() => new Promise(resolve => setTimeout(resolve, 100)));
       }
       if (controller.signal.aborted || !allowed() || document.hidden || !navigator.onLine) throw Error('cancelled');
       step = 'switch'; log('recheck-switch');
@@ -44,8 +62,11 @@ export function createRTCRecheck({ open, current, allowed, idle, replace, trace 
         if (controller.signal.aborted || pending !== controller) return false;
         committing = true; step = 'commit'; clearTimeout(timer); return true;
       };
+      // Adoption may already have dispatched an activation. Keep its slot until
+      // the replacement's own bounded commit and cleanup have completed.
       const replacement = await replace(candidate, controller.signal, commit);
       retained = replacement?.retained === true;
+      if (controller.signal.aborted) throw cancelled();
       result = replacement?.state || 'deferred'; outcome = retained ? 'confirmed' : undefined;
       // The replacement's state describes this probe, not future peer health.
       report({ state: result });
@@ -57,6 +78,6 @@ export function createRTCRecheck({ open, current, allowed, idle, replace, trace 
       outcome = ['unknown', 'rejected', 'canceled'].includes(error?.outcome) ? error.outcome : ['switch', 'commit'].includes(step) ? 'unknown' : controller.signal.aborted ? 'canceled' : 'rejected';
       report({ state: result });
     }
-    finally { clearTimeout(timer); if (!retained) candidate?.close(); if (pending === controller) { pending = undefined; committing = false; } log('recheck-ended'); }
+    finally { clearTimeout(timer); controller.signal.removeEventListener('abort', abort); closeCandidate(); if (pending === controller) { pending = undefined; committing = false; } log('recheck-ended'); }
   } };
 }
