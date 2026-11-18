@@ -18,6 +18,37 @@ async function login(page, app, mode) {
 async function route(page, expected) {
   await page.locator('#connection-button').click(); await expect(page.locator('#diag-transport')).toContainText(expected, { timeout: 12000 }); await page.locator('#close-connection').click();
 }
+
+test('a partial first desktop frame stalled on relay finishes through direct with the same parser and no input', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 160, height: 100 }, webrtc: true, fastConnect: true, seamless: true });
+  await page.addInitScript(() => {
+    const add = WebSocket.prototype.addEventListener;
+    WebSocket.prototype.addEventListener = function(type, listener, options) {
+      if (type !== 'message' || new URL(this.url).pathname !== '/session/connect') return add.call(this, type, listener, options);
+      return add.call(this, type, event => {
+        let value; try { value = JSON.parse(event.data); } catch {}
+        if (value?.type === 'chunk') {
+          if (window.partialFirstFrame) { window.stalledFrameChunks = (window.stalledFrameChunks || 0) + 1; return; }
+          if (value.data.length > 10000) window.partialFirstFrame = true;
+        }
+        listener.call(this, event);
+      }, options);
+    };
+  });
+  try {
+    await login(page, app, 'desktop');
+    const frame = page.frameLocator('#desktop-frame'), renderer = frame.locator('#screen canvas');
+    await expect.poll(() => renderer.evaluate(() => window.stalledFrameChunks || 0)).toBeGreaterThan(0);
+    await expect(frame.locator('#status')).toBeVisible(); await renderer.evaluate(element => { window.partialRenderer = element; });
+    await openInput(page); await expect(page.locator('#paste-button')).toBeDisabled();
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 10000 });
+    await expect(frame.locator('#status')).toBeHidden(); await expect(page.locator('#paste-button')).toBeEnabled();
+    expect(await renderer.evaluate(element => window.partialRenderer === element)).toBe(true);
+    expect(await renderer.evaluate(element => element.getContext('2d').getImageData(159, 99, 1, 1).data[3])).toBe(255);
+    expect(app.vncConnections).toBe(1); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 for (const mode of ['desktop', 'terminal']) test(`${mode}: a delayed initial relay greeting preserves the healthy direct writer; repeated expired greetings remain fatal`, async ({ page }) => {
   const app = await fixture({ rfb: true, webrtc: true, fastConnect: true, seamless: true });
   try {

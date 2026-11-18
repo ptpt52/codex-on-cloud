@@ -350,8 +350,12 @@ function monitorDirect(delay = 3000) {
   };
   healthTimer = setTimeout(tick, delay);
 }
-function idleForSwitch() {
-  return !frameGate?.blocked && !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800;
+function idleForSwitch(streamHandoff = false) {
+  // A seamless path handoff retains the same RFB parser and output offset. Its
+  // initial or resumed frame may arrive on the faster path; input and resizing
+  // still wait for the framebuffer gate. Legacy renderer replacement stays gated.
+  const frameSettled = !frameGate?.blocked || streamHandoff && viewing && !preferences.standby;
+  return frameSettled && !preferences.blocked && !preferences.busy && !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && !desktopInput.composing && !desktopInput.busy && !desktopInput.touch && performance.now() - lastInteraction >= 800;
 }
 function scheduleProbe(delay = probeDelay) {
   if (probeTimer || probeController || !needsProbe() || document.hidden || !navigator.onLine) return;
@@ -480,7 +484,7 @@ function attachViewer(direct, channel) {
   instance.compressionLevel = 2;
   instance.addEventListener('connect', () => {
     if (rfb !== instance || stopping) return;
-    connecting = false; viewing = true; status.hidden = true; lastReport = ''; applyView(); announce('connected'); reportControl();
+    connecting = false; viewing = true; status.hidden = !frameGate.blocked || preferences.standby; status.textContent = '正在加载桌面画面…'; lastReport = ''; applyView(); announce('connected'); reportControl();
     if (direct) directIssue = '';
     reportNetwork(); void refreshNetwork();
     clearTimeout(idleTimer); idleTimer = setTimeout(reportView, 850);
@@ -523,7 +527,7 @@ async function connect() {
   status.hidden = false; status.textContent = '正在连接独立桌面…';
   if (streamEnabled) {
     streamClient?.close();
-    streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: idleForSwitch,
+    streamClient = createStreamClient({ viewer, trace, standby: new URLSearchParams(location.search).get('standby') === '1', csrf: streamCsrf, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }), idle: () => idleForSwitch(true),
       waitReason: () => preferences.standby ? 'standby' : desktopInput.touch ? 'keyboard-open' : frameGate?.blocked ? 'frame-loading' : desktopInput.composing ? 'composition' : pressedKeys.size || pressedPointers.size ? 'keys-held' : preferences.blocked || preferences.busy ? 'ui-busy' : 'input-active',
       settled: () => !pressedKeys.size && !pressedPointers.size && !pointerControls.busy && performance.now() - lastInteraction >= 800,
       prepare: prepareSwitch,
