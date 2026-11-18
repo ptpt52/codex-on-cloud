@@ -148,7 +148,7 @@ test('real tmux viewers follow main to the second terminal after parking and des
   }
 });
 
-test('a rejected desktop focus clears the claimed active tab, never retries, and restores normal input only after a manual selection', async ({ page }, info) => {
+test('a rejected desktop focus keeps the selected terminal, never retries, and restores normal input only after a manual selection', async ({ page }, info) => {
   test.skip(!info.project.name.endsWith('desktop'), 'Desktop terminal task tabs require the wide sidebar');
   let rejectFocus = true, release, entered, attempts = 0;
   const hold = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
@@ -165,7 +165,8 @@ test('a rejected desktop focus clears the claimed active tab, never retries, and
     await expect(page.locator('#desktop-frame')).toHaveAttribute('inert', ''); await expect(page.locator('#paste-button')).toBeDisabled();
     release(); await expect(page.locator('#toast')).toContainText('桌面终端窗口未确认切换');
     await expect(page.locator('#desktop-frame')).not.toHaveAttribute('inert', '');
-    await expect(page.locator('#terminal-tabs [aria-selected=true]')).toHaveCount(0); await expect(page.locator('#paste-button')).toBeDisabled();
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=aux1]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#draft-status')).toContainText('桌面窗口尚未确认切换'); await expect(page.locator('#paste-button')).toBeDisabled();
     await page.locator('#terminal-switch-refresh').evaluate(button => button.click()); await expect(page.locator('#input-terminal')).toBeEnabled();
     expect(attempts).toBe(1); await expect(page.locator('#paste-button')).toBeDisabled();
     rejectFocus = false; await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click();

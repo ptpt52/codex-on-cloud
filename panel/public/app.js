@@ -367,7 +367,7 @@ function openTerminalManager() {
   shortcutMenu.close(); $('terminals-dialog').showModal(); sendDisplayPreferences(); void loadTerminals();
 }
 function renderTerminalSelection() {
-  const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error' || desktopFocusUnconfirmed();
+  const invalid = terminalSelectionState === 'invalid' || terminalSelectionState === 'error';
   const disabled = !canManageTerminals() || inputComposing || views.active.composing || !!confirmation;
   const entries = terminalMode() ? terminalEntries() : terminalEntries().filter(item => !item.available);
   terminalTabs.render(entries, terminalSelectionState === 'closed' ? 'new' : selectedTerminal, { visible: owned && entries.length > 0, disabled, invalid, loading: terminalSelectionState === 'loading', desktop: !terminalMode() });
@@ -377,7 +377,7 @@ function renderTerminalSelection() {
     : draftNotice || (terminalState.persistenceFailed ? '浏览器未能保存草稿，刷新前请复制重要文字。' : '');
   $('draft-status').textContent = message; $('draft-status').hidden = !message;
   renderDraftSafety();
-  $('terminal-switch-status').textContent = invalid ? message : terminalSelectionState === 'loading' ? '正在核对终端…' : '';
+  $('terminal-switch-status').textContent = invalid || desktopFocusUnconfirmed() ? message : terminalSelectionState === 'loading' ? '正在核对终端…' : '';
   $('terminal-switch-refresh').disabled = !loggedIn || terminalBusy;
   $('terminal-switch-manage').disabled = !loggedIn || terminalBusy;
   const stale = terminalCatalogVerified ? terminalState.stale(terminalCatalog, draftIdentity) : 0;

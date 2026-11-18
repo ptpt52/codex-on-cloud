@@ -70,6 +70,8 @@ test('a parked desktop recovery that exceeds focus admission never sends the old
     });
     await expect(page.locator('#connection-status')).toContainText('桌面在线');
     await expect(page.locator('#input-terminal')).toBeEnabled(); expect(attempts).toBe(0);
+    await expect(page.locator('#terminal-tabs [data-terminal-choice=main]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#draft-status')).toContainText('桌面窗口尚未确认切换');
     await expect(page.locator('#paste-button')).toBeDisabled(); expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
     await page.locator('#terminal-tabs [data-terminal-choice=main]').click(); await expect(page.locator('#paste-button')).toBeEnabled();
     expect(attempts).toBe(1); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
