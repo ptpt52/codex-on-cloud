@@ -109,6 +109,42 @@ test('a retired monitor cannot clear the new foreground check while its stats re
  } finally { await app.close(); }
 });
 
+for (const cause of ['hidden', 'busy', 'monitor', 'stop']) test(`a service promotion handles ${cause} after its commit boundary without losing the adopted peer`, async ({ page }) => {
+ const app = await fixture();
+ try {
+  await page.route('**/rtc-transport.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'export async function desktopTransport(...args) { return window.nextServiceTransport(...args); }' }));
+  await page.goto(app.config.origin); await page.clock.install();
+  await page.evaluate(async () => {
+   const { createServiceLink } = await import('/service-link.js'); let opened = 0;
+   window.auditPeers = []; window.auditCanReplace = true;
+   window.nextServiceTransport = async (_viewer, _changed, options) => {
+    const index = opened++, peer = { features: {}, closed: false, promotions: 0, pings: 0,
+     async start() {}, async stats() { return null; }, health: { rttMs: index ? 1 : 100, async ping() { peer.pings++; }, cancel() {} },
+     close() { peer.closed = true; }, control: { request(action) { if (action !== 'promote') throw Error('unexpected RPC'); peer.promotions++;
+      window.auditPeers[0].serverClosed = true; return new Promise((resolve, reject) => { window.releasePromotion = () => resolve({ promoted: true }); options.signal.addEventListener('abort', () => reject(Error('shutdown')), { once: true }); }); } } };
+    options.signal.addEventListener('abort', () => peer.close(), { once: true }); window.auditPeers.push(peer); return peer;
+   };
+   window.auditService = createServiceLink({ viewer: 'isolated-committed-service', options: () => ({}), changed() {}, canReplace: () => window.auditCanReplace }); window.auditService.start();
+  });
+  await expect.poll(() => page.evaluate(() => window.auditService.ready)).toBe(true);
+  await page.evaluate(() => { window.auditRecheck = window.auditService.recheck(); });
+  await expect.poll(() => page.evaluate(() => typeof window.releasePromotion)).toBe('function');
+  await page.evaluate(cause => {
+   if (cause === 'hidden') { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); }
+   if (cause === 'busy') window.auditCanReplace = false;
+   if (cause === 'monitor') window.dispatchEvent(new Event('online'));
+   if (cause === 'stop') window.auditService.stop();
+  }, cause);
+  if (cause === 'monitor') await page.clock.runFor(3100);
+  const result = await page.evaluate(async () => {
+   window.releasePromotion(); await window.auditRecheck;
+   const [old, next] = window.auditPeers, result = { ready: window.auditService.ready, adopted: window.auditService.transport === next, oldClosed: old.closed, serverClosed: old.serverClosed, nextClosed: next.closed, promotions: next.promotions, oldPings: old.pings };
+   window.auditService.stop(); return result;
+  });
+  expect(result).toEqual({ ready: cause !== 'stop', adopted: cause !== 'stop', oldClosed: true, serverClosed: true, nextClosed: cause === 'stop', promotions: 1, oldPings: 1 });
+  expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+ } finally { await app.close(); }
+});
 for (const cause of ['stop', 'busy']) test(`mocked delayed service stats cannot enable a recheck after ${cause}`, async ({ page }) => {
  const app = await fixture();
  try {

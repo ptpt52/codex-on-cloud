@@ -1,11 +1,12 @@
 import { pathPreferred } from './transport-policy.js';
 import { rtcRouteKind } from './rtc-stats.js';
 
-// One explicit probe, no queue. Candidate admission is bounded to 26 seconds;
-// the owning connection decides how to hand over its existing business stream.
+// One explicit probe, no queue. Candidate admission is bounded to 26 seconds.
+// A service promotion may commit to its separately bounded RPC: soft lifecycle
+// cancellation then waits for adoption; explicit shutdown still aborts the peer.
 export function createRTCRecheck({ open, current, allowed, idle, replace }) {
-  let pending;
-  return { get running() { return !!pending; }, cancel() { pending?.abort(); }, async run(report = () => {}) {
+  let pending, committing = false;
+  return { get running() { return !!pending; }, cancel({ force = false } = {}) { if (!committing || force) pending?.abort(); }, async run(report = () => {}) {
     if (pending) { report({ state: 'busy' }); return; }
     if (!allowed() || document.hidden || !navigator.onLine) { report({ state: 'unavailable' }); return; }
     const controller = pending = new AbortController(), timer = setTimeout(() => controller.abort(), 26000);
@@ -27,10 +28,14 @@ export function createRTCRecheck({ open, current, allowed, idle, replace }) {
       }
       if (controller.signal.aborted || !allowed() || document.hidden || !navigator.onLine) throw Error('cancelled');
       report({ state: 'switching' });
-      const result = await replace(candidate, controller.signal);
+      const commit = () => {
+        if (controller.signal.aborted || pending !== controller) return false;
+        committing = true; clearTimeout(timer); return true;
+      };
+      const result = await replace(candidate, controller.signal, commit);
       retained = result?.retained === true;
       report({ state: result?.state || 'deferred' });
     } catch { report({ state: controller.signal.aborted ? 'cancelled' : 'failed' }); }
-    finally { clearTimeout(timer); if (!retained) candidate?.close(); if (pending === controller) pending = undefined; }
+    finally { clearTimeout(timer); if (!retained) candidate?.close(); if (pending === controller) { pending = undefined; committing = false; } }
   } };
 }

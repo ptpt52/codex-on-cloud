@@ -40,7 +40,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     timer = setTimeout(() => void monitor(version, peer), 3000); publish(); return true;
   }
   async function monitor(version, peer) {
-    if (!running || epoch !== version || current !== peer || checking || document.hidden || !navigator.onLine) return;
+    if (!running || epoch !== version || current !== peer || checking || replacing || document.hidden || !navigator.onLine) return;
     const generation = ++monitorGeneration;
     const active = () => running && epoch === version && current === peer && generation === monitorGeneration && !document.hidden && navigator.onLine;
     {
@@ -109,7 +109,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (candidate) candidate.promoteRequired = promoteRequired;
       return candidate;
     },
-    replace: async (candidate, signal) => {
+    replace: async (candidate, signal, commit) => {
       const version = epoch;
       const eligible = () => running && epoch === version && !signal.aborted && !busy && !files?.busy && !checking && canReplace();
       if (!eligible()) return;
@@ -117,15 +117,27 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       try {
         const route = await candidate.stats();
         if (!eligible()) return;
-        if (candidate.promoteRequired) await candidate.control.request('promote', {});
-        if (!eligible()) return;
+        if (candidate.promoteRequired) {
+          if (!commit()) return;
+          cancelMonitor();
+          // The server retires the old peer when promote commits. From here a
+          // soft pause/busy hint cannot discard the replacement after success.
+          // The control client's existing eight-second deadline still applies.
+          await candidate.control.request('promote', {});
+          if (!running || epoch !== version || signal.aborted) return;
+        }
         cancelMonitor(); const old = current, oldFiles = files;
         current = candidate; files = undefined; state.ready = true; state.issue = ''; state.route = route; trace('path-active', { path: 'direct' });
         oldFiles?.close(); old?.close(); healthMisses = 0; publish();
         if (candidate.features?.filesProtocol === 1) openFiles(candidate);
         timer = setTimeout(() => void monitor(epoch, candidate), 3000);
         return { retained: true, state: 'selected' };
-      } finally { replacing = false; }
+      } finally {
+        replacing = false;
+        if (running && epoch === version && current && current !== candidate) {
+          clearTimeout(timer); timer = setTimeout(() => void monitor(version, current), 100);
+        }
+      }
     },
   });
   window.addEventListener('online', wake); window.addEventListener('offline', wake); navigator.connection?.addEventListener('change', wake);
@@ -137,7 +149,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     get helperFiles() { return !replacing && current?.features?.helperDownloadsProtocol === 1 && files?.ready ? files : null; },
     start() { if (running) return; running = true; epoch++; delay = 15000; attempts = 0; halted = false; void probe(); },
     wake, async recheck(report) { await recheck.run(report); if (running && !current) schedule(1000); },
-    stop() { running = false; epoch++; recheck.cancel(); clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },
+    stop() { running = false; epoch++; recheck.cancel({ force: true }); clearTimeout(retry); pending?.abort(); pending = undefined; retire(); },
     async request(action, body, signal) {
       const peer = current;
       if (!peer || !state.ready || busy || replacing || signal?.aborted) throw Object.assign(Error('服务直连未就绪，本次操作未发送'), { outcome: 'rejected' });
