@@ -52,17 +52,31 @@ export function gatherCandidates(peer, signal) {
   if (signal.aborted) return Promise.reject(new Error('直连协商已取消'));
   if (peer.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve, reject) => {
+    let finished = false, fastExpired = false;
+    const urls = (peer.getConfiguration?.().iceServers || []).flatMap(server => Array.isArray(server.urls) ? server.urls : [server.urls]);
+    const wantsRelay = urls.some(url => /^turns?:/.test(url));
+    const wantsReflexive = urls.some(url => /^stun:/.test(url));
+    const usable = () => {
+      const sdp = peer.localDescription?.sdp || '';
+      const types = wantsRelay ? 'relay' : wantsReflexive ? '(?:srflx|prflx|relay)' : '(?:host|srflx|prflx|relay)';
+      return new RegExp('^a=candidate:.*\\styp ' + types + '(?:\\s|$)', 'm').test(sdp);
+    };
     const finish = error => {
-      clearTimeout(timer);
+      if (finished) return;
+      finished = true; clearTimeout(fastTimer); clearTimeout(maxTimer);
       peer.removeEventListener('icegatheringstatechange', changed);
+      peer.removeEventListener('icecandidate', changed);
       signal.removeEventListener('abort', aborted);
       if (error) reject(error); else resolve();
     };
-    const changed = () => { if (peer.iceGatheringState === 'complete') finish(); };
+    const changed = () => { if (peer.iceGatheringState === 'complete' || fastExpired && usable()) finish(); };
     const aborted = () => finish(new Error('直连协商已取消'));
-    // An unreachable STUN service must not delay usable local host candidates.
-    const timer = setTimeout(() => finish(), 1500);
+    // Keep completed/local-only gathering fast, but allow slow STUN/TURN a
+    // bounded second chance before taking the snapshot used by non-trickle SDP.
+    const fastTimer = setTimeout(() => { fastExpired = true; changed(); }, 1500);
+    const maxTimer = setTimeout(() => finish(), 3000);
     peer.addEventListener('icegatheringstatechange', changed);
+    peer.addEventListener('icecandidate', changed);
     signal.addEventListener('abort', aborted, { once: true });
     changed();
   });

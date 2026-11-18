@@ -108,7 +108,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       stats, async start() {
       try {
         let stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'gathering' });
-        deadline('gathering', 3000);
+        deadline('gathering', 4000);
         await peer.setLocalDescription(await peer.createOffer());
         await gatherCandidates(peer, controller.signal);
         const candidates = (peer.localDescription?.sdp || '').split('\n').filter(line => /^a=candidate:/.test(line));

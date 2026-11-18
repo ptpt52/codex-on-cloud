@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { globalIPv4, globalIPv6, rtcAddress, rtcIPv6Address, rtcOffer, stunURL, rtcIceConfiguration, rtcBindAddresses, peerAddress } from '../panel/rtc-network.mjs';
 import { selectedRoute, gatherCandidates, rtcRouteKind, rtcRouteLabel } from '../panel/public/rtc-stats.js';
 
@@ -103,14 +104,41 @@ test('route labels require candidate types and distinguish either TURN allocatio
   assert.equal(rtcRouteKind(hidden), 'direct'); // Address privacy and identical IPs do not determine the path.
 });
 
-test('STUN gathering has a fixed deadline and cancellation removes its listeners', async t => {
+test('local gathering stays fast, empty gathering has a hard bound and cancellation removes listeners', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const peer = new EventTarget(); peer.iceGatheringState = 'gathering';
+  const peer = new EventTarget(); peer.iceGatheringState = 'gathering'; peer.localDescription = { sdp: candidate('10.0.0.1') };
   const first = gatherCandidates(peer, new AbortController().signal);
   t.mock.timers.tick(1500); await first;
+  peer.localDescription.sdp = ''; let done = false;
+  const empty = gatherCandidates(peer, new AbortController().signal).then(() => { done = true; });
+  t.mock.timers.tick(1500); await Promise.resolve(); assert.equal(done, false);
+  t.mock.timers.tick(1500); await empty;
   const controller = new AbortController(), canceled = assert.rejects(gatherCandidates(peer, controller.signal), /取消/);
   controller.abort(); await canceled;
+  for (const event of ['icecandidate', 'icegatheringstatechange']) assert.equal(getEventListeners(peer, event).length, 0);
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
   peer.iceGatheringState = 'complete'; await gatherCandidates(peer, new AbortController().signal);
+});
+
+for (const kind of ['stun', 'turn']) test(`a late ${kind} candidate is included without waiting for the hard gathering deadline`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const peer = new EventTarget(); peer.iceGatheringState = 'gathering'; peer.localDescription = { sdp: candidate('10.0.0.1') };
+  peer.getConfiguration = () => ({ iceServers: [{ urls: kind + ':ice.example.test:3478' }] });
+  let done = false; const waiting = gatherCandidates(peer, new AbortController().signal).then(() => { done = true; });
+  t.mock.timers.tick(1500); await Promise.resolve(); assert.equal(done, false);
+  t.mock.timers.tick(600); peer.localDescription.sdp += '\r\n' + candidate('203.0.113.1', kind === 'stun' ? 'srflx' : 'relay');
+  peer.dispatchEvent(new Event('icecandidate')); await waiting; assert.equal(done, true);
+  assert.equal(getEventListeners(peer, 'icecandidate').length, 0);
+});
+
+test('unreachable TURN cannot block a host offer beyond three seconds and completed gathering returns immediately', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const peer = new EventTarget(); peer.iceGatheringState = 'gathering'; peer.localDescription = { sdp: candidate('10.0.0.1') };
+  peer.getConfiguration = () => ({ iceServers: [{ urls: ['turn:ice.example.test:3478'] }] });
+  const waiting = gatherCandidates(peer, new AbortController().signal); t.mock.timers.tick(3000); await waiting;
+  const complete = gatherCandidates(peer, new AbortController().signal);
+  peer.iceGatheringState = 'complete'; peer.dispatchEvent(new Event('icegatheringstatechange')); await complete;
+  assert.equal(getEventListeners(peer, 'icecandidate').length, 0);
 });
 
 test('IPv4 NAT candidates retain slots beside LAN, IPv6 and center relay candidates', () => {
