@@ -5,15 +5,18 @@ import { uiSnapshot } from '../support/ui-snapshot.mjs';
 
 test.describe('versioned static HTTP cache', () => {
   test.use({ serviceWorkers: 'block' });
-  test('a second load reuses pinned public modules without caching HTML or APIs', async ({ page, context }) => {
+  test('static responses permit private caching without caching HTML or APIs', async ({ page, context, browserName }) => {
     const app = await fixture({ mode: 'terminal' });
     try {
       await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
       await expect(page.locator('#forward-button')).toBeEnabled();
       const pinned = '/health.js?ui=' + app.panel.uiRevision;
-      expect(await page.evaluate(async path => (await fetch(path)).ok, pinned)).toBe(true);
+      const response = await page.evaluate(async path => { const response = await fetch(path); await response.text(); return { ok: response.ok, cache: response.headers.get('cache-control') }; }, pinned);
+      expect(response).toEqual({ ok: true, cache: 'private, max-age=86400, immutable' });
       await context.setOffline(true);
-      expect(await page.evaluate(async path => (await fetch(path)).text(), pinned)).toContain('export');
+      // Playwright's ephemeral WebKit contexts disable the HTTP cache. Verify
+      // the policy there; exercise actual offline reuse in Chromium/Firefox.
+      if (browserName !== 'webkit') expect(await page.evaluate(async path => (await fetch(path)).text(), pinned)).toContain('export');
       for (const path of ['/', '/api/me', '/health.js']) expect(await page.evaluate(async path => { try { await fetch(path); return false; } catch { return true; } }, path)).toBe(true);
     } finally { await context.setOffline(false); await app.close(); }
   });
