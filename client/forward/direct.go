@@ -268,6 +268,7 @@ type directManager struct {
 	config       directSignal
 	configured   bool
 	hintsChanged bool
+	drainID      uint32
 	id           uint32
 	answers      chan directSignal
 	wake         chan struct{}
@@ -286,7 +287,6 @@ func makeDirectManager(ctx context.Context, token string, write func(any) error,
 	return m
 }
 func (m *directManager) accept(value directSignal) {
-	var drainID uint32
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
@@ -296,9 +296,11 @@ func (m *directManager) accept(value directSignal) {
 		}
 		m.hintsChanged = m.configured
 		if m.configured && m.peer != nil {
+			if !m.peer.draining {
+				m.drainID = m.peer.id
+			}
 			m.peer.draining = true
 			m.peer.available = false
-			drainID = m.peer.id
 		}
 		m.config = value
 		m.configured = true
@@ -364,9 +366,6 @@ func (m *directManager) accept(value directSignal) {
 		}
 	}
 	m.mu.Unlock()
-	if drainID != 0 {
-		_ = m.write(map[string]any{"type": "rtc_drain", "id": drainID})
-	}
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -402,6 +401,11 @@ func (m *directManager) run() {
 		m.mu.Lock()
 		enabled := m.configured && m.config.Enabled
 		p := m.peer
+		drainID := m.drainID
+		m.drainID = 0
+		if p == nil || p.id != drainID || !p.draining {
+			drainID = 0
+		}
 		healthy := p != nil && p.ready && (p.healthy || p.available) && !p.draining && time.Since(p.updated) < 10*time.Second
 		busy := p != nil && (len(p.streams) > 0 || p.opening > 0)
 		var disabled *directPeer
@@ -415,6 +419,12 @@ func (m *directManager) run() {
 		m.mu.Unlock()
 		if disabled != nil {
 			disabled.close()
+		}
+		// The one manager loop owns at most one pending drain generation.
+		// A config received by the shared reader only updates this mailbox;
+		// waiting for its bounded write cannot hold data/ACK receive progress.
+		if drainID != 0 && disabled == nil && m.ctx.Err() == nil {
+			_ = m.write(map[string]any{"type": "rtc_drain", "id": drainID})
 		}
 		if probe {
 			if m.negotiate() == "rtc_busy" {
@@ -676,9 +686,15 @@ func (m *directManager) Open(ctx context.Context) *directChannel {
 		drain := !p.draining
 		p.draining = true
 		p.available = false
+		if drain {
+			m.drainID = p.id
+		}
 		m.mu.Unlock()
 		if drain {
-			m.write(map[string]any{"type": "rtc_drain", "id": p.id})
+			select {
+			case m.wake <- struct{}{}:
+			default:
+			}
 		}
 		return nil
 	}

@@ -87,11 +87,11 @@ func TestPeerRotationDoesNotCloseExistingStreamsOrOpenANewTarget(t *testing.T) {
 	peer := &directPeer{id: 1, channels: 128, available: true, streams: map[*directChannel]struct{}{existing: {}}}
 	records := []any{}
 	manager := &directManager{peer: peer, write: func(value any) error { records = append(records, value); return nil }}
-	if manager.Open(context.Background()) != nil || !peer.draining || peer.available || len(peer.streams) != 1 || len(records) != 1 {
+	if manager.Open(context.Background()) != nil || !peer.draining || peer.available || len(peer.streams) != 1 || len(records) != 0 || manager.drainID != peer.id {
 		t.Fatal("Exhausted peer failed to preserve its existing stream and choose relay")
 	}
 	manager.Open(context.Background())
-	if len(records) != 1 {
+	if len(records) != 0 || manager.drainID != peer.id {
 		t.Fatal("Repeated preflight queued duplicate drain commands")
 	}
 }
@@ -266,11 +266,11 @@ func TestNetworkConfigurationChangesDrainOnlyNewStreams(t *testing.T) {
 		next := initial
 		change(&next)
 		manager.accept(next)
-		if manager.config.STUN != next.STUN || manager.config.IPv6 != next.IPv6 || manager.config.Enabled != next.Enabled || manager.peer != peer || !peer.draining || peer.available || len(peer.streams) != 1 || writes != 1 {
+		if manager.config.STUN != next.STUN || manager.config.IPv6 != next.IPv6 || manager.config.Enabled != next.Enabled || manager.peer != peer || !peer.draining || peer.available || len(peer.streams) != 1 || writes != 0 || manager.drainID != peer.id {
 			t.Fatal("Network configuration was ignored or interrupted an existing stream")
 		}
 		manager.accept(next)
-		if writes != 1 {
+		if writes != 0 || manager.drainID != peer.id {
 			t.Fatal("An identical configuration was applied twice")
 		}
 	}
