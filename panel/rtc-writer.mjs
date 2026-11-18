@@ -20,7 +20,11 @@ export function createRTCWriter({ valid, failed = () => {} }) {
       while (sent < RTC_WRITE_LIMITS.quantum) {
         let selected; const native = nativeBytes();
         for (const group of groups.values()) {
-          if (!group.queue.length || group.raw.readyState !== 'open') continue;
+          if (!group.queue.length) continue;
+          // A queued record was admitted while open. Once that native channel
+          // leaves open it cannot become sendable again, even if its final
+          // close event is delayed or missing. Do not spin setImmediate on it.
+          if (group.raw.readyState !== 'open') { discard(group); continue; }
           const item = group.queue[0];
           if (native + item.size > RTC_WRITE_LIMITS.native + (item.priority ? RTC_WRITE_LIMITS.reserve : 0)) { blocked = true; continue; }
           if (!selected || group.queue[0].priority) selected = group;
@@ -58,6 +62,7 @@ export function createRTCWriter({ valid, failed = () => {} }) {
     groups.set(raw, group); raw.bufferedAmountLowThreshold = 0;
     group.subscriptions.push(raw.bufferedAmountLow.subscribe(() => { maybeClose(group); schedule(); }));
     group.subscriptions.push(raw.stateChange.subscribe(state => {
+      if (state === 'closing') { discard(group); schedule(); return; }
       if (state !== 'closed') return;
       clearTimeout(group.closeTimer); discard(group); groups.delete(raw); for (const sub of group.subscriptions) sub.unSubscribe(); schedule();
     }));

@@ -8,6 +8,28 @@ function signal() { const handlers = new Set(); return { subscribe(fn) { handler
 function raw(name = '', packets = []) { return { readyState:'open', bufferedAmount:0, onMessage:signal(), stateChange:signal(), error:signal(), bufferedAmountLow:signal(), send(bytes) { packets.push({ name, bytes }); }, close() { this.readyState='closed'; this.stateChange.emit('closed'); } }; }
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
+for (const announced of [false,true]) test(`a native closing channel ${announced?'with':'without'} its state event releases queued callbacks without spinning or blocking another channel`, async t => {
+  const jobs = new Set();
+  t.mock.method(globalThis,'setImmediate',fn=>{const job={fn};jobs.add(job);return job;});
+  t.mock.method(globalThis,'clearImmediate',job=>jobs.delete(job));
+  const packets=[],a=raw('closing',packets),b=raw('healthy',packets),results=[];
+  let failures=0;
+  const writer=createRTCWriter({valid:()=>true,failed:()=>failures++});
+  try {
+    const closing=writer.channel(a),healthy=writer.channel(b);
+    closing.sendTracked(Buffer.from('never sent'),error=>results.push(error));
+    healthy.sendTracked(Buffer.from('still works'),error=>results.push(error));
+    a.readyState='closing';a.bufferedAmount=32;if(announced)a.stateChange.emit('closing');
+    const pending=[...jobs];jobs.clear();for(const job of pending)job.fn();await Promise.resolve();
+    assert.equal(jobs.size,0,'no runnable queue means no immediate rescheduling');
+    assert.deepEqual(packets.map(packet=>packet.bytes.toString()),['still works']);
+    assert.equal(results.length,2);assert.equal(results.filter(error=>error instanceof Error).length,1);
+    assert.equal(writer.bufferedAmount,32,'closing native bytes still count until the final close');
+    assert.equal(failures,0,'one closing channel cannot retire a healthy peer');
+    a.close();await Promise.resolve();assert.equal(writer.bufferedAmount,0);assert.equal(results.length,2);
+  } finally {writer.close();t.mock.restoreAll();}
+});
+
 test('expanded forwarding windows are negotiated bounds, preserve ACK validation, and return peer credit on close', async () => {
   const budget = createFlowBudget(32768,0), a = raw(), b = raw(), left = forwardChannel(a, { window:16, budget }), right = forwardChannel(b, { window:16, budget });
   let deliveredA = 0, deliveredB = 0;
