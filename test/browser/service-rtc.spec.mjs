@@ -13,6 +13,58 @@ async function startIsolatedService(page,app) {
  },{username:app.config.username,password:app.config.password});
  await expect.poll(()=>page.evaluate(()=>!!window.auditService?.files),{timeout:15000}).toBe(true);
 }
+for (const mode of ['closed-stats', 'initial-files', 'promoted-files']) test(`a ${mode} service candidate rolls back completely and recovers automatically without publishing a dead peer`, async ({ page }) => {
+ test.setTimeout(50000);
+ const app = await fixture({ webrtc: true });
+ try {
+  await page.addInitScript(mode => {
+   window.installPeers = []; window.installFaultArmed = mode !== 'promoted-files';
+   const create = RTCPeerConnection.prototype.createDataChannel, stats = RTCPeerConnection.prototype.getStats;
+   RTCPeerConnection.prototype.createDataChannel = function(label, ...args) {
+    if (label === 'codex-service') window.installPeers.push(this);
+    if (label === 'codex-files' && window.installFaultArmed && mode !== 'closed-stats') {
+     window.installFaultArmed = false; window.installFailedPeer = this;
+     throw new DOMException('synthetic unavailable file channel', 'OperationError');
+    }
+    return create.call(this, label, ...args);
+   };
+   RTCPeerConnection.prototype.getStats = function(...args) {
+    if (mode === 'closed-stats' && window.installFaultArmed) {
+     window.installFaultArmed = false; window.installFailedPeer = this; this.close();
+     return new Promise(resolve => setTimeout(() => resolve(new Map()), 100));
+    }
+    return stats.apply(this, args);
+   };
+  }, mode);
+  await page.goto(app.config.origin);
+  await page.evaluate(async credentials => {
+   await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(credentials) });
+   const settings = await (await fetch('/api/me')).json(), { createServiceLink } = await import('/service-link.js');
+   window.installedPeers = []; window.closedReadyPublications = 0;
+   window.auditService = createServiceLink({ viewer: crypto.randomUUID(), options: () => settings,
+    changed(value) { if (value.ready && window.installPeers.at(-1)?.connectionState === 'closed') window.closedReadyPublications++; },
+    trace(type, detail) {
+     if (type === 'path-active' && window.installedPeers.length < 8) window.installedPeers.push(window.installPeers.length - 1);
+     if (type === 'retry') window.installRetryReason = detail.reason;
+    } });
+   window.auditService.start();
+  }, { username: app.config.username, password: app.config.password });
+  if (mode === 'promoted-files') {
+   await expect.poll(() => page.evaluate(() => !!window.auditService.files), { timeout: 15000 }).toBe(true);
+   await page.evaluate(() => { window.installFaultArmed = true; window.installRecheck = window.auditService.recheck(); });
+  }
+  await expect.poll(() => page.evaluate(() => !!window.installFailedPeer && !window.auditService.transport && window.auditService.state.issue === 'connection'), { timeout: 15000 }).toBe(true);
+  expect(await page.evaluate(() => ({ ready: window.auditService.ready, files: !!window.auditService.files, running: window.auditService.running,
+   closed: window.installFailedPeer.connectionState, falseReadiness: window.closedReadyPublications, selected: window.installedPeers, reason: window.installRetryReason })))
+   .toEqual({ ready: false, files: false, running: true, closed: 'closed', falseReadiness: 0, selected: mode === 'promoted-files' ? [0] : [], reason: 'connection' });
+  // No lifecycle event, manual recheck or input is needed to release admission.
+  await expect.poll(() => page.evaluate(() => window.auditService.ready && !!window.auditService.files), { timeout: 25000 }).toBe(true);
+  expect(await page.evaluate(() => window.installedPeers)).toEqual(mode === 'promoted-files' ? [0, 2] : [1]);
+  await page.evaluate(async () => { await window.auditService.request('files', {}); await window.auditService.files.upload(new File(['once'], 'install-retry.bin')); window.auditService.stop(); });
+  expect(app.received.filter(value => value.method === 'PUT' && value.url === '/files/install-retry.bin')).toHaveLength(1);
+  expect(app.files.get('install-retry.bin').toString()).toBe('once'); expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]); expect(app.vncConnections).toBe(0);
+ } finally { await app.close(); }
+});
 test('a real stalled HTTP file consumer times out only its DTLS file channel while an admitted RPC survives', async ({ page }) => {
  test.setTimeout(60000);
  let release; const gate = new Promise(resolve => { release = resolve; });

@@ -103,7 +103,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     controller.signal.addEventListener('abort', close, { once: true });
     grace = disconnectGrace(() => { if (!ended) failure('connection'); close(); });
     peer.addEventListener('connectionstatechange', () => grace.state(peer.connectionState));
-    return { get channel() { return channel; }, get features() { return features; }, video, viewerReady, control, health, close,
+    return { get channel() { return channel; }, get features() { return features; }, get closed() { return ended; }, video, viewerReady, control, health, close,
       fileChannel() { if (!service) throw Error('非服务通道'); return peer.createDataChannel('codex-files', { ordered: true, protocol: 'files-v1' }); },
       stats, async start() {
       try {

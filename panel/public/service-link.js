@@ -39,6 +39,26 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     }, { window: candidate.features?.filesWindow || 4 });
     files = client; channel.addEventListener('open', publish, { once: true });
   }
+  function install(candidate, route, version) {
+    const unavailable = () => Object.assign(Error('服务候选连接已关闭或失效'), { reason: 'connection' });
+    if (!running || epoch !== version || candidate.closed) throw unavailable();
+    cancelMonitor(); const old = current, oldFiles = files;
+    current = candidate; files = fileRecovery = undefined; state.ready = false;
+    try {
+      oldFiles?.close(); old?.close();
+      // Install every dependent channel and the monitor before publishing
+      // readiness. A failed installation must leave no current peer behind
+      // to block the next automatic probe.
+      if (candidate.features?.filesProtocol === 1) openFiles(candidate);
+      if (!running || epoch !== version || current !== candidate || candidate.closed) throw unavailable();
+      timer = setTimeout(() => void monitor(version, candidate), 3000);
+      state.ready = true; state.issue = ''; state.route = route; healthMisses = 0;
+      trace('path-active', { path: 'direct' }); publish();
+    } catch (error) {
+      if (current === candidate) retire('connection');
+      throw error;
+    }
+  }
   function keepFileProgress(version, peer) {
     if (!files?.progressing) return false;
     healthMisses = 0; state.issue = peer.control?.draining ? 'rpc-timeout' : '';
@@ -96,13 +116,10 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
       const route = await candidate.stats();
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
-      current = candidate; state.ready = true; state.issue = ''; state.route = route; delay = 15000; attempts = healthMisses = 0; trace('path-active', { path: 'direct' }); publish();
-      if (candidate.features?.filesProtocol === 1) {
-        openFiles(candidate);
-      }
-      timer = setTimeout(() => void monitor(version, candidate), 3000);
-    } catch {
+      install(candidate, route, version); delay = 15000; attempts = 0;
+    } catch (error) {
       candidate?.close(); if (epoch === version && !controller.signal.aborted) {
+        state.issue = error?.reason || (state.issue && state.issue !== 'connecting' ? state.issue : 'connection');
         const decision = directRetry(state.issue, attempts++); halted = decision.stop; delay = decision.delay;
         if (halted) trace('probe-stopped', { path: 'direct', reason: state.issue, attempt: attempts });
         state.ready = false; publish(); schedule();
@@ -132,7 +149,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
     },
     replace: async (candidate, signal, commit) => {
       const version = epoch;
-      const eligible = () => running && epoch === version && !signal.aborted && !busy && !files?.busy && !checking && canReplace();
+      const eligible = () => running && epoch === version && !signal.aborted && !candidate.closed && !busy && !files?.busy && !checking && canReplace();
       if (!eligible()) return;
       replacing = true;
       try {
@@ -147,11 +164,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
           await candidate.control.request('promote', {});
           if (!running || epoch !== version || signal.aborted) return;
         }
-        cancelMonitor(); const old = current, oldFiles = files;
-        current = candidate; files = fileRecovery = undefined; state.ready = true; state.issue = ''; state.route = route; trace('path-active', { path: 'direct' });
-        oldFiles?.close(); old?.close(); healthMisses = 0; publish();
-        if (candidate.features?.filesProtocol === 1) openFiles(candidate);
-        timer = setTimeout(() => void monitor(epoch, candidate), 3000);
+        install(candidate, route, version);
         return { retained: true, state: 'selected' };
       } finally {
         replacing = false;
@@ -163,7 +176,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
   });
   window.addEventListener('online', wake); window.addEventListener('offline', wake); navigator.connection?.addEventListener('change', wake);
   document.addEventListener('visibilitychange', wake);
-  return { state, get running() { return running; }, get ready() { return !!current && state.ready && !current.control?.draining; }, get busy() { return busy; },
+  return { state, get running() { return running; }, get ready() { return !!current && !current.closed && state.ready && !current.control?.draining; }, get busy() { return busy; },
     get rttMs() { return current?.health.rttMs ?? null; },
     get transport() { return current; },
     get files() { return !replacing && files?.ready ? files : null; },
