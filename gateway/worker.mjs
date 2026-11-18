@@ -68,6 +68,13 @@ export function createGateway({ config: source, assets = {}, request: upstream =
     } catch { return error(503, '节点路由暂不可用'); }
     if (!node) return !pinned && request.method === 'GET' && !request.headers.has('upgrade') ? reply(303, '', 'text/plain', { location: GATEWAY_PREFIX }) : error(503, pinned ? '助手授权节点不可用，请检查该节点状态' : '尚未选择入口节点');
     if (!gatewaySecret(node.secret)) return error(503, '节点路由配置无效');
+    // Reject stale browser scopes before sending any headers or body to the
+    // newly selected backend. Its own identity check is too late for privacy.
+    const browserScopes = [request.headers.get('x-codex-node'), ...url.searchParams.getAll('node')].filter(value => value !== null);
+    if (!pinned && browserScopes.some(value => value !== node.id)) {
+      void request.body?.cancel().catch(() => {});
+      return reply(409, { error: '入口已切换到其他节点，请保存草稿后刷新页面。', code: 'node_changed', outcome: 'rejected' });
+    }
     const destination = new URL(request.url), backend = new URL(node.backendOrigin); destination.protocol = backend.protocol; destination.host = backend.host;
     const forwarded = new Headers(request.headers);
     for (const name of [...forwarded.keys()]) if (name.startsWith('x-codex-gateway-')) forwarded.delete(name);

@@ -7,6 +7,32 @@ const entry = number => ({ id: number.toString(16).padStart(32, '0'), name: '动
 const key = number => number.toString(16).padStart(64, '0');
 const setup = async options => { const h = await gatewayFixture({ probe: async () => true, ...options }); await h.login(); const code = await h.code(); return { ...h, codeValue: code }; };
 
+test('a switched browser scope never sends sensitive headers or file bytes to the new backend', async () => {
+  const calls = [], h = await setup({ request: async request => {
+    calls.push(request); return new Response('accepted', { headers: { 'x-codex-node-id': request.headers.get('x-codex-gateway-node') } });
+  } });
+  for (const n of [1, 2]) assert.equal((await h.register(entry(n), key(n), h.codeValue.key)).status, 200);
+  await h.select(entry(1).id); await h.select(entry(2).id);
+  const old = entry(1).id, current = entry(2).id;
+  for (const [path, headers] of [
+    ['/api/login', { 'x-codex-node': old }],
+    ['/api/files/private.bin?node=' + old, {}],
+    ['/api/login?node=' + old, { 'x-codex-node': current }],
+    ['/api/login?node=' + current + '&node=' + old, {}],
+    ['/api/login', { 'x-codex-node': '' }],
+  ]) {
+    let canceled = false;
+    const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('synthetic sensitive body')); }, cancel() { canceled = true; } });
+    const response = await h.fetch(h.origin + path, { method: 'POST', headers: { origin: h.origin, 'content-type': 'application/json', ...headers }, body, duplex: 'half' });
+    assert.equal(response.status, 409); assert.deepEqual((await response.json()).code, 'node_changed');
+    assert(canceled); assert.equal(calls.length, 0);
+  }
+  const response = await h.fetch(h.origin + '/session/connect?node=' + old, { headers: { upgrade: 'websocket' } });
+  assert.equal(response.status, 409); assert.equal(calls.length, 0);
+  assert.equal((await h.fetch(h.origin + '/api/state?node=' + current, { headers: { 'x-codex-node': current } })).status, 200);
+  assert.equal(calls.length, 1);
+});
+
 test('gateway propagates cancellation through registry control, routing and the selected upstream', async () => {
   let dispatched; const seen = [], h = await setup({ request: request => {
     seen.push(request); dispatched(request);
