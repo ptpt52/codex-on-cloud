@@ -142,12 +142,15 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       const peer = current;
       if (!peer || !state.ready || busy || replacing || signal?.aborted) throw Object.assign(Error('服务直连未就绪，本次操作未发送'), { outcome: 'rejected' });
       busy = true;
+      let value;
       try {
-        const value = await peer.control.request(action, body);
-        if (signal?.aborted) throw Object.assign(Error('请求已取消，操作结果请刷新确认'), { outcome: 'unknown' });
-        return value;
+        value = await peer.control.request(action, body);
       } catch (err) { if (!err.status && current === peer) { retire('connection'); schedule(1000); } throw err; }
       finally { busy = false; }
+      // Drain the one admitted RPC before releasing its slot. Caller cancellation
+      // does not undo a dispatched action or invalidate the shared file channel.
+      if (signal?.aborted) throw Object.assign(Error('请求已取消，操作结果请刷新确认'), { outcome: 'unknown' });
+      return value;
     },
   };
 }

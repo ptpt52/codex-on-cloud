@@ -1,6 +1,39 @@
 import { test,expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
+for (const action of ['state', 'file-delete']) test(`a late successful ${action} after caller cancellation preserves the service and its active file`, async ({ page }) => {
+ const app = await fixture();
+ try {
+  await page.route('**/rtc-transport.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'export async function desktopTransport(...args) { return window.nextServiceTransport(...args); }' }));
+  await page.goto(app.config.origin);
+  await page.evaluate(async () => {
+   const { createServiceLink } = await import('/service-link.js');
+   const channel = new EventTarget(); Object.assign(channel, { readyState: 'open', bufferedAmount: 0, send() {}, close() { this.readyState = 'closed'; this.dispatchEvent(new Event('close')); } });
+   window.auditFileChannel = channel; window.auditCalls = []; window.auditCloses = 0;
+   window.nextServiceTransport = async () => ({ features: { filesProtocol: 1 }, health: { async ping() {}, cancel() {} }, async start() {}, async stats() { return null; }, fileChannel: () => channel,
+    control: { request(action) { window.auditCalls.push(action); return new Promise(resolve => { window.releaseAuditRPC = resolve; }); } }, close() { window.auditCloses++; channel.close(); } });
+   window.auditService = createServiceLink({ viewer: 'isolated-cancelled-rpc', options: () => ({}), changed() {} }); window.auditService.start();
+  });
+  await expect.poll(() => page.evaluate(() => window.auditService.ready)).toBe(true);
+  const result = await page.evaluate(async action => {
+   const service = window.auditService, channel = window.auditFileChannel, controller = new AbortController();
+   let delivered; const progress = new Promise(resolve => { delivered = resolve; });
+   const download = service.files.download('isolated.bin', 4, undefined, loaded => { if (loaded === 4) delivered(); }); void download.catch(() => {});
+   const request = service.request(action, {}, controller.signal).catch(error => error); controller.abort();
+   const busyBeforeReply = service.busy; window.releaseAuditRPC({ ok: true }); const error = await request;
+   const preserved = service.ready && service.files?.busy;
+   channel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'ready', id: 1, size: 4 }) }));
+   const bytes = new Uint8Array([0, 0, 0, 1, 115, 97, 102, 101]); channel.dispatchEvent(new MessageEvent('message', { data: bytes.buffer }));
+   await progress; channel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'done', id: 1, size: 4 }) }));
+   const text = await (await download).text();
+   const next = service.request('state', {}); window.releaseAuditRPC({ fresh: true }); const value = await next;
+   const result = { busyBeforeReply, outcome: error.outcome, preserved, text, value, closes: window.auditCloses, calls: window.auditCalls };
+   service.stop(); return result;
+  }, action);
+  expect(result).toEqual({ busyBeforeReply: true, outcome: 'unknown', preserved: true, text: 'safe', value: { fresh: true }, closes: 0, calls: [action, 'state'] });
+  expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+ } finally { await app.close(); }
+});
 for (const cause of ['hidden', 'offline']) test(`service heartbeat pauses across ${cause} without retiring the peer or accepting an old nonce`, async ({ page }) => {
  const app = await fixture();
  try {
