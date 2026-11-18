@@ -67,18 +67,21 @@ export class GatewayRegistry {
   async checkNode(request, id) {
     const node = await this.transaction(async value => { await this.session(value, request, true); const node = value.nodes.find(item => item.id === id); if (!node) throw gatewayError(404, '节点已移除'); return node; });
     if (node.checkedAt && this.now() - node.checkedAt < 5000) return { id, ready: node.ready, checkedAt: node.checkedAt };
-    if (this.probes.has(id)) return this.probes.get(id);
-    if (this.probes.size >= 4) throw gatewayError(429, '正在检查其他节点，请稍后重试');
-    const promise = (async () => {
-      const ready = await this.probe(node);
-      return this.transaction(async (value, now) => {
-        await this.session(value, request, true);
-        const current = value.nodes.find(item => item.id === id);
-        if (!current || current.secret !== node.secret || current.backendOrigin !== node.backendOrigin) throw gatewayError(409, '节点接入配置已变化');
-        current.ready = ready; current.checkedAt = now; return { id, ready, checkedAt: now };
-      });
-    })().finally(() => this.probes.delete(id));
-    this.probes.set(id, promise); return promise;
+    let pending = this.probes.get(id);
+    if (!pending) {
+      if (this.probes.size >= 4) throw gatewayError(429, '正在检查其他节点，请稍后重试');
+      // Share only the network result and its node snapshot. Authentication is
+      // per caller, so revoking the first session cannot reject other waiters.
+      pending = (async () => ({ node, ready: await this.probe(node) }))().finally(() => this.probes.delete(id));
+      this.probes.set(id, pending);
+    }
+    const { node: probed, ready } = await pending;
+    return this.transaction(async (value, now) => {
+      await this.session(value, request, true);
+      const current = value.nodes.find(item => item.id === id);
+      if (!current || current.secret !== probed.secret || current.backendOrigin !== probed.backendOrigin) throw gatewayError(409, '节点接入配置已变化');
+      current.ready = ready; current.checkedAt = now; return { id, ready, checkedAt: now };
+    });
   }
   async switchNode(request, body) {
     if (!gatewayHex(body.nodeId) || !gatewayHex(body.operation) || !Number.isSafeInteger(body.revision)) throw gatewayError(400, '切换参数无效');
