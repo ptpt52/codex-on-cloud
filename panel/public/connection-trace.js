@@ -56,6 +56,8 @@ const probeStates = ['probing', 'gathering', 'queued', 'signaling', 'connecting'
 // fixed state is retained by each live view, with no history or payloads.
 export function connectionProgress(type, detail = {}) {
   if (detail.path !== 'direct') return null;
+  if (type === 'recheck-ended' && probeStates.includes(detail.probe)) return { probe: detail.probe,
+    ...(Object.hasOwn(TRACE_REASONS, detail.probeReason) ? { probeReason: detail.probeReason } : {}) };
   const probe = type === 'direct-start' ? 'probing' : type === 'rtc-stage' && probeStates.includes(detail.stage) ? detail.stage :
     ['direct-ready', 'path-active'].includes(type) ? 'ready' : type === 'probe-stopped' ? 'stopped' : ['retry', 'path-lost'].includes(type) ? 'retrying' : null;
   return probe ? { probe, ...(Object.hasOwn(TRACE_REASONS, detail.reason) ? { probeReason: detail.reason } : {}) } : null;
@@ -69,6 +71,10 @@ function clean(value) {
   if (Object.hasOwn(TRACE_STAGES, value.stage)) result.stage = value.stage;
   if (value.type.startsWith('recheck-') && Object.hasOwn(TRACE_RECHECK_STEPS, value.step)) result.step = value.step;
   if (value.type === 'recheck-ended' && Object.hasOwn(TRACE_RECHECK_RESULTS, value.result)) result.result = value.result;
+  if (value.type === 'recheck-ended' && probeStates.includes(value.probe)) {
+    result.probe = value.probe;
+    if (Object.hasOwn(TRACE_REASONS, value.probeReason)) result.probeReason = value.probeReason;
+  }
   if (reasons.includes(value.reason)) result.reason = value.reason;
   if (['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed', 'gathering', 'complete'].includes(value.state)) result.state = value.state;
   if (['ice', 'peer', 'gathering'].includes(value.phase)) result.phase = value.phase;

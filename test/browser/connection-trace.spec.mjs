@@ -2,6 +2,25 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { TRACE_LIMITS } from '../../panel/public/connection-trace.js';
 test.use({ serviceWorkers: 'block' });
+test('a failed manual recheck keeps the stopped automatic probe visible with logging disabled', async ({ page }) => {
+  const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true }); let offers = 0;
+  await page.addInitScript(() => { if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', networkDebug: false })); });
+  await page.route('**/api/terminal/rtc', route => { offers++; return route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }); });
+  await page.route('**/api/service/rtc', route => route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }));
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('终端在线'); await page.locator('#connection-button').click();
+    const current = page.locator('#connection-trace-current');
+    await expect(current).toContainText('自动探测已停止');
+    await page.locator('.direct-hints summary').click(); await page.locator('#save-direct-hints').click();
+    await expect(page.locator('#save-direct-hints')).toBeEnabled({ timeout: 15000 });
+    await expect(page.locator('#direct-probe-status')).toContainText('本次探测未成功');
+    await expect(current).toContainText(/网页终端：[^\n]*\n\s*WebRTC：自动探测已停止[^\n]*访问权限需要重新确认/);
+    expect(offers).toBe(2); await page.waitForTimeout(2000); expect(offers).toBe(2);
+    await expect(page.locator('#copy-connection-trace')).toBeDisabled();
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
 test('active and standby preparation and stopped probes stay visible with process logging disabled', async ({ page }) => {
   test.setTimeout(45000);
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, seamless: true, webrtc: true, fastConnect: true });

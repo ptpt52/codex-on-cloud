@@ -7,7 +7,7 @@ const candidateReasons = ['unsupported', 'disabled', 'auth', 'target', 'busy', '
 // One explicit probe, no queue. Candidate admission is bounded to 26 seconds.
 // A service promotion may commit to its separately bounded RPC: soft lifecycle
 // cancellation then waits for adoption; explicit shutdown still aborts the peer.
-export function createRTCRecheck({ open, current, allowed, idle, replace, trace = () => {} }) {
+export function createRTCRecheck({ open, current, allowed, idle, replace, trace = () => {}, probeStatus = () => null }) {
   let pending, committing = false;
   return { get running() { return !!pending; }, cancel({ force = false } = {}) { if (!committing || force) pending?.abort(); }, async run(report = () => {}) {
     if (pending) { report({ state: 'busy' }); return; }
@@ -16,7 +16,7 @@ export function createRTCRecheck({ open, current, allowed, idle, replace, trace 
     let candidate, retained = false, step = 'candidate', result = 'failed', reason, outcome, status;
     const startedAt = performance.now();
     const log = type => { try { trace(type, { path: 'direct', step, durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
-      ...(type === 'recheck-ended' ? { result, reason, outcome, status } : {}) }); } catch { /* Diagnostics never control adoption. */ } };
+      ...(type === 'recheck-ended' ? { result, reason, outcome, status, ...probeStatus() } : {}) }); } catch { /* Diagnostics never control adoption. */ } };
     try {
       log('recheck-start');
       report({ state: 'probing' }); candidate = await open(controller.signal);

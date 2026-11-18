@@ -158,6 +158,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
   }
   const recheck = createRTCRecheck({
     trace,
+    probeStatus: () => !running ? null : ({ probe: halted ? 'stopped' : current && state.ready ? 'ready' : pending ? 'probing' : 'retrying', probeReason: halted ? state.issue : '' }),
     allowed: () => running && !pending,
     idle: () => !busy && !files?.busy && !checking && !replacing && canReplace(),
     current: () => current && !current.control?.draining && ({ rttMs: current.health.rttMs }),

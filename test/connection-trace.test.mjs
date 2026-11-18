@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createConnectionTrace, createTraceReporter, connectionProgress, TRACE_LIMITS, TRACE_STORAGE_KEY, traceDescription } from '../panel/public/connection-trace.js';
+
+test('recheck completion restores automatic probe status without confusing candidate failure with retry policy', () => {
+  assert.deepEqual(connectionProgress('recheck-ended', { path: 'direct', reason: 'connection', probe: 'stopped', probeReason: 'auth' }), { probe: 'stopped', probeReason: 'auth' });
+  assert.deepEqual(connectionProgress('recheck-ended', { path: 'direct', reason: 'auth', probe: 'ready', probeReason: 'PRIVATE' }), { probe: 'ready' });
+  const trace = createConnectionTrace(undefined, { enabled: true });
+  trace.add({ type: 'recheck-ended', probe: 'PRIVATE', probeReason: 'PRIVATE' }, { mode: 'terminal' });
+  trace.add({ type: 'heartbeat-ok', probe: 'stopped', probeReason: 'auth' }, { mode: 'terminal' });
+  assert.ok(trace.snapshot().every(event => !Object.hasOwn(event, 'probe') && !Object.hasOwn(event, 'probeReason')));
+  assert.ok(!trace.text().includes('PRIVATE'));
+});
 test('routine samples cannot evict fault and lifecycle evidence; operational progress remains payload-free', () => {
   let time = 1700000000000;
   const trace = createConnectionTrace(() => time, { enabled: true, wallNow: () => time });

@@ -98,8 +98,10 @@ test('a verified manual service recovery clears the hard stop for subsequent aut
     await isolatedService(page, app);
     await expect.poll(() => page.evaluate(() => window.serviceEvents.some(value => value.type === 'probe-stopped' && value.reason === 'auth'))).toBe(true);
     await page.evaluate(() => window.serviceLink.recheck());
+    expect(await page.evaluate(() => window.serviceEvents.at(-1))).toMatchObject({ type: 'recheck-ended', result: 'failed', probe: 'stopped', probeReason: 'auth' });
     const deniedOffers = offers; await page.waitForTimeout(1200); expect(offers).toBe(deniedOffers);
     deny = false; await page.evaluate(() => window.serviceLink.recheck()); await expect.poll(() => page.evaluate(() => window.serviceLink.ready)).toBe(true);
+    expect(await page.evaluate(() => window.serviceEvents.at(-1))).toMatchObject({ type: 'recheck-ended', result: 'selected', probe: 'ready' });
     const recoveredOffers = offers; await page.evaluate(() => window.serviceLink.transport.close());
     await expect.poll(() => offers, { timeout: 10000 }).toBeGreaterThan(recoveredOffers);
     await expect.poll(() => page.evaluate(() => window.serviceLink.ready)).toBe(true);

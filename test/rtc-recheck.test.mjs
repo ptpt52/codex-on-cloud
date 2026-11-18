@@ -19,6 +19,16 @@ function probe(t, overrides = {}) {
   return { recheck, candidate, trace, get closes() { return closes; } };
 }
 
+test('failed manual candidates report the unchanged automatic probe state separately', async t => {
+  const p = probe(t, { probeStatus: () => ({ probe: 'stopped', probeReason: 'auth' }),
+    open: async () => { throw Object.assign(Error('denied'), { reason: 'auth', status: 403 }); } });
+  await p.recheck.run();
+  assert.deepEqual({ ...p.trace.snapshot().at(-1), atMs: 0, time: 0, durationMs: 0 }, {
+    atMs: 0, time: 0, page: 1, mode: 'terminal', standby: false, type: 'recheck-ended', path: 'direct', step: 'candidate',
+    result: 'failed', reason: 'auth', status: 403, outcome: 'rejected', durationMs: 0, probe: 'stopped', probeReason: 'auth',
+  });
+});
+
 for (const step of ['candidate', 'connect', 'health', 'stats', 'switch', 'commit']) test(`recheck failure at ${step} records its phase and preserves uncertainty after dispatch`, async t => {
   const p = probe(t), error = Object.assign(Error('PRIVATE_ERROR_BODY'), { code: step === 'health' ? 'heartbeat_timeout' : step === 'commit' ? 'rpc_timeout' : 'PRIVATE_CODE', reason: 'PRIVATE_REASON' });
   const fail = async () => { throw error; };
