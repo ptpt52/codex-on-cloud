@@ -100,7 +100,9 @@ func run(ctx context.Context, server *url.URL, code string, writer io.Writer) er
 	return runWithReverse(ctx, server, code, writer, nil)
 }
 func runWithReverse(ctx context.Context, server *url.URL, code string, writer io.Writer, approve func(context.Context, readyMessage) error) error {
-	return runWithRule(ctx, server, code, writer, approve, nil)
+	diagnostics := &diagnosticOutput{writer: writer}
+	defer diagnostics.Close()
+	return runWithRule(ctx, server, code, diagnostics, approve, nil)
 }
 func runWithRule(ctx context.Context, server *url.URL, code string, writer io.Writer, approve func(context.Context, readyMessage) error, expected *managedRule) error {
 	if !tokenPattern.MatchString(code) {

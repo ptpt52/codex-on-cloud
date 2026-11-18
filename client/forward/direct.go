@@ -287,6 +287,7 @@ func makeDirectManager(ctx context.Context, token string, write func(any) error,
 	return m
 }
 func (m *directManager) accept(value directSignal) {
+	var report string
 	m.mu.Lock()
 	switch value.Type {
 	case "rtc_config":
@@ -362,10 +363,15 @@ func (m *directManager) accept(value directSignal) {
 		}
 		if key != m.lastStatus {
 			m.lastStatus = key
-			m.report(label)
+			report = label
 		}
 	}
 	m.mu.Unlock()
+	// Reports use the bounded diagnostic queue; no callback runs under the
+	// peer lock, so output cannot hold Open, liveness checks or cancellation.
+	if report != "" {
+		m.report(report)
+	}
 	select {
 	case m.wake <- struct{}{}:
 	default:

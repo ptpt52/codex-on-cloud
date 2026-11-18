@@ -108,8 +108,8 @@ func (r managedRule) matches(ready readyMessage) bool {
 	return ready.TargetPort == c.TargetPort && net.ParseIP(ready.TargetHost).Equal(net.ParseIP(c.TargetHost))
 }
 
-// Console output has no file or retained history, at most 120 short writes per
-// minute. Per-rule diagnostics retain their existing category bounds.
+// At most 120 short writes per minute into the process's shared nonblocking
+// diagnostic queue. Per-rule diagnostics retain their category bounds.
 type agentOutput struct {
 	sync.Mutex
 	writer io.Writer
@@ -294,7 +294,9 @@ func runAgent(ctx context.Context, key string, writer io.Writer) error {
 	ctx = context.WithValue(ctx, forwardNodeContext{}, grant.Node)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	output := &agentOutput{writer: writer}
+	diagnostics := &diagnosticOutput{writer: writer}
+	defer diagnostics.Close()
+	output := &agentOutput{writer: diagnostics}
 	manager := &agentRuntime{ctx: ctx, server: server, output: output, workers: make(map[string]*agentWorker), results: make(chan ruleResult, 32)}
 	defer manager.close()
 	link := &managementLink{ctx: ctx}
