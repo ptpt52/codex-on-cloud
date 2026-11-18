@@ -90,7 +90,12 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
     const uncertainTarget = targetPending?.sent === true;
     if (uncertainTarget) reason = 'target-unknown';
     socket.lastError = reason; trace('session-ended', { reason: reason || 'closed', queuedBytes: inputBytes });
-    if (['input-unknown', 'input-pressure', 'target-unknown'].includes(reason)) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason, eventId: id, path: active?.kind || lastPath }, location.origin);
+    // Keep only a classification bit beside each outstanding sequence. A
+    // resize/health ACK gap is not a user action, but unconfirmed typing must
+    // remain visible after any session retirement, including resume expiry.
+    const uncertainInput = terminal && [...inputSizes.values()].some(value => value.userInput);
+    const notice = ['input-unknown', 'input-pressure', 'target-unknown'].includes(reason) ? reason : uncertainInput ? 'input-unknown' : '';
+    if (notice) parent.postMessage({ type: 'codex-stream-reset', frame: new URLSearchParams(location.search).get('frame'), reason: notice, eventId: id, path: active?.kind || lastPath }, location.origin);
     for (const peer of peers.values()) { try { if (peer.ready) send(peer, { type: 'end' }); } catch {} }
     ended = true; recheck.cancel(); directController?.abort();
     for (const [id, pending] of panelRequests) finishPanel(id, panelFailure(pending.action, '连接已关闭，操作结果请核对终端列表'));
@@ -581,14 +586,15 @@ export function createStreamClient({ viewer, csrf, terminal, standby = false, bo
       // No bytes were admitted: don't advance the sequence or fabricate an
       // unknown input on resume. Actual send failures remain unreplayed.
       if (!peer.writable()) { lost(peer); throw failure('连接正在关闭，本次操作未发送'); }
+      const value = terminal ? JSON.parse(data) : null;
       if (terminal && peer.terminalAttachment && attachmentState !== 'ready') {
-        const value = JSON.parse(data);
         if (['ack', 'health'].includes(value.type)) return;
         throw failure('当前没有就绪的终端，本次输入未发送');
       }
       const bytes = terminal ? new TextEncoder().encode(data + '\n') : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength);
       if (!bytes.length || bytes.length > 128 * 1024 || inputSizes.size >= 64 || inputBytes + bytes.length > 128 * 1024) { close('input-pressure'); throw new Error('input pressure'); }
-      const id = ++sent, parts = Math.ceil(bytes.length / CHUNK); inputSizes.set(id, { size: bytes.length, at: performance.now() }); inputBytes += bytes.length;
+      const userInput = !!terminal && (value.type === 'input' || value.type === 'control' && ['paste', 'key', 'edit'].includes(value.action));
+      const id = ++sent, parts = Math.ceil(bytes.length / CHUNK); inputSizes.set(id, { size: bytes.length, at: performance.now(), userInput }); inputBytes += bytes.length;
       try { for (let part = 0; part < parts; part++) send(peer, { type: 'input', epoch, id, part, parts, data: encode(bytes.subarray(part * CHUNK, (part + 1) * CHUNK)) }); }
       catch { lost(peer); }
     },

@@ -2,6 +2,42 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { openInput, closePanels } from './ui.mjs';
 
+for (const typed of [true, false]) test(`resume expiry ${typed ? 'retains an unknown native input notice' : 'does not turn protocol-only ACK gaps into input notices'}`, async ({ page }) => {
+  test.setTimeout(45000);
+  const app = await fixture({ mode: 'terminal', seamless: true });
+  await page.addInitScript(() => {
+    if (window === parent) window.addEventListener('message', event => {
+      if (event.origin === location.origin && event.data?.type === 'codex-network-event' && event.data.event?.type === 'session-ended' && event.data.event.reason === 'resume-timeout') window.expiredStream = event.data.event;
+    });
+    window.noticeSockets = []; const Native = WebSocket;
+    window.WebSocket = class extends Native {
+      constructor(...args) { super(...args); if (new URL(this.url).pathname === '/session/connect') window.noticeSockets.push(this); }
+      addEventListener(type, listener, options) { return super.addEventListener(type, type === 'message' ? event => {
+        let value; try { value = JSON.parse(event.data); } catch {}
+        if (window.dropNativeAcks && value?.type === 'input-ack') { window.droppedNativeAcks = (window.droppedNativeAcks || 0) + 1; return; }
+        listener.call(this, event);
+      } : listener, options); }
+    };
+  });
+  try {
+    const frame = await login(page, app);
+    await page.locator('#network-debug').evaluate(input => { input.checked = true; input.dispatchEvent(new Event('change', { bubbles: true })); });
+    await frame.evaluate(() => { window.dropNativeAcks = true; });
+    if (typed) {
+      await frame.locator('.xterm-helper-textarea').press('a'); await expect.poll(() => app.terminalInputs.some(value => value.text === 'a')).toBe(true);
+    } else { const size = page.viewportSize(); await page.setViewportSize({ width: size.width + 80, height: size.height }); }
+    await expect.poll(() => frame.evaluate(() => window.droppedNativeAcks || 0)).toBeGreaterThan(0);
+    await frame.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); for (const socket of window.noticeSockets) socket.close(); });
+    await expect.poll(() => page.evaluate(() => window.expiredStream?.reason), { timeout: 16000 }).toBe('resume-timeout');
+    expect(await page.evaluate(() => window.expiredStream.queuedBytes)).toBeGreaterThan(0);
+    await frame.evaluate(() => { window.dropNativeAcks = false; Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); });
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    if (typed) { await expect(page.locator('#connection-notice')).toContainText('结果未知'); await expect(page.locator('#input-notice-list li')).toHaveCount(1); }
+    else { await expect(page.locator('#input-notice-list li')).toHaveCount(0); expect(app.terminalInputs).toEqual([]); }
+    expect(app.terminalInputs.filter(value => value.text === 'a')).toHaveLength(typed ? 1 : 0); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 async function login(page, app, { standby = false } = {}) {
   await page.addInitScript(standby => {
     if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', modeStandby: standby, controlsCollapsed: true, terminalInputCollapsed: true }));
