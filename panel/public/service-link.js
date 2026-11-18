@@ -133,7 +133,14 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
         if (halted) trace('probe-stopped', { path: 'direct', reason: state.issue, attempt: attempts });
         state.ready = false; publish(); schedule();
       }
-    } finally { if (pending === controller) pending = undefined; }
+    } finally {
+      if (pending === controller) {
+        pending = undefined;
+        // A visible wake may have consumed its timer while a canceled native
+        // offer was still settling. Re-arm only this live, foreground scope.
+        if (controller.signal.aborted && epoch === version && running && !current) schedule(Math.max(100, 5000 - (performance.now() - probeAt)));
+      }
+    }
   }
   function wake() {
     if (!running) return;

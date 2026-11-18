@@ -37,3 +37,25 @@ test('network hint storms coalesce service probes without retiring a healthy RTC
     for (let n = 2; n < state.times.length; n++) expect(state.times[n] - state.times[n - 1]).toBeGreaterThan(950);
   } finally { await stop(page, app); }
 });
+
+test('foreground service recovery survives an aborted native offer settling after the wake timer', async ({ page }) => {
+  const app = await fixture({ webrtc: true });
+  await page.addInitScript(() => {
+    const create = RTCPeerConnection.prototype.createOffer; window.offerCalls = 0;
+    RTCPeerConnection.prototype.createOffer = async function(...args) {
+      const offer = await create.apply(this, args);
+      if (++window.offerCalls === 1) await new Promise(resolve => { window.releaseOffer = resolve; });
+      return offer;
+    };
+  });
+  try {
+    await isolatedService(page, app); await expect.poll(() => page.evaluate(() => typeof window.releaseOffer)).toBe('function');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(5500); await page.evaluate(() => window.releaseOffer());
+    await expect.poll(() => page.evaluate(() => window.serviceLink.ready), { timeout: 10000 }).toBe(true);
+    expect(await page.evaluate(() => window.offerCalls)).toBe(2);
+  } finally { await page.evaluate(() => window.releaseOffer?.()).catch(() => {}); await stop(page, app); }
+});
