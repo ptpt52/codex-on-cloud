@@ -5,8 +5,9 @@ const failureReasons = Object.freeze({ rpc_timeout: 'rpc-timeout', heartbeat_tim
 const candidateReasons = ['unsupported', 'disabled', 'auth', 'target', 'busy', 'native-busy', 'queue-timeout', 'negotiation-timeout', 'negotiation', 'connection', 'signaling', 'signaling-timeout', 'gathering-timeout', 'ice-timeout', 'channel-timeout', 'timeout', 'protocol', 'signal-failed'];
 
 // One explicit probe, no queue. Candidate admission is bounded to 26 seconds.
-// A service promotion may commit to its separately bounded RPC: soft lifecycle
-// cancellation then waits for adoption; explicit shutdown still aborts the peer.
+// Service promotion and legacy viewer activation can commit to their bounded
+// RPC: soft lifecycle cancellation then waits for adoption; explicit shutdown
+// still aborts the peer.
 export function createRTCRecheck({ open, current, allowed, idle, replace, trace = () => {}, probeStatus = () => null }) {
   let pending, committing = false;
   return { get running() { return !!pending; }, cancel({ force = false } = {}) { if (!committing || force) pending?.abort(); }, async run(report = () => {}) {

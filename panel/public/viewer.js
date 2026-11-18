@@ -44,11 +44,14 @@ const legacyRecheck = createRTCRecheck({
     candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, signal, trace, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }) });
     return candidate;
   },
-  replace: async (candidate, signal) => {
+  replace: async (candidate, signal, commit) => {
     const previous = rfb, version = connectionEpoch; let adopted = false;
     try {
       if (!await prepareSwitch(signal) || rfb !== previous || connectionEpoch !== version || stopping || document.hidden || !navigator.onLine || pressedKeys.size || pressedPointers.size || pointerControls.busy || desktopInput.composing || desktopInput.busy || performance.now() - lastInteraction < 800 || signal.aborted) return;
       switching = true; switchingFrom = previous; frameHold.capture(canvas);
+      // Activation can retire the old viewer before its reply reaches us.
+      // Soft lifecycle hints must retain this bounded, already-dispatched RPC.
+      if (!commit()) return;
       await candidate.control.request('activate', {});
       if (rfb !== previous || connectionEpoch !== version || stopping || signal.aborted) return;
       attachViewer(candidate); adopted = true; return { retained: true, state: 'selected' };
@@ -596,7 +599,7 @@ document.addEventListener('visibilitychange', networkChanged);
 navigator.connection?.addEventListener('change', networkChanged);
 window.addEventListener('pagehide', () => {
   stopping = true;
-  legacyRecheck.cancel();
+  legacyRecheck.cancel({ force: true });
   cancelAnimationFrame(desktopFocusFrame);
   desktopInput.cancel();
   if (desktopText) { clearTimeout(desktopText.timer); desktopText.resolve({ outcome: 'unknown' }); desktopText = undefined; }

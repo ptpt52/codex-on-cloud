@@ -125,8 +125,80 @@ for (const mode of ['terminal', 'desktop']) for (const fault of ['lost reply', '
     await page.locator('#copy-connection-trace').click();
     const events = JSON.parse(await page.evaluate(() => window.recheckLog)).events.filter(event => event.mode === mode && event.type.startsWith('recheck-'));
     expect(events.map(event => event.type)).toEqual(['recheck-start', 'recheck-switch', 'recheck-ended']);
-    expect(events.at(-1)).toMatchObject({ step: 'switch', result: 'failed', outcome: fault === 'refusal' ? 'rejected' : 'unknown' });
+    expect(events.at(-1)).toMatchObject({ step: 'commit', result: 'failed', outcome: fault === 'refusal' ? 'rejected' : 'unknown' });
     if (fault === 'refusal') expect(events.at(-1).status).toBe(400);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
+for (const mode of ['terminal', 'desktop']) for (const hint of ['hidden', 'offline', 'visibility-pulse', 'pagehide']) test(`legacy ${mode} retains a committed recheck under ${hint} or closes it on explicit exit`, async ({ page }) => {
+  const app = await fixture({ mode, rfb: true, webrtc: true });
+  try {
+    await page.addInitScript(mode => {
+      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode }));
+      window.committedPeers = [];
+      const PC = RTCPeerConnection;
+      window.RTCPeerConnection = class extends PC {
+        constructor(...args) { super(...args); this.manual = window.holdCommittedRecheck === true; this.healthSends = 0; this.channels = []; window.committedPeers.push(this); }
+        createDataChannel(label, options) {
+          const channel = super.createDataChannel(label, options); this.channels.push({ label, channel });
+          if (!this.manual) return channel;
+          const send = channel.send.bind(channel), listen = channel.addEventListener.bind(channel), owner = this;
+          let holding = false;
+          const record = data => { const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength); return JSON.parse(new TextDecoder().decode(bytes.subarray(4))); };
+          channel.send = data => {
+            if (label === 'codex-health') owner.healthSends++;
+            if (label === 'codex-terminal') { try { if (record(data).type === 'health') owner.healthSends++; } catch {} }
+            if (label === 'codex-control') { try { if (record(data).action === 'activate') holding = true; } catch {} }
+            return send(data);
+          };
+          if (label === 'codex-control') channel.addEventListener = (type, listener, options) => listen(type, type === 'message' ? event => {
+            if (!holding) return listener.call(channel, event);
+            if (window.releaseCommittedRecheck) throw Error('held activation confirmation limit');
+            window.committedReply = record(event.data); window.committedCandidate = owner;
+            // The response came from the real server after retiring its old
+            // peer. Hold only delivery to the application, never ICE/DTLS.
+            window.releaseCommittedRecheck = () => { holding = false; listener.call(channel, event); };
+          } : listener, options);
+          return channel;
+        }
+      };
+    }, mode);
+    await login(page, app);
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    const frame = page.frames().find(frame => frame.url().includes(`/${mode}/index.html`));
+    await frame.evaluate(() => { window.holdCommittedRecheck = true; });
+    await hints(page);
+    await expect.poll(() => frame.evaluate(() => typeof window.releaseCommittedRecheck), { timeout: 15000 }).toBe('function');
+    expect(await frame.evaluate(() => window.committedReply)).toMatchObject({ ok: true, value: { active: true } });
+    await frame.evaluate(hint => {
+      if (hint === 'offline') { Object.defineProperty(navigator, 'onLine', { configurable: true, value: false }); window.dispatchEvent(new Event('offline')); }
+      else if (hint === 'pagehide') window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+      else {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+        if (hint === 'visibility-pulse') { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); }
+      }
+      window.releaseCommittedRecheck();
+    }, hint);
+    await expect(page.locator('#save-direct-hints')).toBeEnabled({ timeout: 3000 });
+    if (hint === 'pagehide') {
+      await expect.poll(() => frame.evaluate(() => window.committedCandidate.connectionState)).toBe('closed');
+      expect(mode === 'terminal' ? app.terminalConnections : app.vncConnections).toBe(1);
+    } else {
+      await expect(page.locator('#direct-probe-status')).toContainText('新连接已启用');
+      expect(await frame.evaluate(() => window.committedCandidate.connectionState)).toBe('connected');
+      await expect.poll(() => mode === 'terminal' ? app.terminalConnections : app.vncConnections).toBe(2);
+      const pings = await frame.evaluate(() => window.committedCandidate.healthSends);
+      await frame.evaluate(hint => {
+        if (hint === 'offline') { Object.defineProperty(navigator, 'onLine', { configurable: true, value: true }); window.dispatchEvent(new Event('online')); }
+        else { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); }
+      }, hint);
+      await expect.poll(() => frame.evaluate(() => window.committedCandidate.healthSends), { timeout: 5000 }).toBeGreaterThan(pings);
+      await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
+      expect(await frame.evaluate(() => window.committedPeers.length)).toBe(2);
+    }
+    await expect.poll(() => frame.evaluate(() => window.committedPeers[0].channels.find(c => c.label === 'codex-control').channel.readyState)).toBe('closed');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
     expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });

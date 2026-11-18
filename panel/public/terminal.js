@@ -573,11 +573,14 @@ const legacyRecheck = createRTCRecheck({
   idle: idleForSwitch,
   current: () => ({ rttMs: health?.rttMs }),
   open: signal => terminalDirect(viewer, { terminalId, terminalToken }, { trace, signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }) }),
-  replace: async (candidate, signal) => {
+  replace: async (candidate, signal, commit) => {
     const previous = socket, version = epoch; let adopted = false;
     try {
       if (!await prepareSwitch(signal) || socket !== previous || epoch !== version || stopped || document.hidden || !navigator.onLine || !nativeIdle() || signal.aborted) return;
       switching = true; switchingFrom = previous; health?.suspend(); inputState();
+      // The old path may already be closed when activation is confirmed.
+      // Keep the candidate through soft cancellation under its RPC deadline.
+      if (!commit()) return;
       await candidate.activate();
       if (socket !== previous || epoch !== version || stopped || signal.aborted) return;
       attachSocket(candidate.socket); candidate.attach(); adopted = true;
@@ -656,7 +659,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => resume());
 window.addEventListener('offline', () => { legacyRecheck.cancel(); health?.suspend(); stopProbe(); clearTimeout(retry); retry = undefined; if (!socket?.session && !ready) retire(socket, null); inputState(); });
 navigator.connection?.addEventListener('change', () => resume());
-window.addEventListener('pagehide', event => { stopped = true; legacyRecheck.cancel(); history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = fit = undefined; } });
+window.addEventListener('pagehide', event => { stopped = true; legacyRecheck.cancel({ force: true }); history?.suspend(); stopProbe(); clearTimeout(retry); cancelAnimationFrame(layout); retire(socket, null); health?.close(); clearTimeout(connectingTimer); if (!event.persisted) { history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = fit = undefined; } });
 window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; resume(true); } });
 for (const name of ['keydown', 'keyup', 'pointerdown', 'pointerup', 'pointercancel']) window.addEventListener(name, event => {
   lastInteraction = performance.now();
