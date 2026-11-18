@@ -715,7 +715,7 @@ export async function createPanel(config) {
         const length = Number(req.headers['content-length']);
         if (!Number.isSafeInteger(length) || length < 0 || length > MAX_UPLOAD) throw new HttpError(413, '文件大小必须明确，且不能超过 50 MiB');
         const upload = readUploadHeaders(req.headers);
-        const listed = await agent('/files'); transfer.check(); requireWrite(req);
+        const listed = await agent('/files', { signal: transfer.signal }); transfer.check(); requireWrite(req);
         if (listed.uploadProtocol !== UPLOAD_PROTOCOL) throw new HttpError(503, '文件服务需要更新后才能安全上传；未发送文件内容');
         if (!Array.isArray(listed.files)) throw new HttpError(503, '共享目录状态暂不可用');
         const existing = listed.files.find(file => file.name === name);

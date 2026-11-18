@@ -18,8 +18,23 @@ test('file transfers cap concurrent streams, serialize temporary uploads, and re
   assert.throws(() => transfers.begin(next.req, next.res, () => true), /繁忙/);
   guestValid = false; transfers.revalidate(); assert.equal(upload.signal.aborted, true); assert.equal(guest.res.destroyed, true);
   assert.equal(persistent.signal.aborted, false); assert.throws(upload.check, { status: 401 });
+  assert.throws(() => transfers.begin(next.req, next.res, () => true, true), /繁忙/);
+  upload.finish();
   const replacement = transfers.begin(next.req, next.res, () => true, true); replacement.finish();
   for (const transfer of others) transfer.finish(); admin.res.emit('close'); assert.equal(persistent.signal.aborted, true);
+});
+
+test('caller cancellation hides progress and retains its slot until upstream cleanup finishes', t => {
+  const transfers = createFileTransfers({ limit: 1 }); t.after(() => transfers.close());
+  const first = channel(), second = channel(), id = 'a'.repeat(32);
+  const transfer = transfers.begin(first.req, first.res, () => true, false, { owner: 'fixture', id, size: 4 });
+  first.req.emit('aborted');
+  assert.equal(transfer.signal.aborted, true); assert.throws(transfer.check, { status: 401 });
+  assert.throws(() => transfers.progress('fixture', id), { status: 404 });
+  assert.throws(() => transfers.begin(second.req, second.res, () => true), /繁忙/);
+  transfer.advance(4); transfer.finish(); transfer.finish();
+  transfers.begin(second.req, second.res, () => true).finish();
+  assert.equal(first.req.listenerCount('aborted'), 0); assert.equal(first.res.listenerCount('close'), 0);
 });
 
 test('a transfer deadline closes a stalled response and releases its capacity', async t => {
