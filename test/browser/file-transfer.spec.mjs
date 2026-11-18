@@ -120,6 +120,48 @@ test('an explicit busy upload is reported as rejected and its copied log disting
   } finally { await app.close(); }
 });
 
+test('a local File provider failure has its own private debug reason and permits one explicit retry on the same real peer', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', networkDebug: true }));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.uploadDebugLog = value; } } });
+    const slice = File.prototype.slice, create = RTCPeerConnection.prototype.createDataChannel;
+    File.prototype.slice = function (...args) {
+      const part = slice.apply(this, args);
+      if (this.name === 'PRIVATE_FILENAME.bin') Object.defineProperty(part, 'arrayBuffer', { value: async () => {
+        window.providerFailures = (window.providerFailures || 0) + 1;
+        throw new DOMException('PRIVATE_PROVIDER_DETAIL', 'NotReadableError');
+      } });
+      return part;
+    };
+    RTCPeerConnection.prototype.createDataChannel = function (...args) {
+      const channel = create.apply(this, args);
+      if (args[0] === 'codex-files') {
+        window.firstFilePeer ||= this; window.latestFilePeer = this;
+        channel.addEventListener('open', () => { window.fileOpens = (window.fileOpens || 0) + 1; });
+      }
+      return channel;
+    };
+  });
+  const app = await setup(page, { webrtc: true });
+  try {
+    await expect.poll(() => page.evaluate(() => window.fileOpens || 0), { timeout: 15000 }).toBe(1);
+    await page.locator('#upload-input').setInputFiles({ name: 'PRIVATE_FILENAME.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('safe') });
+    await expect(page.locator('#upload-status')).toContainText('本机文件读取失败');
+    await expect(page.locator('#upload-input')).toBeEnabled();
+    await expect.poll(() => page.evaluate(() => window.fileOpens)).toBe(2);
+    expect(await page.evaluate(() => window.latestFilePeer === window.firstFilePeer)).toBe(true);
+    expect(await page.evaluate(() => window.providerFailures)).toBe(1);
+    await page.locator('#upload-input').setInputFiles({ name: 'manual.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('safe') });
+    await expect(page.locator('#upload-status')).toContainText('上传完成：manual.bin');
+    expect(app.files.has('PRIVATE_FILENAME.bin')).toBe(false); expect(app.files.get('manual.bin').toString()).toBe('safe');
+    expect(app.received.filter(value => value.method === 'PUT' && value.url === '/files/manual.bin')).toHaveLength(1);
+    await page.locator('#close-files').click(); await page.locator('#connection-button').click(); await page.locator('#connection-trace > summary').click(); await page.locator('#copy-connection-trace').click();
+    const log = await page.evaluate(() => window.uploadDebugLog), events = JSON.parse(log).events;
+    expect(events.find(value => value.type === 'file-ended' && value.reason === 'file_read_failed')).toMatchObject({ route: 'direct', outcome: 'unknown', totalBytes: 4, loadedBytes: 0 });
+    expect(log).not.toContain('PRIVATE_'); expect(log).not.toContain('manual.bin');
+  } finally { await app.close(); }
+});
+
 test('an HTTPS upload keeps its actual route label when a file direct channel becomes ready in the meantime', async ({ page }) => {
   let releaseSignal, releaseUpload, puts = 0;
   const signalGate = new Promise(resolve => { releaseSignal = resolve; }), uploadGate = new Promise(resolve => { releaseUpload = resolve; });

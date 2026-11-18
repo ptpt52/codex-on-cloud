@@ -37,6 +37,7 @@ export const TRACE_REASONS = Object.freeze({
   'page-hidden': '页面已挂起', 'page-restored': '从浏览器缓存恢复页面',
   'http-status': '请求返回错误状态',
   file_busy: '文件服务正在处理另一项上传或删除', file_exists: '已有同名文件，未覆盖',
+  file_read_failed: '本机文件读取失败，请重新选择文件',
   'file-progress': '文件数据或确认仍在推进，连接保持活跃',
   'handoff-busy': '另一项连接切换仍在处理', 'input-unconfirmed': '等待已发送数据确认，不重发输入', 'output-draining': '等待终端完成当前画面',
 });
