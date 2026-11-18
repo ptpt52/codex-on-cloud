@@ -514,6 +514,14 @@ function finishSwitch(force = false) {
   switching = false; switchingFrom = undefined; inputState();
   parent.postMessage({ type: 'codex-direct-finished', frame }, location.origin);
 }
+function recoverSwitch(previous, version) {
+  if (socket !== previous || epoch !== version || stopped) return;
+  finishSwitch(true);
+  // activate may have retired the old writer before its reply was lost.
+  // Its close event was suppressed during the handoff; recover it explicitly.
+  if (previous.readyState !== WebSocket.OPEN) retire(previous, 0);
+  else if (ready && !document.hidden && navigator.onLine) health?.wake();
+}
 function prepareSwitch(signal) {
   return new Promise(resolve => {
     const id = ++switchSequence;
@@ -550,11 +558,7 @@ async function probeDirect() {
   finally {
     if (!promoted) candidate?.close();
     if (candidateController === controller) candidateController = null;
-    if (requested && !promoted) {
-      finishSwitch(true);
-      if (socket === previous && previous.readyState !== WebSocket.OPEN) retire(previous, 0);
-      else if (ready && !document.hidden && navigator.onLine) health?.wake();
-    }
+    if (requested && !promoted) recoverSwitch(previous, currentEpoch);
     scheduleProbe();
   }
 }
@@ -564,10 +568,15 @@ const legacyRecheck = createRTCRecheck({
   current: () => ({ rttMs: health?.rttMs }),
   open: signal => terminalDirect(viewer, { terminalId, terminalToken }, { trace, signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf }) }),
   replace: async (candidate, signal) => {
-    if (!await prepareSwitch(signal) || !nativeIdle() || signal.aborted) return;
-    switching = true; switchingFrom = socket; health?.suspend(); inputState();
-    try { await candidate.activate(); attachSocket(candidate.socket); candidate.attach(); return { retained: true, state: 'selected' }; }
-    finally { finishSwitch(true); }
+    const previous = socket, version = epoch; let adopted = false;
+    try {
+      if (!await prepareSwitch(signal) || socket !== previous || epoch !== version || stopped || document.hidden || !navigator.onLine || !nativeIdle() || signal.aborted) return;
+      switching = true; switchingFrom = previous; health?.suspend(); inputState();
+      await candidate.activate();
+      if (socket !== previous || epoch !== version || stopped || signal.aborted) return;
+      attachSocket(candidate.socket); candidate.attach(); adopted = true;
+      return { retained: true, state: 'selected' };
+    } finally { if (adopted) finishSwitch(true); else recoverSwitch(previous, version); }
   },
 });
 window.addEventListener('message', event => {

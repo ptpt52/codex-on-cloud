@@ -13,6 +13,71 @@ async function login(page, app) {
   await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
 }
 
+for (const mode of ['terminal', 'desktop']) for (const fault of ['lost reply', 'refusal']) test(`legacy ${mode} recheck recovers from activation ${fault} without replaying input`, async ({ page }) => {
+  const app = await fixture({ mode, rfb: true, webrtc: true });
+  try {
+    await page.addInitScript(({ mode, fault }) => {
+      if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode }));
+      window.recheckPeers = []; window.recheckFaultReplies = 0; window.oldHealthSends = 0;
+      const record = data => {
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        return JSON.parse(new TextDecoder().decode(bytes.subarray(4)));
+      };
+      const PC = RTCPeerConnection;
+      window.RTCPeerConnection = class extends PC {
+        constructor(...args) { super(...args); this.oldPath = window.recheckPeers.length === 0; window.recheckPeers.push(this); }
+        createDataChannel(label, options) {
+          const channel = super.createDataChannel(label, options), send = channel.send.bind(channel);
+          let faultId;
+          channel.send = data => {
+            if (this.oldPath && label === 'codex-health') window.oldHealthSends++;
+            let value; try { value = record(data); } catch {}
+            if (this.oldPath && label === 'codex-terminal' && value?.type === 'health') window.oldHealthSends++;
+            if (label === 'codex-control' && value?.action === 'activate' && window.failActivation) {
+              window.failActivation = false; faultId = value.id;
+              window.healthBeforeFailure = window.oldHealthSends;
+              if (fault === 'refusal') {
+                // The real server rejects the invalid body before committing.
+                const bytes = new TextEncoder().encode(JSON.stringify({ ...value, body: null })), frame = new Uint8Array(bytes.length + 4);
+                new DataView(frame.buffer).setUint32(0, bytes.length); frame.set(bytes, 4); data = frame;
+              }
+            }
+            send(data);
+          };
+          if (label === 'codex-control') channel.addEventListener('message', event => {
+            let value; try { value = record(event.data); } catch { return; }
+            if (value.id !== faultId) return;
+            window.recheckFaultReplies++;
+            // Lose only the committed activation reply. ICE, DTLS, the old
+            // path's close and every other application message remain real.
+            if (fault === 'lost reply') event.stopImmediatePropagation();
+          });
+          return channel;
+        }
+      };
+    }, { mode, fault });
+    await login(page, app);
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    const frame = page.frames().find(frame => frame.url().includes(mode === 'terminal' ? '/terminal/index.html' : '/desktop/index.html'));
+    await frame.evaluate(() => { window.failActivation = true; });
+    await hints(page);
+    await expect.poll(() => frame.evaluate(() => window.recheckFaultReplies), { timeout: 15000 }).toBe(1);
+    await expect(page.locator('#save-direct-hints')).toBeEnabled({ timeout: 12000 });
+    await expect(page.locator('#direct-probe-status')).toContainText('本次探测未成功');
+    if (fault === 'lost reply') {
+      await expect.poll(() => mode === 'terminal' ? app.terminalConnections : app.vncConnections, { timeout: 10000 }).toBe(2);
+      expect(await frame.evaluate(() => window.recheckPeers.slice(0, 2).map(peer => peer.connectionState))).toEqual(['closed', 'closed']);
+    } else {
+      await expect.poll(() => frame.evaluate(() => window.oldHealthSends > window.healthBeforeFailure), { timeout: 5000 }).toBe(true);
+      expect(mode === 'terminal' ? app.terminalConnections : app.vncConnections).toBe(1);
+      expect(await frame.evaluate(() => window.recheckPeers[0].connectionState)).toBe('connected');
+    }
+    await expect(page.locator('#connection-status')).toContainText(mode === 'terminal' ? '终端在线' : '桌面在线');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
+  } finally { await app.close(); }
+});
+
 for (const mode of ['terminal', 'desktop']) for (const seamless of [true, false]) test(`healthy ${mode} ${seamless ? 'unified' : 'legacy'} rechecks saved hints and preserves its renderer and input`, async ({ page }) => {
   const app = await fixture({ mode, rfb: true, webrtc: true, fastConnect: seamless, seamless }); const offers = [];
   try {

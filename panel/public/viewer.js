@@ -39,11 +39,14 @@ const legacyRecheck = createRTCRecheck({
     return candidate;
   },
   replace: async (candidate, signal) => {
-    if (!await prepareSwitch(signal) || pressedKeys.size || pressedPointers.size || pointerControls.busy || desktopInput.composing || desktopInput.busy || performance.now() - lastInteraction < 800 || signal.aborted) return;
-    switching = true; switchingFrom = rfb; frameHold.capture(canvas);
-    let adopted = false;
-    try { await candidate.control.request('activate', {}); attachViewer(candidate); adopted = true; return { retained: true, state: 'selected' }; }
-    finally { if (!adopted) finishSwitch(); }
+    const previous = rfb, version = connectionEpoch; let adopted = false;
+    try {
+      if (!await prepareSwitch(signal) || rfb !== previous || connectionEpoch !== version || stopping || document.hidden || !navigator.onLine || pressedKeys.size || pressedPointers.size || pointerControls.busy || desktopInput.composing || desktopInput.busy || performance.now() - lastInteraction < 800 || signal.aborted) return;
+      switching = true; switchingFrom = previous; frameHold.capture(canvas);
+      await candidate.control.request('activate', {});
+      if (rfb !== previous || connectionEpoch !== version || stopping || signal.aborted) return;
+      attachViewer(candidate); adopted = true; return { retained: true, state: 'selected' };
+    } finally { if (!adopted) recoverSwitch(previous, version); }
   },
 });
 let rfb, retry, stopping = false, resizeReady = false, frameReadiness, frameGate;
@@ -357,6 +360,15 @@ function finishSwitch() {
   switching = false; switchingFrom = undefined;
   parent.postMessage({ type: 'codex-direct-finished', frame }, location.origin);
 }
+function recoverSwitch(previous, version) {
+  if (rfb !== previous || connectionEpoch !== version || stopping) return;
+  finishSwitch();
+  if (!viewing) {
+    // The old disconnect was suppressed while activate was pending. A lost
+    // confirmation must enter normal recovery instead of leaving a dead view.
+    announce('disconnected'); clearTimeout(retry); retry = setTimeout(connect, 0);
+  } else { frameHold.clear(); monitorDirect(250); }
+}
 function prepareSwitch(signal) {
   return new Promise(resolve => {
     const id = ++switchSequence;
@@ -387,7 +399,7 @@ function waitStable(signal) {
 async function probeDirect() {
   if (!needsProbe() || document.hidden || !navigator.onLine) return;
   if (!idleForSwitch()) { scheduleProbe(5000); return; }
-  const controller = probeController = new AbortController(), epoch = connectionEpoch;
+  const controller = probeController = new AbortController(), epoch = connectionEpoch, previous = rfb;
   let candidate, prepared = false, requested = false, promoted = false;
   try {
     candidate = await desktopTransport(viewer, () => { if (transport === candidate) reportControl(); }, { probe: true, trace, signal: controller.signal, bootstrap: () => rtcConfig && ({ ...rtcConfig, csrf: streamCsrf }),
@@ -413,10 +425,7 @@ async function probeDirect() {
   } finally {
     if (!promoted) candidate?.close();
     probeController = null;
-    if (requested && !promoted) {
-      finishSwitch();
-      if (!viewing && !stopping) { announce('disconnected'); clearTimeout(retry); retry = setTimeout(connect, 2500); }
-    }
+    if (requested && !promoted) recoverSwitch(previous, epoch);
     scheduleProbe();
   }
 }
