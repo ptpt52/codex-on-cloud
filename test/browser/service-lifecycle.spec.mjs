@@ -59,3 +59,18 @@ test('foreground service recovery survives an aborted native offer settling afte
     expect(await page.evaluate(() => window.offerCalls)).toBe(2);
   } finally { await page.evaluate(() => window.releaseOffer?.()).catch(() => {}); await stop(page, app); }
 });
+
+test('a verified manual service recovery clears the hard stop for subsequent automatic recovery', async ({ page }) => {
+  const app = await fixture({ webrtc: true }); let deny = true, offers = 0;
+  await page.route('**/api/service/rtc', route => { offers++; return deny ? route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'injected authorization failure' }) }) : route.continue(); });
+  try {
+    await isolatedService(page, app);
+    await expect.poll(() => page.evaluate(() => window.serviceEvents.some(value => value.type === 'probe-stopped' && value.reason === 'auth'))).toBe(true);
+    await page.evaluate(() => window.serviceLink.recheck());
+    const deniedOffers = offers; await page.waitForTimeout(1200); expect(offers).toBe(deniedOffers);
+    deny = false; await page.evaluate(() => window.serviceLink.recheck()); await expect.poll(() => page.evaluate(() => window.serviceLink.ready)).toBe(true);
+    const recoveredOffers = offers; await page.evaluate(() => window.serviceLink.transport.close());
+    await expect.poll(() => offers, { timeout: 10000 }).toBeGreaterThan(recoveredOffers);
+    await expect.poll(() => page.evaluate(() => window.serviceLink.ready)).toBe(true);
+  } finally { await stop(page, app); }
+});

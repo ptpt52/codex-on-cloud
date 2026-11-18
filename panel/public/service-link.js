@@ -61,6 +61,10 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (candidate.features?.filesProtocol === 1) openFiles(candidate);
       if (!running || epoch !== version || current !== candidate || candidate.closed) throw unavailable();
       queueMonitor(version, candidate, 3000);
+      // A verified manual recovery starts a new retry scope too. Preserve hard
+      // stops on failed probes, and clear them only after complete adoption.
+      halted = false; attempts = 0; delay = 15000;
+      clearTimeout(retry); retry = undefined; retryDue = 0;
       state.ready = true; state.issue = ''; state.route = route; healthMisses = 0;
       trace('path-active', { path: 'direct' }); publish();
     } catch (error) {
@@ -125,7 +129,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
       const route = await candidate.stats();
       if (!running || epoch !== version || controller.signal.aborted) throw Error('协商已取消');
-      install(candidate, route, version); delay = 15000; attempts = 0;
+      install(candidate, route, version);
     } catch (error) {
       candidate?.close(); if (epoch === version && !controller.signal.aborted) {
         state.issue = error?.reason || (state.issue && state.issue !== 'connecting' ? state.issue : 'connection');
