@@ -53,12 +53,14 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       // If progress stops for six seconds, resume normal heartbeat checks.
       if (keepFileProgress(version, peer)) return;
       checking = true;
+      const checkedAt = performance.now();
       try { await peer.health.ping({ confirmation: healthMisses > 0 }); if (!active()) return; const route = await peer.stats(); if (active()) { healthMisses = 0; state.issue = peer.control?.draining ? 'rpc-timeout' : ''; state.route = route; if (performance.now() - heartbeatLoggedAt >= 15000) { heartbeatLoggedAt = performance.now(); trace('heartbeat-ok', { path: 'direct', rttMs: Math.round(peer.health.rttMs || 0) }); } publish(); } }
       catch (error) {
         if (active()) {
           if (error.code === 'heartbeat_timeout' && keepFileProgress(version, peer)) return;
+          if (error.code === 'heartbeat_timeout') trace('heartbeat-timeout', { path: 'direct', reason: 'heartbeat', durationMs: Math.max(0, Math.round(performance.now() - checkedAt)) });
           if (error.code === 'heartbeat_timeout' && ++healthMisses === 1) { state.issue = 'heartbeat-suspect'; publish(); timer = setTimeout(() => void monitor(version, peer), 0); }
-          else { retire('connection'); schedule(1000); }
+          else { retire(error.code === 'heartbeat_timeout' ? 'heartbeat' : 'connection'); schedule(1000); }
         }
         return;
       }

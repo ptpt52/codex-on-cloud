@@ -48,6 +48,29 @@ test('desktop controls still close after timeout and invalid late service replie
   }
 });
 
+test('RPC diagnostics distinguish local HTTP failures, late replies and peer closure without recording payloads', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const wire = clientChannel(), events = [], client = createControlClient(wire, () => {}, { keepOnTimeout: true, trace: (type, event) => events.push({ type, ...event }) });
+  for (const [id, code] of [[1, 'local_http_timeout'], [2, 'local_http_error']]) {
+    const request = client.request('diagnostics', { text: 'PRIVATE_BODY' });
+    reply(wire, { id, ok: false, error: { code, status: id === 1 ? 504 : 502, outcome: 'unknown', message: 'PRIVATE_MESSAGE' } });
+    await assert.rejects(request, { code }); assert.equal(client.ready, true);
+  }
+  const timedOut = assert.rejects(client.request('file-delete', { name: 'PRIVATE_FILENAME' }), { code: 'rpc_timeout' });
+  t.mock.timers.tick(8000); await timedOut; reply(wire, { id: 3, ok: true, value: { text: 'PRIVATE_REPLY' } });
+  const closed = assert.rejects(client.request('PRIVATE_ACTION', {}), { code: 'peer_closed' }); wire.close(); await closed;
+  assert.deepEqual(events.map(({ type, reason }) => [type, reason]), [['rpc-failed', 'local-http-timeout'], ['rpc-failed', 'local-http-error'], ['rpc-failed', 'rpc-timeout'], ['rpc-recovered', 'late-reply'], ['rpc-failed', 'peer-closed'], ['control-closed', 'peer-closed']]);
+  assert.equal(events[0].action, 'diagnostics'); assert.equal(events[2].action, 'file-delete'); assert.equal(events[3].action, 'file-delete');
+  assert.equal(events[4].action, undefined); assert.equal(JSON.stringify(events).includes('PRIVATE_'), false);
+});
+
+test('a failed diagnostic sink cannot prevent settlement or close the working control channel', async () => {
+  const wire = clientChannel(), client = createControlClient(wire, () => {}, { trace() { throw Error('log storage unavailable'); } });
+  const failed = assert.rejects(client.request('files', {}), { status: 503 });
+  reply(wire, { id: 1, ok: false, error: { status: 503, outcome: 'rejected' } }); await failed;
+  assert.equal(client.ready, true); client.close();
+});
+
 test('control records preserve bounded UTF-8 and escaped clipboard text across small SCTP messages', () => {
   for (const value of [{ id: 1, body: { text: '中文😀\r\n$(literal)' } }, { id: 2, text: '\x01'.repeat(32768) }]) {
     const wire = channel(); sendControl(wire, value);

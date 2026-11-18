@@ -14,7 +14,7 @@ export function attachRTCControl(channel, { valid, perform, failureMessage = 'ç›
       } catch (error) {
         response = { id: value.id, ok: false, error: { status: error.status || 502,
           message: error.status ? error.message : failureMessage, outcome: error.outcome || (error.status ? 'rejected' : 'unknown'),
-          ...(error.code === 'local_http_timeout' ? { code: error.code } : {}) } };
+          ...(['local_http_timeout', 'local_http_error'].includes(error.code) ? { code: error.code } : {}) } };
       }
       if (ended || !valid()) { close(); return; }
       try { sendControl(channel, response); } catch { close(); }

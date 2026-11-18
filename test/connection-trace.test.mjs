@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createConnectionTrace, createTraceReporter, TRACE_LIMITS, TRACE_STORAGE_KEY, traceDescription } from '../panel/public/connection-trace.js';
+test('RPC reasons and fixed action names survive export while arbitrary actions and sensitive fields do not', () => {
+  const trace = createConnectionTrace(undefined, { enabled: true });
+  trace.add({ type: 'rpc-failed', path: 'direct', reason: 'local-http-timeout', action: 'diagnostics', status: 504, outcome: 'unknown', durationMs: 6000, body: 'PRIVATE_BODY', error: 'PRIVATE_MESSAGE' }, { mode: 'service' });
+  trace.add({ type: 'rpc-recovered', reason: 'late-reply', action: 'file-delete' }, { mode: 'service' });
+  trace.add({ type: 'control-closed', reason: 'peer-closed', action: 'PRIVATE_ACTION' }, { mode: 'service' });
+  const events = trace.snapshot(); assert.equal(events[0].action, 'diagnostics'); assert.equal(events[2].action, undefined);
+  assert.match(traceDescription(events[0]), /节点本机服务请求超时.*连接诊断.*HTTP 504/);
+  assert.match(traceDescription(events[1]), /删除文件/); assert.equal(trace.text().includes('PRIVATE_'), false);
+});
 test('connection diagnostics retain bounded whitelisted events without payloads or endpoint information', () => {
   let now = 100; const trace = createConnectionTrace(() => now, { enabled: true, wallNow: () => 1700000000000 + now });
   assert.equal(trace.add({ type: 'unknown', text: 'secret' }, { mode: 'terminal' }), false);

@@ -23,8 +23,13 @@ test('connection timeline measures relay and direct stages, sanitizes events and
       const current = new URLSearchParams(location.search).get('frame');
       parent.postMessage({ type: 'codex-network-event', frame: 'stale', event: { type: 'input-pressure' } }, location.origin);
       parent.postMessage({ type: 'codex-network-event', frame: current, event: { type: 'retry', path: 'direct', waitMs: 500, text: 'PRIVATE_TEXT_SENTINEL', address: 'PRIVATE_ADDRESS_SENTINEL', reason: 'PRIVATE_REASON_SENTINEL' } }, location.origin);
+      parent.postMessage({ type: 'codex-network-event', frame: current, event: { type: 'rpc-failed', path: 'direct', reason: 'local-http-timeout', action: 'diagnostics', status: 504, outcome: 'unknown', body: 'PRIVATE_RPC_BODY' } }, location.origin);
+      parent.postMessage({ type: 'codex-network-event', frame: current, event: { type: 'rpc-recovered', reason: 'late-reply', action: 'file-delete' } }, location.origin);
     });
     await expect(page.locator('#connection-trace-list')).toContainText('500 ms 后');
+    await expect(page.locator('#connection-trace-list')).toContainText('节点本机服务请求超时');
+    await expect(page.locator('#connection-trace-list')).toContainText('连接诊断');
+    await expect(page.locator('#connection-trace-list')).toContainText('删除文件');
     await expect(page.locator('#connection-trace-list')).not.toContainText('输入队列达到上限');
     await page.locator('#copy-connection-trace').click(); await expect(page.locator('#connection-trace-copy')).toBeVisible();
     const copied = await page.locator('#connection-trace-copy').inputValue();

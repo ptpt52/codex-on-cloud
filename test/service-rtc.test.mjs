@@ -6,6 +6,11 @@ import { fixture } from './fixture.mjs';
 import { serviceClient } from './support/service-client.mjs';
 import { localServiceRequest } from '../panel/service-rtc.mjs';
 async function setup(app){await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});}
+for(const afterHeaders of [false,true])test(`local HTTP failure ${afterHeaders?'during the body':'before headers'} retains a distinct diagnostic code`,async t=>{
+ const server=http.createServer((req,res)=>{req.resume();if(afterHeaders){res.writeHead(200,{'content-type':'application/json'});res.write('{');setImmediate(()=>res.destroy());}else req.socket.destroy();});
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ await assert.rejects(localServiceRequest(server.address().port,{},'files',{},new AbortController().signal),{status:502,code:'local_http_error',outcome:'unknown'});
+});
 test('a local service timeout returns an unknown HTTP outcome before the browser deadline without retrying', { timeout: 10000 }, async t => {
  let calls=0;
  const server=http.createServer((req,_res)=>{calls++;req.resume();});server.listen(0,'127.0.0.1');await once(server,'listening');

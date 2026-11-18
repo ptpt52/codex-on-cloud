@@ -1,3 +1,5 @@
+import { CONTROL_TRACE_ACTIONS } from './control.js';
+
 export const TRACE_LIMITS = Object.freeze({ events: 200, bytes: 65536, scopes: 4, storageBytes: 262144, ageMs: 86400000 });
 export const TRACE_STORAGE_KEY = 'codex-cloud.network-log.v2';
 export const TRACE_LABELS = Object.freeze({
@@ -13,6 +15,7 @@ export const TRACE_LABELS = Object.freeze({
   'rtc-route': '选中的 WebRTC 路径',
   'view-start': '准备查看连接', 'view-reused': '复用待命视图', 'view-discarded': '释放待命视图',
   'request-failed': '节点请求失败', 'request-recovered': '节点请求已恢复',
+  'rpc-failed': '直连控制请求失败', 'rpc-recovered': '迟到回复已排空，控制通道恢复', 'control-closed': '直连控制通道已关闭',
   'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束',
   'capture-start': '开始记录网络调试日志',
 });
@@ -25,12 +28,14 @@ export const TRACE_REASONS = Object.freeze({
   protocol: '协商参数未被接受', closed: '连接已关闭', 'input-unknown': '输入结果无法确认', 'input-pressure': '输入队列达到上限', 'target-unknown': '切换结果无法确认',
   'resume-timeout': '恢复查看连接超时', 'session-expired': '查看会话已失效', 'signal-failed': '协商服务暂不可达',
   'rpc-timeout': '控制请求超时，操作结果待确认',
+  'local-http-timeout': '节点本机服务请求超时', 'local-http-error': '节点本机服务连接中断', 'peer-closed': '远端控制通道已关闭',
+  'channel-error': '控制通道报告传输错误', 'control-protocol': '控制回复格式或序号无效', 'control-send': '控制请求发送失败', 'late-reply': '迟到回复仅恢复通道，不改变原操作结果',
   standby: '后台待命视图禁止切换路径', 'keyboard-open': '远程键盘仍处于开启状态', 'frame-loading': '等待桌面首帧或尺寸恢复',
   'input-active': '等待输入空闲', composition: '输入法正在选字', 'keys-held': '等待按键或指针释放', 'ui-busy': '等待界面操作完成',
   history: '正在查找、复制或查看历史', 'target-switch': '正在切换终端', cooldown: '连接路径切换冷却期', 'quality-warming': '等待延迟采样',
   quality: '当前路径质量更好', 'handoff-refused': '当前界面暂未允许切换', aborted: '请求已取消', network: '请求未收到响应',
   'page-hidden': '页面已挂起', 'page-restored': '从浏览器缓存恢复页面',
-  'http-status': '上传请求返回错误状态',
+  'http-status': '请求返回错误状态',
   file_busy: '文件服务正在处理另一项上传或删除', file_exists: '已有同名文件，未覆盖',
   'file-progress': '文件数据或确认仍在推进，连接保持活跃',
   'handoff-busy': '另一项连接切换仍在处理', 'input-unconfirmed': '等待已发送数据确认，不重发输入', 'output-draining': '等待终端完成当前画面',
@@ -50,6 +55,7 @@ function clean(value) {
   if (['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed', 'gathering', 'complete'].includes(value.state)) result.state = value.state;
   if (['ice', 'peer', 'gathering'].includes(value.phase)) result.phase = value.phase;
   if (['state', 'terminals', 'files', 'forward', 'access', 'desktop', 'input', 'other'].includes(value.operation)) result.operation = value.operation;
+  if (CONTROL_TRACE_ACTIONS.includes(value.action)) result.action = value.action;
   if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status;
   for (const key of ['durationMs', 'waitMs', 'budgetMs', 'queuedBytes', 'rttMs', 'jitterMs', 'ackMs', 'penaltyMs', 'attempt', 'host', 'reflexive', 'relay', 'candidateMs', 'currentMs', 'pendingInputs', 'inputAgeMs', 'loadedBytes', 'totalBytes', 'windowChunks', 'chunkAckMs', 'chunkMaxAckMs', 'bufferWaitMs', 'fileReadMs']) if (number(value[key])) result[key] = value[key];
   return result;
@@ -180,6 +186,7 @@ export function traceDescription(event, now = Date.now()) {
   const states = { new: '新建', checking: '正在探测', connecting: '正在连接', connected: '已连接', completed: '已完成', disconnected: '暂时断开', failed: '失败', closed: '已关闭', gathering: '正在收集', complete: '收集完成' };
   const parts = [TRACE_LABELS[event.type], event.stage && TRACE_STAGES[event.stage], event.phase && ({ ice: 'ICE 路径', peer: '加密连接', gathering: '候选收集' })[event.phase], event.state && states[event.state], event.reason && TRACE_REASONS[event.reason]];
   if (event.operation) parts.push(({ state: '状态查询', terminals: '终端管理', files: '文件传输', forward: '端口映射', access: '访问验证', desktop: '桌面控制', input: '输入通道', other: '节点接口' })[event.operation]);
+  if (event.action) parts.push(({ ping: '服务探针', promote: '服务连接切换', activate: '启用通道', state: '状态查询', diagnostics: '连接诊断', files: '文件列表', 'file-delete': '删除文件', 'forward-list': '映射列表', clipboard: '剪贴板', paste: '粘贴', key: '按键', edit: '编辑', terminal: '终端输入', terminals: '终端列表', 'create-terminal': '新建终端', 'open-terminal': '打开终端' })[event.action]);
   if (event.status) parts.push(`HTTP ${event.status}`);
   if (event.route) parts.push(routes[event.route]);
   if (event.totalBytes !== undefined) parts.push(`已报告接收 ${event.loadedBytes || 0} / ${event.totalBytes} 字节`);

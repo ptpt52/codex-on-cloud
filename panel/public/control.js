@@ -1,4 +1,6 @@
 export const CONTROL_LIMIT = 256 * 1024;
+export const CONTROL_TRACE_ACTIONS = Object.freeze(['ping', 'promote', 'activate', 'state', 'diagnostics', 'files', 'file-delete', 'forward-list', 'clipboard', 'paste', 'key', 'edit', 'terminal', 'terminals', 'create-terminal', 'open-terminal']);
+const failureReasons = Object.freeze({ rpc_timeout: 'rpc-timeout', local_http_timeout: 'local-http-timeout', local_http_error: 'local-http-error', peer_closed: 'peer-closed', channel_error: 'channel-error', control_protocol: 'control-protocol', control_send: 'control-send' });
 const CHUNK = 16 * 1024;
 
 // A single bounded JSON record, framed over reliable, ordered binary messages.
@@ -38,41 +40,47 @@ export function controlDecoder(receive, fail) {
   } };
 }
 
-export function createControlClient(channel, changed, { keepOnTimeout = false } = {}) {
+export function createControlClient(channel, changed, { keepOnTimeout = false, trace = () => {} } = {}) {
   channel.binaryType = 'arraybuffer';
-  let pending, disposed = false, sequence = 0, drainingId = 0;
+  let pending, disposed = false, sequence = 0, draining;
   const unavailable = code => Object.assign(new Error('直连操作结果未知，请先查看桌面确认'), { outcome: 'unknown', ...(code ? { code } : {}) });
+  const report = (type, entry, detail) => { try { trace(type, { path: 'direct', ...(entry?.action ? { action: entry.action } : {}),
+    ...(entry ? { durationMs: Math.max(0, Math.round(performance.now() - entry.at)) } : {}), ...detail }); } catch {} };
   const finish = (error, value) => {
     if (!pending) return;
     const current = pending; pending = undefined;
     clearTimeout(current.timer);
+    if (error) report('rpc-failed', current, { reason: Object.hasOwn(failureReasons, error.code) ? failureReasons[error.code] : error.status ? 'http-status' : 'closed',
+      ...(Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? { status: error.status } : {}), outcome: ['rejected', 'unknown', 'canceled'].includes(error.outcome) ? error.outcome : 'unknown' });
     error ? current.reject(error) : current.resolve(value);
   };
-  const close = () => {
+  const close = (reason = 'closed') => {
     if (disposed) return;
-    disposed = true; drainingId = 0; decoder.reset(); finish(unavailable()); channel.close(); changed(false);
+    disposed = true; draining = undefined; decoder.reset(); finish(unavailable(Object.keys(failureReasons).find(code => failureReasons[code] === reason)));
+    if (reason !== 'closed') report('control-closed', undefined, { reason });
+    channel.close(); changed(false);
   };
   const decoder = controlDecoder(value => {
-    // A service RPC deadline settles its caller once. Keep only its numeric ID
-    // until the late reply drains; no new RPC can overtake server-side work.
-    if (drainingId && value.id === drainingId && typeof value.ok === 'boolean') { drainingId = 0; changed(true); return; }
-    if (!pending || value.id !== pending.id || typeof value.ok !== 'boolean') { close(); return; }
+    // Keep one ID and fixed diagnostic metadata, never the body or callbacks.
+    // A late reply restores admission without changing the settled outcome.
+    if (draining && value.id === draining.id && typeof value.ok === 'boolean') { report('rpc-recovered', draining, { reason: 'late-reply' }); draining = undefined; changed(true); return; }
+    if (!pending || value.id !== pending.id || typeof value.ok !== 'boolean') { close('control-protocol'); return; }
     finish(value.ok ? null : Object.assign(new Error(value.error?.message || '直连操作失败'), { status: value.error?.status, outcome: value.error?.outcome || 'unknown', code: value.error?.code }), value.value);
-  }, close);
+  }, () => close('control-protocol'));
   channel.addEventListener('message', event => { if (!disposed) decoder.push(event.data); });
   channel.addEventListener('open', () => { if (!disposed) changed(true); });
-  channel.addEventListener('close', close);
-  channel.addEventListener('error', close);
-  return { close, get draining() { return !!drainingId; }, get ready() { return !disposed && !drainingId && channel.readyState === 'open'; },
+  channel.addEventListener('close', () => close('peer-closed'));
+  channel.addEventListener('error', () => close('channel-error'));
+  return { close, get draining() { return !!draining; }, get ready() { return !disposed && !draining && channel.readyState === 'open'; },
     request(action, body) {
-      if (pending || drainingId || disposed || channel.readyState !== 'open' || sequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连控制通道繁忙或未就绪，本次操作未发送'), { outcome: 'rejected' }));
+      if (pending || draining || disposed || channel.readyState !== 'open' || sequence >= 2147483647) return Promise.reject(Object.assign(new Error('直连控制通道繁忙或未就绪，本次操作未发送'), { outcome: 'rejected' }));
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        pending = { id, resolve, reject, timer: setTimeout(() => {
-          if (!keepOnTimeout) { close(); return; }
-          drainingId = id; finish(unavailable('rpc_timeout')); changed(false);
+        pending = { id, resolve, reject, at: performance.now(), action: CONTROL_TRACE_ACTIONS.includes(action) ? action : undefined, timer: setTimeout(() => {
+          if (!keepOnTimeout) { close('rpc-timeout'); return; }
+          draining = { id, action: pending.action, at: pending.at }; finish(unavailable('rpc_timeout')); changed(false);
         }, 8000) };
-        try { sendControl(channel, { id, action, body }); } catch { close(); }
+        try { sendControl(channel, { id, action, body }); } catch { close('control-send'); }
       });
     },
   };
