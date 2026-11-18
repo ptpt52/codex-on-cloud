@@ -1,5 +1,5 @@
 import { createFileWire, createFileBuffer, sendFileChunks, FILE_CHUNK, FILE_MAX } from './file-wire.js';
-import { uploadOptions, uploadResult } from './file-upload.js';
+import { uploadOptions, uploadResult, recoverableFileStatus } from './file-upload.js';
 import { FORWARD_CLIENTS } from './forward-platform.js';
 import { validTransferWindow } from './transfer-window.js';
 // Amortize File/provider access over one maximum window, independently of
@@ -18,7 +18,7 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
   if(cancelingId){if(value.type==='cancelled'&&value.id===cancelingId)wire.close();return;}
   const entry=active;if(!entry||value.id!==entry.id)throw unknown();
   if(value.type==='error'){
-   recoverable=value.recoverable===true&&[404,409,410,412,413,429,503,507].includes(value.status);
+   recoverable=value.recoverable===true&&recoverableFileStatus(value.status);
    const outcome=['rejected','unknown'].includes(value.outcome)?value.outcome:[404,409,410,412,413,429,507].includes(value.status)?'rejected':'unknown';
    settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome,...(['file_busy','file_exists'].includes(value.fileCode)?{fileCode:value.fileCode}:{})}));wire.close();return;
   }

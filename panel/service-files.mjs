@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js';
-import { uploadOptions, uploadHeaders, uploadResult, validTransferName } from './public/file-upload.js';
+import { uploadOptions, uploadHeaders, uploadResult, validTransferName, recoverableFileStatus } from './public/file-upload.js';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 import { FORWARD_FILES, ARTIFACT_LIMITS } from '../native/forward-artifacts.mjs';
 import { validTransferWindow } from './public/transfer-window.js';
@@ -21,7 +21,14 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
- function reject(entry,err){if(active!==entry)return;recoverable=[404,409,410,412,413,429,503,507].includes(err.status);const outcome=['rejected','unknown'].includes(err.outcome)?err.outcome:rejectedStatuses.includes(err.status)?'rejected':'unknown';try{wire.send({type:'error',id:entry.id,status:err.status||502,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();}
+ function reject(entry,err){
+  if(active!==entry)return;
+  const status=err.status||502;
+  recoverable=valid()&&!signal.aborted&&recoverableFileStatus(status);
+  const outcome=['rejected','unknown'].includes(err.outcome)?err.outcome:rejectedStatuses.includes(status)?'rejected':'unknown';
+  try{wire.send({type:'error',id:entry.id,status,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}
+  cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();
+ }
  async function control(value){
   // A ready frame may already have released upload chunks when HTTP rejects
   // the request. Drain that ordered tail during the fixed retirement window;
@@ -71,7 +78,11 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   if(recoverable)return;
   const entry=active;
   try{check(entry);if(entry.direction!=='upload'||entry.ended||entry.received+bytes.length>entry.size)throw fault(400,'文件数据长度无效');entry.received+=bytes.length;await new Promise((resolve,reject)=>entry.req.write(bytes,err=>err?reject(err):resolve()));check(entry);}
-  catch(err){if(!recoverable)throw err;}
+  catch(err){
+   if(recoverable)return;
+   if(err.status===400||err.status===401||!valid()||signal.aborted)throw err;
+   reject(entry,err);
+  }
  }
  async function download(entry,res){
   check(entry);if(res.statusCode!==200){

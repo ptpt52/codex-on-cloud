@@ -1,5 +1,7 @@
 import { test,expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
+import http from 'node:http';
+import { once } from 'node:events';
 test.use({ serviceWorkers: 'block' });
 async function startIsolatedService(page,app) {
  await page.goto(app.config.origin);
@@ -58,6 +60,89 @@ for (const afterBlock of [false, true]) test(`a local File read failure ${afterB
   expect(app.inputCalls).toEqual([]); expect(app.vncConnections).toBe(0);
  } finally { release(); await app.close(); }
 });
+for (const mode of ['http500', 'http-disconnect']) test(`a ${mode} file failure preserves an admitted real RPC and verifies health before permitting one manual retry`, async ({ page }) => {
+ let release, entered; const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+ const app = await fixture({ webrtc: true, serviceDiagnostics: async () => { entered(); await gate; return { available: false }; } });
+ const puts = [], saved = new Map(); let healthy = false;
+ const upstream = http.createServer(async (req, res) => {
+  req.on('error', () => {});
+  if (req.url === '/files') { res.end(JSON.stringify({ uploadProtocol: 1, quotaProtocol: 1, truncated: false, files: [] })); return; }
+  if (req.url === '/health') { res.end('{"ok":true}'); return; }
+  puts.push(req.url);
+  if (!healthy) {
+   if (mode === 'http500') { req.resume(); res.writeHead(500); res.end('{"error":"isolated file failure","outcome":"unknown"}'); }
+   else req.once('data', () => req.socket.destroy());
+   return;
+  }
+  const chunks = []; try { for await (const bytes of req) chunks.push(bytes); } catch { return; }
+  const name = decodeURIComponent(req.url.slice('/files/'.length)); saved.set(name, Buffer.concat(chunks)); res.end(JSON.stringify({ ok: true, name }));
+ });
+ upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening'); app.config.fileAgentUrl = 'http://127.0.0.1:' + upstream.address().port;
+ try {
+  await startIsolatedService(page, app);
+  await page.evaluate(mode => {
+   const service = window.auditService, peer = service.transport; window.auditOld = peer; window.auditOldFiles = service.files;
+   const ping = peer.health.ping.bind(peer.health); window.fileRecoveryChecks = 0;
+   peer.health.ping = (...args) => {
+    window.fileRecoveryChecks++;
+    if (mode !== 'http500') return ping(...args);
+    return new Promise((resolve, reject) => { window.verifyFileRecovery = () => ping(...args).then(resolve, reject); });
+   };
+   window.auditReply = service.request('diagnostics', {}).catch(error => ({ outcome: error.outcome }));
+   window.auditUpload = service.files.upload(new File([new Uint8Array(128 * 1024)], 'failed.bin')).catch(error => ({ status: error.status, outcome: error.outcome }));
+  }, mode);
+  await started;
+  expect(await page.evaluate(() => window.auditUpload)).toMatchObject({ outcome: 'unknown', status: expect.any(Number) });
+  if (mode === 'http500') {
+   await expect.poll(() => page.evaluate(() => typeof window.verifyFileRecovery)).toBe('function');
+   expect(await page.evaluate(() => ({ files: window.auditService.files, samePeer: window.auditService.transport === window.auditOld, checks: window.fileRecoveryChecks }))).toEqual({ files: null, samePeer: true, checks: 1 });
+   await page.evaluate(() => window.verifyFileRecovery());
+  }
+  await expect.poll(() => page.evaluate(() => !!window.auditService.files && window.auditService.files !== window.auditOldFiles)).toBe(true);
+  expect(await page.evaluate(() => ({ samePeer: window.auditService.transport === window.auditOld, ready: window.auditService.ready, busy: window.auditService.busy, checked: window.fileRecoveryChecks > 0 }))).toEqual({ samePeer: true, ready: true, busy: true, checked: true });
+  expect(puts).toEqual(['/files/failed.bin']);
+  release(); expect(await page.evaluate(() => window.auditReply)).toMatchObject({ services: { available: false } });
+  healthy = true;
+  await page.evaluate(async () => { await window.auditService.files.upload(new File(['manual'], 'fresh.bin')); window.auditService.stop(); });
+  expect(puts).toEqual(['/files/failed.bin', '/files/fresh.bin']); expect(saved.get('fresh.bin').toString()).toBe('manual');
+  expect(app.inputCalls).toEqual([]); expect(app.vncConnections).toBe(0);
+ } finally { release(); await app.close(); upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }
+});
+
+for (const mode of ['bad-health', 'stop']) test(`file recovery ${mode} cannot reopen a channel on the retired service`, async ({ page }) => {
+ const app = await fixture({ webrtc: true }); let puts = 0;
+ const upstream = http.createServer((req, res) => {
+  if (req.url === '/files') { res.end('{"uploadProtocol":1,"files":[]}'); return; }
+  puts++; req.resume(); res.writeHead(500); res.end('{"error":"isolated file failure","outcome":"unknown"}');
+ });
+ upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening'); app.config.fileAgentUrl = 'http://127.0.0.1:' + upstream.address().port;
+ try {
+  await startIsolatedService(page, app);
+  await page.evaluate(mode => {
+   const service = window.auditService, peer = service.transport, create = peer.fileChannel.bind(peer), close = peer.close.bind(peer);
+   window.fileRecoveries = window.peerClosed = window.healthChecks = 0;
+   peer.fileChannel = () => { window.fileRecoveries++; return create(); };
+   peer.close = () => { window.peerClosed++; close(); };
+   peer.health.ping = () => {
+    window.healthChecks++;
+    return mode === 'bad-health' ? Promise.reject(Object.assign(Error('synthetic missing echo'), { code: 'heartbeat_timeout' }))
+     : new Promise(resolve => { window.settleFileRecovery = resolve; });
+   };
+   window.auditUpload = service.files.upload(new File(['once'], 'failed.bin')).catch(error => ({ status: error.status }));
+  }, mode);
+  expect(await page.evaluate(() => window.auditUpload)).toEqual({ status: 500 });
+  if (mode === 'stop') {
+   await expect.poll(() => page.evaluate(() => typeof window.settleFileRecovery)).toBe('function');
+   await page.evaluate(async () => { window.auditService.stop(); window.settleFileRecovery(); await Promise.resolve(); });
+  } else {
+   await expect.poll(() => page.evaluate(() => window.peerClosed)).toBe(1);
+   await page.evaluate(() => window.auditService.stop());
+  }
+  expect(await page.evaluate(() => ({ files: window.auditService.files, ready: window.auditService.ready, recovered: window.fileRecoveries, checked: window.healthChecks > 0 }))).toEqual({ files: null, ready: false, recovered: 0, checked: true });
+  expect(puts).toBe(1); expect(app.inputCalls).toEqual([]); expect(app.vncConnections).toBe(0);
+ } finally { await app.close(); upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }
+});
+
 for (const replyMode of ['late', 'missing']) test(`an eight-second ${replyMode} control reply preserves a progressing DTLS upload without replay`, async ({ page }) => {
  const app = await fixture({ webrtc: true });
  try {

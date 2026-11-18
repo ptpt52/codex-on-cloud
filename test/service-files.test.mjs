@@ -23,7 +23,13 @@ test('file HTTP outcomes survive both RTC directions independently of channel re
   {status:503,expected:'unknown',recoverable:true},
   {status:409,outcome:'unknown',expected:'unknown',recoverable:true},
   {status:409,expected:'rejected',recoverable:true},
-  {status:500,outcome:'rejected',expected:'rejected',recoverable:false},
+  {status:500,outcome:'rejected',expected:'rejected',recoverable:true},
+  {status:408,expected:'unknown',recoverable:true},
+  {status:502,expected:'unknown',recoverable:true},
+  {status:504,expected:'unknown',recoverable:true},
+  {status:401,expected:'unknown',recoverable:false},
+  {status:403,expected:'unknown',recoverable:false},
+  {status:423,expected:'unknown',recoverable:false},
  ])await t.test(`${direction} HTTP ${sample.status}, outcome ${sample.outcome||'legacy'}`,async t=>{
   let requests=0,recoverable,frame;
   const upstream=http.createServer((req,res)=>{requests++;req.resume();res.writeHead(sample.status,{'content-type':'application/json'});res.end(JSON.stringify({error:'isolated failure',...(sample.outcome?{outcome:sample.outcome}:{})}));});
@@ -41,6 +47,19 @@ test('file HTTP outcomes survive both RTC directions independently of channel re
   await assert.rejects(pending,error=>error.status===sample.status&&error.outcome===sample.expected);
   assert.equal(frame.outcome,sample.expected);assert.equal(recoverable,sample.recoverable);assert.equal(requests,1,'a rejected or unknown file is never replayed');
  });
+});
+test('a file deadline retires only its channel and keeps its outcome unknown',async t=>{
+ let entered;const started=new Promise(resolve=>{entered=resolve;});
+ const upstream=http.createServer(req=>{req.on('error',()=>{});entered();});upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+ t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));
+ t.mock.timers.enable({apis:['setTimeout']});
+ const signal=()=>{const handlers=new Set();return{subscribe(fn){handlers.add(fn);return{unSubscribe:()=>handlers.delete(fn)};},emit(value){for(const fn of [...handlers])fn(value);}};};
+ const sent=[],failed=[],controller=new AbortController(),channel={readyState:'open',bufferedAmount:0,onMessage:signal(),stateChange:signal(),error:signal(),send:bytes=>sent.push(JSON.parse(bytes)),close(){if(this.readyState==='closed')return;this.readyState='closed';this.stateChange.emit('closed');}};
+ const files=attachServiceFiles(channel,{valid:()=>true,headers:{},port:()=>upstream.address().port,signal:controller.signal,fail:value=>failed.push(value)});t.after(()=>files.close());
+ channel.onMessage.emit('{"type":"start","id":1,"direction":"download","name":"held","size":4}');await started;
+ t.mock.timers.tick(300000);
+ assert.deepEqual(sent.find(value=>value.type==='error'),{type:'error',id:1,status:408,outcome:'unknown',message:'文件传输超过五分钟',recoverable:true});
+ assert.deepEqual(failed,[]);t.mock.timers.tick(3000);assert.deepEqual(failed,[true]);
 });
 test('recoverable file channel closures release abort and native subscriptions before replacement',async t=>{
  const upstream=http.createServer((_req,res)=>{res.writeHead(404,{'content-type':'application/json'});res.end('{"error":"missing"}');});

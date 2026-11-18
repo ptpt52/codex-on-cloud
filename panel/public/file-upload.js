@@ -1,6 +1,10 @@
 export const UPLOAD_PROTOCOL = 1;
 export const FILE_DELETE_PROTOCOL = 1;
 export const UPLOAD_CONFIRM_MS = 120000;
+// A file HTTP failure can retire its channel while authenticated controls live.
+// Authentication, lock and malformed-protocol failures remain peer-fatal.
+export const recoverableFileStatus = status => Number.isInteger(status) &&
+  ([404, 408, 409, 410, 412, 413, 429].includes(status) || status >= 500 && status <= 599);
 // Existing Unix files may use the full NAME_MAX and literal backslashes.
 // New uploads keep space for a rename suffix and portable names.
 export function validTransferName(name, upload = false) {
