@@ -80,3 +80,34 @@ test('a caller cancellation budget cannot extend the local helper deadline befor
   assert.equal(response.status, 502); assert.equal(deletes, 0);
   assert(performance.now() - start < 7500, 'the delete caller\'s 8 second budget replaced the helper\'s 6 second deadline');
 });
+
+for (const operation of ['delete', 'upload']) for (const phase of ['preflight', 'committed']) test(`${operation} expiry during ${phase} preserves its dispatched outcome without replay`, async t => {
+  // Hold the periodic sweep to isolate the expiry window checked immediately
+  // after a helper reply. A sweep may instead close the HTTP response entirely.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let now = Date.now(), calls = 0, present = operation === 'delete'; t.mock.method(Date, 'now', () => now);
+  const app = await fixture({ mode: 'terminal', sessionMs: 60000 }); t.after(() => app.close());
+  const helper = http.createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/files') {
+      if (phase === 'preflight') now += 120000;
+      return res.end(JSON.stringify({ files: [], deleteProtocol: 1, uploadProtocol: 1, quotaProtocol: 1 }));
+    }
+    calls++; present = req.method === 'PUT';
+    if (req.method === 'PUT') assert.equal(Buffer.concat(chunks).toString(), 'abc');
+    now += 120000;
+    res.end(JSON.stringify({ ok: true, name: 'expiry.bin', ...(req.method === 'PUT' ? { size: 3 } : {}) }));
+  });
+  helper.listen(0, '127.0.0.1'); await once(helper, 'listening');
+  t.after(() => new Promise(resolve => { helper.close(resolve); helper.closeAllConnections(); }));
+  app.config.fileAgentUrl = 'http://127.0.0.1:' + helper.address().port;
+  await app.login();
+  const response = operation === 'delete'
+    ? await app.request('/api/files/delete', { method: 'POST', body: { name: 'expiry.bin', version: 'a'.repeat(64) } })
+    : await app.request('/api/files/expiry.bin', { method: 'PUT', raw: Buffer.from('abc') });
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).outcome, phase === 'committed' ? 'unknown' : 'rejected');
+  assert.equal(calls, phase === 'committed' ? 1 : 0);
+  assert.equal(present, phase === 'committed' ? operation === 'upload' : operation === 'delete');
+});

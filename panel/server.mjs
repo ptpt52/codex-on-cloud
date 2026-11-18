@@ -674,6 +674,7 @@ export async function createPanel(config) {
       try {
         const listed = await agent('/files', { signal }); transfer.check(); requireWrite(req);
         if (listed.deleteProtocol !== FILE_DELETE_PROTOCOL) throw new HttpError(503, '文件服务需要更新后才能删除文件');
+        transfer.dispatch();
         const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'DELETE', headers: { authorization: `Bearer ${config.agentSecret}`, 'if-match': '"' + version + '"' }, signal,
         });
@@ -720,6 +721,7 @@ export async function createPanel(config) {
           if (total - replaced + length > 1024 * 1024 * 1024) throw new HttpError(413, '共享目录已达到临时上传的 1 GiB 容量上限');
         }
         const limiter = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; try { if (this.total > MAX_UPLOAD) throw Error('文件过大'); transfer.advance(chunk.length); callback(null, chunk); } catch (error) { callback(error); } } });
+        transfer.dispatch();
         const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
