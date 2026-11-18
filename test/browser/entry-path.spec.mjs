@@ -52,6 +52,25 @@ test('a node entry boots, authenticates and starts its terminal without escaping
   } finally { await app.close(); }
 });
 
+test('a desktop node subpath keeps noVNC dependencies and RTC modules inside one versioned entry', async ({ page }) => {
+  const app = await fixture({ nodeId: 'c'.repeat(32), entryBasePath: '/node/desk/', rfb: true, seamless: true, webrtc: true, fastConnect: true });
+  const escaped = [], scripts = [], errors = [];
+  page.on('request', request => {
+    const url = new URL(request.url()); if (url.origin !== app.config.origin) return;
+    if (!url.pathname.startsWith('/node/desk/')) escaped.push(url.pathname);
+    if (url.pathname.endsWith('.js') && !url.pathname.endsWith('/sw.js')) scripts.push(url);
+  });
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(app.config.origin + '/node/desk/'); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 15000 });
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    expect(scripts.some(url => url.pathname.includes('/desktop/novnc/1.7.0/core/rfb.js'))).toBe(true);
+    for (const url of scripts) expect(url.pathname.includes('/desktop/novnc/1.7.0/') || url.searchParams.get('ui') === app.panel.uiRevision, url.pathname).toBe(true);
+    expect(escaped).toEqual([]); expect(errors).toEqual([]); expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('a selfhost node manages fixed helper keys and forward/reverse rules through its own entry path', async ({ page }) => {
   const app = await fixture({ mode: 'terminal', nodeId: 'b'.repeat(32), entryBasePath: '/node/pairing/', seamless: true, forwardPorts: '*' });
   const requests=[]; page.on('request',request=>{if(request.method()==='POST'&&new URL(request.url()).pathname.endsWith('/api/forward/agents/rule'))requests.push(request);});
