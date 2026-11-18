@@ -10,8 +10,13 @@ export function frpsProxyProbe({ endpoint, username = 'admin', password, request
   const authorization = 'Basic ' + Buffer.from(username + ':' + password).toString('base64');
   return async name => {
     const response = await request(new URL('/api/proxy/http/' + encodeURIComponent(name), base), { headers: { authorization, accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(1500) });
-    if (response.status === 404) return false;
-    if (!response.ok) throw Error('frps 管理查询失败（HTTP ' + response.status + '）');
+    if (!response.ok) {
+      // A status-only decision must not retain an unread error stream until
+      // the request deadline. Faulty producer cleanup cannot delay the result.
+      void response.body?.cancel().catch(() => {});
+      if (response.status === 404) return false;
+      throw Error('frps 管理查询失败（HTTP ' + response.status + '）');
+    }
     const text = (await readResponseBytes(response, MAX_BODY, 'frps 管理响应超过大小上限')).toString('utf8');
     let value; try { value = JSON.parse(text); } catch { throw Error('frps 管理响应格式无效'); }
     if (!value || typeof value.status !== 'string') throw Error('frps 管理响应缺少代理状态');

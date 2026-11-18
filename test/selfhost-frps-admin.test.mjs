@@ -54,3 +54,35 @@ test('frps probe cancels an oversized streaming response before reading it all',
   await assert.rejects(probe('node-a'), /超过大小上限/);
   assert.equal(cancelled, true); assert(pulled <= 18, 'only the limit, one excess chunk and at most one prefetched chunk may be read');
 });
+
+for (const status of [404, 503]) test(`frps HTTP ${status} retires an unfinished error response immediately`, { timeout: 3000 }, async t => {
+  let finish;
+  const closed = new Promise(resolve => { finish = resolve; });
+  const server = http.createServer((_req, res) => {
+    res.writeHead(status, { 'content-type': 'application/json' }); res.write('{');
+    res.once('close', finish);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const probe = frpsProxyProbe({ endpoint: `http://127.0.0.1:${server.address().port}`, password: 'frps_password_very_long_123' });
+  if (status === 404) assert.equal(await probe('missing'), false);
+  else await assert.rejects(probe('broken'), /HTTP 503/);
+  let timer;
+  try { await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('error body survived the completed probe')), 700); })]); }
+  finally { clearTimeout(timer); }
+});
+
+test('frps error results never wait for a stuck producer cancellation', async () => {
+  for (const status of [404, 503]) {
+    let canceled = false, timer;
+    const probe = frpsProxyProbe({ endpoint: 'http://127.0.0.1:17500', password: 'frps_password_very_long_123',
+      request: async () => new Response(new ReadableStream({ cancel() { canceled = true; return new Promise(() => {}); } }), { status }) });
+    try {
+      const result = probe('node-a');
+      const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(Error('probe waited for cancellation')), 300); });
+      if (status === 404) assert.equal(await Promise.race([result, timeout]), false);
+      else await assert.rejects(Promise.race([result, timeout]), /HTTP 503/);
+      assert.equal(canceled, true);
+    } finally { clearTimeout(timer); }
+  }
+});
