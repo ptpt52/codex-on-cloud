@@ -63,6 +63,57 @@ test.describe('signaling admission', () => {
   });
 });
 
+test.describe('signaling admission with a controlling Service Worker', () => {
+  test.use({ serviceWorkers: 'allow' });
+  test('actual backend requests stay serialized and a canceled standby request releases its queue slot', async ({ page }) => {
+    test.setTimeout(45000);
+    const app = await fixture({ rfb: true, seamless: true, webrtc: true, fastConnect: true });
+    const listeners = app.panel.server.listeners('request');
+    expect(listeners).toHaveLength(1);
+    app.panel.server.removeAllListeners('request');
+    let release, active = 0, peak = 0;
+    const held = new Promise(resolve => { release = resolve; }), offers = { terminal: 0, desktop: 0, service: 0 };
+    const dispatch = (req, res) => { if (!res.destroyed) listeners[0].call(app.panel.server, req, res); };
+    app.panel.server.on('request', (req, res) => {
+      const mode = req.method === 'POST' && /^\/api\/(terminal|desktop|service)\/rtc$/.exec(req.url)?.[1];
+      if (!mode) { dispatch(req, res); return; }
+      offers[mode]++; active++; peak = Math.max(peak, active);
+      let ended = false;
+      const finish = () => { if (!ended) { ended = true; active--; } };
+      res.once('finish', finish); res.once('close', finish);
+      if (mode === 'terminal' && offers.terminal === 1) void held.then(() => dispatch(req, res));
+      else dispatch(req, res);
+    });
+    await page.addInitScript(() => { if (window === parent) {
+      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal', modeStandby: true }));
+      window.offerRequests = [];
+      window.addEventListener('message', event => { if (event.origin === location.origin && event.data?.type === 'codex-rtc-offer-request' && window.offerRequests.length < 16) window.offerRequests.push(event.data.frame); });
+    } });
+    try {
+      await page.goto(app.config.origin);
+      await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+      await page.reload();
+      expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+      await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+      await expect(page.locator('#connection-status')).toContainText('终端在线');
+      await expect.poll(() => offers.terminal).toBe(1);
+      // Administrator services start on demand. Open files while the viewer's
+      // request is held to include the controlled root page in the same queue.
+      await page.locator('#files-button').click(); await expect(page.locator('#files-dialog')).toBeVisible();
+      await page.locator('#close-files').click();
+      await expect.poll(() => page.evaluate(() => new Set(window.offerRequests).size), { timeout: 15000 }).toBe(2);
+      expect(offers.desktop).toBe(0);
+      await openTools(page); await page.locator('#mode-standby').uncheck();
+      await expect(page.locator('#standby-frame')).toHaveCount(0);
+      release(); await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+      expect(offers.desktop).toBe(0);
+      await page.locator('#mode-standby').check(); await prepared(page, 'desktop');
+      await expect.poll(() => offers.desktop).toBe(1); await expect.poll(() => offers.service).toBe(1);
+      expect(peak).toBe(1); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]);
+    } finally { release(); await app.close(); }
+  });
+});
+
 
 for (const direct of [false, true]) for (const mode of ['desktop', 'terminal']) test(`${mode} ${direct ? 'direct' : 'relay'}: changing standby preference preserves the active renderer and connection`, async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, seamless: true, webrtc: direct, fastConnect: direct });
