@@ -4,12 +4,13 @@ import { createConnectionTrace, createTraceReporter, connectionProgress, TRACE_L
 test('routine samples cannot evict fault and lifecycle evidence; operational progress remains payload-free', () => {
   let time = 1700000000000;
   const trace = createConnectionTrace(() => time, { enabled: true, wallNow: () => time });
-  for (const type of ['view-start', 'probe-stopped', 'session-ended', 'path-active', 'first-frame']) {
+  const milestones = ['view-start', 'probe-stopped', 'session-ended', 'path-active', 'first-frame', 'heartbeat-timeout', 'input-pressure'];
+  for (const type of milestones) {
     time++; trace.add({ type, path: 'direct', reason: 'auth' }, { mode: 'terminal', view: 1 });
   }
   for (let n = 0; n < 600; n++) { time++; trace.add({ type: 'heartbeat-ok', rttMs: n }, { mode: 'service' }); }
   const events = trace.snapshot();
-  assert.equal(events.length, TRACE_LIMITS.events); assert.deepEqual(events.slice(0, 5).map(value => value.type), ['view-start', 'probe-stopped', 'session-ended', 'path-active', 'first-frame']);
+  assert.equal(events.length, TRACE_LIMITS.events); assert.deepEqual(events.slice(0, milestones.length).map(value => value.type), milestones);
   assert.equal(events.at(-1).rttMs, 599); assert.ok(Buffer.byteLength(trace.text()) <= TRACE_LIMITS.bytes);
   assert.deepEqual(connectionProgress('probe-stopped', { path: 'direct', reason: 'auth', error: 'PRIVATE_ERROR' }), { probe: 'stopped', probeReason: 'auth' });
   assert.equal(connectionProgress('heartbeat-ok', { path: 'direct' }), null);

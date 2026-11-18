@@ -145,7 +145,7 @@ export function createConnectionTrace(now = () => Date.now(), { storage, scope =
     // retaining the last 32 events as chronological context. Bounds stay fixed.
     while (events.length > TRACE_LIMITS.events || bytes({ version: 2, events }) > TRACE_LIMITS.bytes - 1024) { evict(events); droppedEvents++; }
   }
-  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended']);
+  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'heartbeat-timeout', 'input-pressure', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended']);
   function evict(list) {
     const index = list.findIndex((event, index) => index < list.length - 32 && !important.has(event.type));
     list.splice(index < 0 ? 0 : index, 1);
