@@ -11,8 +11,8 @@ class Channel extends EventTarget {
 }
 function receiver(t,window=16,premature=false){
  const a=new Channel(),b=new Channel();a.peer=b;b.peer=a;
- const chunks=[],controls=[],progress=[];let size=0;
- const client=createFileClient(a,()=>{},{window});
+ const chunks=[],controls=[],progress=[],failures=[];let size=0;
+ const client=createFileClient(a,recoverable=>failures.push(recoverable),{window});
  const server=createFileWire(b,{failed(){},chunk(bytes){chunks.push(bytes.slice());},control(value){
   controls.push(value);
   if(value.type==='start'){size=value.size;server.setWindow(window);server.send({type:'ready',id:value.id,size,window});if(premature)server.send({type:'done',id:value.id,name:'result.bin',size});}
@@ -20,8 +20,21 @@ function receiver(t,window=16,premature=false){
   if(value.type==='cancel')server.send({type:'cancelled',id:value.id});
  }});
  t.after(()=>{client.close();server.close();});
- return{client,chunks,controls,progress,onProgress:n=>progress.push(n)};
+ return{client,chunks,controls,progress,failures,onProgress:n=>progress.push(n)};
 }
+for(const afterBlock of [false,true])for(const cause of ['slice','provider','short-read'])test(`a local ${cause} failure ${afterBlock?'after one block':'before data'} cancels exactly once and remains recoverable`,async t=>{
+ const peer=receiver(t),block=16*FILE_CHUNK;let reads=0;
+ const file={name:'result.bin',size:block+4,slice(start,end){reads++;
+  if(afterBlock&&start===0)return{async arrayBuffer(){return new ArrayBuffer(end-start);}};
+  if(cause==='slice')throw Error('synthetic File slice failure');
+  return{async arrayBuffer(){if(cause==='provider')throw new DOMException('synthetic unavailable provider','NotReadableError');return new ArrayBuffer(end-start-1);}};
+ }};
+ await assert.rejects(peer.client.upload(file),{code:'file_read_failed',outcome:'unknown'});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(reads,afterBlock?2:1);assert.equal(peer.controls.filter(v=>v.type==='cancel').length,1);
+ assert.equal(peer.controls.some(v=>v.type==='end'),false);assert.deepEqual(peer.failures,[true]);
+ assert.equal(peer.chunks.length>0,afterBlock);
+});
 for(const window of [4,16])test(`slow File access is batched within 256 KiB while preserving all bytes and window ${window}`,async t=>{
  const peer=receiver(t,window),size=4479340,bytes=Buffer.alloc(size);for(let n=0;n<size;n++)bytes[n]=n%251;
  const reads=[];let activeReads=0,peakReads=0;

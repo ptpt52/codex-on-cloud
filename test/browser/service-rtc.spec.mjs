@@ -29,6 +29,35 @@ test('real service RPC cancellation drains its delayed HTTP reply while an indep
   expect(app.inputCalls).toEqual([]);expect(app.vncConnections).toBe(0);
  }finally{release();await app.close();}
 });
+for (const afterBlock of [false, true]) test(`a local File read failure ${afterBlock ? 'after one block' : 'before data'} preserves its real service RPC and permits a fresh upload`, async ({ page }) => {
+ let release, entered; const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+ const app = await fixture({ webrtc: true, serviceDiagnostics: async () => { entered(); await gate; return { available: false }; } });
+ try {
+  await startIsolatedService(page, app);
+  await page.evaluate(afterBlock => {
+   const service = window.auditService, block = 16 * 16380; window.auditOld = service.transport; window.auditOldFiles = service.files;
+   window.auditReply = service.request('diagnostics', {});
+   window.auditUpload = service.files.upload({ name: 'provider-failure.bin', size: block + 4, slice(start, end) {
+    return { async arrayBuffer() {
+     if (afterBlock && start === 0) return new ArrayBuffer(end - start);
+     return new Promise((_, reject) => { window.failFileRead = () => reject(new DOMException('synthetic unavailable provider', 'NotReadableError')); });
+    } };
+   } }).catch(error => ({ code: error.code, outcome: error.outcome }));
+  }, afterBlock);
+  await started; await expect.poll(() => page.evaluate(() => typeof window.failFileRead)).toBe('function');
+  await page.evaluate(() => window.failFileRead());
+  expect(await page.evaluate(() => window.auditUpload)).toEqual({ code: 'file_read_failed', outcome: 'unknown' });
+  await expect.poll(() => page.evaluate(() => !!window.auditService.files && window.auditService.files !== window.auditOldFiles)).toBe(true);
+  expect(await page.evaluate(() => ({ samePeer: window.auditService.transport === window.auditOld, ready: window.auditService.ready, rpcBusy: window.auditService.busy }))).toEqual({ samePeer: true, ready: true, rpcBusy: true });
+  release(); expect(await page.evaluate(() => window.auditReply)).toEqual({ tunnel: expect.any(Object), services: { available: false }, files: expect.any(Object) });
+  await page.evaluate(async () => { await window.auditService.files.upload(new File(['safe'], 'provider-retry.bin')); await window.auditService.request('files', {}); window.auditService.stop(); });
+  expect(app.files.has('provider-failure.bin')).toBe(false); expect(app.files.get('provider-retry.bin').toString()).toBe('safe');
+  // Cancellation can reach the panel before it dispatches the file-agent PUT.
+  expect(app.received.filter(value => value.method === 'PUT' && value.url === '/files/provider-failure.bin').length).toBeLessThanOrEqual(1);
+  expect(app.received.filter(value => value.method === 'PUT' && value.url === '/files/provider-retry.bin')).toHaveLength(1);
+  expect(app.inputCalls).toEqual([]); expect(app.vncConnections).toBe(0);
+ } finally { release(); await app.close(); }
+});
 for (const replyMode of ['late', 'missing']) test(`an eight-second ${replyMode} control reply preserves a progressing DTLS upload without replay`, async ({ page }) => {
  const app = await fixture({ webrtc: true });
  try {

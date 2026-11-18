@@ -33,8 +33,11 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
      for(let offset=0;offset<entry.size;offset+=FILE_READ_BLOCK){
       if(active!==entry)throw unknown();
       const end=Math.min(entry.size,offset+FILE_READ_BLOCK),at=performance.now();
-      const bytes=await entry.file.slice(offset,end).arrayBuffer();entry.readMs+=performance.now()-at;
-      if(active!==entry||bytes.byteLength!==end-offset)throw unknown();
+      let bytes;
+      try{bytes=await entry.file.slice(offset,end).arrayBuffer();if(bytes.byteLength!==end-offset)throw unknown();}
+      catch{cancel(entry,Object.assign(Error('本机文件读取失败，上传已取消；请重新选择文件后手动重试'),{code:'file_read_failed',outcome:'unknown'}));throw unknown();}
+      entry.readMs+=performance.now()-at;
+      if(active!==entry)throw unknown();
       yield new Uint8Array(bytes);
      }
     }
@@ -47,12 +50,21 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
   if(value.type!=='done'||!entry.started||entry.direction==='upload'&&(!entry.endSent||entry.received!==entry.size)||entry.direction==='download'&&(entry.received!==entry.size||value.size!==entry.size))throw unknown();
   settle(null,entry.direction==='download'?entry.buffer.blob():uploadResult({ok:true,name:value.name}));
  }});
+ function cancel(entry,reason){
+  if(active!==entry)return;
+  // Local File/provider failures follow the same bounded cancellation handshake
+  // as a user abort. The server must classify this file channel as recoverable
+  // before it closes, preserving the shared control peer and admitted RPCs.
+  recoverable=true;cancelingId=entry.id;settle(reason);
+  cancelTimer=setTimeout(()=>wire.close(),1500);
+  try{wire.send({type:'cancel',id:entry.id});}catch{wire.close();}
+ }
  function transfer(direction,name,size,file,upload,signal,helper,progress){
   if(signal?.aborted)return Promise.reject(signal.reason||unknown());
   if(!wire.ready||active||cancelingId||id>=2147483647||!Number.isSafeInteger(size)||size<0||size>FILE_MAX)return Promise.reject(Object.assign(Error('文件直连繁忙、未就绪或文件超过 50 MiB'),{outcome:'rejected'}));
   wire.resetMetrics();
   return new Promise((resolve,reject)=>{
-   const abort=()=>{if(active!==entry)return;recoverable=true;cancelingId=entry.id;settle(signal?.reason||unknown());try{wire.send({type:'cancel',id:entry.id});cancelTimer=setTimeout(()=>wire.close(),1500);}catch{wire.close();}};
+   const abort=()=>cancel(entry,signal?.reason||unknown());
    const entry=active={id:++id,direction,size,file,helper:!!helper,received:0,readMs:0,started:false,endSent:false,signal,abort,progress,resolve,reject,timer:setTimeout(abort,300000)};
    signal?.addEventListener('abort',abort,{once:true});
    try{wire.send({type:'start',id:entry.id,direction,name,size,...(window>4?{window}:{}),...(direction==='upload'?{upload:uploadOptions(upload)}:{}),...(helper?{helper}:{})});}catch(err){settle(err);wire.close();}
