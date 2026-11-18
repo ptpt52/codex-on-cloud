@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { createFileWire, sendFileChunks, FILE_MAX } from './public/file-wire.js';
+import { createFileWire, sendFileChunks, FILE_MAX, fileTimeoutCode } from './public/file-wire.js';
 import { uploadOptions, uploadHeaders, uploadResult, validTransferName, recoverableFileStatus } from './public/file-upload.js';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 import { FORWARD_FILES, ARTIFACT_LIMITS } from '../native/forward-artifacts.mjs';
@@ -17,7 +17,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
  const subscriptions=[];
  const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:bytes=>channel.send(bytes),close:()=>channel.close(),
   addEventListener(type,fn){if(type==='message')subscriptions.push(channel.onMessage.subscribe(data=>fn({data})));else if(type==='close')subscriptions.push(channel.stateChange.subscribe(state=>{if(state==='closed')fn();}));else if(type==='error')subscriptions.push(channel.error.subscribe(fn));}};
- const wire=createFileWire(adapter,{control,chunk:receive,failed(){ended=true;clearTimeout(retireTimer);signal.removeEventListener('abort',cancel);for(const subscription of subscriptions.splice(0))subscription?.unSubscribe?.();cleanup();fail(recoverable);}});
+ const wire=createFileWire(adapter,{control,chunk:receive,timedOut(err){if(active)reject(active,Object.assign(err,{status:408}));else wire.close(err);},failed(){ended=true;clearTimeout(retireTimer);signal.removeEventListener('abort',cancel);for(const subscription of subscriptions.splice(0))subscription?.unSubscribe?.();cleanup();fail(recoverable);}});
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
  function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
@@ -25,8 +25,9 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   if(active!==entry)return;
   const status=err.status||502;
   recoverable=valid()&&!signal.aborted&&recoverableFileStatus(status);
+  wire.quiesce(err);
   const outcome=['rejected','unknown'].includes(err.outcome)?err.outcome:rejectedStatuses.includes(status)?'rejected':'unknown';
-  try{wire.send({type:'error',id:entry.id,status,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}
+  try{wire.send({type:'error',id:entry.id,status,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(fileTimeoutCode(err.code)?{code:err.code}:{}),...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}
   cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();
  }
  async function control(value){
@@ -36,7 +37,7 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
   if(recoverable)return;
   if(value.type==='cancel'){
    if(Object.keys(value).sort().join(',')!=='id,type'||!Number.isInteger(value.id)||value.id<=0||value.id!==lastId||active&&active.id!==value.id)throw fault(400,'文件取消参数无效');
-   recoverable=true;cleanup();wire.send({type:'cancelled',id:value.id});retireTimer=setTimeout(()=>wire.close(),1500).unref();return;
+   recoverable=true;wire.quiesce();cleanup();wire.send({type:'cancelled',id:value.id});retireTimer=setTimeout(()=>wire.close(),1500).unref();return;
   }
   if(value.type==='start'){
    const fields=Object.keys(value).sort().join(','),hasUpload=Object.hasOwn(value,'upload'),hasHelper=Object.hasOwn(value,'helper');

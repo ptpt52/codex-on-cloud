@@ -9,6 +9,26 @@ class Channel extends EventTarget {
  send(data){queueMicrotask(()=>{if(this.peer.readyState==='open')this.peer.dispatchEvent(new MessageEvent('message',{data:typeof data==='string'?data:data.slice().buffer}));});}
  close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}
 }
+for (const acknowledge of [false, true]) test(`a stalled upload retires its file channel after ${acknowledge ? 'confirmed' : 'missing'} cancellation without replay`, async t => {
+ t.mock.timers.enable({ apis: ['setTimeout'] });
+ const a = new Channel(), b = new Channel(), controls = [], failed = []; a.peer = b; b.peer = a;
+ b.addEventListener('message', ({ data }) => {
+  if (typeof data !== 'string') return;
+  const value = JSON.parse(data); controls.push(value);
+  if (value.type === 'start') b.send(JSON.stringify({ type: 'ready', id: value.id, size: value.size }));
+  if (value.type === 'cancel' && acknowledge) b.send(JSON.stringify({ type: 'cancelled', id: value.id }));
+ });
+ const client = createFileClient(a, value => failed.push(value)); t.after(() => client.close());
+ const pending = client.upload(new File(['once'], 'stalled.bin')); void pending.catch(() => {});
+ await new Promise(resolve => setImmediate(resolve)); t.mock.timers.tick(15000);
+ await assert.rejects(pending, { code: 'file_ack_timeout', outcome: 'unknown' });
+ await new Promise(resolve => setImmediate(resolve));
+ assert.equal(controls.filter(value => value.type === 'cancel').length, 1);
+ assert.equal(controls.some(value => value.type === 'end'), false);
+ if (!acknowledge) { assert.deepEqual(failed, []); t.mock.timers.tick(1500); }
+ assert.deepEqual(failed, [true]); assert.equal(a.readyState, 'closed');
+ assert.equal(controls.filter(value => value.type === 'start').length, 1);
+});
 function receiver(t,window=16,premature=false){
  const a=new Channel(),b=new Channel();a.peer=b;b.peer=a;
  const chunks=[],controls=[],progress=[],failures=[];let size=0;

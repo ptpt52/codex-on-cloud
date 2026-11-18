@@ -16,6 +16,26 @@ import { FILE_CHUNK,FILE_MAX } from '../panel/public/file-wire.js';
 import { attachServiceFiles } from '../panel/service-files.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
+test('download ACK timeout sends a recoverable unknown outcome and releases only the file channel within three seconds', async t => {
+ const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-length': 4 }); res.end('safe'); });
+ upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+ t.after(() => new Promise(resolve => { upstream.close(resolve); upstream.closeAllConnections(); }));
+ t.mock.timers.enable({ apis: ['setTimeout'] });
+ const signal = () => { const handlers = new Set(); return { subscribe(fn) { handlers.add(fn); return { unSubscribe: () => handlers.delete(fn) }; }, emit(value) { for (const fn of [...handlers]) fn(value); } }; };
+ const sent = [], failed = [], controller = new AbortController(); let dataSent;
+ const data = new Promise(resolve => { dataSent = resolve; });
+ const channel = { readyState: 'open', bufferedAmount: 0, onMessage: signal(), stateChange: signal(), error: signal(),
+  send(bytes) { sent.push(typeof bytes === 'string' ? JSON.parse(bytes) : bytes); if (typeof bytes !== 'string') dataSent(); },
+  close() { if (this.readyState === 'closed') return; this.readyState = 'closed'; this.stateChange.emit('closed'); } };
+ const files = attachServiceFiles(channel, { valid: () => true, headers: {}, port: () => upstream.address().port, signal: controller.signal, fail: value => failed.push(value) }); t.after(() => files.close());
+ channel.onMessage.emit('{"type":"start","id":1,"direction":"download","name":"held","size":4}'); await data;
+ t.mock.timers.tick(15000); await new Promise(resolve => setImmediate(resolve));
+ assert.deepEqual(sent.find(value => value.type === 'error'), { type: 'error', id: 1, status: 408, outcome: 'unknown', message: '文件分块确认超时', code: 'file_ack_timeout', recoverable: true });
+ assert.deepEqual(failed, []); assert.equal(channel.readyState, 'open');
+ // A late ordered ACK is drained without reopening data admission.
+ channel.onMessage.emit('{"type":"ack","seq":1}'); t.mock.timers.tick(3000);
+ assert.deepEqual(failed, [true]); assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+});
 test('file HTTP outcomes survive both RTC directions independently of channel recovery',async t=>{
  for(const direction of ['upload','download'])for(const sample of [
   {status:503,outcome:'rejected',expected:'rejected',recoverable:true},

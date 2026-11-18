@@ -97,16 +97,16 @@ test('upload logs expose transport, byte counts, deadline or HTTP failure withou
   assert.ok(!trace.text().includes('PRIVATE_'));
 });
 
-test('local file read failures survive private log persistence with a distinct readable cause', () => {
+for (const reason of ['file_read_failed', 'file_ack_timeout', 'file_buffer_timeout']) test(`${reason} survives private log persistence with a distinct readable cause`, () => {
   let saved;
   const storage = { getItem: () => saved, setItem: (_key, value) => { saved = value; } };
   const trace = createConnectionTrace(undefined, { enabled: true, storage, scope: 'node:fixture' });
-  trace.add({ type: 'file-ended', route: 'direct', reason: 'file_read_failed', outcome: 'unknown', loadedBytes: 0, totalBytes: 4,
+  trace.add({ type: 'file-ended', route: 'direct', reason, outcome: 'unknown', loadedBytes: 0, totalBytes: 4,
     filename: 'PRIVATE_FILENAME', error: 'PRIVATE_PROVIDER_DETAIL', provider: 'PRIVATE_PROVIDER' }, { mode: 'service' });
   trace.flush();
   const restored = createConnectionTrace(undefined, { enabled: true, storage, scope: 'node:fixture' });
   const event = restored.snapshot().find(value => value.type === 'file-ended');
-  assert.equal(event.reason, 'file_read_failed'); assert.match(traceDescription(event), /本机文件读取失败/);
+  assert.equal(event.reason, reason); assert.match(traceDescription(event), /本机文件读取失败|文件分块确认超时|文件发送缓冲超时/);
   assert.ok(!restored.text().includes('PRIVATE_'));
   trace.setEnabled(false); restored.setEnabled(false);
 });

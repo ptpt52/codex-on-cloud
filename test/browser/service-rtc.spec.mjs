@@ -13,6 +13,42 @@ async function startIsolatedService(page,app) {
  },{username:app.config.username,password:app.config.password});
  await expect.poll(()=>page.evaluate(()=>!!window.auditService?.files),{timeout:15000}).toBe(true);
 }
+test('a real stalled HTTP file consumer times out only its DTLS file channel while an admitted RPC survives', async ({ page }) => {
+ test.setTimeout(60000);
+ let release; const gate = new Promise(resolve => { release = resolve; });
+ const app = await fixture({ webrtc: true, serviceDiagnostics: async () => { await gate; return { available: false }; } });
+ let healthy = false; const puts = [], saved = new Map();
+ const upstream = http.createServer(async (req, res) => {
+  req.on('error', () => {});
+  if (req.url === '/files') { res.end('{"uploadProtocol":1,"quotaProtocol":1,"files":[]}'); return; }
+  if (req.url === '/health') { res.end('{"ready":true,"uploadProtocol":1,"quotaProtocol":1}'); return; }
+  puts.push(req.url); if (!healthy) { req.pause(); return; }
+  const chunks = []; try { for await (const bytes of req) chunks.push(bytes); } catch { return; }
+  const name = decodeURIComponent(req.url.slice('/files/'.length)); saved.set(name, Buffer.concat(chunks)); res.end(JSON.stringify({ ok: true, name }));
+ });
+ upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening'); app.config.fileAgentUrl = 'http://127.0.0.1:' + upstream.address().port;
+ try {
+  await startIsolatedService(page, app);
+  await page.evaluate(() => {
+   const service = window.auditService; window.auditOld = service.transport; window.auditOldFiles = service.files;
+   window.auditLoaded = 0; window.lastFileProgress = performance.now();
+   window.auditUpload = service.files.upload(new File([new Uint8Array(16 * 1024 * 1024)], 'stalled.bin'), undefined, undefined, loaded => {
+    if (loaded > window.auditLoaded) { window.auditLoaded = loaded; window.lastFileProgress = performance.now(); }
+   }).catch(error => ({ outcome: error.outcome, code: error.code }));
+  });
+  await page.waitForFunction(() => performance.now() - window.lastFileProgress > 10500 && window.auditService.files?.busy, { timeout: 35000 });
+  await page.evaluate(() => { window.auditReply = window.auditService.request('diagnostics', {}).catch(error => ({ outcome: error.outcome })); });
+  expect(await page.evaluate(() => window.auditUpload)).toEqual({ code: 'file_ack_timeout', outcome: 'unknown' });
+  // Release before the independent six-second RPC budget expires.
+  release(); expect(await page.evaluate(() => window.auditReply)).toMatchObject({ services: { available: false } });
+  await expect.poll(() => page.evaluate(() => !!window.auditService.files && window.auditService.files !== window.auditOldFiles)).toBe(true);
+  expect(await page.evaluate(() => ({ samePeer: window.auditService.transport === window.auditOld, ready: window.auditService.ready }))).toEqual({ samePeer: true, ready: true });
+  expect(puts).toEqual(['/files/stalled.bin']); expect(saved.size).toBe(0);
+  healthy = true; await page.evaluate(async () => { await window.auditService.files.upload(new File(['manual'], 'fresh.bin')); window.auditService.stop(); });
+  expect(puts).toEqual(['/files/stalled.bin', '/files/fresh.bin']); expect(saved.get('fresh.bin').toString()).toBe('manual');
+  expect(app.inputCalls).toEqual([]); expect(app.vncConnections).toBe(0);
+ } finally { release(); await app.close(); upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }
+});
 test('real service RPC cancellation drains its delayed HTTP reply while an independent DTLS upload completes once',async({page})=>{
  let release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
  const app=await fixture({webrtc:true,serviceDiagnostics:async()=>{entered();await gate;return{available:false};}});

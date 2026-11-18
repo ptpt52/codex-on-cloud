@@ -1,6 +1,7 @@
 import { LEGACY_TRANSFER_WINDOW, validTransferWindow } from './transfer-window.js';
 export const FILE_CHUNK = 16380;
 export const FILE_MAX = 50 * 1024 * 1024;
+export const fileTimeoutCode = code => ['file_ack_timeout', 'file_buffer_timeout'].includes(code);
 const BUFFER = 512 * 1024;
 const DATA_BUFFER = BUFFER - 4096; // Keep one maximum control message available.
 // Coalesce arbitrarily small network reads into at most 800 blocks (50 MiB).
@@ -21,8 +22,8 @@ export function createFileBuffer(size) {
 }
 // One ordered stream in each direction, with a negotiated 4/8/16-chunk window.
 // Sequence numbers last for the channel, so old chunks/ACKs cannot be replayed.
-export function createFileWire(channel, { control, chunk, failed }, now = () => performance.now()) {
-  let ended = false, sent = 0, received = 0, queued = 0, chain = Promise.resolve(), window = LEGACY_TRANSFER_WINDOW, writable;
+export function createFileWire(channel, { control, chunk, failed, timedOut }, now = () => performance.now()) {
+  let ended = false, stopping, sent = 0, acknowledged = 0, received = 0, queued = 0, chain = Promise.resolve(), window = LEGACY_TRANSFER_WINDOW, writable;
   let ackCount = 0, ackTotal = 0, maxAck = 0, bufferWait = 0;
   const pending = new Map();
   channel.binaryType = 'arraybuffer';
@@ -36,18 +37,31 @@ export function createFileWire(channel, { control, chunk, failed }, now = () => 
   function checkWritable() {
     if (!writable) return;
     clearTimeout(writable.timer);
-    if (ended || channel.readyState !== 'open') { finishWritable(failure()); return; }
+    if (ended || stopping || channel.readyState !== 'open') { finishWritable(stopping || failure()); return; }
     if (channel.bufferedAmount + writable.length + 4 <= DATA_BUFFER) { finishWritable(); return; }
     // Native adapters may not expose bufferedamountlow; retain one bounded poll.
     writable.timer = setTimeout(checkWritable, 25);
   }
   channel.bufferedAmountLowThreshold = BUFFER / 2;
   channel.addEventListener('bufferedamountlow', checkWritable);
-  function close(reason = failure()) {
-    if (ended) return; ended = true;
+  function quiesce(reason = failure()) {
+    stopping ||= reason;
     finishWritable(reason);
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(reason); } pending.clear();
+  }
+  function close(reason = failure()) {
+    if (ended) return; ended = true;
+    quiesce(reason);
+    channel.removeEventListener?.('bufferedamountlow', checkWritable);
     channel.close(); failed(reason);
+  }
+  function timeout(message, code) {
+    if (ended || stopping) return;
+    const reason = Object.assign(failure(message), { code });
+    quiesce(reason);
+    // Keep control records and the ordered tail alive for the owner's bounded
+    // cancel/error handshake. Only that file channel is then retired.
+    try { timedOut ? timedOut(reason) : close(reason); } catch (err) { close(err); }
   }
   function send(value) {
     const text = JSON.stringify(value);
@@ -63,7 +77,9 @@ export function createFileWire(channel, { control, chunk, failed }, now = () => 
         const value = JSON.parse(event.data);
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('文件消息格式无效');
         if (value.type === 'ack') {
-          if (Object.keys(value).sort().join(',') !== 'seq,type' || !pending.size || pending.keys().next().value !== value.seq) throw failure('文件确认序号无效');
+          if (Object.keys(value).sort().join(',') !== 'seq,type' || value.seq !== acknowledged + 1 || value.seq > sent) throw failure('文件确认序号无效');
+          acknowledged = value.seq;
+          if (stopping) return;
           const item = pending.get(value.seq); pending.delete(value.seq); clearTimeout(item.timer);
           const elapsed = Math.max(0, now() - item.started); ackCount++; ackTotal = Math.min(2 ** 40, ackTotal + elapsed); maxAck = Math.max(maxAck, elapsed); item.resolve();
         } else Promise.resolve(control(value)).catch(close);
@@ -82,7 +98,7 @@ export function createFileWire(channel, { control, chunk, failed }, now = () => 
     } catch (err) { close(err); }
   });
   channel.addEventListener('close', () => close()); channel.addEventListener('error', () => close());
-  return { close, send, get ready() { return !ended && channel.readyState === 'open'; }, get window() { return window; },
+  return { close, send, quiesce, get ready() { return !ended && !stopping && channel.readyState === 'open'; }, get window() { return window; },
     get metrics() { return { windowChunks: window, chunkAckMs: ackCount ? Math.round(ackTotal / ackCount) : 0, chunkMaxAckMs: Math.round(maxAck), bufferWaitMs: Math.round(bufferWait) }; },
     resetMetrics() { if (pending.size || writable) throw failure('文件测量仍在进行'); ackCount = ackTotal = maxAck = bufferWait = 0; },
     setWindow(value) {
@@ -90,18 +106,18 @@ export function createFileWire(channel, { control, chunk, failed }, now = () => 
       window = value;
     },
     waitWritable(length) {
-      if (ended || channel.readyState !== 'open' || writable || !Number.isInteger(length) || length <= 0 || length > FILE_CHUNK) return Promise.reject(failure('文件发送窗口暂不可用'));
+      if (ended || stopping || channel.readyState !== 'open' || writable || !Number.isInteger(length) || length <= 0 || length > FILE_CHUNK) return Promise.reject(stopping || failure('文件发送窗口暂不可用'));
       if (channel.bufferedAmount + length + 4 <= DATA_BUFFER) return Promise.resolve();
       return new Promise((resolve, reject) => {
-        writable = { length, resolve, reject, started: now(), deadline: setTimeout(() => close(failure('文件发送缓冲等待超时')), 15000) };
+        writable = { length, resolve, reject, started: now(), deadline: setTimeout(() => timeout('文件发送缓冲等待超时', 'file_buffer_timeout'), 15000) };
         checkWritable();
       });
     },
     data(bytes) {
-      if (ended || channel.readyState !== 'open' || !bytes.length || bytes.length > FILE_CHUNK || pending.size >= window || sent >= 2147483647 || channel.bufferedAmount + bytes.length + 4 > DATA_BUFFER) return Promise.reject(failure('文件发送窗口暂不可用'));
+      if (ended || stopping || channel.readyState !== 'open' || !bytes.length || bytes.length > FILE_CHUNK || pending.size >= window || sent >= 2147483647 || channel.bufferedAmount + bytes.length + 4 > DATA_BUFFER) return Promise.reject(stopping || failure('文件发送窗口暂不可用'));
       const seq=++sent, frame=new Uint8Array(bytes.length+4);new DataView(frame.buffer).setUint32(0,seq);frame.set(bytes,4);
       return new Promise((resolve,reject)=>{
-        pending.set(seq,{resolve,reject,started:now(),timer:setTimeout(()=>close(failure('文件分块确认超时')),15000)});
+        pending.set(seq,{resolve,reject,started:now(),timer:setTimeout(()=>timeout('文件分块确认超时', 'file_ack_timeout'),15000)});
         try{channel.send(frame);}catch(err){close(err);}
       });
     },

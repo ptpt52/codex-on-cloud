@@ -3,6 +3,26 @@ import assert from 'node:assert/strict';
 import { createFileWire,sendFileChunks,FILE_CHUNK } from '../panel/public/file-wire.js';
 import { createFileClient } from '../panel/public/file-client.js';
 class Wire extends EventTarget{readyState='open';bufferedAmount=0;send(data){queueMicrotask(()=>{if(this.peer.readyState==='open')this.peer.dispatchEvent(new MessageEvent('message',{data:typeof data==='string'?data:data.slice().buffer}));});}close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}}
+for (const buffer of [false, true]) test(`file ${buffer ? 'buffer' : 'ACK'} timeout quiesces data while preserving bounded control and validating late ACKs`, async t => {
+ t.mock.timers.enable({ apis: ['setTimeout'] });
+ const channel = new Wire(), controls = [], failures = [], timeouts = [];
+ channel.send = data => { if (typeof data === 'string') controls.push(JSON.parse(data)); };
+ const wire = createFileWire(channel, { control() {}, chunk() {}, failed: err => failures.push(err), timedOut: err => timeouts.push(err) });
+ const send = value => channel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) }));
+ const first = wire.data(new Uint8Array(1)); void first.catch(() => {});
+ if (buffer) send({ type: 'ack', seq: 1 });
+ channel.bufferedAmount = buffer ? 510 * 1024 : 0;
+ const pending = buffer ? wire.waitWritable(FILE_CHUNK) : first; void pending.catch(() => {});
+ t.mock.timers.tick(15000);
+ const code = buffer ? 'file_buffer_timeout' : 'file_ack_timeout';
+ await assert.rejects(pending, { code, outcome: 'unknown' });
+ assert.equal(timeouts.length, 1); assert.equal(failures.length, 0); assert.equal(channel.readyState, 'open'); assert.equal(wire.ready, false);
+ await assert.rejects(wire.data(new Uint8Array(1)), { code });
+ channel.bufferedAmount = 0; wire.send({ type: 'cancel', id: 1 }); assert.equal(controls.at(-1).type, 'cancel');
+ if (!buffer) { send({ type: 'ack', seq: 1 }); assert.equal(failures.length, 0); }
+ send({ type: 'ack', seq: 1 }); assert.equal(failures.length, 1, 'replayed ACK remains a protocol failure during retirement');
+ t.mock.timers.tick(300000); assert.equal(timeouts.length, 1);
+});
 test('file metrics separate chunk acknowledgement latency and buffer waits without changing credits or retaining prior transfers', async () => {
  const a=new Wire(),b=new Wire();a.peer=b;b.peer=a;let now=10;
  const wire=createFileWire(a,{control(){},chunk(){},failed(){}},()=>now);

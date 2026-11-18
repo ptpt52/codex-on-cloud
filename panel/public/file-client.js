@@ -1,4 +1,4 @@
-import { createFileWire, createFileBuffer, sendFileChunks, FILE_CHUNK, FILE_MAX } from './file-wire.js';
+import { createFileWire, createFileBuffer, sendFileChunks, FILE_CHUNK, FILE_MAX, fileTimeoutCode } from './file-wire.js';
 import { uploadOptions, uploadResult, recoverableFileStatus } from './file-upload.js';
 import { FORWARD_CLIENTS } from './forward-platform.js';
 import { validTransferWindow } from './transfer-window.js';
@@ -10,7 +10,7 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
  let active,id=0,recoverable=false,cancelingId=0,cancelTimer;
  const unknown=()=>Object.assign(Error('文件直连已断开，结果未知；请检查文件状态后手动重试'),{outcome:'unknown'});
  const settle=(err,result)=>{if(!active)return;const entry=active;active=null;clearTimeout(entry.timer);entry.signal?.removeEventListener('abort',entry.abort);err?entry.reject(err):entry.resolve(result);};
- const wire=createFileWire(channel,{failed(err){clearTimeout(cancelTimer);settle(err);failed(recoverable);},chunk(bytes){
+ const wire=createFileWire(channel,{timedOut(err){if(active)cancel(active,err);else wire.close(err);},failed(err){clearTimeout(cancelTimer);settle(err);failed(recoverable);},chunk(bytes){
   if(cancelingId)return;
   if(!active||active.direction!=='download'||!active.started||active.received+bytes.length>active.size||active.received+bytes.length>FILE_MAX)throw unknown();
   active.received+=bytes.length;active.buffer.append(bytes);active.progressAt=performance.now();active.progress?.(active.received,active.size);
@@ -20,7 +20,7 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
   if(value.type==='error'){
    recoverable=value.recoverable===true&&recoverableFileStatus(value.status);
    const outcome=['rejected','unknown'].includes(value.outcome)?value.outcome:[404,409,410,412,413,429,507].includes(value.status)?'rejected':'unknown';
-   settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome,...(['file_busy','file_exists'].includes(value.fileCode)?{fileCode:value.fileCode}:{})}));wire.close();return;
+   settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome,...(fileTimeoutCode(value.code)?{code:value.code}:{}),...(['file_busy','file_exists'].includes(value.fileCode)?{fileCode:value.fileCode}:{})}));wire.close();return;
   }
   if(value.type==='ready'){
    if(entry.started||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_MAX||(entry.direction==='upload'||entry.helper)&&value.size!==entry.size)throw unknown();
@@ -55,7 +55,7 @@ export function createFileClient(channel, failed = () => {}, { window = 4 } = {}
   // Local File/provider failures follow the same bounded cancellation handshake
   // as a user abort. The server must classify this file channel as recoverable
   // before it closes, preserving the shared control peer and admitted RPCs.
-  recoverable=true;cancelingId=entry.id;settle(reason);
+  recoverable=true;cancelingId=entry.id;wire.quiesce(reason);settle(reason);
   cancelTimer=setTimeout(()=>wire.close(),1500);
   try{wire.send({type:'cancel',id:entry.id});}catch{wire.close();}
  }

@@ -38,6 +38,8 @@ export const TRACE_REASONS = Object.freeze({
   'http-status': '请求返回错误状态',
   file_busy: '文件服务正在处理另一项上传或删除', file_exists: '已有同名文件，未覆盖',
   file_read_failed: '本机文件读取失败，请重新选择文件',
+  file_ack_timeout: '文件分块确认超时，请检查文件状态后手动重试',
+  file_buffer_timeout: '文件发送缓冲超时，请检查文件状态后手动重试',
   'file-progress': '文件数据或确认仍在推进，连接保持活跃',
   'handoff-busy': '另一项连接切换仍在处理', 'input-unconfirmed': '等待已发送数据确认，不重发输入', 'output-draining': '等待终端完成当前画面',
 });
