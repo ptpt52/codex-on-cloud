@@ -249,7 +249,7 @@ func (p *transportPool) offline(conn *websocket.Conn) {
 func (p *transportPool) session(conn *websocket.Conn, healthy func()) error {
 	stop := context.AfterFunc(p.ctx, func() { conn.Close() })
 	defer stop()
-	kind, data, err := conn.ReadMessage()
+	kind, data, err := readHandshake(conn, time.Now().Add(5*time.Second))
 	if err != nil {
 		return connectionFailure(err)
 	}

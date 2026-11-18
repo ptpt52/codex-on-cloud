@@ -361,7 +361,7 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 		conn.Close()
 	})
 	defer stop()
-	kind, data, err := conn.ReadMessage()
+	kind, data, err := readHandshake(conn, time.Now().Add(5*time.Second))
 	if err != nil {
 		return connectionFailure(err)
 	}

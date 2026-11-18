@@ -240,8 +240,9 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 	if !active.attach(tcp, ws) {
 		return nil
 	}
+	readyDeadline := time.Now().Add(dataReadyTimeout)
 	if usingDirect {
-		ws.SetReadDeadline(time.Now().Add(dataReadyTimeout))
+		ws.SetReadDeadline(readyDeadline)
 		ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		// The target-open record ends preflight. Failure after this point never
 		// reconnects the same TCP stream through another transport.
@@ -249,7 +250,7 @@ func proxy(ctx context.Context, server *url.URL, token string, tcp *net.TCPConn,
 			return streamFailure(err, "relay_ready_timeout")
 		}
 	}
-	kind, first, err := ws.ReadMessage()
+	kind, first, err := readHandshake(ws, readyDeadline)
 	if err != nil {
 		return streamFailure(err, "relay_ready_timeout")
 	}
@@ -389,8 +390,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 	if !state.deadline.IsZero() && state.deadline.Before(handshakeDeadline) {
 		handshakeDeadline = state.deadline
 	}
-	control.SetReadDeadline(handshakeDeadline)
-	ready, err := readForwardReady(control)
+	ready, err := readForwardReady(control, handshakeDeadline)
 	if err != nil {
 		return err
 	}
@@ -439,8 +439,7 @@ func runSession(ctx context.Context, server *url.URL, token string, state *resum
 		control.SetWriteDeadline(time.Now().Add(time.Second))
 		record, _ := json.Marshal(map[string]string{"type": "error", "code": code})
 		if control.WriteMessage(websocket.TextMessage, record) == nil {
-			control.SetReadDeadline(time.Now().Add(time.Second))
-			control.ReadMessage()
+			readHandshake(control, time.Now().Add(time.Second))
 		}
 		return failure(code)
 	}

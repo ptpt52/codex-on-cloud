@@ -73,8 +73,12 @@ func (m *managementLink) close(stopping bool) {
 	conn.Close()
 }
 
-func readForwardReady(conn *websocket.Conn) (readyMessage, error) {
-	kind, data, err := conn.ReadMessage()
+func readForwardReady(conn *websocket.Conn, until time.Time) (readyMessage, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	if !until.IsZero() && until.Before(deadline) {
+		deadline = until
+	}
+	kind, data, err := readHandshake(conn, deadline)
 	var ready readyMessage
 	if err != nil {
 		return ready, connectionFailure(err)
@@ -110,7 +114,7 @@ func confirmListening(conn *websocket.Conn, ready readyMessage, until time.Time)
 	if err := conn.WriteMessage(websocket.TextMessage, bytes); err != nil {
 		return connectionFailure(err)
 	}
-	kind, data, err := conn.ReadMessage()
+	kind, data, err := readHandshake(conn, deadline)
 	if err != nil {
 		return connectionFailure(err)
 	}
@@ -151,9 +155,7 @@ func resumeManagement(ctx context.Context, serverURLValue *url.URL, state *resum
 			return nil, err
 		}
 		stop := context.AfterFunc(ctx, func() { conn.Close() })
-		deadline := minDeadline(time.Now().Add(5*time.Second), state.deadline)
-		conn.SetReadDeadline(deadline)
-		next, err := readForwardReady(conn)
+		next, err := readForwardReady(conn, state.deadline)
 		if err == nil {
 			err = state.accept(next)
 		}
@@ -179,11 +181,4 @@ func resumeManagement(ctx context.Context, serverURLValue *url.URL, state *resum
 		}
 	}
 	return nil, failure("resume_expired")
-}
-
-func minDeadline(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
 }

@@ -54,15 +54,16 @@ func reverseProxy(ctx context.Context, server *url.URL, ready readyMessage, id s
 	defer ws.Close()
 	stop := context.AfterFunc(ctx, func() { ws.Close() })
 	defer stop()
+	readyDeadline := time.Now().Add(dataReadyTimeout)
 	ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	ws.SetReadDeadline(time.Now().Add(dataReadyTimeout))
+	ws.SetReadDeadline(readyDeadline)
 	if usingDirect {
 		record, _ := json.Marshal(map[string]string{"type": "open", "id": id})
 		if err := ws.WriteMessage(websocket.TextMessage, record); err != nil {
 			return streamFailure(err, "relay_ready_timeout")
 		}
 	}
-	kind, bytes, err := ws.ReadMessage()
+	kind, bytes, err := readHandshake(ws, readyDeadline)
 	if err != nil {
 		return streamFailure(err, "relay_ready_timeout")
 	}
