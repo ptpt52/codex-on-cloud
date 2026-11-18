@@ -6,7 +6,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSelfhostCenter, CENTER_REQUEST_LIMITS } from '../selfhost/center.mjs';
+import { createSelfhostCenter, CENTER_REQUEST_LIMITS, CENTER_CONNECTION_LIMITS } from '../selfhost/center.mjs';
 import { JSON_BODY_LIMITS } from '../panel/json-body.mjs';
 import { joinNode, leaveNode, nodeDoctor } from '../selfhost/node.mjs';
 import { centerRequest } from '../panel/center-http.mjs';
@@ -69,6 +69,107 @@ function incompleteCenterBody(h, path) {
   return { request, response };
 }
 
+function rawCenterRequest(t, h, path, { method = 'GET', headers = {}, body = '' } = {}) {
+  const socket = net.createConnection({ host: '127.0.0.1', port: h.port });
+  const closed = new Promise(resolve => socket.once('close', resolve));
+  t.after(() => socket.destroy());
+  const response = new Promise((resolve, reject) => {
+    let data = '';
+    socket.once('error', reject);
+    socket.once('close', () => reject(Error('connection closed before response headers')));
+    socket.setTimeout(3000, () => socket.destroy(Error('response deadline')));
+    const receive = chunk => {
+      data += chunk.toString();
+      const end = data.indexOf('\r\n\r\n'); if (end < 0) return;
+      socket.off('data', receive); socket.setTimeout(0);
+      const lines = data.slice(0, end).split('\r\n');
+      resolve({ status: Number(lines[0].split(' ')[1]), headers: Object.fromEntries(lines.slice(1).map(line => { const at = line.indexOf(':'); return [line.slice(0, at).toLowerCase(), line.slice(at + 1).trim()]; })) });
+    };
+    socket.on('data', receive);
+    socket.once('connect', () => socket.write(`${method} ${path} HTTP/1.1\r\nHost: 127.0.0.1:${h.port}\r\nConnection: keep-alive\r\n${Object.entries(headers).map(([key, value]) => `${key}: ${value}\r\n`).join('')}\r\n${body}`));
+  });
+  return { socket, closed, response };
+}
+
+test('center rejects framed GET/HEAD bodies before static, redirect, public or internal dispatch', { timeout: 10000 }, async t => {
+  const h = await setup(t); let routes = 0;
+  h.center.registry.routeAllowed = async () => { routes++; return true; };
+  for (const path of ['/healthz', '/api/public/nodes', '/', '/admin', '/internal/route-auth?path=/node/capacity/']) {
+    for (const method of ['GET', 'HEAD']) {
+      for (const framing of [{ 'Content-Length': 1048576 }, { 'Transfer-Encoding': 'chunked' }]) {
+        const item = rawCenterRequest(t, h, path, { method, headers: framing, body: framing['Transfer-Encoding'] ? '1\r\nx\r\n' : 'x' });
+        const response = await item.response;
+        assert.equal(response.status, 400); assert.equal(response.headers.connection, 'close'); await item.closed;
+      }
+    }
+  }
+  assert.equal(routes, 0);
+  assert.equal((await h.request('/healthz', { headers: { 'content-length': '0' } })).status, 200);
+});
+
+test('successful center logout flushes its result and closes an ignored incomplete request body', { timeout: 5000 }, async t => {
+  const h = await setup(t); await h.login();
+  let request, closed;
+  const response = await new Promise((resolve, reject) => {
+    request = http.request(h.origin + '/admin/api/logout', { method: 'POST', headers: { origin: h.origin, cookie: h.cookie, 'x-csrf-token': h.csrf, 'content-length': 1048576 } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.once('error', reject);
+      res.once('end', () => resolve({ status: res.statusCode, connection: res.headers.connection, value: JSON.parse(Buffer.concat(chunks)) }));
+    });
+    t.after(() => request.destroy()); request.once('error', reject);
+    closed = new Promise(resolveClose => request.once('socket', socket => socket.once('close', resolveClose)));
+    request.write('x');
+  });
+  assert.deepEqual(response, { status: 200, connection: 'close', value: { ok: true } }); await closed;
+  assert.equal((await h.request('/admin/api/me')).status, 401);
+});
+
+test('public keep-alive connection saturation preserves internal node heartbeat and route capacity', { timeout: 15000 }, async t => {
+  const h = await onlineCenter(t); h.center.server.keepAliveTimeout = 15000;
+  h.center.server.closeIdleConnections(); await new Promise(resolve => setImmediate(resolve));
+  const held = [];
+  for (let index = 0; index < CENTER_CONNECTION_LIMITS.public; index++) {
+    const item = rawCenterRequest(t, h, '/healthz'); held.push(item);
+    assert.equal((await item.response).status, 200);
+  }
+  const overflow = rawCenterRequest(t, h, '/healthz'), rejected = await overflow.response;
+  assert.equal(rejected.status, 503); assert.equal(rejected.headers.connection, 'close'); await overflow.closed;
+  assert.equal((await h.route()).status, 204);
+  assert.equal((await (await h.ping()).json()).reject, false);
+  held[0].socket.destroy(); await held[0].closed; await new Promise(resolve => setImmediate(resolve));
+  const recovered = rawCenterRequest(t, h, '/healthz'); assert.equal((await recovered.response).status, 200);
+});
+
+test('internal keep-alive connection capacity is bounded independently of public requests', { timeout: 10000 }, async t => {
+  const h = await onlineCenter(t); h.center.server.keepAliveTimeout = 15000;
+  h.center.server.closeIdleConnections(); await new Promise(resolve => setImmediate(resolve));
+  for (let index = 0; index < CENTER_CONNECTION_LIMITS.internal; index++) {
+    const item = rawCenterRequest(t, h, '/internal/route-auth?path=/node/capacity/');
+    assert.equal((await item.response).status, 204);
+  }
+  const overflow = rawCenterRequest(t, h, '/internal/route-auth?path=/node/capacity/'), rejected = await overflow.response;
+  assert.equal(rejected.status, 503); assert.equal(rejected.headers.connection, 'close'); await overflow.closed;
+  assert.equal((await h.request('/healthz')).status, 200);
+});
+
+test('center reclassifies reused proxy connections and releases their last class on close', { timeout: 15000 }, async t => {
+  const h = await onlineCenter(t), agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  t.after(() => agent.destroy()); h.center.server.keepAliveTimeout = 15000;
+  h.center.server.closeIdleConnections(); await new Promise(resolve => setImmediate(resolve));
+  const request = path => new Promise((resolve, reject) => {
+    const req = http.get(h.origin + path, { agent }, res => { const socket = res.socket; res.resume(); res.once('end', () => resolve({ status: res.statusCode, socket })); res.once('error', reject); });
+    req.once('error', reject);
+  });
+  const first = await request('/healthz'); assert.equal(first.status, 200);
+  for (let index = 1; index < CENTER_CONNECTION_LIMITS.public; index++) assert.equal((await rawCenterRequest(t, h, '/healthz').response).status, 200);
+  const internal = await request('/internal/route-auth?path=/node/capacity/');
+  assert.equal(internal.status, 204); assert.equal(internal.socket, first.socket);
+  assert.equal((await rawCenterRequest(t, h, '/healthz').response).status, 200);
+  assert.equal((await request('/healthz')).status, 503);
+  // Rejection must release the previous internal classification as well.
+  await new Promise(resolve => setImmediate(resolve));
+  for (let index = 0; index < CENTER_CONNECTION_LIMITS.internal; index++) assert.equal((await rawCenterRequest(t, h, '/internal/route-auth?path=/node/capacity/').response).status, 204);
+});
+
 test('public JSON saturation preserves separate plugin bodies and internal route authorization', { timeout: 5000 }, async t => {
   const h = await onlineCenter(t), pending = [];
   try {
@@ -126,6 +227,7 @@ test('incomplete plugin bodies cannot consume public JSON or internal GET admiss
 
 test('internal operation admission is bounded without consuming public capacity', { timeout: 5000 }, async t => {
   const h = await onlineCenter(t);
+  h.center.server.closeIdleConnections(); await new Promise(resolve => setImmediate(resolve));
   let release, entered = 0, ready, timeout;
   const gate = new Promise(resolve => { release = resolve; }), admitted = new Promise(resolve => { ready = resolve; });
   const routeAllowed = h.center.registry.routeAllowed.bind(h.center.registry);

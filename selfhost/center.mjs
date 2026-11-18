@@ -12,7 +12,7 @@ import { clientAddress, loopbackAddress } from './client-address.mjs';
 import { frpsProxyProbe } from './frps-admin.mjs';
 import { HELP_PAGE_CSP, readHelpPage } from './help-page.mjs';
 import { loadedBackendVersion } from '../native/backend-version.mjs';
-import { createJSONBodies, closeUnreadBody } from '../panel/json-body.mjs';
+import { createJSONBodies, closeUnreadBody, hasRequestBody } from '../panel/json-body.mjs';
 
 const backendVersion = await loadedBackendVersion('center');
 
@@ -27,9 +27,11 @@ const ASSETS = new Map([
 ]);
 const BODY_LIMIT = 16 * 1024, PLUGIN_LIMIT = 128 * 1024;
 export const CENTER_REQUEST_LIMITS = Object.freeze({ public: 32, internal: 32 });
+export const CENTER_CONNECTION_LIMITS = Object.freeze({ total: 256, public: 224, internal: 32 });
 
 function reply(res, status, value, headers = {}) {
   if (res.headersSent || res.destroyed) return;
+  closeUnreadBody(res.req, res);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(value));
 }
@@ -75,6 +77,18 @@ export async function createSelfhostCenter({
   // and Caddy's internal route authorization. Both classes have fixed bounds.
   const bodies = { public: createJSONBodies(), internal: createJSONBodies() };
   const requests = { public: 0, internal: 0 }, admitted = new WeakMap();
+  const connections = { public: new Set(), internal: new Set() }, connectionKinds = new WeakMap();
+  const admitConnection = (socket, kind) => {
+    const previous = connectionKinds.get(socket);
+    if (previous === kind) return true;
+    if (connections[kind].size >= CENTER_CONNECTION_LIMITS[kind]) return false;
+    if (previous) connections[previous].delete(socket);
+    else socket.once('close', () => {
+      connections[connectionKinds.get(socket)].delete(socket); connectionKinds.delete(socket);
+    });
+    connections[kind].add(socket); connectionKinds.set(socket, kind);
+    return true;
+  };
   const jsonBody = (req, limit) => bodies[admitted.get(req)].read(req, limit);
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
@@ -117,6 +131,7 @@ export async function createSelfhostCenter({
 
   async function route(req, res) {
     if (!hostAllowed(req)) throw selfhostError(400, '访问域名未配置');
+    if (['GET', 'HEAD'].includes(req.method) && hasRequestBody(req)) throw selfhostError(400, '此请求不接受正文');
     const url = new URL(req.url, 'http://internal'); let path = url.pathname;
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('referrer-policy', 'same-origin');
@@ -230,19 +245,24 @@ export async function createSelfhostCenter({
   }
 
   const server = http.createServer((req, res) => {
-    const reject = error => {
-      closeUnreadBody(req, res);
+    const reject = (error, close = false) => {
+      if (close) {
+        res.shouldKeepAlive = false; res.setHeader('connection', 'close');
+        res.once('finish', () => req.destroy());
+      }
       if (!error.status) console.error(`[selfhost] ${error.name}: request failed`);
       reply(res, error.status || 503, { error: error.status ? error.message : '中心服务暂时不可用', outcome: error.outcome || (['GET', 'HEAD'].includes(req.method) ? 'rejected' : 'unknown') });
     };
     let path;
-    try { path = new URL(req.url, 'http://internal').pathname; } catch { reject(selfhostError(400, '请求路径无效')); return; }
-    const kind = ['/internal/frp-plugin', '/internal/route-auth'].includes(path) ? 'internal' : 'public';
-    if (closing || requests[kind] >= CENTER_REQUEST_LIMITS[kind]) { reject(selfhostError(503, '中心请求繁忙或正在关闭，请稍后重试')); return; }
+    try { path = new URL(req.url, 'http://internal').pathname; } catch { reject(selfhostError(400, '请求路径无效'), true); return; }
+    // Keep idle sockets charged, and reclassify Caddy's reused connections for
+    // each request. Only trusted local internal routes can use reserved slots.
+    const kind = ['/internal/frp-plugin', '/internal/route-auth'].includes(path) && loopbackAddress(req.socket.remoteAddress) && hostAllowed(req) ? 'internal' : 'public';
+    if (closing || !admitConnection(req.socket, kind) || requests[kind] >= CENTER_REQUEST_LIMITS[kind]) { reject(selfhostError(503, '中心请求繁忙或正在关闭，请稍后重试'), true); return; }
     requests[kind]++; admitted.set(req, kind);
     void route(req, res).catch(reject).finally(() => { requests[kind]--; admitted.delete(req); });
   });
-  server.requestTimeout = 30_000; server.headersTimeout = 10_000; server.maxHeadersCount = 64; server.maxConnections = 256;
+  server.requestTimeout = 30_000; server.headersTimeout = 10_000; server.maxHeadersCount = 64; server.maxConnections = CENTER_CONNECTION_LIMITS.total;
   timer = setInterval(() => { if (!closing) void registry.sweep().catch(() => {}); }, 5000); timer.unref();
   return {
     server, registry,
