@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { forwardChannel } from '../panel/forward-channel.mjs';
+import { forwardChannel, DIRECT_CLOSE_MS } from '../panel/forward-channel.mjs';
+import { createFlowBudget } from '../panel/flow-budget.mjs';
 import { guardForwardSCTP, forwardNegotiationFailure } from '../panel/forward-rtc.mjs';
 
 test('direct diagnostics distinguish UDP reachability, encrypted handshake and channel authorization', () => {
@@ -23,6 +24,41 @@ test('direct streams preserve bytes and FIN ordering while a four-record ACK win
   assert.deepEqual(wire.packets.slice(0,5),Array(5).fill(payload));assert.equal(wire.readyState,'open');
   wire.onMessage.emit(ack(6));assert.equal(wire.readyState,'closed');assert.equal(wire.onMessage.size,0);
   await Promise.resolve();assert.equal(callbacks,6);
+});
+
+test('a closing stream releases queued work and peer credit at its total deadline despite partial ACK progress', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const budget = createFlowBudget(), raw = channel(), otherRaw = channel(), results = [];
+  const closing = forwardChannel(raw, { budget }), other = forwardChannel(otherRaw, { budget });
+  let closes = 0; closing.on('close', () => closes++);
+  try {
+    for (let n = 0; n < 6; n++) closing.send(Buffer.alloc(1024), error => results.push(error ? 'closed' : 'sent'));
+    closing.close(); closing.close();
+    assert.equal(closing.readyState, 2); assert.equal(budget.used, 4096);
+    t.mock.timers.tick(DIRECT_CLOSE_MS - 1); assert.equal(raw.readyState, 'open');
+    raw.onMessage.emit(ack(1)); // Opens one slot but must not renew close time.
+    assert.equal(raw.packets.length, 5); assert.equal(closing.readyState, 2);
+    t.mock.timers.tick(1);
+    assert.equal(closing.readyState, 3);
+    assert.equal(budget.used, 0); assert.equal(closes, 1);
+    other.send(Buffer.from('independent')); assert.equal(other.readyState, 1);
+    assert.equal(otherRaw.packets[0].toString(), 'independent');
+  } finally { closing.terminate(); other.terminate(); }
+  await Promise.resolve(); assert.deepEqual(results, ['sent', 'sent', 'sent', 'sent', 'sent', 'closed']);
+});
+
+test('closing has an absolute ACK deadline and successful draining cancels its timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const budget = createFlowBudget(), raw = channel(), socket = forwardChannel(raw, { budget });
+  let closes = 0; socket.on('close', () => closes++);
+  socket.send(Buffer.alloc(1024)); socket.close();
+  t.mock.timers.tick(DIRECT_CLOSE_MS - 1); assert.equal(socket.readyState, 2);
+  t.mock.timers.tick(1); assert.equal(socket.readyState, 3); assert.equal(budget.used, 0);
+  assert.equal(raw.onMessage.size, 0); assert.equal(closes, 1);
+  const timelyRaw = channel(), timely = forwardChannel(timelyRaw); let timelyCloses = 0;
+  timely.on('close', () => timelyCloses++); timely.send('last'); timely.close();
+  timelyRaw.onMessage.emit(ack(1)); assert.equal(timely.readyState, 3);
+  t.mock.timers.tick(DIRECT_CLOSE_MS); assert.equal(timelyCloses, 1);
 });
 
 test('a paused target withholds ACK credit and cannot accumulate more than four incoming records',()=>{

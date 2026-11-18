@@ -4,11 +4,12 @@ import { validTransferWindow } from './public/transfer-window.js';
 // Ordered/reliable SCTP preserves message boundaries. The negotiated window
 // bounds each receiver; an optional shared budget bounds the entire peer.
 export const DIRECT_WINDOW = 4, DIRECT_CHUNK = 16384, DIRECT_BUFFER = 256 * 1024;
+export const DIRECT_CLOSE_MS = 30000;
 export function forwardChannel(channel, { transport = 'direct', shared = false, window = DIRECT_WINDOW, budget } = {}) {
   if (!validTransferWindow(window)) throw Error('Invalid forward window');
   const socket = new EventEmitter(), subscriptions = [], outgoing = [], incoming = [];
   const owner = Symbol(), held = new Map();
-  let ended = false, paused = false, closing = false, queued = 0, sent = 0, acked = 0, received = 0, delivered = 0, credited = 0;
+  let ended = false, paused = false, closing = false, closeTimer, queued = 0, sent = 0, acked = 0, received = 0, delivered = 0, credited = 0;
   Object.defineProperties(socket, {
     readyState: { get: () => ended ? 3 : closing ? 2 : channel.readyState === 'open' ? 1 : 0 },
     bufferedAmount: { get: () => queued + channel.bufferedAmount },
@@ -18,6 +19,7 @@ export function forwardChannel(channel, { transport = 'direct', shared = false, 
   function finish(graceful = false) {
     if (ended) return;
     ended = true;
+    clearTimeout(closeTimer);
     for (const subscription of subscriptions) subscription.unSubscribe();
     for (const item of outgoing.splice(0)) queueMicrotask(() => item.callback?.(new Error('Direct channel closed')));
     budget?.forget(owner); if (budget) budget.release([...held.values()].reduce((sum, bytes) => sum + bytes, 0), [...held.values()].reduce((sum, bytes) => sum + budget.bulkBytes(bytes), 0)); held.clear();
@@ -70,7 +72,12 @@ export function forwardChannel(channel, { transport = 'direct', shared = false, 
   socket.close = (code = 1000, reason = '') => {
     if (ended || closing) return;
     if (code !== 1000) socket.send(JSON.stringify({ type: 'error', code: reason || 'protocol_error' }));
-    closing = true; flush();
+    if (ended) return;
+    closing = true;
+    // Give final data/FIN their normal ordered credit drain, with one total
+    // deadline. Partial ACK progress cannot retain a closed target forever.
+    closeTimer = setTimeout(() => finish(), DIRECT_CLOSE_MS).unref();
+    flush();
   };
   subscriptions.push(channel.onMessage.subscribe(value => {
     if (ended) return;
