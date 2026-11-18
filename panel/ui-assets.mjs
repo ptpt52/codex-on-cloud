@@ -11,6 +11,8 @@ export const NOVNC_VERSION = '1.7.0';
 export const STATIC_CACHE = 'private, max-age=86400, immutable';
 export const UI_LIMITS = Object.freeze({ file: 4 * 1024 * 1024, total: 16 * 1024 * 1024, generations: 4 });
 export const ASSETS = new Map([
+  ['/novnc-bundle.js', ['vendor/novnc-bundle.js', 'text/javascript; charset=utf-8']],
+  ['/novnc-LICENSES.txt', ['vendor/novnc-LICENSES.txt', 'text/plain; charset=utf-8']],
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/access-ui.js', ['access-ui.js', 'text/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],

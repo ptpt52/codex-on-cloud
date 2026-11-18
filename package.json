@@ -3,7 +3,9 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "shell:setup": "node scripts/setup-shell.mjs",
@@ -48,6 +50,7 @@
     "test:supervision": "node test/desktop-supervision-native.mjs",
     "test:recovery": "node test/recovery-native.mjs",
     "test:terminal-only": "node test/terminal-only-native.mjs",
+    "build:novnc": "node scripts/build-novnc.mjs",
     "build:forward": "node scripts/build-forward.mjs",
     "test:gateway:worker": "node test/gateway-worker-native.mjs",
     "test:serial": "node test/serial-native.mjs",
@@ -66,6 +69,11 @@
     "werift": "0.26.0",
     "ws": "8.22.1"
   },
-  "optionalDependencies": { "@novnc/novnc": "1.7.0" },
-  "devDependencies": { "@playwright/test": "1.64.1" }
+  "optionalDependencies": {
+    "@novnc/novnc": "1.7.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "esbuild": "0.25.12"
+  }
 }

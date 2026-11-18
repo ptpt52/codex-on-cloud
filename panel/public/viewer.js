@@ -1,7 +1,7 @@
 import { createTraceReporter, connectionProgress } from '/connection-trace.js';
 import { nodeURL } from '/node-scope.js';
 import { rtcIceServers } from '/rtc-ice.js';
-import RFB from './novnc/core/rfb.js';
+import RFB from '/novnc-bundle.js';
 import { desktopTransport, canTryDirect } from './rtc.js';
 import { createDesktopPointer } from './desktop-pointer.js';
 import { createFrameHold } from './frame-hold.js';

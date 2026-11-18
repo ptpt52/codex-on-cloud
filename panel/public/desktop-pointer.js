@@ -1,4 +1,4 @@
-import { releaseCapture } from './novnc/core/util/events.js';
+import { releaseCapture } from '/novnc-bundle.js';
 
 // Relative touch input is translated into ordinary canvas mouse events. noVNC
 // retains its normal RFB encoder and transport; no second input queue is used.

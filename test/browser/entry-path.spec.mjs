@@ -65,7 +65,8 @@ test('a desktop node subpath keeps noVNC dependencies and RTC modules inside one
     await page.goto(app.config.origin + '/node/desk/'); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('桌面在线', { timeout: 15000 });
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
-    expect(scripts.some(url => url.pathname.includes('/desktop/novnc/1.7.0/core/rfb.js'))).toBe(true);
+    expect(scripts.filter(url => url.pathname.endsWith('/novnc-bundle.js'))).toHaveLength(1);
+    expect(scripts.some(url => url.pathname.includes('/desktop/novnc/'))).toBe(false);
     for (const url of scripts) expect(url.pathname.includes('/desktop/novnc/1.7.0/') || url.searchParams.get('ui') === app.panel.uiRevision, url.pathname).toBe(true);
     expect(escaped).toEqual([]); expect(errors).toEqual([]); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
