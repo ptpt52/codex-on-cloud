@@ -30,7 +30,7 @@ import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
 import { createServiceRTC } from './service-rtc.mjs';
 import { attachServiceFiles } from './service-files.mjs';
-import { createUIAssets } from './ui-assets.mjs';
+import { createUIAssets, NOVNC_VERSION, STATIC_CACHE } from './ui-assets.mjs';
 import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
@@ -761,19 +761,22 @@ export async function createPanel(config) {
       if (path.startsWith('/desktop/novnc/')) {
         let relative;
         try { relative = decodeURIComponent(path.slice('/desktop/novnc/'.length)); } catch { throw new HttpError(400, '资源路径无效'); }
+        const pinned = relative.startsWith(NOVNC_VERSION + '/');
+        if (pinned) relative = relative.slice(NOVNC_VERSION.length + 1);
         if (!/^(core|vendor)\/[a-zA-Z0-9_./-]+\.js$/.test(relative)) throw new HttpError(404, '资源不存在');
         const file = resolve(NOVNC, relative);
         if (!file.startsWith(NOVNC + sep) || relative.split('/').includes('..')) throw new HttpError(404, '资源不存在');
         let bytes;
         try { bytes = await readFile(file); } catch { throw new HttpError(404, '资源不存在'); }
-        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': bytes.length, 'cache-control': 'no-store' });
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': bytes.length, 'cache-control': pinned ? STATIC_CACHE : 'no-store' });
         return res.end(req.method === 'HEAD' ? undefined : bytes);
       }
     }
     const asset = assets.get(path, url.searchParams.get('ui'));
     if (asset && ['GET', 'HEAD'].includes(req.method)) {
       res.setHeader('content-security-policy', `default-src 'self'; script-src 'self' 'sha256-${asset.scriptHash}'; style-src 'self'${path.startsWith('/terminal/') ? " 'unsafe-inline'" : ''}; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'`);
-      res.writeHead(200, { 'content-type': asset.type, 'content-length': asset.bytes.length, 'cache-control': 'no-store', 'x-ui-revision': asset.revision });
+      const pinned = url.searchParams.get('ui') === asset.revision && !asset.type.startsWith('text/html') && path !== '/sw.js';
+      res.writeHead(200, { 'content-type': asset.type, 'content-length': asset.bytes.length, 'cache-control': pinned ? STATIC_CACHE : 'no-store', 'x-ui-revision': asset.revision });
       return res.end(req.method === 'HEAD' ? undefined : asset.bytes);
     }
     throw new HttpError(404, '资源不存在');

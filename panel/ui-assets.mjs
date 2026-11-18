@@ -7,6 +7,8 @@ import { normalizeEntryBasePath } from './entry-path.mjs';
 import { createLoginIdentity, renderLoginForm } from './login-identity.mjs';
 
 const PUBLIC = new URL('./public/', import.meta.url);
+export const NOVNC_VERSION = '1.7.0';
+export const STATIC_CACHE = 'private, max-age=86400, immutable';
 export const UI_LIMITS = Object.freeze({ file: 4 * 1024 * 1024, total: 16 * 1024 * 1024, generations: 4 });
 export const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -126,6 +128,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
       }
       const hash = createHash('sha256');
       hash.update('login-identity:v1:' + JSON.stringify(login));
+      hash.update('novnc:' + NOVNC_VERSION);
       if (nodeId) hash.update('node:' + nodeId);
       if (gateway) hash.update('gateway:v1');
       if (gatewayOrigin) hash.update('gateway-origin:' + gatewayOrigin);
@@ -137,7 +140,15 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
       // Reject a deployment still writing files; publish only a complete snapshot.
       for (const [route, [name]] of ASSETS) if (!(await boundedRead(new URL(name, root))).equals(raw.get(route).bytes)) throw Error('资源仍在修改，未发布；请完成文件更新后重试');
       const publicAssetPath = route => entryBasePath === '/' ? route : route === '/' ? entryBasePath : entryBasePath.slice(0, -1) + route;
-      const imports = Object.fromEntries([...raw.keys()].filter(route => route.endsWith('.js') && route !== '/sw.js').map(route => [route, publicAssetPath(route) + '?ui=' + revision]));
+      const imports = Object.fromEntries([...raw.keys()].filter(route => route.endsWith('.js') && route !== '/sw.js').flatMap(route => {
+        const value = publicAssetPath(route) + '?ui=' + revision;
+        return [[route, value], [publicAssetPath(route), value]];
+      }));
+      // A versioned prefix also pins noVNC's relative transitive imports. Keep
+      // both aliases so node subpaths share the same coherent module snapshot.
+      for (const prefix of ['/desktop/novnc/', publicAssetPath('/desktop/novnc/')]) imports[prefix] = publicAssetPath('/desktop/novnc/' + NOVNC_VERSION + '/');
+      const pinnedNoVNC = publicAssetPath('/desktop/novnc/' + NOVNC_VERSION + '/');
+      imports[pinnedNoVNC] = pinnedNoVNC;
       const importMap = JSON.stringify({ imports });
       const scriptHash = createHash('sha256').update(importMap).digest('base64');
       const prepared = new Map();

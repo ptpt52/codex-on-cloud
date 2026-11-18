@@ -3,6 +3,22 @@ import { writeFile, readFile, rm } from 'node:fs/promises';
 import { fixture } from '../fixture.mjs';
 import { uiSnapshot } from '../support/ui-snapshot.mjs';
 
+test.describe('versioned static HTTP cache', () => {
+  test.use({ serviceWorkers: 'block' });
+  test('a second load reuses pinned public modules without caching HTML or APIs', async ({ page, context }) => {
+    const app = await fixture({ mode: 'terminal' });
+    try {
+      await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+      await expect(page.locator('#forward-button')).toBeEnabled();
+      const pinned = '/health.js?ui=' + app.panel.uiRevision;
+      expect(await page.evaluate(async path => (await fetch(path)).ok, pinned)).toBe(true);
+      await context.setOffline(true);
+      expect(await page.evaluate(async path => (await fetch(path)).text(), pinned)).toContain('export');
+      for (const path of ['/', '/api/me', '/health.js']) expect(await page.evaluate(async path => { try { await fetch(path); return false; } catch { return true; } }, path)).toBe(true);
+    } finally { await context.setOffline(false); await app.close(); }
+  });
+});
+
 test('live UI publication keeps old modules coherent, preserves draft and frame, and a new page loads the new snapshot', async ({ page, context }) => {
   const snapshot = await uiSnapshot(), app = await fixture({ uiRoot: snapshot.root, rfb: true, rfbSize: { width: 640, height: 480 } });
   try {
