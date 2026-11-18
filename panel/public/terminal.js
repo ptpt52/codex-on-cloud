@@ -1,4 +1,4 @@
-import { createTraceReporter } from '/connection-trace.js';
+import { createTraceReporter, connectionProgress } from '/connection-trace.js';
 import { nodeURL } from '/node-scope.js';
 import { rtcIceServers } from '/rtc-ice.js';
 import { createTerminalHealth } from './terminal-health.js';
@@ -17,7 +17,12 @@ import { appleTouchInput, attachRetainedTerminal } from '/retained-input.js';
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
 let networkDebug = query.get('networkDebug') === '1';
-const trace = createTraceReporter(frame, { enabled: () => networkDebug });
+const reportTrace = createTraceReporter(frame, { enabled: () => networkDebug });
+const trace = (type, detail = {}) => {
+  const progress = connectionProgress(type, detail);
+  if (progress) parent.postMessage({ type: 'codex-connection-progress', frame, ...progress }, location.origin);
+  reportTrace(type, detail);
+};
 let probed = false;
 const streamEnabled = query.get('stream') === '1';
 let streamClient, streamPaused = false, pendingWrites = 0, pendingOutputAck = 0, outputAckTimer;
@@ -457,7 +462,7 @@ function attachSocket(current) {
       const writtenTerm = term;
       term.write(bytes, () => {
         pendingWrites--;
-        if (!firstPainted && socket === current && term === writtenTerm) { firstPainted = true; trace('first-frame', { path: current.direct ? 'direct' : 'relay', durationMs: Math.round(performance.now() - firstFrameAt) }); }
+        if (!firstPainted && socket === current && term === writtenTerm) { firstPainted = true; parent.postMessage({ type: 'codex-view-first-frame', frame }, location.origin); trace('first-frame', { path: current.direct ? 'direct' : 'relay', durationMs: Math.round(performance.now() - firstFrameAt) }); }
         if (socket === current && term === writtenTerm && ready && current.readyState === WebSocket.OPEN && bytes.length) acknowledgeOutput(current, bytes.length);
       }); return;
     }

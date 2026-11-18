@@ -17,7 +17,7 @@ import { createWorkbenchClipboard } from './workbench-clipboard.js';
 import { createWorkspaceLifetime } from './workspace-lifetime.js';
 import { readFileDownload } from './file-transfer.js';
 import { createRoundTrip } from './health.js';
-import { createConnectionTrace, traceDescription } from './connection-trace.js';
+import { createConnectionTrace, traceDescription, connectionProgress, TRACE_REASONS } from './connection-trace.js';
 import { createInputNotices } from './input-notices.js';
 import { nodeIdentity, nodeHeaders, nodeLink } from './node-scope.js';
 import { entryPath, entryBasePath } from './entry-path.js';
@@ -90,10 +90,12 @@ $('close-connection-notice').addEventListener('click', event => {
 });
 for (const name of ['keydown', 'keyup']) $('close-connection-notice').addEventListener(name, event => event.stopPropagation());
 function recordConnection(type, detail, mode, standby = false, view = mode === 'service' ? undefined : views.active.epoch) {
+  if (mode === 'service') { const progress = connectionProgress(type, detail); if (progress) serviceProgress = progress; }
   if (!loggedIn || !connectionTrace.enabled) return;
   if (connectionTrace.add({ ...detail, type }, { mode, standby, view }) && $('connection-dialog').open) traceRenderFrame ??= requestAnimationFrame(() => { traceRenderFrame = undefined; renderConnectionTrace(); });
 }
 let connectionTraceTimer, traceDownloadURL, traceDownloadTimer, traceRenderFrame, traceExportGeneration = 0;
+let serviceProgress = {};
 const connectionRequestFaults = new Map(); // Seven fixed request categories.
 function connectionLogCurrent() {
   const route = value => rtcRouteKind(value) === 'relay' ? 'turn' : rtcRouteKind(value) === 'direct' ? rtcDirectKind(value) : 'unknown';
@@ -101,8 +103,9 @@ function connectionLogCurrent() {
     platform: /iPad|iPhone|iPod/.test(navigator.userAgent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1 ? 'ios' : /Android/.test(navigator.userAgent) ? 'android' : 'other',
     revision: document.querySelector('meta[name="ui-revision"]')?.content,
     views: [views.active, views.standby].filter(entry => entry?.mode).map(entry => ({ mode: entry.mode, standby: entry === views.standby, state: entry.state, path: entry.transport === 'terminal' ? 'relay' : entry.transport,
+      moduleReady: entry.moduleReady, firstFrame: entry.firstFrame, probe: entry.probe, probeReason: entry.probeReason,
       route: entry.transport === 'direct' ? route(entry.network) : ['relay', 'terminal'].includes(entry.transport) ? 'wss' : 'unknown',
-      reason: connectionTrace.latest(entry.mode, entry.epoch)?.reason || entry.issue })).concat({ mode: 'service', state: serviceLink.ready ? 'connected' : serviceLink.running ? 'connecting' : 'idle', path: serviceLink.ready ? 'direct' : 'relay', route: serviceLink.ready ? route(serviceLink.state.route) : 'https', reason: serviceLink.state.issue }) };
+      reason: connectionTrace.latest(entry.mode, entry.epoch)?.reason || entry.issue })).concat({ mode: 'service', state: serviceLink.ready ? 'connected' : serviceLink.running ? 'connecting' : 'idle', path: serviceLink.ready ? 'direct' : 'relay', route: serviceLink.ready ? route(serviceLink.state.route) : 'https', reason: serviceLink.state.issue, ...(serviceLink.running ? serviceProgress : {}) }) };
 }
 function renderConnectionTrace() {
   const list = $('connection-trace-list');
@@ -113,7 +116,9 @@ function renderConnectionTrace() {
   $('connection-trace-current').textContent = connectionLogCurrent().views.map(view => {
     const entry = view.mode === views.active.mode && !view.standby ? views.active : view.standby ? views.standby : null;
     const latest = connectionTrace.latest(view.mode, entry?.epoch);
-    return `${names[view.mode]}${view.standby ? '（待命）' : ''}：${({ connected: '已连接', connecting: '连接中', reconnecting: '恢复中', idle: '未启动' })[view.state] || '等待连接'} · ${view.path === 'direct' ? 'WebRTC' : view.path === 'relay' ? '中转' : '路径待确认'}${latest ? '\n  ' + traceDescription(latest) : ''}`;
+    const preparation = entry ? ` · ${view.moduleReady ? '模块已加载' : '模块加载中'} · ${view.firstFrame ? '首帧已接收' : '等待首帧'}` : '';
+    const probe = ({ probing: '开始探测', gathering: '收集地址', queued: '等待协商名额', signaling: '交换连接信息', connecting: '建立通道', ready: '通道就绪', retrying: '等待重试', stopped: '自动探测已停止' })[view.probe];
+    return `${names[view.mode]}${view.standby ? '（待命）' : ''}：${({ connected: '已连接', connecting: '连接中', reconnecting: '恢复中', idle: '未启动' })[view.state] || '等待连接'} · ${view.path === 'direct' ? 'WebRTC' : view.path === 'relay' ? '中转' : '路径待确认'}${preparation}${probe ? `\n  WebRTC：${probe}${TRACE_REASONS[view.probeReason] ? ' · ' + TRACE_REASONS[view.probeReason] : ''}` : ''}${latest ? '\n  ' + traceDescription(latest) : ''}`;
   }).join('\n');
   const capture = connectionTrace.stats;
   $('connection-trace-retention').textContent = !connectionTrace.enabled ? '调试日志已关闭，不采集过程记录。开启后立即生效，无需重新连接；关闭会清空本标签页当前节点的记录。' : `正在记录，已保留 ${capture.retained} 条${capture.droppedEvents ? `，已淘汰 ${capture.droppedEvents} 条` : ''}${capture.suppressedEvents ? `，已合并 ${capture.suppressedEvents} 次重复` : ''}。本标签页每节点最多 200 条、64 KiB、24 小时，最多 4 个节点；刷新后可查看。${connectionTrace.persisted ? '' : '浏览器存储不可用，当前仅保留内存记录。'}不记录终端文字、凭据或 IP。`;
@@ -768,6 +773,7 @@ function renderConnection() {
   renderClipboard();
   syncModeStandby();
   sendDisplayPreferences();
+  renderConnectionTrace();
   if (!loggedIn) return;
   if (nodeMismatch) {
     overlay('入口已切换', '请保存草稿后刷新页面，连接当前节点；已发送操作不会重试。');
@@ -1149,14 +1155,15 @@ function syncModeStandby() {
   $('desktop-stage').insertBefore(element, $('desktop-overlay'));
 }
 function updateView(entry, value) {
-  return views.update(entry, value, { revision: displayRevision, fontSize: displayPreferences.terminalFontSize, terminalSwitching, issues: Object.keys(directIssues) });
+  return views.update(entry, value, { revision: displayRevision, fontSize: displayPreferences.terminalFontSize, terminalSwitching, issues: Object.keys(directIssues), probeReasons: Object.keys(TRACE_REASONS) });
 }
 function receiveStandby(value) {
   const entry = views.standby;
   updateView(entry, value);
+  if (['codex-connection-progress', 'codex-view-first-frame'].includes(value.type)) { renderConnectionTrace(); return; }
     if (value.type === 'codex-network-event') { recordConnection(value.event?.type, value.event, entry.mode, true, entry.epoch); return; }
   if (value.type === 'codex-desktop') {
-    if (value.state === 'ready') { recordConnection('view-ready', {}, entry.mode, true, entry.epoch); sendStandbyPreferences(); return; }
+    if (value.state === 'ready') { recordConnection('view-ready', {}, entry.mode, true, entry.epoch); sendStandbyPreferences(); renderConnectionTrace(); return; }
     if (value.state === 'connected') sendStandbyPreferences();
   } else if (value.type === 'codex-stream-reset' && ['input-unknown', 'input-pressure'].includes(value.reason)) {
     const record = streamInputNotice(value, { mode: entry.mode, epoch: entry.epoch, standby: true, target: entry.noticeTarget });
@@ -1994,6 +2001,7 @@ window.addEventListener('message', event => {
   if (entry === views.standby) { receiveStandby(event.data); return; }
   const wasReady = entry.panelReady;
   updateView(entry, event.data);
+  if (['codex-connection-progress', 'codex-view-first-frame'].includes(event.data.type)) { renderConnectionTrace(); return; }
   if (event.data.type === 'codex-terminal-attachment') { renderConnection(); return; }
   if (event.data.type === 'codex-direct-recheck-state') { hintProbeReport(event.data.id, 'workspace', event.data); return; }
   if (event.data.type === 'codex-network-event') { recordConnection(event.data.event?.type, event.data.event, displayPreferences.mode); return; }
@@ -2073,7 +2081,7 @@ window.addEventListener('message', event => {
     renderDisplayControls(); viewportWaiter?.(); renderConnection(); return;
   }
   if (event.data?.type !== 'codex-desktop') return;
-  if (event.data.state === 'ready') { recordConnection('view-ready', {}, displayPreferences.mode); sendDisplayPreferences(); return; }
+  if (event.data.state === 'ready') { recordConnection('view-ready', {}, displayPreferences.mode); sendDisplayPreferences(); renderConnectionTrace(); return; }
   if (event.data.state === 'connected') sendDisplayPreferences();
   else if (event.data.state === 'disconnected') { resetDirectControl(); resetPanelRequests(); if (panelRoute === 'direct') panelState = 'offline'; clearClipboard(); renderClipboard(); }
   else if (event.data.state !== 'connecting') return;

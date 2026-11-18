@@ -1,6 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createConnectionTrace, createTraceReporter, TRACE_LIMITS, TRACE_STORAGE_KEY, traceDescription } from '../panel/public/connection-trace.js';
+import { createConnectionTrace, createTraceReporter, connectionProgress, TRACE_LIMITS, TRACE_STORAGE_KEY, traceDescription } from '../panel/public/connection-trace.js';
+test('routine samples cannot evict fault and lifecycle evidence; operational progress remains payload-free', () => {
+  let time = 1700000000000;
+  const trace = createConnectionTrace(() => time, { enabled: true, wallNow: () => time });
+  for (const type of ['view-start', 'probe-stopped', 'session-ended', 'path-active', 'first-frame']) {
+    time++; trace.add({ type, path: 'direct', reason: 'auth' }, { mode: 'terminal', view: 1 });
+  }
+  for (let n = 0; n < 600; n++) { time++; trace.add({ type: 'heartbeat-ok', rttMs: n }, { mode: 'service' }); }
+  const events = trace.snapshot();
+  assert.equal(events.length, TRACE_LIMITS.events); assert.deepEqual(events.slice(0, 5).map(value => value.type), ['view-start', 'probe-stopped', 'session-ended', 'path-active', 'first-frame']);
+  assert.equal(events.at(-1).rttMs, 599); assert.ok(Buffer.byteLength(trace.text()) <= TRACE_LIMITS.bytes);
+  assert.deepEqual(connectionProgress('probe-stopped', { path: 'direct', reason: 'auth', error: 'PRIVATE_ERROR' }), { probe: 'stopped', probeReason: 'auth' });
+  assert.equal(connectionProgress('heartbeat-ok', { path: 'direct' }), null);
+  const current = JSON.parse(trace.text({ views: [{ mode: 'terminal', moduleReady: true, firstFrame: false, probe: 'stopped', probeReason: 'auth', text: 'PRIVATE_TEXT' }, { mode: 'desktop', probe: 'PRIVATE_STATE', probeReason: 'PRIVATE_REASON' }] })).current;
+  assert.equal(current.views[0].moduleReady, true); assert.equal(current.views[0].firstFrame, false); assert.equal(current.views[0].probe, 'stopped');
+  assert.equal(current.views[1].probe, undefined); assert.equal(JSON.stringify(current).includes('PRIVATE_'), false);
+  time += TRACE_LIMITS.ageMs + 1; assert.deepEqual(trace.snapshot(), []);
+});
 test('recheck phases and results are whitelisted, readable and cannot expose raw errors', () => {
   const trace = createConnectionTrace(undefined, { enabled: true });
   trace.add({ type: 'recheck-ended', step: 'commit', result: 'failed', outcome: 'unknown', reason: 'rpc-timeout', durationMs: 8000, error: 'PRIVATE_ERROR', candidate: 'PRIVATE_ADDRESS' }, { mode: 'service' });

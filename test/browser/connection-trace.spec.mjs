@@ -2,6 +2,28 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { TRACE_LIMITS } from '../../panel/public/connection-trace.js';
 test.use({ serviceWorkers: 'block' });
+test('active and standby preparation and stopped probes stay visible with process logging disabled', async ({ page }) => {
+  test.setTimeout(45000);
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, seamless: true, webrtc: true, fastConnect: true });
+  let release; const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/desktop/viewer.js?*', async route => { await held; await route.continue(); });
+  await page.route('**/api/desktop/rtc', route => route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }));
+  await page.addInitScript(() => { if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode: 'terminal', modeStandby: true, networkDebug: false })); });
+  try {
+    await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+    await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    await page.locator('#connection-button').click();
+    const current = page.locator('#connection-trace-current');
+    await expect(current).toContainText(/网页终端：[\s\S]*模块已加载 · 首帧已接收/);
+    await expect(current).toContainText(/桌面（待命）：[^\n]*模块加载中/);
+    release();
+    await expect(current).toContainText(/桌面（待命）：[^\n]*模块已加载 · 首帧已接收/, { timeout: 15000 });
+    await expect(current).toContainText('自动探测已停止');
+    await expect(current).toContainText('访问权限需要重新确认');
+    await expect(page.locator('#copy-connection-trace')).toBeDisabled();
+    expect(app.inputCalls).toEqual([]); expect(app.terminalInputs).toEqual([]);
+  } finally { release(); await app.close(); }
+});
 async function login(page, app) {
   await page.addInitScript(() => {
     if (window !== parent) return;

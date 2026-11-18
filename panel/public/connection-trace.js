@@ -50,6 +50,15 @@ const reasons = ['unsupported', 'disabled', 'signaling', 'negotiation', 'timeout
   ...Object.keys(TRACE_REASONS)];
 const number = value => Number.isInteger(value) && value >= 0 && value <= 2 ** 40;
 const routes = { lan: '局域网直连', ipv6: 'IPv6 直连', nat: 'NAT 打洞', vpn: 'VPN', 'public-ipv4': '公网 IPv4', turn: 'TURN 中继', wss: 'WebSocket 中转', https: 'HTTPS', direct: 'WebRTC', unknown: '类型待确认' };
+const probeStates = ['probing', 'gathering', 'queued', 'signaling', 'connecting', 'ready', 'retrying', 'stopped'];
+// Operational status, independent of optional process logging. Only the latest
+// fixed state is retained by each live view, with no history or payloads.
+export function connectionProgress(type, detail = {}) {
+  if (detail.path !== 'direct') return null;
+  const probe = type === 'direct-start' ? 'probing' : type === 'rtc-stage' && probeStates.includes(detail.stage) ? detail.stage :
+    ['direct-ready', 'path-active'].includes(type) ? 'ready' : type === 'probe-stopped' ? 'stopped' : ['retry', 'path-lost'].includes(type) ? 'retrying' : null;
+  return probe ? { probe, ...(Object.hasOwn(TRACE_REASONS, detail.reason) ? { probeReason: detail.reason } : {}) } : null;
+}
 function clean(value) {
   if (!value || !Object.hasOwn(TRACE_LABELS, value.type)) return null;
   const result = { type: value.type };
@@ -132,13 +141,19 @@ export function createConnectionTrace(now = () => Date.now(), { storage, scope =
   function trim() {
     const time = wallNow();
     while (events.length && time - events[0].time > TRACE_LIMITS.ageMs) { events.shift(); droppedEvents++; }
-    if (events.length > TRACE_LIMITS.events) { events.shift(); droppedEvents++; }
-    while (bytes({ version: 2, events }) > TRACE_LIMITS.bytes - 1024) { events.shift(); droppedEvents++; }
+    // Preserve failures and milestones ahead of routine samples, while always
+    // retaining the last 32 events as chronological context. Bounds stay fixed.
+    while (events.length > TRACE_LIMITS.events || bytes({ version: 2, events }) > TRACE_LIMITS.bytes - 1024) { evict(events); droppedEvents++; }
+  }
+  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended']);
+  function evict(list) {
+    const index = list.findIndex((event, index) => index < list.length - 32 && !important.has(event.type));
+    list.splice(index < 0 ? 0 : index, 1);
   }
   function text(current) {
     trim();
     const exported = { version: 2, exportedAt: wallNow(), capture: { enabled: recording, page, startedAt, droppedEvents, suppressedEvents, limits: TRACE_LIMITS }, ...(current ? { current: cleanCurrent(current) } : {}), events: events.map(event => ({ ...event })) };
-    while (bytes(exported) > TRACE_LIMITS.bytes && exported.events.length) { exported.events.shift(); exported.capture.droppedEvents++; }
+    while (bytes(exported) > TRACE_LIMITS.bytes && exported.events.length) { evict(exported.events); exported.capture.droppedEvents++; }
     return JSON.stringify(exported);
   }
   return {
@@ -186,6 +201,10 @@ function cleanCurrent(value) {
     path: ['direct', 'relay'].includes(view.path) ? view.path : 'unknown',
     ...(Object.hasOwn(routes, view.route) ? { route: view.route } : {}),
     ...(Object.hasOwn(TRACE_REASONS, view.reason) ? { reason: view.reason } : {}),
+    ...(typeof view.moduleReady === 'boolean' ? { moduleReady: view.moduleReady } : {}),
+    ...(typeof view.firstFrame === 'boolean' ? { firstFrame: view.firstFrame } : {}),
+    ...(probeStates.includes(view.probe) ? { probe: view.probe } : {}),
+    ...(Object.hasOwn(TRACE_REASONS, view.probeReason) ? { probeReason: view.probeReason } : {}),
   }));
   return result;
 }

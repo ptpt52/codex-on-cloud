@@ -26,4 +26,6 @@ npm run reload-ui
 
 Service Worker 只缓存公共界面资源，不缓存认证 API、桌面画面或文件。旧页面与资源版本有界保留；无法加载原版本时提示保存草稿后刷新，不自动重发输入。
 
+带 `ui` 版本的公共脚本、样式等静态资源允许浏览器私有缓存一天；noVNC 使用固定依赖版本路径缓存，避免重复加载依赖。HTML、API、文件与 Service Worker 脚本仍禁止 HTTP 缓存。不带版本的资源不使用这一缓存策略；节点子路径与根路径的模块导入都绑定到该页面的同一 UI 版本。
+
 [文档目录](README.md) · [部署选择](deployment.md) · [维护排障](operations.md)

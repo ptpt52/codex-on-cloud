@@ -3,6 +3,7 @@ import { createRoundTrip } from './health.js';
 const terminalKey = value => typeof value === 'string' && /^(?:main|aux[1-7]):%\d{1,10}:\d{1,10}$/.test(value);
 function view(element, epoch, mode = 'desktop', key = '', noticeTarget = '') {
   return { element, epoch, mode, key, desiredKey: key, noticeTarget, loaded: false, state: 'idle', transport: '', paused: false,
+    moduleReady: false, firstFrame: false, probe: '', probeReason: '',
     panelReady: false, panelCapabilitiesKnown: false, terminalSwitchReady: false, terminalCreateReady: false, terminalOpenReady: false, terminalAttachment: false, attachmentState: '',
     dimensions: null, geometry: null, scale: 0, scaleRevision: -1, reviewing: false, composing: false, touchInput: false,
     nativeIdle: false, resizeReady: false, frameReady: mode !== 'desktop', activationPending: false, inputNoticeKey: '', network: null, issue: '', latency: createRoundTrip() };
@@ -46,6 +47,7 @@ export function createViewLifecycle(element) {
     invalidate(entry = active) { if (live(entry)) invalidate(entry); },
     suspend() {
       invalidate(active); active.state = 'reconnecting'; active.paused = false;
+      active.firstFrame = false; active.probe = 'retrying'; active.probeReason = '';
       active.nativeIdle = active.resizeReady = active.composing = active.touchInput = active.activationPending = false;
       if (active.mode === 'desktop') active.frameReady = false;
       active.latency.clear();
@@ -68,15 +70,21 @@ export function createViewLifecycle(element) {
     },
     cancelTarget(entry) { if (live(entry)) entry.desiredKey = entry.key; },
     inputReady(entry = active) { return entry === active && entry.loaded && entry.state === 'connected' && !entry.paused && entry.frameReady && !entry.activationPending && entry.key === entry.desiredKey && (!entry.terminalAttachment || entry.attachmentState === 'ready'); },
-    update(entry, value, { revision, fontSize, terminalSwitching = false, issues = [] } = {}) {
+    update(entry, value, { revision, fontSize, terminalSwitching = false, issues = [], probeReasons = [] } = {}) {
       if (!live(entry)) return false;
-      if (value.type === 'codex-desktop' && ['connected', 'connecting', 'disconnected'].includes(value.state)) {
+      if (value.type === 'codex-desktop' && value.state === 'ready') entry.moduleReady = true;
+      else if (value.type === 'codex-view-first-frame') entry.firstFrame = true;
+      else if (value.type === 'codex-connection-progress') {
+        if (!['probing', 'gathering', 'queued', 'signaling', 'connecting', 'ready', 'retrying', 'stopped'].includes(value.probe)) return false;
+        entry.probe = value.probe; entry.probeReason = probeReasons.includes(value.probeReason) ? value.probeReason : '';
+      } else if (value.type === 'codex-desktop' && ['connected', 'connecting', 'disconnected'].includes(value.state)) {
         if (value.state === 'connected') {
           const transport = value.transport === 'direct' ? 'direct' : entry.mode === 'terminal' ? 'terminal' : 'relay';
           if (entry.state !== 'connected' || entry.transport !== transport) entry.latency.clear();
           entry.state = 'connected'; entry.transport = transport;
         } else {
           entry.state = value.state === 'disconnected' || entry.state === 'reconnecting' ? 'reconnecting' : 'connecting';
+          entry.firstFrame = false;
           invalidate(entry); entry.latency.clear(); entry.scaleRevision = -1;
           entry.frameReady = entry.mode !== 'desktop'; entry.resizeReady = entry.nativeIdle = false;
         }

@@ -1,4 +1,4 @@
-import { createTraceReporter } from '/connection-trace.js';
+import { createTraceReporter, connectionProgress } from '/connection-trace.js';
 import { nodeURL } from '/node-scope.js';
 import { rtcIceServers } from '/rtc-ice.js';
 import RFB from './novnc/core/rfb.js';
@@ -19,7 +19,12 @@ const status = document.getElementById('status');
 const viewer = new URLSearchParams(location.search).get('viewer');
 const frame = new URLSearchParams(location.search).get('frame');
 let networkDebug = new URLSearchParams(location.search).get('networkDebug') === '1';
-const trace = createTraceReporter(frame, { enabled: () => networkDebug });
+const reportTrace = createTraceReporter(frame, { enabled: () => networkDebug });
+const trace = (type, detail = {}) => {
+  const progress = connectionProgress(type, detail);
+  if (progress) parent.postMessage({ type: 'codex-connection-progress', frame, ...progress }, location.origin);
+  reportTrace(type, detail);
+};
 const viewport = document.getElementById('viewport');
 const frameHold = createFrameHold(viewport), fastConnect = new URLSearchParams(location.search).get('fast') === '1', routes = routePolicy();
 const streamEnabled = new URLSearchParams(location.search).get('stream') === '1';
@@ -464,6 +469,7 @@ function attachViewer(direct, channel) {
   const firstFrameAt = performance.now();
   frameReadiness = afterFirstFrame(instance, () => {
     if (rfb !== instance || stopping) return;
+    parent.postMessage({ type: 'codex-view-first-frame', frame }, location.origin);
     resizeReady = true; trace('first-frame', { path: streamClient?.socket.direct || direct ? 'direct' : 'relay', durationMs: Math.round(performance.now() - firstFrameAt) }); reportView();
   });
   if (channel) {

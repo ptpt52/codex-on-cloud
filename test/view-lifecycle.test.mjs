@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createViewLifecycle } from '../panel/public/view-lifecycle.js';
+
+test('module, first-frame and probe diagnostics follow the view without granting input readiness', () => {
+  const views = createViewLifecycle({ contentWindow: {} }); views.begin('desktop');
+  const entry = views.active;
+  views.update(entry, { type: 'codex-desktop', state: 'ready' });
+  views.update(entry, { type: 'codex-view-first-frame' });
+  views.update(entry, { type: 'codex-connection-progress', probe: 'stopped', probeReason: 'auth' }, { probeReasons: ['auth'] });
+  assert.equal(entry.moduleReady, true); assert.equal(entry.firstFrame, true); assert.equal(entry.probe, 'stopped'); assert.equal(entry.probeReason, 'auth');
+  assert.equal(views.inputReady(), false);
+  views.update(entry, { type: 'codex-desktop', state: 'disconnected' });
+  assert.equal(entry.moduleReady, true); assert.equal(entry.firstFrame, false);
+});
 const element = () => ({ contentWindow: {} });
 const main = 'main:%0:4000', other = 'aux1:%1:4001';
 const connected = (views, entry, transport = 'direct') => {
