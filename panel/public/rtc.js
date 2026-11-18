@@ -1,7 +1,7 @@
 import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute, rtcRouteKind, rtcDirectKind } from './rtc-stats.js';
-import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureStatus } from './transport-policy.js';
+import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, rtcFailureStatus, createRTCNativeWaiter } from './transport-policy.js';
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
 import { nodeHeaders, nodeIdentity } from '/node-scope.js';
 import { entryPath, entryBasePath } from '/entry-path.js';
@@ -9,6 +9,7 @@ import { rtcIceServers, rtcCredentialsNeedRefresh } from '/rtc-ice.js';
 import { requestRTCOffer } from '/rtc-offers.js';
 
 let enabled = true;
+const native = createRTCNativeWaiter();
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
@@ -55,7 +56,7 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     void ready.catch(() => {});
     const control = createControlClient(peer.createDataChannel(service ? 'codex-service' : 'codex-control', { ordered: true, protocol: service ? 'service-v1' : 'codex-control-v1' }), value => {
-      if (value) { clearTimeout(timeout); resolveReady(); }
+      if (value) resolveReady();
       else rejectReady(new Error('直连已关闭'));
       controlChanged(value);
     }, { keepOnTimeout: service, trace });
@@ -110,7 +111,8 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       try {
         let stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'gathering' });
         deadline('gathering', 4000);
-        await peer.setLocalDescription(await peer.createOffer());
+        const offer = await native.wait(() => peer.createOffer(), controller.signal);
+        await native.wait(() => peer.setLocalDescription(offer), controller.signal);
         await gatherCandidates(peer, controller.signal);
         const candidates = (peer.localDescription?.sdp || '').split('\n').filter(line => /^a=candidate:/.test(line));
         trace('rtc-candidates', { path: 'direct', host: candidates.filter(line => / typ host(?:\s|$)/.test(line)).length, reflexive: candidates.filter(line => / typ (?:srflx|prflx)(?:\s|$)/.test(line)).length, relay: candidates.filter(line => / typ relay(?:\s|$)/.test(line)).length });
@@ -133,13 +135,14 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
         } finally { release(); }
         stageAt = performance.now(); trace('rtc-stage', { path: 'direct', stage: 'connecting' });
         deadline('connecting', RTC_CONNECT_TIMEOUT);
-        await peer.setRemoteDescription(answer);
+        await native.wait(() => peer.setRemoteDescription(answer), controller.signal);
         await ready;
+        clearTimeout(timeout);
         trace('rtc-stage', { path: 'direct', stage: 'connecting', durationMs: Math.round(performance.now() - stageAt) });
         stage = 'ready';
         if (service) features = await control.request('ping', {});
         else if (!probe) await control.request('activate', {});
-      } catch (error) { failure(timedOut ? 'timeout' : error?.reason === 'busy' ? 'busy' : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
+      } catch (error) { failure(timedOut ? 'timeout' : ['busy', 'native-busy'].includes(error?.reason) ? error.reason : 'negotiation'); close(); throw Object.assign(error, { reason: lastFailure || 'negotiation' }); }
     } };
   } catch { failure(timedOut ? 'timeout' : 'signaling'); clearTimeout(timeout); signal?.removeEventListener('abort', cancel); controller.abort(); peer?.close(); return null; }
 }

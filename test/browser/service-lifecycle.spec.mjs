@@ -4,9 +4,10 @@ import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
 // Exercise the real service client and RTC backend without an application
 // viewer starting an unrelated service association in the same login.
-async function isolatedService(page, app, instrument = false) {
+async function isolatedService(page, app, instrument = false, clock = false) {
   await page.route('**/service-audit.html', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head></head><body>Isolated service regression</body></html>' }));
   await page.goto(app.config.origin + '/service-audit.html');
+  if (clock) await page.clock.install();
   await page.evaluate(async ({ username, password, instrument }) => {
     const response = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
     if (!response.ok) throw Error('Isolated login failed');
@@ -25,6 +26,36 @@ async function isolatedService(page, app, instrument = false) {
   }, { username: app.config.username, password: app.config.password, instrument });
 }
 async function stop(page, app) { await page.evaluate(() => window.serviceLink?.stop()).catch(() => {}); await app.close(); }
+
+for (const operation of ['offer', 'remote-description']) test(`a never-settling native ${operation} times out, permits foreground recovery and ignores its late result`, async ({ page }) => {
+  const app = await fixture({ webrtc: true });
+  await page.addInitScript(operation => {
+    const method = operation === 'offer' ? 'createOffer' : 'setRemoteDescription';
+    const original = RTCPeerConnection.prototype[method], local = RTCPeerConnection.prototype.setLocalDescription;
+    window.nativeCalls = 0; window.retiredLocalCalls = 0;
+    RTCPeerConnection.prototype[method] = async function(...args) {
+      const value = await original.apply(this, args);
+      if (++window.nativeCalls === 1) { if (operation === 'offer') this.retiredAuditPeer = true; await new Promise(resolve => { window.releaseNative = resolve; }); }
+      return value;
+    };
+    RTCPeerConnection.prototype.setLocalDescription = function(...args) { if (this.retiredAuditPeer) window.retiredLocalCalls++; return local.apply(this, args); };
+  }, operation);
+  try {
+    await isolatedService(page, app, false, true);
+    await expect.poll(() => page.evaluate(() => typeof window.releaseNative)).toBe('function');
+    await page.clock.runFor(operation === 'offer' ? 5000 : 13000);
+    expect(await page.evaluate(reason => window.serviceEvents.some(event => event.reason === reason), operation === 'offer' ? 'gathering-timeout' : 'channel-timeout')).toBe(true);
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.clock.runFor(200); await page.clock.resume();
+    await expect.poll(() => page.evaluate(() => window.serviceLink.ready), { timeout: 10000 }).toBe(true);
+    await page.evaluate(() => { window.recoveredService = window.serviceLink.transport; window.releaseNative(); });
+    await expect.poll(() => page.evaluate(() => window.nativeCalls)).toBe(2);
+    expect(await page.evaluate(() => ({ stale: window.retiredLocalCalls, same: window.recoveredService === window.serviceLink.transport, ready: window.serviceLink.ready }))).toEqual({ stale: 0, same: true, ready: true });
+  } finally { await page.evaluate(() => window.releaseNative?.()).catch(() => {}); await stop(page, app); }
+});
 
 test('network hint storms coalesce service probes without retiring a healthy RTC association', async ({ page }) => {
   const app = await fixture({ webrtc: true });

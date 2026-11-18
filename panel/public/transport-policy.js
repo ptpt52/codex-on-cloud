@@ -5,6 +5,31 @@ export const NETWORK_PROBE_INTERVAL = 5000;
 export const RTC_SIGNAL_TIMEOUT = 12000;
 export const RTC_CONNECT_TIMEOUT = 12000;
 export const HEARTBEAT_CONGESTION_GRACE = 4000;
+export const RTC_NATIVE_LIMIT = 4;
+
+// Abort ends the caller's wait even if a browser operation never settles.
+// Keep its slot charged until native settlement: retries cannot accumulate an
+// unbounded number of abandoned createOffer/description operations per realm.
+export function createRTCNativeWaiter() {
+  let pending = 0;
+  return { get pending() { return pending; }, wait(run, signal) {
+    const cancelled = () => signal?.reason || Object.assign(Error('直连协商已取消'), { name: 'AbortError' });
+    if (signal?.aborted) return Promise.reject(cancelled());
+    if (pending >= RTC_NATIVE_LIMIT) return Promise.reject(Object.assign(Error('浏览器原生协商仍有挂起调用'), { reason: 'native-busy' }));
+    pending++;
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = (ok, value) => {
+        if (finished) return; finished = true; signal?.removeEventListener('abort', abort);
+        ok ? resolve(value) : reject(value);
+      };
+      const abort = () => finish(false, cancelled());
+      signal?.addEventListener('abort', abort, { once: true });
+      Promise.resolve().then(() => { if (signal?.aborted) throw cancelled(); return run(); }).then(
+        value => { pending--; finish(true, value); }, error => { pending--; finish(false, error); });
+    });
+  } };
+}
 export function heartbeatProgress(sentAt, progressAt, now = performance.now()) {
   return progressAt >= sentAt && now >= progressAt && now - progressAt <= 1500;
 }

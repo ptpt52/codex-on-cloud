@@ -2,7 +2,7 @@ import { pathPreferred } from './transport-policy.js';
 import { rtcRouteKind } from './rtc-stats.js';
 
 const failureReasons = Object.freeze({ rpc_timeout: 'rpc-timeout', heartbeat_timeout: 'heartbeat', local_http_timeout: 'local-http-timeout', local_http_error: 'local-http-error', peer_closed: 'peer-closed', channel_error: 'channel-error', control_protocol: 'control-protocol', control_send: 'control-send' });
-const candidateReasons = ['unsupported', 'disabled', 'auth', 'target', 'busy', 'negotiation', 'connection', 'signaling', 'signaling-timeout', 'gathering-timeout', 'ice-timeout', 'channel-timeout', 'timeout', 'protocol', 'signal-failed'];
+const candidateReasons = ['unsupported', 'disabled', 'auth', 'target', 'busy', 'native-busy', 'negotiation', 'connection', 'signaling', 'signaling-timeout', 'gathering-timeout', 'ice-timeout', 'channel-timeout', 'timeout', 'protocol', 'signal-failed'];
 
 // One explicit probe, no queue. Candidate admission is bounded to 26 seconds.
 // A service promotion may commit to its separately bounded RPC: soft lifecycle

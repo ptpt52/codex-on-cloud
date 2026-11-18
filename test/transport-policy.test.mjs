@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { disconnectGrace, routePolicy, ROUTE_COOLDOWN, NETWORK_PROBE_INTERVAL, rtcFailureStatus, directRetry, createPathQuality, pathPreferred } from '../panel/public/transport-policy.js';
+import { disconnectGrace, routePolicy, ROUTE_COOLDOWN, NETWORK_PROBE_INTERVAL, rtcFailureStatus, directRetry, createPathQuality, pathPreferred, createRTCNativeWaiter, RTC_NATIVE_LIMIT } from '../panel/public/transport-policy.js';
+
+test('aborted native waits release their caller while retaining bounded native slots until settlement', async () => {
+  const native = createRTCNativeWaiter(), releases = [];
+  for (let n = 0; n < RTC_NATIVE_LIMIT; n++) {
+    const controller = new AbortController();
+    const pending = native.wait(() => new Promise(resolve => releases.push(resolve)), controller.signal);
+    await Promise.resolve(); controller.abort(); await assert.rejects(pending, { name: 'AbortError' });
+  }
+  assert.equal(native.pending, RTC_NATIVE_LIMIT);
+  let invoked = false;
+  await assert.rejects(native.wait(() => { invoked = true; }), { reason: 'native-busy' }); assert.equal(invoked, false);
+  releases[0]('late'); await new Promise(setImmediate); assert.equal(native.pending, RTC_NATIVE_LIMIT - 1);
+  assert.equal(await native.wait(() => 'new scope'), 'new scope');
+  for (const release of releases.slice(1)) release(); await new Promise(setImmediate); assert.equal(native.pending, 0);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(native.wait(() => { invoked = true; }, controller.signal), { name: 'AbortError' }); assert.equal(invoked, false);
+  await assert.rejects(native.wait(() => { throw Error('native failure'); }), /native failure/); assert.equal(native.pending, 0);
+});
 test('path quality uses fresh repeated samples, favors comparable direct paths and requires a margin for TURN or switching back', () => {
   let time = 1000; const quality = createPathQuality(() => time);
   quality.sample(100); assert.equal(quality.rttMs, null); quality.sample(120); assert.equal(quality.rttMs, 110);
