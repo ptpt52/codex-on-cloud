@@ -4,11 +4,11 @@ import { gatewayDigest, decodeGatewayCode } from '../gateway/protocol.mjs';
 
 export async function gatewayFixture({ origin = 'https://desk.example.test', backendZone = 'example.test', request, assets, probe } = {}) {
   const password = 'gateway-test-only-password-' + 'a'.repeat(32), config = { version: 1, origin, backendZone }, env = { GATEWAY_PASSWORD_HASH: await gatewayDigest(password) };
-  const storage = { value: undefined, chain: Promise.resolve(), active: 0,
+  const storage = { value: undefined, chain: Promise.resolve(), active: 0, writes: 0,
     async get() { await this.chain; return structuredClone(this.value); },
     transaction(fn) {
       if (++this.active > 64) throw Error('fixture transaction limit');
-      const action = this.chain.then(async () => { let value = structuredClone(this.value); const result = await fn({ get: async () => structuredClone(value), put: async (_key, next) => { value = structuredClone(next); } }); this.value = value; return result; });
+      const action = this.chain.then(async () => { let value = structuredClone(this.value); const result = await fn({ get: async () => structuredClone(value), put: async (_key, next) => { this.writes++; value = structuredClone(next); } }); this.value = value; return result; });
       this.chain = action.catch(() => {}); return action.finally(() => { this.active--; });
     },
   };

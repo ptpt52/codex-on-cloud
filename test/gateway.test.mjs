@@ -1,11 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gatewayFixture } from './gateway-fixture.mjs';
-import { gatewayConfig, gatewayBackend, gatewayProxyHeaders, gatewayNode, gatewayHex, GATEWAY_LIMITS, gatewayDeadline, gatewayJSON } from '../gateway/protocol.mjs';
+import { gatewayConfig, gatewayBackend, gatewayProxyHeaders, gatewayNode, gatewayHex, GATEWAY_LIMITS, gatewayDeadline, gatewayJSON, gatewayDigest } from '../gateway/protocol.mjs';
 
 const entry = number => ({ id: number.toString(16).padStart(32, '0'), name: '动态节点 ' + number, backendOrigin: `https://node-${number}.example.test`, mode: 'terminal' });
 const key = number => number.toString(16).padStart(64, '0');
 const setup = async options => { const h = await gatewayFixture({ probe: async () => true, ...options }); await h.login(); const code = await h.code(); return { ...h, codeValue: code }; };
+
+test('stable gateway reads avoid storage writes while concurrent mutations remain durable and serialized', async () => {
+  const h = await setup(), before = structuredClone(h.storage.value), writes = h.storage.writes;
+  const reads = await Promise.all(Array.from({ length: 20 }, (_, index) => h.api(index % 2 ? 'nodes' : 'codes')));
+  assert(reads.every(response => response.status === 200));
+  assert.equal(h.storage.writes, writes); assert.deepEqual(h.storage.value, before);
+  const responses = await Promise.all(Array.from({ length: 8 }, (_, index) => h.api(index % 2 ? 'nodes' : 'codes', index % 2 ? {} : { method: 'POST', body: { name: 'Concurrent ' + index } })));
+  assert(responses.every(response => response.status === 200)); assert.equal(h.storage.writes, writes + 4);
+  assert.equal(h.storage.value.codes.length, before.codes.length + 4);
+  h.restart(); const listing = await (await h.api('codes')).json();
+  assert.equal(listing.codes.length, before.codes.length + 4); assert.equal(h.storage.writes, writes + 4);
+});
+
+test('gateway read transactions persist expiry cleanup once and recheck revoked sessions', async () => {
+  const h = await setup(), now = h.registry.now();
+  h.storage.value.sessions.push({ ...h.storage.value.sessions[0], hash: 'a'.repeat(64), expires: now - 1 });
+  h.storage.value.failures.push({ client: 'expired', count: 1, until: now - 1 });
+  h.storage.value.pending = { id: key(1).slice(0, 32), nodeId: entry(1).id, at: now - GATEWAY_LIMITS.pendingMs - 1 };
+  const writes = h.storage.writes;
+  assert.equal((await h.api('nodes')).status, 200); assert.equal(h.storage.writes, writes + 1);
+  assert.equal(h.storage.value.sessions.length, 1); assert.deepEqual(h.storage.value.failures, []); assert.equal(h.storage.value.pending, null);
+  assert.equal((await h.api('nodes')).status, 200); assert.equal(h.storage.writes, writes + 1);
+  assert.equal((await h.api('logout', { method: 'POST', body: {} })).status, 200); assert.equal(h.storage.writes, writes + 2);
+  assert.equal((await h.api('nodes')).status, 401); assert.equal(h.storage.writes, writes + 2);
+});
+
+test('gateway read optimization preserves initial state persistence and password rotation', async () => {
+  const h = await gatewayFixture(); assert.equal(h.storage.writes, 0);
+  await h.login(); assert.equal(h.storage.writes, 1);
+  await h.code(); assert.equal(h.storage.writes, 2);
+  const original = h.env.GATEWAY_PASSWORD_HASH;
+  const password = 'rotated-test-password-' + 'b'.repeat(32);
+  h.env.GATEWAY_PASSWORD_HASH = await gatewayDigest(password);
+  assert.equal((await h.api('nodes')).status, 401);
+  assert.equal((await h.api('login', { method: 'POST', body: { password } })).status, 200);
+  assert.equal(h.storage.writes, 3); assert.deepEqual(h.storage.value.codes, []);
+  assert.equal(h.storage.value.sessions.length, 1); assert.equal(h.storage.value.passwordHash, h.env.GATEWAY_PASSWORD_HASH);
+  assert.equal((await h.api('nodes')).status, 401); assert.equal(h.storage.writes, 3);
+  h.env.GATEWAY_PASSWORD_HASH = original;
+  await h.login(); const writes = h.storage.writes;
+  h.advance(604800001);
+  assert.equal((await h.api('nodes')).status, 401); assert.equal(h.storage.writes, writes);
+  // A successful login commits cleanup and a fresh session in one write.
+  await h.login(); assert.equal(h.storage.writes, writes + 1); assert.equal(h.storage.value.sessions.length, 1);
+});
 
 test('a switched browser scope never sends sensitive headers or file bytes to the new backend', async () => {
   const calls = [], h = await setup({ request: async request => {

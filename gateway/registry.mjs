@@ -6,15 +6,20 @@ export class GatewayRegistry {
     return this.state.storage.transaction(async storage => {
       const passwordHash = this.env.GATEWAY_PASSWORD_HASH;
       if (!gatewaySecret(passwordHash)) throw gatewayError(503, '网关登录尚未配置');
-      const value = await storage.get('gateway') || { version: 1, revision: 1, nodes: [], activeId: null, sessions: [], failures: [], codes: [], pending: null, lastSwitch: null, passwordHash };
+      const saved = await storage.get('gateway'), previous = saved ? JSON.stringify(saved) : undefined;
+      const value = saved || { version: 1, revision: 1, nodes: [], activeId: null, sessions: [], failures: [], codes: [], pending: null, lastSwitch: null, passwordHash };
       const now = this.now();
       if (value.passwordHash !== passwordHash) { value.passwordHash = passwordHash; value.sessions = []; value.codes = []; }
       value.sessions = value.sessions.filter(session => session.expires > now).slice(-GATEWAY_LIMITS.sessions);
       value.failures = value.failures.filter(failure => failure.until > now).slice(-GATEWAY_LIMITS.failures);
       if (value.pending && now - value.pending.at > GATEWAY_LIMITS.pendingMs) value.pending = null;
       const result = await action(value, now);
-      if (new TextEncoder().encode(JSON.stringify(value)).length > GATEWAY_LIMITS.bytes) throw gatewayError(413, '网关状态超过 128 KiB');
-      await storage.put('gateway', value); return result;
+      const serialized = JSON.stringify(value);
+      if (new TextEncoder().encode(serialized).length > GATEWAY_LIMITS.bytes) throw gatewayError(413, '网关状态超过 128 KiB');
+      // Compare inside the same transaction, before and after expiry cleanup
+      // and the action. Stable reads need no write; mutations stay atomic.
+      if (serialized !== previous) await storage.put('gateway', value);
+      return result;
     });
   }
   session(value, request, write = false) {
