@@ -157,10 +157,11 @@ func (p *transportPool) run() {
 			direct.Close()
 		}
 	}()
-	for attempt := 0; p.ctx.Err() == nil; attempt++ {
+	var backoff reconnectBackoff
+	for p.ctx.Err() == nil {
 		conn, err := dialHeaders(p.ctx, p.server, "/forward/transport", p.grant.Agent+"."+p.grant.Secret, http.Header{"X-Codex-Agent-Instance": {p.instance}})
 		if err == nil {
-			err = p.session(conn)
+			err = p.session(conn, backoff.ready)
 			p.offline(conn)
 		}
 		if p.ctx.Err() != nil {
@@ -169,7 +170,7 @@ func (p *transportPool) run() {
 		if err != nil && !canResume(connectionFailure(err)) {
 			return
 		}
-		delay := min(time.Second*time.Duration(1<<min(attempt, 4)), 15*time.Second)
+		delay := backoff.next()
 		timer := time.NewTimer(delay)
 		select {
 		case <-p.ctx.Done():
@@ -196,7 +197,7 @@ func (p *transportPool) offline(conn *websocket.Conn) {
 		channel.flow.finish(failure("network_disconnected"))
 	}
 }
-func (p *transportPool) session(conn *websocket.Conn) error {
+func (p *transportPool) session(conn *websocket.Conn, healthy func()) error {
 	stop := context.AfterFunc(p.ctx, func() { conn.Close() })
 	defer stop()
 	kind, data, err := conn.ReadMessage()
@@ -212,6 +213,7 @@ func (p *transportPool) session(conn *websocket.Conn) error {
 	if kind != websocket.TextMessage || len(data) > 2048 || json.Unmarshal(data, &ready) != nil || ready.Type != "pool-ready" || ready.Version != 1 || ready.ID != p.grant.Agent || !tokenPattern.MatchString(ready.Token) {
 		return failure("protocol_error")
 	}
+	healthy()
 	p.mu.Lock()
 	old := p.direct
 	if p.token != ready.Token {

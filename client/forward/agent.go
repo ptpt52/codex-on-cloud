@@ -324,13 +324,14 @@ func runAgent(ctx context.Context, key string, writer io.Writer) error {
 	}
 	instance := hex.EncodeToString(nonce[:])
 	manager.pool = newTransportPool(ctx, server, grant, instance, output)
-	for attempt := 0; ; attempt++ {
+	var backoff reconnectBackoff
+	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 		conn, err := dialHeaders(ctx, server, "/forward/agent", grant.Agent+"."+grant.Secret, http.Header{"X-Codex-Agent-Instance": {instance}})
 		if err == nil {
-			err = agentSession(ctx, conn, grant, server, manager, link, requestInventory)
+			err = agentSession(ctx, conn, grant, server, manager, link, requestInventory, backoff.ready)
 			link.offline(conn)
 		}
 		if ctx.Err() != nil {
@@ -342,8 +343,8 @@ func runAgent(ctx context.Context, key string, writer io.Writer) error {
 		if !canResume(err) {
 			return err
 		}
-		delay := min(time.Second*time.Duration(1<<min(attempt, 4)), 15*time.Second)
-		fmt.Fprintf(output, "控制台连接中断，%d 秒后重连；已断开的 TCP 和串口数据不会重放。\n", int(delay/time.Second))
+		delay := backoff.next()
+		fmt.Fprintf(output, "控制台连接中断，%.1f 秒后重连；已断开的 TCP 和串口数据不会重放。\n", delay.Seconds())
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -354,7 +355,7 @@ func runAgent(ctx context.Context, key string, writer io.Writer) error {
 	}
 }
 
-func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, server *url.URL, manager *agentRuntime, link *managementLink, inventory chan<- struct{}) error {
+func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, server *url.URL, manager *agentRuntime, link *managementLink, inventory chan<- struct{}, healthy func()) error {
 	stop := context.AfterFunc(ctx, func() {
 		conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "client_stopping"), time.Now().Add(time.Second))
 		conn.Close()
@@ -375,6 +376,7 @@ func agentSession(ctx context.Context, conn *websocket.Conn, grant agentGrant, s
 	if err = link.install(conn); err != nil {
 		return err
 	}
+	healthy()
 	if ready.TransportProtocol == 1 {
 		manager.pool.start()
 	}
