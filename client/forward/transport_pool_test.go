@@ -2,17 +2,105 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v4"
 )
+
+func TestRelayACKBypassesABlockedWriteOnTheSameStream(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	pool := newTransportPool(ctx, nil, agentGrant{}, "", nil)
+	// No native writer: hold a queued data completion to model pool congestion.
+	conn := &websocket.Conn{}
+	pool.conn = conn
+	relay := &relayChannel{pool: pool, conn: conn, id: 1}
+	flow := newFlowChannel(relay, func() bool { return true })
+	flow.relay = true
+	var workers sync.WaitGroup
+	defer func() { pool.cancel(); flow.Close(); workers.Wait() }()
+	flow.receive(webrtc.DataChannelMessage{Data: []byte("inbound-one")})
+	if _, _, err := flow.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+	writing := make(chan error, 1)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		writing <- flow.WriteMessage(websocket.BinaryMessage, []byte("queued-outbound"))
+	}()
+	var data poolWrite
+	select {
+	case data = <-pool.data:
+	case <-ctx.Done():
+		t.Fatal("outbound data was not queued")
+	}
+	reading := make(chan struct {
+		bytes []byte
+		err   error
+	}, 1)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		_, bytes, err := flow.ReadMessage()
+		reading <- struct {
+			bytes []byte
+			err   error
+		}{bytes, err}
+	}()
+	select {
+	case ack := <-pool.controls:
+		var value struct {
+			Type string `json:"type"`
+			ID   int    `json:"id"`
+		}
+		if ack.conn != conn || ack.kind != websocket.BinaryMessage || len(ack.data) <= 5 || ack.data[0] != 1 || binary.BigEndian.Uint32(ack.data[1:5]) != 1 || json.Unmarshal(ack.data[5:], &value) != nil || value.Type != "ack" || value.ID != 1 {
+			t.Fatal("invalid receive credit frame")
+		}
+		ack.finish(nil)
+	case <-ctx.Done():
+		t.Fatal("ACK blocked behind its opposite-direction queued data")
+	}
+	flow.receive(webrtc.DataChannelMessage{Data: []byte("inbound-two")})
+	select {
+	case result := <-reading:
+		if result.err != nil || string(result.bytes) != "inbound-two" {
+			t.Fatal("receive did not progress independently:", result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("receive still blocked behind outgoing data")
+	}
+	select {
+	case <-writing:
+		t.Fatal("data completed before the native writer released it")
+	default:
+	}
+	if len(data.data) <= 5 || data.data[0] != 2 || string(data.data[5:]) != "queued-outbound" {
+		t.Fatal("outbound business bytes changed")
+	}
+	data.finish(nil)
+	select {
+	case err := <-writing:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("outbound data did not finish")
+	}
+	if len(pool.data) != 0 || len(pool.controls) != 0 {
+		t.Fatal("data or credit was replayed")
+	}
+}
 
 func TestPooledTransportRetriesWhenDataReconnectPrecedesManagementEnrollment(t *testing.T) {
 	var attempts atomic.Int32

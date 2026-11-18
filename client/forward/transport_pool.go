@@ -371,7 +371,11 @@ func (c *relayChannel) sendContextDeadline(ctx context.Context, data []byte, tex
 }
 func (c *relayChannel) Send(data []byte) error     { return c.frame(2, data) }
 func (c *relayChannel) SendText(data string) error { return c.frame(1, []byte(data)) }
-func (c *relayChannel) BufferedAmount() uint64     { return 0 } // Writes are synchronous, with one bounded writer.
+
+// Receive credit must reach the priority queue even while an opposite-direction
+// business write waits. The pool's single writer still serializes native writes.
+func (c *relayChannel) SendACK(data string) error { return c.frame(1, []byte(data)) }
+func (c *relayChannel) BufferedAmount() uint64    { return 0 } // Writes are synchronous, with one bounded writer.
 func (c *relayChannel) Close() error {
 	c.pool.mu.Lock()
 	current := c.pool.channels[c.id] == c && c.pool.conn == c.conn
