@@ -121,9 +121,12 @@ jobs:
           - target: chromium-desktop
             engine: chromium
             projects: --project=chromium-desktop
-          - target: chromium-phone
+          - target: chromium-phone-1
             engine: chromium
-            projects: --project=chromium-phone
+            projects: --project=chromium-phone --shard=1/2
+          - target: chromium-phone-2
+            engine: chromium
+            projects: --project=chromium-phone --shard=2/2
           - target: chromium-tablet
             engine: chromium
             projects: --project=chromium-tablet
@@ -168,8 +171,8 @@ jobs:
       - name: Install CJK fonts for actual mixed-script terminal metrics
         run: sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Cross-browser compatibility
-        # Firefox and WebKit can exceed 30 minutes as a serial suite. Keep all
-        # desktop/mobile cases in two shards with one worker each. Per-test
+        # Chromium phone, Firefox and WebKit can exceed 30 minutes serially.
+        # Split these suites into two shards with one worker each. Per-test
         # deadlines and the 45-minute job bound still apply.
         timeout-minutes: 30
         run: npm run test:compat -- ${{ matrix.projects }}

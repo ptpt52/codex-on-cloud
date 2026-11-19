@@ -167,10 +167,12 @@ test('the public offline shell includes shortcut modules and never caches authen
     expect(paths).toContain('/forward-rule-form.js');
     expect(paths).not.toContain('/node-directory.js'); expect(paths).not.toContain('/node-ui.js');
     for (const path of ['/service-link.js', '/rtc-transport.js', '/rtc-stats.js', '/transport-policy.js', '/control.js', '/health.js', '/file-wire.js', '/file-client.js']) expect(paths).toContain(path);
+    const downloadShell = ['/file-download/bridge.html', '/file-download/bridge.js', '/file-download/worker.js'];
+    for (const path of ['/file-download.js', ...downloadShell]) expect(paths).toContain(path);
     expect(paths).toContain('/novnc-bundle.js'); expect(paths).toContain('/novnc-LICENSES.txt');
-    expect(paths.every(path => path === '/' || path === '/novnc-LICENSES.txt' || /^\/[a-z0-9-]+\.(js|css|svg|webmanifest)$/.test(path))).toBe(true);
+    expect(paths.every(path => path === '/' || path === '/novnc-LICENSES.txt' || downloadShell.includes(path) || /^\/[a-z0-9-]+\.(js|css|svg|webmanifest)$/.test(path))).toBe(true);
     expect(new Set(revisions)).toEqual(new Set([app.panel.uiRevision]));
-    expect(paths.some(path => path.startsWith('/api/') || path.startsWith('/desktop/'))).toBe(false);
+    expect(paths.some(path => path.startsWith('/api/') || path.startsWith('/desktop/') || path.startsWith('/file-download/save/'))).toBe(false);
     expect(app.inputCalls).toEqual([]);
   } finally { await context.setOffline(false); await app.close(); }
 });
