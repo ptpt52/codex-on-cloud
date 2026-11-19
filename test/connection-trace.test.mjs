@@ -10,6 +10,13 @@ test('directory summaries retain bounded progress and stop causes without metada
   assert.equal(trace.text().includes('PRIVATE'), false);
 });
 
+test('statistics admission diagnostics contain a count without peer or native result payloads', () => {
+  const trace = createConnectionTrace(undefined, { enabled: true });
+  trace.add({ type: 'rtc-stats-busy', path: 'direct', pendingStats: 4, peer: 'PRIVATE_PEER', stats: 'PRIVATE_STATS' }, { mode: 'service' });
+  assert.match(traceDescription(trace.snapshot()[0]), /统计读取额度已满.*未结束的统计读取 4 项/);
+  assert.equal(trace.text().includes('PRIVATE_'), false);
+});
+
 test('recheck completion restores automatic probe status without confusing candidate failure with retry policy', () => {
   assert.deepEqual(connectionProgress('recheck-ended', { path: 'direct', reason: 'connection', probe: 'stopped', probeReason: 'auth' }), { probe: 'stopped', probeReason: 'auth' });
   assert.deepEqual(connectionProgress('recheck-ended', { path: 'direct', reason: 'auth', probe: 'ready', probeReason: 'PRIVATE' }), { probe: 'ready' });

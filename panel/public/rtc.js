@@ -1,7 +1,7 @@
 import { createControlClient } from '/control.js';
 import { createHealthClient } from '/health.js';
 import { gatherCandidates, selectedRoute, rtcRouteKind, rtcDirectKind } from './rtc-stats.js';
-import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, RTC_NEGOTIATION_TIMEOUT, rtcFailureStatus, createRTCNativeWaiter } from './transport-policy.js';
+import { disconnectGrace, RTC_SIGNAL_TIMEOUT, RTC_CONNECT_TIMEOUT, RTC_NEGOTIATION_TIMEOUT, RTC_NATIVE_LIMIT, rtcFailureStatus, createRTCNativeWaiter } from './transport-policy.js';
 import { rtcHints, createRTCHints } from '/rtc-hints.js';
 import { nodeHeaders, nodeIdentity } from '/node-scope.js';
 import { entryPath, entryBasePath } from '/entry-path.js';
@@ -10,6 +10,9 @@ import { requestRTCOffer, OFFER_LIMITS } from '/rtc-offers.js';
 
 let enabled = true;
 const native = createRTCNativeWaiter();
+// Diagnostics have a separate realm-wide budget. Timed out/closed peers keep
+// charging their native reads until settlement, without blocking negotiation.
+const nativeStats = createRTCNativeWaiter();
 export function canTryDirect() { return enabled && window.isSecureContext && !!window.RTCPeerConnection; }
 
 // HTTPS authenticates the SDP fingerprints; DTLS encrypts the LAN data stream.
@@ -76,19 +79,24 @@ export async function desktopTransport(viewer, controlChanged = () => {}, { prob
       else channel.addEventListener('open', notify, { once: true });
     };
     if (!probe && !service) video();
-    let features, statsRead, statsResolve, statsTimer, statsPending = false, lastRoute;
+    let features, statsRead, statsResolve, statsTimer, statsPending = false, statsBlockedLogged = false, lastRoute;
     function stats() {
       if (ended) return Promise.resolve(null);
       if (statsRead) return statsRead;
       // Statistics are optional diagnostics, not a prerequisite for healthy
       // data channels. Keep at most one native read, even if it never settles.
       if (statsPending) return Promise.resolve(null);
+      if (nativeStats.pending >= RTC_NATIVE_LIMIT) {
+        if (!statsBlockedLogged) { statsBlockedLogged = true; trace('rtc-stats-busy', { path: 'direct', pendingStats: nativeStats.pending }); }
+        return Promise.resolve(null);
+      }
+      statsBlockedLogged = false;
       statsPending = true;
       statsRead = new Promise(resolve => {
         const finish = value => { clearTimeout(statsTimer); statsResolve = statsRead = undefined; resolve(value); };
         statsResolve = finish;
         statsTimer = setTimeout(() => { trace('rtc-stats-timeout', { path: 'direct', durationMs: 1000 }); finish(null); }, 1000);
-        Promise.resolve().then(() => peer.getStats()).then(value => {
+        nativeStats.wait(() => peer.getStats()).then(value => {
           const result = ended ? null : selectedRoute(value), kind = rtcRouteKind(result);
           const route = kind === 'relay' ? 'turn' : kind === 'direct' ? rtcDirectKind(result) : 'unknown';
           if (!ended && route !== lastRoute) { lastRoute = route; trace('rtc-route', { path: 'direct', route }); }
