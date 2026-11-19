@@ -16,6 +16,45 @@ import { FILE_CHUNK,FILE_MAX } from '../panel/public/file-wire.js';
 import { attachServiceFiles } from '../panel/service-files.mjs';
 import { FORWARD_FILES } from '../panel/forward-downloads.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
+for(const direction of ['upload','download'])for(const errorFails of [false,true])test(`failed ${direction} completion settles unknown without replay (${errorFails?'unwritable error record':'recoverable error record'})`,async t=>{
+ let requests=0,completed=0;
+ const upstream=http.createServer((req,res)=>{
+  requests++;req.resume();req.once('end',()=>{
+   completed++;
+   if(direction==='upload'){res.writeHead(200,{'content-type':'application/json'});res.end('{"ok":true,"name":"completed.bin"}');}
+   else{res.writeHead(200,{'content-length':4});res.end('safe');}
+  });
+ });
+ upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+ t.after(()=>new Promise(resolve=>{upstream.close(resolve);upstream.closeAllConnections();}));
+ const signal=()=>{const handlers=new Set();return{subscribe(fn){handlers.add(fn);return{unSubscribe(){handlers.delete(fn);}};},emit(value){for(const fn of [...handlers])fn(value);},get size(){return handlers.size;}};};
+ const native={readyState:'open',bufferedAmount:0,onMessage:signal(),stateChange:signal(),error:signal()},browser=Object.assign(new EventTarget(),{readyState:'open',bufferedAmount:0});
+ let completionAttempts=0,errorAttempts=0,closes=0;
+ const close=()=>{if(native.readyState==='closed')return;closes++;native.readyState=browser.readyState='closed';native.stateChange.emit('closed');browser.dispatchEvent(new Event('close'));};
+ native.close=browser.close=close;
+ native.send=data=>{
+  const value=typeof data==='string'?JSON.parse(data):null;
+  if(value?.type==='done'){completionAttempts++;throw Error('isolated completion send failure');}
+  if(value?.type==='error'){errorAttempts++;if(errorFails)throw Error('isolated error send failure');}
+  queueMicrotask(()=>browser.dispatchEvent(Object.assign(new Event('message'),{data})));
+ };
+ browser.send=data=>queueMicrotask(()=>native.onMessage.emit(typeof data==='string'?data:Buffer.from(data)));
+ const controller=new AbortController(),serverFailures=[],clientFailures=[];
+ const server=attachServiceFiles(native,{valid:()=>true,headers:{},port:()=>upstream.address().port,signal:controller.signal,fail:value=>serverFailures.push(value)});
+ const client=createFileClient(browser,value=>clientFailures.push(value));
+ t.after(()=>{server.close();client.close();controller.abort();});
+ const transfer=direction==='upload'?client.upload(new File(['safe'],'completed.bin')):client.download('completed.bin',4);
+ let timer;
+ try{
+  await assert.rejects(Promise.race([transfer,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('completion remained pending')),3000);})]),error=>error.outcome==='unknown'&&(errorFails||error.status===502));
+ }finally{clearTimeout(timer);}
+ assert.equal(client.busy,false);assert.equal(client.ready,false);
+ assert.equal(completed,1);assert.equal(requests,1,'a committed or unknown transfer is never resubmitted');
+ assert.equal(completionAttempts,1);assert.equal(errorAttempts,1);assert.equal(closes,1);
+ assert.deepEqual(serverFailures,[true]);assert.deepEqual(clientFailures,[!errorFails]);
+ assert.equal(getEventListeners(controller.signal,'abort').length,0);
+ assert.equal(native.onMessage.size+native.stateChange.size+native.error.size,0);
+});
 test('download ACK timeout sends a recoverable unknown outcome and releases only the file channel within three seconds', async t => {
  const upstream = http.createServer((_req, res) => { res.writeHead(200, { 'content-length': 4 }); res.end('safe'); });
  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');

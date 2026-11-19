@@ -20,14 +20,27 @@ export function attachServiceFiles(channel,{valid,headers,port,signal,fail,entry
  const wire=createFileWire(adapter,{control,chunk:receive,timedOut(err){if(active)reject(active,Object.assign(err,{status:408}));else wire.close(err);},failed(){ended=true;clearTimeout(retireTimer);signal.removeEventListener('abort',cancel);for(const subscription of subscriptions.splice(0))subscription?.unSubscribe?.();cleanup();fail(recoverable);}});
  function cleanup(){const entry=active;active=undefined;if(!entry)return;clearTimeout(entry.timer);entry.controller.abort();entry.req?.destroy();entry.res?.destroy();}
  function check(entry){if(!entry||entry!==active||!valid()||signal.aborted||ended)throw fault(401,'文件授权或连接已失效');}
- function finish(entry,value){if(active!==entry)return;try{check(entry);wire.send({type:'done',id:entry.id,...value});}catch{}cleanup();}
+ function finish(entry,value){
+  if(active!==entry)return;
+  try{check(entry);wire.send({type:'done',id:entry.id,...value});}
+  catch(err){
+   // The upload may already be committed. A failed completion record must
+   // settle as unknown, never clear our deadline and strand the client.
+   reject(entry,Object.assign(fault(err.status||502,'文件完成确认失败，结果未知；请检查文件状态后手动重试'),{outcome:'unknown'}));return;
+  }
+  cleanup();
+ }
  function reject(entry,err){
   if(active!==entry)return;
   const status=err.status||502;
   recoverable=valid()&&!signal.aborted&&recoverableFileStatus(status);
   wire.quiesce(err);
   const outcome=['rejected','unknown'].includes(err.outcome)?err.outcome:rejectedStatuses.includes(status)?'rejected':'unknown';
-  try{wire.send({type:'error',id:entry.id,status,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(fileTimeoutCode(err.code)?{code:err.code}:{}),...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});}catch{}
+  let notified=false;
+  try{wire.send({type:'error',id:entry.id,status,outcome,message:err.status?err.message:'文件传输中断，结果未知；请检查文件状态后手动重试',...(fileTimeoutCode(err.code)?{code:err.code}:{}),...(['file_busy','file_exists'].includes(err.fileCode)?{fileCode:err.fileCode}:{}),...(recoverable?{recoverable:true}:{})});notified=true;}catch{}
+  // A failed error record cannot participate in the graceful error handshake.
+  // Closing immediately lets the browser settle unknown and release its slot.
+  if(!notified){wire.close(err);return;}
   cleanup();if(recoverable)retireTimer=setTimeout(()=>wire.close(),3000).unref();
  }
  async function control(value){
