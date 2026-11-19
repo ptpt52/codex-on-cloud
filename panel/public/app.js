@@ -880,7 +880,8 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
   }
   const service = serviceAction(path, method);
   if (!cachedResumePending && service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
-    try { const value = await serviceLink.request(service, body || {}, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
+    const serviceBody = service === 'files' && path.includes('?') ? { page: new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('page') } : body || {};
+    try { const value = await serviceLink.request(service, serviceBody, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
   if (!cachedResumePending && method === 'GET' && views.active.panelReady && owned && views.active.state === 'connected' && ['/api/state', '/api/terminals'].includes(path)) {

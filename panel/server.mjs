@@ -28,6 +28,8 @@ import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
 import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
+import { createFileCatalog, FILE_CATALOG_LIMITS } from './file-catalog.mjs';
+import { readResponseBytes } from '../native/response-body.mjs';
 import { createServiceRTC } from './service-rtc.mjs';
 import { attachServiceFiles } from './service-files.mjs';
 import { createUIAssets, NOVNC_VERSION, STATIC_CACHE } from './ui-assets.mjs';
@@ -119,6 +121,7 @@ export async function createPanel(config) {
   const forwardAgents = createForwardAgents(config, forwarding);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
   const fileTransfers = createFileTransfers();
+  const fileCatalog = createFileCatalog();
   const helperTransfers = createFileTransfers({ limit: 2, busyStatus: 429, busyMessage: '助手下载繁忙，请稍后重试' });
   const turnCache = createTurnCache(signal => requestTurnCredentials({ endpoint: config.selfhostNode.turnEndpoint, node: config.selfhostNode, ca: config.selfhostCaBundle, signal }));
   const turnConfig = async (wait = true) => {
@@ -255,7 +258,7 @@ export async function createPanel(config) {
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-    const data = await response.json();
+    const data = path === '/files' ? JSON.parse((await readResponseBytes(response, FILE_CATALOG_LIMITS.snapshotBytes, '文件列表元数据超过 2 MiB')).toString('utf8')) : await response.json();
     if (!response.ok) throw Object.assign(new HttpError(response.status, data.error || '桌面操作失败'), { outcome: data.outcome || (method !== 'GET' && response.status >= 500 ? 'unknown' : 'rejected') });
     return data;
   }
@@ -679,7 +682,21 @@ export async function createPanel(config) {
       return reply(res, 200, result);
     }
     if (path === '/api/files' && req.method === 'GET') {
-      requireSession(req);
+      const session = requireSession(req);
+      if (url.searchParams.has('page')) {
+        if (url.searchParams.size !== 1 || url.searchParams.getAll('page').length !== 1) throw new HttpError(400, '文件列表分页参数无效');
+        const controller = new AbortController();
+        const cancel = () => { if (!res.writableFinished) controller.abort(); };
+        res.once('close', cancel);
+        if (req.aborted || res.destroyed) controller.abort();
+        try {
+          const value = await fileCatalog.read(session.hash, url.searchParams.get('page'), async signal => {
+            const result = await agent('/files', { signal }); requireSession(req);
+            return { ...result, fileProgressProtocol: 1 };
+          }, controller.signal);
+          requireSession(req); return reply(res, 200, value);
+        } finally { res.off('close', cancel); }
+      }
       const result = await agent('/files'); requireSession(req); return reply(res, 200, { ...result, fileProgressProtocol: 1 });
     }
     if (path === '/api/files/delete' && req.method === 'POST') {
@@ -935,6 +952,7 @@ export async function createPanel(config) {
     forwardAgents.close(); await forwarding.close();
     await services.close();
     fileTransfers.close();
+    fileCatalog.close();
     helperTransfers.close();
     clearInterval(expiration);
     closeSockets(() => true);

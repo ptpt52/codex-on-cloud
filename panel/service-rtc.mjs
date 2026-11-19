@@ -2,6 +2,7 @@ import http from 'node:http';
 import { createRTCBridge, rtcBindAddresses, rtcOffer } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { normalizeEntryBasePath } from './entry-path.mjs';
+import { validFilePage } from './public/file-list.js';
 
 const error = (status, message, outcome = 'rejected') => Object.assign(Error(message), { status, outcome });
 export const SERVICE_ACTIONS = Object.freeze({ state: ['GET', '/api/state'], diagnostics: ['GET', '/api/diagnostics'], files: ['GET', '/api/files'],
@@ -15,6 +16,11 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
   if (!Object.hasOwn(SERVICE_ACTIONS, action)) return Promise.reject(error(400, '不支持的服务操作'));
   const [method, path] = route;
   const prefix = normalizeEntryBasePath(entryBasePath).slice(0, -1);
+  let query = '';
+  if (action === 'files' && Object.hasOwn(body || {}, 'page')) {
+    if (Object.keys(body).join(',') !== 'page' || !validFilePage(body.page)) return Promise.reject(error(400, '文件列表分页参数无效'));
+    query = '?page=' + body.page;
+  }
   const data = method === 'POST' ? JSON.stringify(body) : '';
   if (method === 'POST' && (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.byteLength(data) > 1024)) return Promise.reject(error(400, '服务参数无效或过大'));
   return new Promise((resolve, reject) => {
@@ -24,7 +30,7 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
     const transportError = err => err.status ? err : requestSignal.reason?.name === 'TimeoutError'
       ? Object.assign(error(504, '服务操作超时，结果未知，请刷新状态确认', 'unknown'), { code: 'local_http_timeout' })
       : Object.assign(error(502, '服务连接中断，操作结果未知，请刷新状态确认', 'unknown'), { code: 'local_http_error' });
-    const req = http.request({ host: '127.0.0.1', port, path: prefix + path, method, signal: requestSignal,
+    const req = http.request({ host: '127.0.0.1', port, path: prefix + path + query, method, signal: requestSignal,
       headers: { ...headers, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
       const chunks = []; let size = 0;
       res.on('data', chunk => { size += chunk.length; if (size > 240 * 1024) res.destroy(error(503, '服务响应过大，请使用 HTTPS', method === 'POST' ? 'unknown' : 'rejected')); else chunks.push(chunk); });

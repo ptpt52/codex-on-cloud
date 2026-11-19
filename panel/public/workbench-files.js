@@ -1,6 +1,6 @@
 import { FILE_MAX, fileTimeoutCode } from './file-wire.js';
 import { createUploadPrompt, uploadResult, validTransferName, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './file-upload.js';
-import { createFileListReader } from './file-list.js';
+import { createFileListReader, readFilePages } from './file-list.js';
 import { createFileProgress, observeUploadProgress, createUploadTrace } from './file-transfer.js';
 import { nodeLink } from './node-scope.js';
 
@@ -108,7 +108,8 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       if (generation === state().generation && state().loggedIn && !state().accessExpired) $('file-list-status').textContent = `${error.message}；不会自动重试。`;
     }
   });
-  const fileListReader = createFileListReader({ request: signal => api('/api/files', { signal }),
+  const readFiles = signal => readFilePages((page, signal) => api('/api/files?page=' + page, { signal }), signal);
+  const fileListReader = createFileListReader({ request: readFiles,
     valid: () => !disposed && state().loggedIn && !state().accessExpired && navigator.onLine && $('files-dialog').open,
     render: (files, listing) => { deleteSupported = listing.deleteProtocol === FILE_DELETE_PROTOCOL; renderFiles(files); }, status: text => { $('file-list-status').textContent = text; },
   });
@@ -180,7 +181,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     renderFileControls();
     $('upload-status').textContent = `正在检查 ${file.name}…`;
     try {
-      const listing = await api('/api/files', { signal: controller.signal });
+      const listing = await readFiles(controller.signal);
       if (!current()) return;
       if (listing.uploadProtocol !== UPLOAD_PROTOCOL || !Array.isArray(listing.files)) throw Error('文件服务需要更新后才能安全上传；未发送文件内容');
       const existing = listing.files.find(entry => entry.name === file.name);

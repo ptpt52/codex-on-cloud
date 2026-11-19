@@ -140,7 +140,7 @@ test('new-file race and old file service both fail safely without overwriting', 
     await open(page, app);
     await page.route('**/api/files/*', async route => { if (route.request().method() === 'PUT') app.files.set('资料.txt', Buffer.from('created after listing')); await route.continue(); });
     await select(page); await expect(page.locator('#upload-status')).toContainText('已有同名文件'); expect(app.files.get('资料.txt').toString()).toBe('created after listing'); expect(writes(app)).toHaveLength(0);
-    await page.route('**/api/files', route => route.fulfill({ json: { files: [] } }));
+    await page.route(/\/api\/files(?:\?.*)?$/, route => route.fulfill({ json: { files: [] } }));
     await select(page, 'old-helper.txt'); await expect(page.locator('#upload-status')).toContainText('文件服务需要更新'); expect(writes(app)).toHaveLength(0);
   } finally { await app.close(); }
 });
@@ -192,7 +192,7 @@ test('a successful upload with a failed list refresh still reports completion', 
   const app = await fixture({ mode: 'terminal' });
   try {
     await open(page, app);
-    await page.route('**/api/files', route => app.files.has('资料.txt') ? route.fulfill({ status: 503, json: { error: 'list unavailable' } }) : route.continue());
+    await page.route(/\/api\/files(?:\?.*)?$/, route => app.files.has('资料.txt') ? route.fulfill({ status: 503, json: { error: 'list unavailable' } }) : route.continue());
     await select(page); await expect(page.locator('#upload-status')).toContainText('上传完成：资料.txt；列表刷新失败');
     expect(writes(app)).toHaveLength(1); expect(app.files.get('资料.txt').toString()).toBe('new content');
   } finally { await app.close(); }
@@ -203,7 +203,7 @@ test('stalled post-upload refresh obeys the overall deadline and releases the fi
   const waiting = new Promise(resolve => { release = resolve; });
   try {
     await open(page, app); await page.clock.install();
-    await page.route('**/api/files', async route => { if (app.files.has('资料.txt')) { refreshStarted = true; await waiting; } await route.continue().catch(() => {}); });
+    await page.route(/\/api\/files(?:\?.*)?$/, async route => { if (app.files.has('资料.txt')) { refreshStarted = true; await waiting; } await route.continue().catch(() => {}); });
     await select(page); await expect(page.locator('#upload-status')).toContainText('上传完成'); await expect.poll(() => refreshStarted).toBe(true);
     await page.clock.fastForward(300001); await expect(page.locator('#upload-status')).toContainText('上传完成：资料.txt；列表刷新失败'); await expect(page.locator('#upload-input')).toBeEnabled();
     expect(writes(app)).toHaveLength(1); expect(app.files.get('资料.txt').toString()).toBe('new content');

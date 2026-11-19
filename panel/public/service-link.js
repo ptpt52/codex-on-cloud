@@ -3,7 +3,8 @@ import { desktopTransport } from '/rtc-transport.js';
 import { createFileClient } from './file-client.js';
 import { createRTCRecheck } from './rtc-recheck.js';
 const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'POST /api/files/delete': 'file-delete', 'GET /api/forward': 'forward-list' };
-export const serviceAction = (path, method) => Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
+export const serviceAction = (path, method) => method === 'GET' && /^\/api\/files\?page=(?:1|[a-f0-9]{32}\.[1-9]\d{0,2})$/.test(path) ? 'files'
+  : Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
 
 // Separate authenticated service link: no frame, desktop claim or input replay.
 export function createServiceLink({ viewer, options, changed, canReplace = () => true, trace = () => {} }) {

@@ -10,7 +10,7 @@ test('a stalled directory read times out and can be refreshed without replaying 
   const gate = new Promise(resolve => { release = resolve; });
   try {
     app.files.set('kept.txt', Buffer.from('kept')); await login(page, app); await page.clock.install();
-    await page.route('**/api/files', async route => { if (stall) { await gate; await route.fulfill({ json: { files: [] } }).catch(() => {}); } else await route.continue(); });
+    await page.route(/\/api\/files(?:\?.*)?$/, async route => { if (stall) { await gate; await route.fulfill({ json: { files: [] } }).catch(() => {}); } else await route.continue(); });
     await page.locator('#files-button').click(); await expect(page.locator('#file-list-status')).toContainText('正在读取');
     await page.clock.fastForward(8001); await expect(page.locator('#file-list-status')).toContainText('读取文件列表超时'); await expect(page.locator('#files-button')).toBeEnabled();
     stall = false; await page.locator('#refresh-files').click(); await expect(page.locator('#file-list')).toContainText('kept.txt');
@@ -23,7 +23,7 @@ test('closing the directory cancels its read and allows immediate reopening', as
   const gate = new Promise(resolve => { release = resolve; });
   try {
     app.files.set('kept.txt', Buffer.from('kept')); await login(page, app);
-    await page.route('**/api/files', async route => { if (stall) { await gate; await route.abort().catch(() => {}); } else await route.continue(); });
+    await page.route(/\/api\/files(?:\?.*)?$/, async route => { if (stall) { await gate; await route.abort().catch(() => {}); } else await route.continue(); });
     await page.locator('#files-button').click(); await expect(page.locator('#file-list-status')).toContainText('正在读取');
     await page.locator('#close-files').click(); await expect(page.locator('#files-button')).toBeEnabled({ timeout: 1500 });
     stall = false; await page.locator('#files-button').click(); await expect(page.locator('#file-list')).toContainText('kept.txt');
@@ -118,7 +118,7 @@ test('deletion confirmation expires or cancels offline, and older helpers cannot
     await remove.click(); await page.clock.fastForward(120001); await expect(page.locator('#file-delete-dialog')).toBeHidden();
     await remove.click(); await context.setOffline(true); await expect(page.locator('#file-delete-dialog')).toBeHidden();
     await context.setOffline(false); await page.locator('#refresh-files').click();
-    await page.route('**/api/files', async route => { const response = await route.fetch(), body = await response.json(); delete body.deleteProtocol; await route.fulfill({ json: body }); });
+    await page.route(/\/api\/files(?:\?.*)?$/, async route => { const response = await route.fetch(), body = await response.json(); delete body.deleteProtocol; await route.fulfill({ json: body }); });
     await page.locator('#refresh-files').click(); await expect(remove).toBeDisabled(); await expect(remove).toHaveAttribute('title', /更新/);
     expect(app.received.filter(req => req.method === 'DELETE')).toHaveLength(0); expect(app.files.has('keep.txt')).toBe(true);
   } finally { await context.setOffline(false); await app.close(); }
