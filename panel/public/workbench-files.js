@@ -1,4 +1,5 @@
-import { FILE_MAX, fileTimeoutCode } from './file-wire.js';
+import { FILE_MAX, FILE_DOWNLOAD_TIMEOUT, fileTimeoutCode } from './file-wire.js';
+import { canStreamDownload, createDownloadSink } from './file-download.js';
 import { createUploadPrompt, uploadResult, validTransferName, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './file-upload.js';
 import { createFileListReader, readFilePages } from './file-list.js';
 import { createFileProgress, observeUploadProgress, createUploadTrace } from './file-transfer.js';
@@ -35,11 +36,6 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
         event.preventDefault();
         if (!available) return toast('此文件名无法在网页使用，请先在节点主机改名', true);
         if (!state().loggedIn || state().accessExpired || !navigator.onLine) return toast('文件传输暂不可用，请恢复连接后重试。', true);
-        if (file.size > FILE_MAX) {
-          if (fileTransferController || fileDeletion) return toast('请先完成当前文件操作。');
-          $('upload-status').textContent = '大于 50 MiB 的文件由浏览器下载，请在浏览器下载列表查看进度或取消。';
-          const nativeLink = document.createElement('a'); nativeLink.href = link.href; nativeLink.download = file.name; document.body.append(nativeLink); nativeLink.click(); nativeLink.remove(); return;
-        }
         void downloadFile(file);
       });
       const actions = document.createElement('div'); actions.className = 'file-row-actions';
@@ -53,7 +49,17 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       remove.setAttribute('aria-label', `删除 ${file.name}`);
       try { fileDeleteOptions({ name: file.name, version: file.version }); } catch { remove.dataset.unavailable = 'true'; }
       remove.addEventListener('click', () => void deleteFile(file));
-      actions.append(link, copy, insert, remove); row.append(detail, actions); $('file-list').append(row);
+      actions.append(link);
+      if (file.size > FILE_MAX && available) {
+        const fallback = document.createElement('a'); fallback.href = link.href; fallback.download = file.name; fallback.textContent = 'HTTPS 下载';
+        fallback.addEventListener('click', event => {
+          event.preventDefault();
+          if (!state().loggedIn || state().accessExpired || !navigator.onLine || fileTransferController || fileDeletion) return toast('请先完成当前文件操作并恢复连接。');
+          nativeDownload(file);
+        });
+        actions.append(fallback);
+      }
+      actions.append(copy, insert, remove); row.append(detail, actions); $('file-list').append(row);
     }
     renderFileControls();
   }
@@ -225,27 +231,44 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       if (fileTransferController === controller) { fileTransferController = fileTransferPath = undefined; changed(); $('upload-input').disabled = false; $('upload-input').value = ''; renderFileControls(); }
     }
   }
+  function nativeDownload(file) {
+    $('upload-status').textContent = '文件内容：HTTPS（本次下载）；请在浏览器下载列表查看进度或取消。';
+    const link = document.createElement('a'); link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.download = file.name;
+    document.body.append(link); link.click(); link.remove();
+  }
   async function downloadFile(file) {
     if (fileTransferController || fileDeletion) return toast('请先完成当前文件操作。');
     if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
     if (!state().loggedIn || state().accessExpired || !navigator.onLine || !$('files-dialog').open) return;
+    const client = serviceLink.files, large = file.size > FILE_MAX;
+    if (large && (!client || file.size > client.maxDownload || !canStreamDownload())) { nativeDownload(file); return; }
     const generation = state().generation, controller = fileTransferController = new AbortController();
-    const timer = setTimeout(() => controller.abort('timeout'), 300000), client = serviceLink.files;
+    const timer = setTimeout(() => controller.abort('timeout'), large ? FILE_DOWNLOAD_TIMEOUT : 300000), downloadTrace = createUploadTrace(trace);
+    let sink;
     fileTransferPath = client ? 'direct' : 'https'; changed();
     const current = () => !disposed && fileTransferController === controller && generation === state().generation && state().loggedIn && !state().accessExpired;
     const progress = fileProgress.start({ name: file.name, size: file.size, direction: 'download', route: client ? 'WebRTC' : 'HTTPS', cancel: () => controller.abort('user') });
-    const report = (loaded, total) => { if (current() && !controller.signal.aborted) progress.progress(loaded, total); };
+    downloadTrace.start(client ? 'direct' : 'https', file.size, 'download');
+    const report = (loaded, total) => { if (current() && !controller.signal.aborted) { progress.progress(loaded, total); downloadTrace.progress(loaded, total); } };
     $('upload-input').disabled = true; renderFileControls(); $('upload-status').textContent = `正在下载 ${file.name}…`;
     try {
-      const blob = client ? await client.download(file.name, file.size, controller.signal, report)
+      let blob;
+      if (large) {
+        sink = await createDownloadSink(file.name, file.size, controller.signal, () => controller.abort('save-cancelled'));
+        if (!current() || controller.signal.aborted) { sink.abort(); return; }
+        await client.downloadTo(file.name, file.size, sink, controller.signal, report);
+      } else blob = client ? await client.download(file.name, file.size, controller.signal, report)
         : await api(`/api/files/${encodeURIComponent(file.name)}`, { signal: controller.signal, progress: report, downloadSize: file.size });
-      if (!current() || controller.signal.aborted) { progress.end('下载已取消，未生成下载文件。'); return; }
-      saveDirectFile(blob, file.name); progress.end('下载完成，已交给浏览器保存。', true); $('upload-status').textContent = `下载完成：${file.name}`;
+      if (!current() || controller.signal.aborted) { progress.end(large ? '下载已取消，请在浏览器下载列表核对文件。' : '下载已取消，未生成下载文件。'); return; }
+      if (blob) saveDirectFile(blob, file.name);
+      downloadTrace.end(undefined, undefined, 'confirmed'); progress.end('下载完成，已交给浏览器保存。', true); $('upload-status').textContent = `下载完成：${file.name}`;
     } catch (error) {
-      progress.end(controller.signal.aborted ? '下载已取消，未生成下载文件。' : '下载未完成，不会自动重试。');
-      if (current()) $('upload-status').textContent = controller.signal.aborted ? '下载已中断，未保存不完整文件。' : `${error.message}；请刷新列表后手动重试。`;
+      sink?.abort(error); downloadTrace.end(controller.signal.aborted ? 'aborted' : fileTimeoutCode(error.code) ? error.code : 'network', error.status, controller.signal.aborted ? 'canceled' : 'unknown');
+      progress.end(controller.signal.aborted ? large ? '下载已取消，请在浏览器下载列表核对文件。' : '下载已取消，未生成下载文件。' : '下载未完成，不会自动重试。');
+      if (current()) $('upload-status').textContent = controller.signal.aborted ? large ? '下载已中断，请在浏览器下载列表核对并清理未完成文件。' : '下载已中断，未保存不完整文件。' : `${error.message}；请刷新列表后手动重试。`;
     } finally {
       clearTimeout(timer);
+      downloadTrace.end('aborted', undefined, 'canceled');
       if (fileTransferController === controller) { fileTransferController = fileTransferPath = undefined; changed(); $('upload-input').disabled = false; renderFileControls(); }
     }
   }

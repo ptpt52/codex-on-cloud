@@ -44,3 +44,13 @@ test('a transfer deadline closes a stalled response and releases its capacity', 
   assert.equal(transfer.signal.aborted, true); assert.equal(first.res.destroyed, true);
   const second = channel(); transfers.begin(second.req, second.res, () => true).finish();
 });
+
+test('large download deadlines cover the HTTP bridge while uploads retain their five-minute budget', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const transfers = createFileTransfers({ downloadTimeoutMs: 1800000 }); t.after(() => transfers.close());
+  const download = channel(), upload = channel(); download.req.method = 'GET'; upload.req.method = 'PUT';
+  const downloading = transfers.begin(download.req, download.res, () => true), uploading = transfers.begin(upload.req, upload.res, () => true);
+  t.mock.timers.tick(300000); assert.equal(uploading.signal.aborted, true); assert.equal(downloading.signal.aborted, false);
+  t.mock.timers.tick(1500000); assert.equal(downloading.signal.aborted, true); assert.equal(download.res.destroyed, true);
+  assert.throws(() => createFileTransfers({ downloadTimeoutMs: 1800001 }));
+});

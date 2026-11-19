@@ -44,3 +44,13 @@ FILE_BENCH_WINDOW=8 FILE_BENCH_READ_MS=20 npm run test:files:bench
 所有上传均得到完成确认并通过哈希校验。探针延迟应结合吞吐和 CPU 一起看；减慢发送可能降低本机资源争用，该数字不能代替真实链路 RTT。另以八块窗口、每次读取额外等待 20 毫秒完成了三种条件的参数验证。
 
 比较时保存相同文件大小、窗口、重复次数、Node/依赖版本和测试条件。先比较确认完成字节/耗时，再看 `fileReadMs`、`chunkAckMs`、`chunkMaxAckMs`、`bufferWaitMs`、探针 P95 和观测到的缓冲量；仅凭“直连”标签或单次测速不能判断瓶颈。实际 LAN/VPN 测试还应记录真实路径、操作系统与文件来源，并单独报告。
+
+大文件下载另用 `test/browser/large-file-download.spec.mjs` 验证。2026-11-19 的一次隔离 Chromium 移动视口测试中，140 MiB 经真实本机 ICE/DTLS 下载、由浏览器流式保存，SHA256 一致，浏览器 HTTPS 文件内容请求为零，测得约 6.96 MiB/s。该记录使用测试文件服务和同机网络，不代表 Android 真机、无线局域网或 VPN 的吞吐，也不作为 CI 最低速度断言。
+
+保存 Worker 的持续运行可显式运行下列验收，默认 CI 跳过此慢项：
+
+```sh
+FILE_LONG_DOWNLOAD_TEST=1 npm run test:browser -- test/browser/large-file-download.spec.mjs --project=mobile --grep 'sustained native'
+```
+
+本机已完成一次 311 秒的 8 MiB 慢速保存并通过哈希校验，覆盖五分钟以上的浏览器 Worker 生命周期；此项不测量 WebRTC 吞吐。

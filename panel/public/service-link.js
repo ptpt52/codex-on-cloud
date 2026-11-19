@@ -2,6 +2,7 @@ import { directRetry } from './transport-policy.js';
 import { desktopTransport } from '/rtc-transport.js';
 import { createFileClient } from './file-client.js';
 import { createRTCRecheck } from './rtc-recheck.js';
+import { FILE_MAX, FILE_DOWNLOAD_MAX } from './file-wire.js';
 const routes = { 'GET /api/state': 'state', 'GET /api/diagnostics': 'diagnostics', 'GET /api/files': 'files', 'POST /api/files/delete': 'file-delete', 'GET /api/forward': 'forward-list' };
 export const serviceAction = (path, method) => method === 'GET' && /^\/api\/files\?page=(?:1|[a-f0-9]{32}\.[1-9]\d{0,2})$/.test(path) ? 'files'
   : Object.hasOwn(routes, method + ' ' + path) ? routes[method + ' ' + path] : null;
@@ -46,7 +47,7 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (channel.readyState === 'closed') queueMicrotask(reopen);
       else channel.addEventListener('close', reopen, { once: true });
       publish();
-    }, { window: candidate.features?.filesWindow || 4 });
+    }, { window: candidate.features?.filesWindow || 4, maxDownload: Number.isSafeInteger(candidate.features?.filesDownloadMax) && candidate.features.filesDownloadMax >= FILE_MAX && candidate.features.filesDownloadMax <= FILE_DOWNLOAD_MAX ? candidate.features.filesDownloadMax : FILE_MAX });
     files = client; channel.addEventListener('open', publish, { once: true });
   }
   function install(candidate, route, version) {

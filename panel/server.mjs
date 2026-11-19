@@ -28,6 +28,7 @@ import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
 import { createAccessControl } from './access-control.mjs';
 import { createFileTransfers } from './file-transfers.mjs';
+import { FILE_DOWNLOAD_TIMEOUT } from './public/file-wire.js';
 import { createFileCatalog, FILE_CATALOG_LIMITS } from './file-catalog.mjs';
 import { readResponseBytes } from '../native/response-body.mjs';
 import { createServiceRTC } from './service-rtc.mjs';
@@ -120,7 +121,7 @@ export async function createPanel(config) {
   const forwarding = createForwarding(config);
   const forwardAgents = createForwardAgents(config, forwarding);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
-  const fileTransfers = createFileTransfers();
+  const fileTransfers = createFileTransfers({ downloadTimeoutMs: FILE_DOWNLOAD_TIMEOUT });
   const fileCatalog = createFileCatalog();
   const helperTransfers = createFileTransfers({ limit: 2, busyStatus: 429, busyMessage: '助手下载繁忙，请稍后重试' });
   const turnCache = createTurnCache(signal => requestTurnCredentials({ endpoint: config.selfhostNode.turnEndpoint, node: config.selfhostNode, ca: config.selfhostCaBundle, signal }));

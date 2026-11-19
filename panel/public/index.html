@@ -435,7 +435,7 @@
   <dialog id="files-dialog" class="files-dialog transfer-dialog" aria-labelledby="files-title">
     <div class="dialog-heading"><div><span class="eyebrow">WORKSPACE TRANSFER</span><h2 id="files-title">文件中转</h2></div><button id="close-files" class="quiet" aria-label="关闭文件中转">✕</button></div>
     <p id="file-transport" class="muted" role="status">文件内容：HTTPS</p>
-    <p class="muted">文件位于节点主机的共享目录 <code id="transfer-path">等待读取…</code>。每个文件最大 50 MiB，同名上传需确认，可自动改名保留原文件。</p>
+    <p class="muted">文件位于节点主机的共享目录 <code id="transfer-path">等待读取…</code>。每个上传文件最大 50 MiB，同名上传需确认，可自动改名保留原文件。</p>
     <button id="open-transfer-directory" class="secondary" type="button" title="打开共享目录；已有窗口时切到该窗口，保留浏览位置" hidden>在远程桌面打开目录</button>
     <button id="upload-zone" class="upload-zone" type="button"><span aria-hidden="true">↑</span><strong>选择文件或拖到这里上传</strong><small>每次一个文件 · 上传到节点主机</small></button><input id="upload-input" type="file" aria-label="上传文件" hidden>
     <div id="file-path-fallback" class="file-path-fallback" hidden><label for="file-path-preview">服务器完整路径</label><input id="file-path-preview" readonly autocomplete="off"><p class="muted">浏览器未允许自动复制，可选中上方路径手动复制。</p></div>

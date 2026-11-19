@@ -22,6 +22,14 @@ test('upload trace preserves only bounded timing counters in sampled and final e
   const event=events.at(-1);assert.equal(event.chunkAckMs,123);assert.equal(event.fileReadMs,17);assert.equal(event.windowChunks,16);assert.ok(!JSON.stringify(events).includes('PRIVATE_'));
 });
 
+test('large download diagnostics retain their direction and actual path without filenames or stream handles', () => {
+  const events = [], trace = createUploadTrace((type, value) => events.push({ type, ...value }));
+  const size = 140 * 1024 * 1024;
+  trace.start('direct', size, 'download'); trace.progress(size, size); trace.end(undefined, undefined, 'confirmed');
+  assert.equal(events.length, 3); assert.ok(events.every(value => value.direction === 'download' && value.route === 'direct' && value.totalBytes === size));
+  assert.equal(events.at(-1).loadedBytes, size); assert.equal(events.at(-1).outcome, 'confirmed');
+});
+
 test('file buffering handles tiny chunks, empty files and incomplete or oversized bodies with fixed byte bounds', async () => {
   const buffer = createFileBuffer(70000);
   for (let i = 0; i < 70000; i++) buffer.append(new Uint8Array([i % 251]));

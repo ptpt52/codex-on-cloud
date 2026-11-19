@@ -2,13 +2,49 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createFileClient, FILE_READ_LIMITS } from '../panel/public/file-client.js';
-import { createFileWire,FILE_CHUNK,FILE_MAX } from '../panel/public/file-wire.js';
+import { createFileWire,sendFileChunks,FILE_CHUNK,FILE_MAX,FILE_DOWNLOAD_MAX } from '../panel/public/file-wire.js';
 
 class Channel extends EventTarget {
  readyState='open';bufferedAmount=0;
  send(data){queueMicrotask(()=>{if(this.peer.readyState==='open')this.peer.dispatchEvent(new MessageEvent('message',{data:typeof data==='string'?data:data.slice().buffer}));});}
  close(){if(this.readyState==='closed')return;this.readyState='closed';this.dispatchEvent(new Event('close'));}
 }
+
+test('large downloads require an advertised limit and a streaming sink before any request is admitted', async t => {
+ const a=new Channel(),b=new Channel();a.peer=b;b.peer=a;let starts=0;b.addEventListener('message',()=>starts++);
+ const legacy=createFileClient(a);t.after(()=>legacy.close());
+ const sink={write(){},close(){},abort(){}};
+ await assert.rejects(legacy.downloadTo('large.bin',FILE_MAX+1,sink),{outcome:'rejected'});
+ assert.equal(starts,0);assert.equal(legacy.maxDownload,FILE_MAX);
+ const c=new Channel(),d=new Channel();c.peer=d;d.peer=c;d.addEventListener('message',()=>starts++);
+ const modern=createFileClient(c,()=>{},{maxDownload:FILE_DOWNLOAD_MAX});t.after(()=>modern.close());
+ await assert.rejects(modern.download('large.bin',FILE_MAX+1),{outcome:'rejected'});
+ await assert.rejects(modern.downloadTo('too-large.bin',FILE_DOWNLOAD_MAX+1,sink),{outcome:'rejected'});
+ await assert.rejects(modern.downloadTo('bad-sink.bin',FILE_MAX+1,{}),{outcome:'rejected'});
+ assert.equal(starts,0);
+});
+
+test('a slow download sink applies receive-window backpressure and cancellation cannot close or finish its partial file', async t => {
+ const a=new Channel(),b=new Channel();a.peer=b;b.peer=a;
+ const client=createFileClient(a,()=>{},{window:16,maxDownload:FILE_DOWNLOAD_MAX});
+ let writes=0,closed=0,aborted=0,release,entered;
+ const started=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve),controller=new AbortController();
+ const sink={async write(){writes++;entered();await held;},close(){closed++;},abort(){aborted++;release();}};
+ let sending;
+ const server=createFileWire(b,{failed(){},chunk(){},control(value){
+  if(value.type==='start'){
+   server.setWindow(16);server.send({type:'ready',id:value.id,size:value.size,window:16});
+   async function* source(){for(let n=0;n<32;n++)yield new Uint8Array(FILE_CHUNK);}
+   sending=sendFileChunks(source(),server);void sending.catch(()=>{});
+  }
+  if(value.type==='cancel')server.send({type:'cancelled',id:value.id});
+ }});
+ t.after(()=>{release();client.close();server.close();});
+ const saving=client.downloadTo('large.bin',FILE_MAX+1,sink,controller.signal);void saving.catch(()=>{});
+ await started;await new Promise(setImmediate);assert.equal(writes,1);assert.equal(closed,0);
+ controller.abort(Error('user stopped save'));await assert.rejects(saving,/user stopped save/);await new Promise(setImmediate);
+ assert.equal(aborted,1);assert.equal(closed,0);assert.equal(writes,1);server.close();await assert.rejects(sending);
+});
 
 test('canceled and closed file clients keep pending native reads charged across retries until settlement', async t => {
  const releases=[],controllers=[],peers=[];let reads=0;

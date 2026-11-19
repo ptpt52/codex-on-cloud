@@ -18,7 +18,7 @@ export const TRACE_LABELS = Object.freeze({
   'request-failed': '节点请求失败', 'request-recovered': '节点请求已恢复',
   'rpc-failed': '直连控制请求失败', 'rpc-recovered': '迟到回复已排空，控制通道恢复', 'control-closed': '直连控制通道已关闭',
   'recheck-start': '开始手动直连重测', 'recheck-switch': '候选验证完成，准备切换', 'recheck-ended': '手动直连重测结束',
-  'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束', 'file-list-ended': '文件目录读取结束',
+  'file-start': '开始传输文件', 'file-progress': '文件传输进度', 'file-ended': '本次文件传输结束', 'file-list-ended': '文件目录读取结束',
   'capture-start': '开始记录网络调试日志',
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', queued: '等待协商名额', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
@@ -72,6 +72,7 @@ function clean(value) {
   if (['relay', 'direct'].includes(value.path)) result.path = value.path;
   if (Object.hasOwn(routes, value.route)) result.route = value.route;
   if (['confirmed', 'rejected', 'unknown', 'canceled'].includes(value.outcome)) result.outcome = value.outcome;
+  if (['upload', 'download'].includes(value.direction)) result.direction = value.direction;
   if (Object.hasOwn(TRACE_STAGES, value.stage)) result.stage = value.stage;
   if (value.type.startsWith('recheck-') && Object.hasOwn(TRACE_RECHECK_STEPS, value.step)) result.step = value.step;
   if (value.type === 'recheck-ended' && Object.hasOwn(TRACE_RECHECK_RESULTS, value.result)) result.result = value.result;
@@ -229,6 +230,7 @@ export function traceDescription(event, now = Date.now()) {
   if (event.action) parts.push(({ ping: '服务探针', promote: '服务连接切换', activate: '启用通道', state: '状态查询', diagnostics: '连接诊断', files: '文件列表', 'file-delete': '删除文件', 'forward-list': '映射列表', clipboard: '剪贴板', paste: '粘贴', key: '按键', edit: '编辑', terminal: '终端输入', terminals: '终端列表', 'create-terminal': '新建终端', 'open-terminal': '打开终端' })[event.action]);
   if (event.status) parts.push(`HTTP ${event.status}`);
   if (event.route) parts.push(routes[event.route]);
+  if (event.direction) parts.push(event.direction === 'download' ? '下载' : '上传');
   if (event.totalBytes !== undefined) parts.push(`已报告接收 ${event.loadedBytes || 0} / ${event.totalBytes} 字节`);
   if (event.pages !== undefined) parts.push(`已读 ${event.pages} 页，${event.itemCount || 0} 项`);
   if (event.pendingStats !== undefined) parts.push(`未结束的统计读取 ${event.pendingStats} 项`);

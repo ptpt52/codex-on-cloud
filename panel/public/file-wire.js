@@ -1,6 +1,8 @@
 import { LEGACY_TRANSFER_WINDOW, validTransferWindow } from './transfer-window.js';
 export const FILE_CHUNK = 16380;
 export const FILE_MAX = 50 * 1024 * 1024;
+export const FILE_DOWNLOAD_MAX = 1024 * 1024 * 1024;
+export const FILE_DOWNLOAD_TIMEOUT = 30 * 60 * 1000;
 export const fileTimeoutCode = code => ['file_ack_timeout', 'file_buffer_timeout'].includes(code);
 const BUFFER = 512 * 1024;
 const DATA_BUFFER = BUFFER - 4096; // Keep one maximum control message available.

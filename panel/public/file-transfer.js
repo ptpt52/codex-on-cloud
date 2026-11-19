@@ -1,4 +1,4 @@
-import { FILE_MAX, createFileBuffer } from './file-wire.js';
+import { FILE_MAX, FILE_DOWNLOAD_MAX, createFileBuffer } from './file-wire.js';
 
 export function transferSize(value) {
   if (value < 1024) return `${value} B`;
@@ -12,12 +12,12 @@ export function createUploadTrace(report = () => {}, now = () => performance.now
   let active;
   function emit(type, detail = {}) {
     if (!active) return;
-    try { report(type, { route: active.route, loadedBytes: active.loaded, totalBytes: active.total, durationMs: Math.max(0, Math.round(now() - active.started)), ...active.metrics, ...detail }); } catch { /* Diagnostics cannot stop a transfer. */ }
+    try { report(type, { route: active.route, ...(active.direction ? { direction: active.direction } : {}), loadedBytes: active.loaded, totalBytes: active.total, durationMs: Math.max(0, Math.round(now() - active.started)), ...active.metrics, ...detail }); } catch { /* Diagnostics cannot stop a transfer. */ }
   }
   return {
-    start(route, total) {
-      if (!['https', 'direct'].includes(route) || !Number.isSafeInteger(total) || total < 0 || total > FILE_MAX) throw Error('上传诊断参数无效');
-      active = { route, total, loaded: 0, started: now(), logged: now() }; emit('file-start');
+    start(route, total, direction = 'upload') {
+      if (!['upload', 'download'].includes(direction) || !['https', 'direct'].includes(route) || !Number.isSafeInteger(total) || total < 0 || total > (direction === 'download' ? FILE_DOWNLOAD_MAX : FILE_MAX)) throw Error('文件诊断参数无效');
+      active = { route, total, loaded: 0, started: now(), logged: now(), ...(direction === 'download' ? { direction } : {}) }; emit('file-start');
     },
     progress(loaded, total, metrics) {
       if (!active || total !== active.total || !Number.isSafeInteger(loaded) || loaded <= active.loaded || loaded > total) return;
@@ -63,7 +63,7 @@ export function createFileProgress({ panel, title, meter, detail, cancel }, now 
       return {
         phase(text) { if (active !== entry || entry.done) return; entry.phase = text; paint(); },
         progress(loaded, total = size) {
-          if (active !== entry || entry.done || !Number.isSafeInteger(loaded) || !Number.isSafeInteger(total) || loaded < entry.loaded || total < loaded || total > FILE_MAX) return;
+          if (active !== entry || entry.done || !Number.isSafeInteger(loaded) || !Number.isSafeInteger(total) || loaded < entry.loaded || total < loaded || total > (entry.direction === 'download' ? FILE_DOWNLOAD_MAX : FILE_MAX)) return;
           if (entry.phase) entry.started = now();
           entry.phase = ''; entry.loaded = loaded; entry.total = total;
           if (now() - entry.painted >= 150 || loaded === total) paint();

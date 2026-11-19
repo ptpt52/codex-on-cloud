@@ -1,6 +1,7 @@
 // Four bounded in-flight file streams; revocation closes their HTTP bodies as
 // well as their upstream requests. Screen ownership never controls a transfer.
-export function createFileTransfers({ limit = 4, timeoutMs = 300000, busyStatus = 503, busyMessage = '文件传输繁忙，请稍后重试' } = {}) {
+export function createFileTransfers({ limit = 4, timeoutMs = 300000, downloadTimeoutMs = timeoutMs, busyStatus = 503, busyMessage = '文件传输繁忙，请稍后重试' } = {}) {
+  if (!Number.isSafeInteger(downloadTimeoutMs) || downloadTimeoutMs < 1 || downloadTimeoutMs > 1800000) throw Error('文件下载期限无效');
   const active = new Set();
   function revalidate() { for (const entry of active) if (!entry.signal.aborted && !entry.valid()) entry.abort(); }
   const timer = setInterval(revalidate, 1000).unref();
@@ -21,7 +22,7 @@ export function createFileTransfers({ limit = 4, timeoutMs = 300000, busyStatus 
       const entry = { valid, signal: controller.signal, temporaryUpload, ...(progress ? { progress: { ...progress, loaded: 0 } } : {}), abort() { cancel(); res.destroy(); }, finish };
       // Keep the slot through cancellation until the handler's finally has
       // unwound its upstream work. The original deadline still bounds cleanup.
-      const timer = setTimeout(() => { entry.abort(); finish(); }, timeoutMs).unref();
+      const timer = setTimeout(() => { entry.abort(); finish(); }, req.method === 'GET' ? downloadTimeoutMs : timeoutMs).unref();
       active.add(entry);
       function finish() { clearTimeout(timer); active.delete(entry); cancel(); req.off('aborted', cancel); res.off('close', cancel); }
       function check() {

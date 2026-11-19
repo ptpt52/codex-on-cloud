@@ -3,6 +3,7 @@ import { createRTCBridge, rtcBindAddresses, rtcOffer } from './rtc.mjs';
 import { rtcHints, withHintCandidates } from './rtc-hints.mjs';
 import { normalizeEntryBasePath } from './entry-path.mjs';
 import { validFilePage } from './public/file-list.js';
+import { FILE_DOWNLOAD_MAX } from './public/file-wire.js';
 
 const error = (status, message, outcome = 'rejected') => Object.assign(Error(message), { status, outcome });
 export const SERVICE_ACTIONS = Object.freeze({ state: ['GET', '/api/state'], diagnostics: ['GET', '/api/diagnostics'], files: ['GET', '/api/files'],
@@ -83,7 +84,7 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
         ...(connectFiles ? { connectFiles: (channel, live, fail) => { if (entry.candidate) { void entry.close(); return; } return connectFiles(channel, live, headers, controller.signal, fail); } } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
-          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, filesWindow: connectFiles ? 16 : 4, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
+          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, filesWindow: connectFiles ? 16 : 4, filesDownloadMax: connectFiles ? FILE_DOWNLOAD_MAX : 0, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
           if (action === 'promote') {
             if (!entry.candidate) throw error(409, '服务连接已变化');
             const previous = pages.get(base);

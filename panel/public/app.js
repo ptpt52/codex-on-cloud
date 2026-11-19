@@ -1750,7 +1750,7 @@ function renderFileTransport() {
   const active = fileWorkbench?.transferPath;
   $('file-transport').textContent = active === 'https' ? '文件内容：HTTPS（本次传输）'
     : active === 'direct' ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（本次传输）`
-    : serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（下次传输可用，最多 50 MiB）`
+    : serviceLink.files ? `文件内容：${rtcRouteLabel(serviceLink.state.route)}（下次传输可用${serviceLink.files.maxDownload > 50 * 1024 * 1024 ? '，大文件下载最多 1 GiB' : '，最多 50 MiB'}）`
     : serviceProtocol === 1 && rtcConfig?.webrtc ? '文件内容：HTTPS；后台继续探测 WebRTC' : '文件内容：HTTPS';
   $('diag-file-transport').textContent = $('file-transport').textContent.replace(/^文件内容：/, '');
 }
