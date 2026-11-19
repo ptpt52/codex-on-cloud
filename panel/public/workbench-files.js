@@ -273,7 +273,17 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     get busy() { return !!fileTransferController || !!fileDeletion || fileListReader.busy; },
     get transferPath() { return fileTransferPath; },
     update: renderFileControls, saveDownload: saveDirectFile, reset,
-    revalidate() { fileListReader.revalidate(); uploadPrompt.revalidate(); if (state().temporary || fileDeletion?.generation !== state().generation) cancelDeletion(); if (!state().loggedIn || state().accessExpired || !navigator.onLine) { fileTransferController?.abort(!navigator.onLine ? 'offline' : 'auth'); cancelDeletion(); } },
+    revalidate() {
+      fileListReader.revalidate(); uploadPrompt.revalidate();
+      if (state().temporary || fileDeletion?.generation !== state().generation) cancelDeletion();
+      if (!state().loggedIn || state().accessExpired) { fileTransferController?.abort('auth'); cancelDeletion(); }
+      else if (!navigator.onLine) {
+        // The default-route hint cannot revoke an admitted LAN/VPN transfer.
+        // Its channel, ACK/read deadlines and five-minute budget still apply.
+        if (fileTransferPath !== 'direct') fileTransferController?.abort('offline');
+        cancelDeletion();
+      }
+    },
     suspend() { const pending = !!fileTransferController || !!fileDeletion?.sent; reset('page-hidden'); if (pending) $('upload-status').textContent = '页面已离开，文件操作结果未确认；请刷新列表核对，不会自动重试。'; },
     dispose() { if (disposed) return; disposed = true; reset(); for (const remove of listeners) remove(); uploadPrompt.dispose(); fileProgress.dispose(); $('file-list').replaceChildren(); },
   };

@@ -3,6 +3,51 @@ import { createHash } from 'node:crypto';
 import { fixture } from '../fixture.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex');
 async function login(app,page){await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});await page.goto(app.config.origin);await page.locator('#username').fill('visitor');await page.locator('#password').fill('temporary-test-password');await page.locator('#login-button').click();await expect(page.locator('#user-label')).toContainText('临时访问');await page.locator('#files-button').click();}
+for (const ending of ['complete', 'cancel', 'close']) test(`an offline hint preserves an admitted LAN upload while ${ending} keeps its own outcome`, async ({ page }) => {
+ const app=await fixture({webrtc:true});let signals=0;
+ page.on('request',request=>{if(request.url().endsWith('/api/service/rtc'))signals++;});
+ await page.addInitScript(()=>{
+  const read=Blob.prototype.arrayBuffer,send=RTCDataChannel.prototype.send;
+  window.filePackets=0;window.fileCancels=0;window.slowFiles=false;
+  Blob.prototype.arrayBuffer=async function(){if(window.slowFiles)await new Promise(resolve=>setTimeout(resolve,350));return read.call(this);};
+  RTCDataChannel.prototype.send=function(value){if(this.label==='codex-files'){window.fileNative=this;if(typeof value==='string'){if(JSON.parse(value).type==='cancel')window.fileCancels++;}else window.filePackets++;}return send.call(this,value);};
+ });
+ try{
+  await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
+  const bytes=Buffer.alloc(2*1024*1024,139);await page.evaluate(()=>{window.slowFiles=true;});
+  await page.locator('#upload-input').setInputFiles({name:'hint.bin',mimeType:'application/octet-stream',buffer:bytes});
+  await expect.poll(()=>page.evaluate(()=>window.filePackets)).toBeGreaterThan(0);
+  await page.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:false});window.dispatchEvent(new Event('offline'));});
+  await expect(page.locator('#upload-input')).toBeDisabled();
+  if(ending==='cancel')await page.locator('#cancel-file-transfer').click();
+  if(ending==='close')await page.evaluate(()=>window.fileNative.close());
+  await expect(page.locator('#upload-status')).toContainText(ending==='complete'?'上传完成':ending==='cancel'?'结果未知':'结果未确认',{timeout:10000});
+  if(ending==='complete'){expect(hash(app.files.get('hint.bin'))).toBe(hash(bytes));expect(await page.evaluate(()=>window.fileCancels)).toBe(0);expect(signals).toBe(1);}
+  else{expect(app.files.has('hint.bin')).toBe(false);if(ending==='cancel')expect(await page.evaluate(()=>window.fileCancels)).toBe(1);}
+  await page.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:true});window.dispatchEvent(new Event('online'));});
+  await expect(page.locator('#upload-input')).toBeEnabled();
+  await page.waitForTimeout(400);expect(app.received.filter(request=>request.method==='PUT'&&request.url==='/files/hint.bin')).toHaveLength(1);
+  expect(app.inputCalls).toEqual([]);
+ }finally{await app.close();}
+});
+test('an offline hint preserves a progressing LAN download without HTTP fallback or an incomplete saved file', async ({ page }) => {
+ const app=await fixture({webrtc:true}),bytes=Buffer.alloc(2*1024*1024,141);app.files.set('download.bin',bytes);let bodies=0;
+ await page.addInitScript(()=>{
+  const listen=RTCDataChannel.prototype.addEventListener;window.downloadChunks=0;
+  RTCDataChannel.prototype.addEventListener=function(type,listener,options){if(this.label==='codex-files'&&type==='message')return listen.call(this,type,event=>{
+   if(typeof event.data!=='string')setTimeout(()=>{window.downloadChunks++;listener.call(this,event);},300);else listener.call(this,event);
+  },options);return listen.call(this,type,listener,options);};
+ });
+ try{
+  await page.route('**/api/files/**',route=>{bodies++;return route.abort();});
+  await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
+  const downloading=page.waitForEvent('download');await page.locator('.file-row a').click();
+  await expect.poll(()=>page.evaluate(()=>window.downloadChunks)).toBeGreaterThan(0);
+  await page.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:false});window.dispatchEvent(new Event('offline'));});
+  const download=await downloading,stream=await download.createReadStream(),parts=[];for await(const chunk of stream)parts.push(chunk);
+  expect(hash(Buffer.concat(parts))).toBe(hash(bytes));await expect(page.locator('#upload-status')).toContainText('下载完成');expect(bodies).toBe(0);expect(app.inputCalls).toEqual([]);
+ }finally{await app.close();}
+});
 test('blocked native file reads stay bounded across canceled uploads and late reads cannot send file data',async({page})=>{
  const app=await fixture({webrtc:true});
  await page.addInitScript(()=>{
