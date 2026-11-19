@@ -685,6 +685,8 @@ export async function createPanel(config) {
       const session = requireSession(req);
       if (url.searchParams.has('page')) {
         if (url.searchParams.size !== 1 || url.searchParams.getAll('page').length !== 1) throw new HttpError(400, '文件列表分页参数无效');
+        const pageItems = req.headers['x-codex-file-page-items'];
+        if (pageItems !== undefined && pageItems !== '1000') throw new HttpError(400, '文件列表分页能力无效');
         const controller = new AbortController();
         const cancel = () => { if (!res.writableFinished) controller.abort(); };
         res.once('close', cancel);
@@ -693,7 +695,7 @@ export async function createPanel(config) {
           const value = await fileCatalog.read(session.hash, url.searchParams.get('page'), async signal => {
             const result = await agent('/files', { signal }); requireSession(req);
             return { ...result, fileProgressProtocol: 1 };
-          }, controller.signal);
+          }, controller.signal, pageItems === '1000' ? 1000 : undefined);
           requireSession(req); return reply(res, 200, value);
         } finally { res.off('close', cancel); }
       }

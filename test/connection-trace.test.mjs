@@ -2,6 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createConnectionTrace, createTraceReporter, connectionProgress, TRACE_LIMITS, TRACE_STORAGE_KEY, traceDescription } from '../panel/public/connection-trace.js';
 
+test('directory summaries retain bounded progress and stop causes without metadata payloads', () => {
+  const trace = createConnectionTrace(undefined, { enabled: true });
+  trace.add({ type: 'file-list-ended', pages: 2, itemCount: 630, durationMs: 20000, outcome: 'rejected', reason: 'list-timeout', files: ['PRIVATE'], snapshot: 'PRIVATE', cursor: 'PRIVATE' }, { mode: 'service' });
+  const event = trace.snapshot()[0];
+  assert.match(traceDescription(event), /目录读取总期限已到/); assert.match(traceDescription(event), /已读 2 页，630 项/);
+  assert.equal(trace.text().includes('PRIVATE'), false);
+});
+
 test('recheck completion restores automatic probe status without confusing candidate failure with retry policy', () => {
   assert.deepEqual(connectionProgress('recheck-ended', { path: 'direct', reason: 'connection', probe: 'stopped', probeReason: 'auth' }), { probe: 'stopped', probeReason: 'auth' });
   assert.deepEqual(connectionProgress('recheck-ended', { path: 'direct', reason: 'auth', probe: 'ready', probeReason: 'PRIVATE' }), { probe: 'ready' });

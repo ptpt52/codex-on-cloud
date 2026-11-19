@@ -12,6 +12,7 @@ import { createBrowserPreferences, decodeBrowserPreferences, BROWSER_PREFERENCES
 import { createRTCHints, hintIP } from './rtc-hints.js';
 import { createServiceLink, serviceAction } from './service-link.js';
 import { uploadHeaders } from './file-upload.js';
+import { FILE_PAGE_LIMITS } from './file-list.js';
 import { createWorkbenchFiles } from './workbench-files.js';
 import { createWorkbenchClipboard } from './workbench-clipboard.js';
 import { createWorkspaceLifetime } from './workspace-lifetime.js';
@@ -880,7 +881,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
   }
   const service = serviceAction(path, method);
   if (!cachedResumePending && service && raw === undefined && serviceLink.ready && !serviceLink.busy && !signal?.aborted) {
-    const serviceBody = service === 'files' && path.includes('?') ? { page: new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('page') } : body || {};
+    const serviceBody = service === 'files' && path.includes('?') ? { page: new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('page'), pageItems: FILE_PAGE_LIMITS.pageItems } : body || {};
     try { const value = await serviceLink.request(service, serviceBody, signal); if (path === '/api/state') panelRoute = 'service'; return value; }
     catch (error) { if (error.status === 401) showLogin('登录已过期，请重新登录'); if (method !== 'GET' || [401, 403, 423].includes(error.status) || signal?.aborted) throw error; }
   }
@@ -899,6 +900,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
     }
   }
   const headers = { 'x-viewer-id': viewer, ...nodeHeaders() };
+  if (service === 'files' && path.includes('?')) headers['x-codex-file-page-items'] = String(FILE_PAGE_LIMITS.pageItems);
   if (method !== 'GET') headers['x-csrf-token'] = csrf;
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (upload !== undefined) Object.assign(headers, uploadHeaders(upload));

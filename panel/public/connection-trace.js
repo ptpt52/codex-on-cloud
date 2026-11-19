@@ -17,7 +17,7 @@ export const TRACE_LABELS = Object.freeze({
   'request-failed': '节点请求失败', 'request-recovered': '节点请求已恢复',
   'rpc-failed': '直连控制请求失败', 'rpc-recovered': '迟到回复已排空，控制通道恢复', 'control-closed': '直连控制通道已关闭',
   'recheck-start': '开始手动直连重测', 'recheck-switch': '候选验证完成，准备切换', 'recheck-ended': '手动直连重测结束',
-  'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束',
+  'file-start': '开始上传文件', 'file-progress': '上传接收进度', 'file-ended': '本次上传结束', 'file-list-ended': '文件目录读取结束',
   'capture-start': '开始记录网络调试日志',
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', queued: '等待协商名额', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
@@ -38,6 +38,7 @@ export const TRACE_REASONS = Object.freeze({
   history: '正在查找、复制或查看历史', 'target-switch': '正在切换终端', cooldown: '连接路径切换冷却期', 'quality-warming': '等待延迟采样',
   quality: '当前路径质量更好', 'handoff-refused': '当前界面暂未允许切换', aborted: '请求已取消', network: '请求未收到响应',
   'page-hidden': '页面已挂起', 'page-restored': '从浏览器缓存恢复页面',
+  'list-timeout': '目录读取总期限已到', 'page-timeout': '目录单页读取超时',
   'native-busy': '浏览器原生协商仍有挂起调用，等待释放',
   'queue-timeout': '等待本页协商名额超时', 'negotiation-timeout': '本次直连协商总时限已到',
   'http-status': '请求返回错误状态',
@@ -83,7 +84,7 @@ function clean(value) {
   if (['state', 'terminals', 'files', 'forward', 'access', 'desktop', 'input', 'other'].includes(value.operation)) result.operation = value.operation;
   if (CONTROL_TRACE_ACTIONS.includes(value.action)) result.action = value.action;
   if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) result.status = value.status;
-  for (const key of ['durationMs', 'waitMs', 'budgetMs', 'queuedBytes', 'rttMs', 'jitterMs', 'ackMs', 'penaltyMs', 'attempt', 'host', 'reflexive', 'relay', 'candidateMs', 'currentMs', 'pendingInputs', 'inputAgeMs', 'loadedBytes', 'totalBytes', 'windowChunks', 'chunkAckMs', 'chunkMaxAckMs', 'bufferWaitMs', 'fileReadMs']) if (number(value[key])) result[key] = value[key];
+  for (const key of ['durationMs', 'waitMs', 'budgetMs', 'queuedBytes', 'rttMs', 'jitterMs', 'ackMs', 'penaltyMs', 'attempt', 'host', 'reflexive', 'relay', 'candidateMs', 'currentMs', 'pendingInputs', 'inputAgeMs', 'loadedBytes', 'totalBytes', 'windowChunks', 'chunkAckMs', 'chunkMaxAckMs', 'bufferWaitMs', 'fileReadMs', 'pages', 'itemCount']) if (number(value[key])) result[key] = value[key];
   return result;
 }
 // No text, addresses, IDs, SDP or credentials cross this diagnostic interface.
@@ -154,7 +155,7 @@ export function createConnectionTrace(now = () => Date.now(), { storage, scope =
     // retaining the last 32 events as chronological context. Bounds stay fixed.
     while (events.length > TRACE_LIMITS.events || bytes({ version: 2, events }) > TRACE_LIMITS.bytes - 1024) { evict(events); droppedEvents++; }
   }
-  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'heartbeat-timeout', 'input-pressure', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended']);
+  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'heartbeat-timeout', 'input-pressure', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended', 'file-list-ended']);
   function evict(list) {
     const index = list.findIndex((event, index) => index < list.length - 32 && !important.has(event.type));
     list.splice(index < 0 ? 0 : index, 1);
@@ -228,6 +229,7 @@ export function traceDescription(event, now = Date.now()) {
   if (event.status) parts.push(`HTTP ${event.status}`);
   if (event.route) parts.push(routes[event.route]);
   if (event.totalBytes !== undefined) parts.push(`已报告接收 ${event.loadedBytes || 0} / ${event.totalBytes} 字节`);
+  if (event.pages !== undefined) parts.push(`已读 ${event.pages} 页，${event.itemCount || 0} 项`);
   if (event.windowChunks !== undefined) parts.push(`窗口 ${event.windowChunks} 块，分块确认 ${event.chunkAckMs || 0} ms（最长 ${event.chunkMaxAckMs || 0} ms），发送缓冲等待 ${event.bufferWaitMs || 0} ms，文件读取 ${event.fileReadMs || 0} ms`);
   if (event.outcome) parts.push(({ confirmed: '已确认完成', rejected: '请求被拒绝', unknown: '结果未知，不自动重试', canceled: '已取消' })[event.outcome]);
   if (event.attempt) parts.push(`第 ${event.attempt} 次尝试`);

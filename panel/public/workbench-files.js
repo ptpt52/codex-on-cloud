@@ -108,7 +108,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       if (generation === state().generation && state().loggedIn && !state().accessExpired) $('file-list-status').textContent = `${error.message}；不会自动重试。`;
     }
   });
-  const readFiles = signal => readFilePages((page, signal) => api('/api/files?page=' + page, { signal }), signal);
+  const readFiles = signal => readFilePages((page, signal) => api('/api/files?page=' + page, { signal }), signal, trace);
   const fileListReader = createFileListReader({ request: readFiles,
     valid: () => !disposed && state().loggedIn && !state().accessExpired && navigator.onLine && $('files-dialog').open,
     render: (files, listing) => { deleteSupported = listing.deleteProtocol === FILE_DELETE_PROTOCOL; renderFiles(files); }, status: text => { $('file-list-status').textContent = text; },

@@ -16,12 +16,12 @@ test('large catalogs use one stable census, bounded RPC pages and preserve all p
   const catalog = createFileCatalog(); t.after(() => catalog.close()); const original = listing(); let loads = 0, pages = 0;
   assert.ok(Buffer.byteLength(JSON.stringify(original)) > 240 * 1024);
   const result = await readFilePages(async page => {
-    const value = await catalog.read('login', page, async () => { loads++; return original; });
+    const value = await catalog.read('login', page, async () => { loads++; return original; }, undefined, FILE_PAGE_LIMITS.pageItems);
     assert.ok(Buffer.byteLength(JSON.stringify(value)) <= FILE_PAGE_LIMITS.pageBytes); pages++;
     if (pages === 1) original.files[999].name = 'changed-outside-snapshot';
     return value;
   });
-  assert.equal(loads, 1); assert.equal(pages, 8); assert.equal(result.files.length, 1000);
+  assert.equal(loads, 1); assert.equal(pages, 2); assert.equal(result.files.length, 1000);
   assert.match(result.files[999].name, /^0999-x/); assert.equal(result.truncated, false); assert.equal(result.quotaProtocol, 1);
   const fresh = await readFilePages(page => catalog.read('login', page, async () => original));
   assert.equal(fresh.files[999].name, 'changed-outside-snapshot');
@@ -41,6 +41,16 @@ test('catalog cursors are isolated by login, expire and evict with bounded count
   await catalog.read('two', '1', heavy); await catalog.read('three', '1', heavy);
   await assert.rejects(catalog.read('one', first.next, load), { status: 410 });
   for (const page of ['', '0', '../files', 'a'.repeat(32) + '.1000', first.snapshot + '.0']) await assert.rejects(catalog.read('one', page, load), { status: 400 });
+});
+
+test('unadvertised clients retain 128-item pages while large pages are byte-bounded', async t => {
+  const catalog = createFileCatalog(); t.after(() => catalog.close());
+  const original = listing(), old = await catalog.read('a', '1', async () => original);
+  assert.equal(old.files.length, 128);
+  const wide = await catalog.read('a', '1', async () => original, undefined, 1000);
+  assert.ok(wide.files.length > 128); assert.ok(Buffer.byteLength(JSON.stringify(wide)) <= FILE_PAGE_LIMITS.pageBytes);
+  assert.equal((await catalog.read('a', old.next)).offset, 128);
+  await assert.rejects(catalog.read('a', '1', async () => original, undefined, 1001), { status: 400 });
 });
 
 test('cancelled initial reads retain admission until settlement and shutdown prevents late snapshots', async () => {
@@ -76,12 +86,12 @@ test('browser page assembly accepts legacy lists but never publishes partial or 
 });
 
 test('service pagination accepts only validated cursors on its fixed entry path', async t => {
-  const paths = [], server = http.createServer((req, res) => { paths.push(req.url); res.end('{}'); });
+  const paths = [], capabilities = [], server = http.createServer((req, res) => { paths.push(req.url); capabilities.push(req.headers['x-codex-file-page-items']); res.end('{}'); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
   const read = body => localServiceRequest(server.address().port, {}, 'files', body, new AbortController().signal, '/node/example/');
-  await read({ page: '1' }); await read({ page: 'a'.repeat(32) + '.128' });
-  for (const body of [{ page: '../../etc' }, { page: '1&url=/api/security' }, { page: 1 }, { page: '1', url: '/api/security' }]) await assert.rejects(read(body), { status: 400 });
-  assert.deepEqual(paths, ['/node/example/api/files?page=1', '/node/example/api/files?page=' + 'a'.repeat(32) + '.128']);
+  await read({ page: '1' }); await read({ page: 'a'.repeat(32) + '.128', pageItems: 1000 });
+  for (const body of [{ page: '../../etc' }, { page: '1&url=/api/security' }, { page: 1 }, { page: '1', url: '/api/security' }, { page: '1', pageItems: 1001 }, { page: '1', pageItems: '1000' }]) await assert.rejects(read(body), { status: 400 });
+  assert.deepEqual(paths, ['/node/example/api/files?page=1', '/node/example/api/files?page=' + 'a'.repeat(32) + '.128']); assert.deepEqual(capabilities, [undefined, '1000']);
 });
 
 test('1000 long filenames stay on real service DTLS, keep legacy HTTP and fresh upload quota checks', async t => {
@@ -92,10 +102,10 @@ test('1000 long filenames stay on real service DTLS, keep legacy HTTP and fresh 
   const client = await serviceClient(app); t.after(() => client.close()); let pages = 0;
   const baseline = app.received.filter(req => req.url === '/files').length;
   const value = await readFilePages(async page => {
-    const reply = await client.rpc('files', { page }); assert.equal(reply.ok, true); pages++;
+    const reply = await client.rpc('files', { page, pageItems: 1000 }); assert.equal(reply.ok, true); pages++;
     return reply.value;
   });
-  assert.equal(pages, 8); assert.equal(value.files.length, 1000); assert.equal(app.received.filter(req => req.url === '/files').length - baseline, 1);
+  assert.equal(pages, 2); assert.equal(value.files.length, 1000); assert.equal(app.received.filter(req => req.url === '/files').length - baseline, 1);
   assert.equal((await client.rpc('ping')).value.ready, true);
   const shared = await (await client.request('/api/files?page=1')).json();
   assert.equal((await client.rpc('files', { page: shared.next })).value.offset, 128);

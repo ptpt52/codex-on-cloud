@@ -17,8 +17,10 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
   const [method, path] = route;
   const prefix = normalizeEntryBasePath(entryBasePath).slice(0, -1);
   let query = '';
+  let pageHeaders = {};
   if (action === 'files' && Object.hasOwn(body || {}, 'page')) {
-    if (Object.keys(body).join(',') !== 'page' || !validFilePage(body.page)) return Promise.reject(error(400, '文件列表分页参数无效'));
+    if (Object.keys(body).some(key => !['page', 'pageItems'].includes(key)) || !validFilePage(body.page) || Object.hasOwn(body, 'pageItems') && body.pageItems !== 1000) return Promise.reject(error(400, '文件列表分页参数无效'));
+    if (body.pageItems === 1000) pageHeaders = { 'x-codex-file-page-items': '1000' };
     query = '?page=' + body.page;
   }
   const data = method === 'POST' ? JSON.stringify(body) : '';
@@ -31,7 +33,7 @@ export function localServiceRequest(port, headers, action, body, signal, entryBa
       ? Object.assign(error(504, '服务操作超时，结果未知，请刷新状态确认', 'unknown'), { code: 'local_http_timeout' })
       : Object.assign(error(502, '服务连接中断，操作结果未知，请刷新状态确认', 'unknown'), { code: 'local_http_error' });
     const req = http.request({ host: '127.0.0.1', port, path: prefix + path + query, method, signal: requestSignal,
-      headers: { ...headers, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
+      headers: { ...headers, ...pageHeaders, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
       const chunks = []; let size = 0;
       res.on('data', chunk => { size += chunk.length; if (size > 240 * 1024) res.destroy(error(503, '服务响应过大，请使用 HTTPS', method === 'POST' ? 'unknown' : 'rejected')); else chunks.push(chunk); });
       res.once('error', err => reject(transportError(err))); res.once('end', () => {
