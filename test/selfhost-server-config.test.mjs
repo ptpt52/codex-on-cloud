@@ -26,7 +26,7 @@ test('Caddy routes node paths through auth and frps while keeping internals priv
   assert.match(config, /path=\{(?:http\.request\.uri\.path|http\.request\.uri)\}/);
   assert.match(config, /reverse_proxy 127\.0\.0\.1:18080/);
   assert.match(config, /header_up Host \{host\}/);
-  assert.match(config, /flush_interval -1/);
+  assert.doesNotMatch(config, /flush_interval -1/);
   assert.match(config, /handle \/\.well-known\/acme-challenge/);
   assert.match(config, /header_up Cookie/);
   assert.match(caddyConfig('desk.example.com', { adminCidrs: ['198.51.100.0/24'] }), /path \/admin \/admin\/\*/);

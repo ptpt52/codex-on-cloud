@@ -107,7 +107,8 @@ ${adminGuard}
 		reverse_proxy 127.0.0.1:${frpHttpPort} {
 			header_up Host {host}
 			header_up Cookie "(^|;[ \t]*)coc_session_center(_admin)?=[^;]*" "$1"
-			flush_interval -1
+			# Keep client cancellation while waiting for upstream response headers.
+			# SSE and unknown-length streams are flushed automatically by Caddy.
 			transport http {
 				read_timeout 0
 				write_timeout 0

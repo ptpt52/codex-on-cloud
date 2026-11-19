@@ -256,7 +256,7 @@ curl -fsS --max-time 3 http://127.0.0.1:36181/internal/healthz
 
 独立内部监听应返回 `ok: true` 和 `isolated: true`。旧共享配置在自动验收中提示待迁移，不能将它当作已经实现慢请求头隔离；按原安装参数完整升级后再次验收。
 
-同时核对已部署的 Caddy 路由授权配置包含 `max_conns_per_host 16`、`unhealthy_request_count 16`、`max_fails 1` 和 `response_header_timeout 2s`。内部健康页不能证明这些代理限制已经更新；并发容量和超时的开发回归由 `npm run test:selfhost:edge` 使用真实 Caddy、隔离中心与模拟存储等待验证，不向生产节点注入故障。
+同时核对已部署的 Caddy 路由授权配置包含 `max_conns_per_host 16`、`unhealthy_request_count 16`、`max_fails 1` 和 `response_header_timeout 2s`，节点反向代理不设置 `flush_interval -1`。该值在固定的 Caddy 2.6.2 中会让等待上游响应头的请求忽略客户端断开，取消文件传输后可能继续占用名额；默认刷新策略保留取消传播，SSE、未知长度响应与 WebSocket 继续流式传输。完整重跑原 `install` 命令才能更新 Caddyfile，单独更新应用不会应用此修复。内部健康页不能证明这些代理限制已经更新；`npm run test:selfhost:edge` 使用真实 Caddy、隔离中心与模拟存储等待验证并发、超时、取消后的四个文件名额回收及流式传输，不向生产节点注入故障。
 
 在已接入节点的完整路径检查工作台就绪状态：
 
