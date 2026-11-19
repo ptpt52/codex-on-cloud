@@ -6,7 +6,7 @@ import { resolve4 } from 'node:dns/promises';
 import net from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseArgs, parseEnv } from 'node:util';
 import { promisify } from 'node:util';
 import {
   SELFHOST_VERSIONS, caddyAcmeBootstrap, caddyConfig, caddyUnit, centerEnvironment, centerUnit,
@@ -18,6 +18,7 @@ import { readHelpPage } from '../selfhost/help-page.mjs';
 import { serverUpdate } from '../selfhost/server-update.mjs';
 import { acquireFileLock } from '../native/file-lock.mjs';
 import { readResponseBytes } from '../native/response-body.mjs';
+import { checkCenterRollbackListeners } from '../selfhost/listeners.mjs';
 
 const exec = promisify(execFile), project = fileURLToPath(new URL('../', import.meta.url));
 const ROOT = '/opt/codex-selfhost', ETC = '/etc/codex-selfhost', DATA = '/var/lib/codex-selfhost', SERVICE = 'codex-selfhost';
@@ -178,6 +179,7 @@ async function rollbackApplication() {
   if (!(await command('test', ['-d', previous])).ok) throw Error('没有可回滚的上一版中心应用');
   const envText = await readFile(join(ETC, 'server.env'), 'utf8'), domain = envText.match(/^SELFHOST_PUBLIC_HOST=(.+)$/m)?.[1];
   if (!domain) throw Error('中心域名配置丢失，未重启回滚应用');
+  await checkCenterRollbackListeners(previous, parseEnv(envText));
   const update = await serverUpdate({ ...updateOptions(), applicationOnly: true });
   try {
     await update.applicationRollingBack();
@@ -288,12 +290,16 @@ async function configure({ domain, email, publicIp, privateIp, certFile, keyFile
       await requiredCommand(hook, [], { timeout: 60000 });
       await safeWrite(hook, certbotHook(domain, { configDirectory: ETC }), 0o755);
     }
-    await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, frpHttpPort: 18080, redirectHttp: !certFile, adminCidrs }), 0o644);
+    await safeWrite(join(ETC, 'Caddyfile'), caddyConfig(domain, { centerPort: 36180, internalPort: 36181, frpHttpPort: 18080, redirectHttp: !certFile, adminCidrs }), 0o644);
     await requiredCommand(join(ROOT, 'bin', 'caddy'), ['validate', '--config', join(ETC, 'Caddyfile'), '--adapter', 'caddyfile']);
     for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
     for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) { await command('systemctl', ['reset-failed', unit]); await requiredCommand('systemctl', ['enable', '--now', unit]); }
     for (const unit of ['codex-selfhost-center.service', 'codex-selfhost-frps.service', 'codex-selfhost-coturn.service', 'codex-selfhost-caddy.service']) await requiredCommand('systemctl', ['restart', unit]);
     await localHttpsHealth(domain);
+    await waitCheck(async () => {
+      const response = await fetch('http://127.0.0.1:36181/internal/healthz', { signal: AbortSignal.timeout(1500), redirect: 'error' });
+      const value = JSON.parse(await readResponseBytes(response, 1024)); return response.status === 200 && value.ok === true && value.isolated === true;
+    }, '内部监听健康检查');
     for (const port of [7000, 3478, 5349]) await listenTcp(port);
     if (configureUfw) {
       await requiredCommand('apt-get', ['install', '-y', '--no-install-recommends', 'ufw'], { timeout: 120000 });

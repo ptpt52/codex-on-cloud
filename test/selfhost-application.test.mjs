@@ -15,15 +15,15 @@ test('installed center boots with its packaged dependencies outside the reposito
   const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
     import http from 'node:http';
     import { createSelfhostCenter } from './selfhost/center.mjs';
+    import { listenCenter } from './selfhost/listeners.mjs';
     import { loadedBackendVersion } from './native/backend-version.mjs';
     const center = await createSelfhostCenter({
-      origin: 'https://desk.example.test', dataDir: './state',
+      origin: 'https://desk.example.test', dataDir: './state', port: 0, internalPort: 0,
       password: 'packaged_center_test_password', frpToken: 'packaged_frp_test_token_long',
       turnSecret: 'packaged_turn_test_secret_'.repeat(3),
     });
     try {
-      center.server.listen(0, '127.0.0.1');
-      await new Promise(resolve => center.server.once('listening', resolve));
+      await listenCenter(center, { port: 0, internalPort: 0 });
       const ready = await new Promise((resolve, reject) => {
         const request = http.get({ hostname: '127.0.0.1', port: center.server.address().port,
           path: '/healthz', headers: { host: 'desk.example.test' } }, response => {
@@ -35,6 +35,15 @@ test('installed center boots with its packaged dependencies outside the reposito
         request.once('error', reject);
       });
       if (!ready) throw Error('Packaged center is not ready');
+      const internal = await new Promise((resolve, reject) => {
+        const request = http.get({ host: '127.0.0.1', port: center.internalServer.address().port,
+          path: '/internal/healthz', headers: { host: 'desk.example.test' } }, response => {
+          let body = ''; response.on('data', chunk => { body += chunk; }); response.once('error', reject);
+          response.once('end', () => resolve(response.statusCode === 200 && JSON.parse(body).isolated));
+        });
+        request.once('error', reject);
+      });
+      if (!internal) throw Error('Packaged internal listener is not ready');
       console.log('packaged center ready');
       console.log('backend ' + (await loadedBackendVersion('center')).revision);
     } finally { await center.close(); }

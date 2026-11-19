@@ -89,6 +89,8 @@ test('configuration distinguishes gateway nodes from centers and refuses inconsi
   await writeFile(join(centerDirectory, 'server.env'), 'SELFHOST_ORIGIN=https://center.example.test\nSELFHOST_PUBLIC_HOST=center.example.test\n', { mode: 0o640 });
   const center = await loadVerificationConfig({ role: 'center' }, { root, centerDirectory }); assert.equal(center.role, 'center'); assert.equal(center.entry, 'https://center.example.test/');
   assert(center.services.every(unit => unit.startsWith('codex-selfhost-')));
+  await writeFile(join(centerDirectory, 'server.env'), 'SELFHOST_ORIGIN=https://center.example.test\nSELFHOST_PUBLIC_HOST=center.example.test\nSELFHOST_CENTER_PORT=36180\nSELFHOST_INTERNAL_PORT=36181\n', { mode: 0o640 });
+  assert.equal((await loadVerificationConfig({ role: 'center' }, { root, centerDirectory })).internalPort, 36181);
 });
 
 test('wrong nodes, redirects, unhealthy files and stale UI fail checks; credentials never go to an unverified node', async t => {
@@ -185,6 +187,24 @@ test('center role checks homepage, admin subpath and public nodes without requir
   const report = await verifyDeployment({ login: true }, { loadConfig: async () => c, run: goodRun, request, readPassword: async () => secret });
   assert(report.summary.automatedOk, JSON.stringify(report)); assert.equal(status(report, 'admin-page'), 'pass'); assert.equal(status(report, 'logout'), 'pass');
   assert(!report.checks.some(check => check.id === 'prerequisites' || check.id === 'forward-artifacts'));
+});
+
+test('center verification requires a separately configured internal listener to prove isolation', async t => {
+  const root = await temporary(t), calls = [];
+  const c = config(root, { role: 'center', mode: undefined, nodeId: undefined, kind: 'selfhost-center', entry: 'https://center.example.test/', services: [], internalPort: 36181 });
+  const internal = 'http://127.0.0.1:36181/internal/healthz'; let available = false;
+  const request = async target => {
+    const url = String(target); calls.push(url);
+    if (url === internal) return json({ ok: true, isolated: available });
+    if (url.endsWith('/healthz')) return json({ ok: true });
+    if (url.endsWith('/api/public/nodes')) return json({ nodes: [] });
+    return new Response('<a href="/admin/"></a><form id="login-form"></form>', { headers: { 'content-type': 'text/html' } });
+  };
+  let report = await verifyDeployment({}, { loadConfig: async () => c, run: goodRun, request });
+  assert.equal(status(report, 'internal-listener'), 'fail'); assert.equal(report.summary.automatedOk, false);
+  available = true; report = await verifyDeployment({}, { loadConfig: async () => c, run: goodRun, request });
+  assert.equal(status(report, 'internal-listener'), 'pass'); assert.equal(report.summary.automatedOk, true);
+  assert(calls.includes(internal));
 });
 
 test('verification requests never follow redirects, reject non-loopback plaintext and bound actual response bytes', async t => {

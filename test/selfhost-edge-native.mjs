@@ -13,7 +13,7 @@ import { caddyAcmeConfig, caddyConfig, certbotHook } from '../selfhost/server-co
 const directory = await mkdtemp(join(tmpdir(), 'codex-edge-native-'));
 const listen = async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; };
 const freePort = async () => { const server = http.createServer(); const port = await listen(server); await new Promise(resolve => server.close(resolve)); return port; };
-let child, output = '', upstream;
+let child, output = '', upstream, internal;
 const stop = async () => { if (child?.exitCode === null) { const done = once(child, 'exit'); child.kill('SIGTERM'); await done; } };
 const httpGet = (port, path) => new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port, path }, res => { let body = ''; res.on('data', bytes => body += bytes); res.on('end', () => resolve({ status: res.statusCode, body })); }).on('error', reject));
 try {
@@ -21,8 +21,10 @@ try {
   await mkdir(tlsDir); await mkdir(join(webroot, '.well-known/acme-challenge'), { recursive: true });
   await writeFile(join(webroot, '.well-known/acme-challenge/probe'), 'bounded-challenge');
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', join(tlsDir, 'privkey.pem'), '-out', join(tlsDir, 'fullchain.pem'), '-subj', '/CN=localhost', '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
-  upstream = http.createServer((req, res) => { if (req.url.startsWith('/internal/route-auth')) { res.writeHead(204); res.end(); } else res.end(req.headers.cookie || 'empty'); });
-  const upstreamPort = await listen(upstream), file = join(directory, 'Caddyfile'), binary = process.env.CADDY_PATH || 'caddy';
+  let internalCalls = 0, publicInternalCalls = 0;
+  upstream = http.createServer((req, res) => { if (req.url.startsWith('/internal/')) publicInternalCalls++; res.end(req.headers.cookie || 'empty'); });
+  internal = http.createServer((req, res) => { const url = new URL(req.url, 'http://internal'); assert.equal(url.pathname, '/internal/route-auth'); assert(url.searchParams.get('path')?.startsWith('/node/')); internalCalls++; res.writeHead(204); res.end(); });
+  const upstreamPort = await listen(upstream), internalPort = await listen(internal), file = join(directory, 'Caddyfile'), binary = process.env.CADDY_PATH || 'caddy';
   const run = async config => {
     await writeFile(file, config.replaceAll('https://desk.example.test', 'https://127.0.0.1:' + httpsPort).replaceAll('http://desk.example.test', 'http://127.0.0.1:' + httpPort));
     execFileSync(binary, ['validate', '--config', file, '--adapter', 'caddyfile'], { stdio: 'pipe', timeout: 10000 });
@@ -33,17 +35,18 @@ try {
   };
   await run(caddyAcmeConfig('desk.example.test', webroot));
   assert.equal((await httpGet(httpPort, '/.well-known/acme-challenge/probe')).body, 'bounded-challenge'); await stop();
-  await run(caddyConfig('desk.example.test', { tlsDirectory: tlsDir, webroot, centerPort: upstreamPort, frpHttpPort: upstreamPort, adminCidrs: ['198.51.100.0/24'] }));
+  await run(caddyConfig('desk.example.test', { tlsDirectory: tlsDir, webroot, centerPort: upstreamPort, internalPort, frpHttpPort: upstreamPort, adminCidrs: ['198.51.100.0/24'] }));
   assert.equal((await httpGet(httpPort, '/.well-known/acme-challenge/probe')).body, 'bounded-challenge');
   const ca = await readFile(join(tlsDir, 'fullchain.pem'));
   for (const cookie of ['coc_session_center=old; coc_session_center_admin=new; coc_session_node=keep', 'coc_session_node=keep; coc_session_center_admin=new; coc_session_center=old']) {
     const body = await new Promise((resolve, reject) => https.get({ host: '127.0.0.1', port: httpsPort, path: '/node/test/', ca, headers: { cookie } }, res => { let body = ''; res.on('data', bytes => body += bytes); res.on('end', () => resolve(body)); }).on('error', reject));
     assert(body.includes('coc_session_node=keep')); assert(!body.includes('old') && !body.includes('new'));
   }
-  for (const [path, expected] of [['/admin/', 403], ['/admin/api/keys', 403], ['/api/join', 200], ['/node/test/', 200]]) {
+  for (const [path, expected] of [['/admin/', 403], ['/admin/api/keys', 403], ['/api/join', 200], ['/node/test/', 200], ['/internal/healthz', 404]]) {
     const status = await new Promise((resolve, reject) => https.get({ host: '127.0.0.1', localAddress: '127.0.0.2', port: httpsPort, path, ca }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject));
     assert.equal(status, expected, path);
   }
+  assert(internalCalls >= 3); assert.equal(publicInternalCalls, 0);
   await stop();
   // Exercise both generated shell phases without touching users or services.
   const bin = join(directory, 'bin'), calls = join(directory, 'calls'), issued = join(directory, 'issued'); await mkdir(bin); await mkdir(issued);
@@ -56,5 +59,5 @@ try {
     execFileSync('/bin/sh', ['-c', hook], { env: { ...process.env, PATH: bin + ':' + process.env.PATH, HOOK_CALLS: calls }, stdio: 'pipe', timeout: 10000 });
   }
   assert.equal((await readFile(calls, 'utf8')).trim(), 'restart codex-selfhost-frps.service\nrestart codex-selfhost-caddy.service\nrestart codex-selfhost-coturn.service');
-  console.log('✓ actual Caddy bootstrap and renewal HTTP-01 routes, TLS and node cookie filtering; certificate hook command harness');
-} finally { await stop(); if (upstream) await new Promise(resolve => { upstream.close(resolve); upstream.closeAllConnections(); }); await rm(directory, { recursive: true, force: true }); }
+  console.log('✓ actual Caddy bootstrap and renewal HTTP-01 routes, TLS, isolated route-auth upstream and node cookie filtering; certificate hook command harness');
+} finally { await stop(); for (const server of [upstream, internal].filter(Boolean)) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); await rm(directory, { recursive: true, force: true }); }

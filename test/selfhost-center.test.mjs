@@ -21,8 +21,11 @@ function freePort() {
   });
 }
 
-async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
+async function setup(t, { turnSecret, legacy = false, helpPage, isolated = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-selfhost-center-')), port = await freePort(), origin = `http://127.0.0.1:${port}`, closed = [];
+  let internalPort;
+  if (isolated) { do { internalPort = await freePort(); } while (internalPort === port); }
+  const internalOrigin = isolated ? `http://127.0.0.1:${internalPort}` : origin;
   const helpFile = join(directory, 'help.html');
   if (helpPage !== undefined) await writeFile(helpFile, helpPage, { mode: 0o640 });
   let legacyToken;
@@ -30,11 +33,12 @@ async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
     const auth = await createAuth({ dataDir: join(directory, 'center'), username: 'admin', password: 'center_password_very_long_123', sessionMs: 60000 });
     legacyToken = (await auth.create()).token; await auth.close();
   }
-  const center = await createSelfhostCenter({ origin, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', turnSecret, helpFile, closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
+  const center = await createSelfhostCenter({ origin, port, internalPort, dataDir: join(directory, 'center'), password: 'center_password_very_long_123', publicHost: 'desk.example.test', frpServerPort: 7000, frpTlsServerName: 'desk.example.test', frpToken: 'frp_test_token_very_long_123', turnSecret, helpFile, closeTunnel: async (slug, reason) => closed.push({ slug, reason }) });
   center.server.listen(port, '127.0.0.1'); await once(center.server, 'listening');
+  if (isolated) { center.internalServer.listen(internalPort, '127.0.0.1'); await once(center.internalServer, 'listening'); }
   t.after(async () => { await center.close(); await rm(directory, { recursive: true, force: true }); });
   let cookie = '', csrf = '';
-  const request = (path, { method = 'GET', body, headers = {}, authenticated = true } = {}) => fetch(origin + path, {
+  const request = (path, { method = 'GET', body, headers = {}, authenticated = true } = {}) => fetch((path.startsWith('/internal/') ? internalOrigin : origin) + path, {
     method,
     headers: { origin, ...(authenticated && cookie ? { cookie } : {}), ...(method === 'GET' ? {} : { 'x-csrf-token': csrf, 'content-type': 'application/json' }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual',
@@ -43,11 +47,11 @@ async function setup(t, { turnSecret, legacy = false, helpPage } = {}) {
     const response = await request('/admin/api/login', { method: 'POST', body: { username: 'admin', password: 'center_password_very_long_123' }, authenticated: false });
     cookie = response.headers.get('set-cookie').split(';')[0]; csrf = (await response.json()).csrf; return response;
   };
-  return { center, directory, origin, port, closed, request, login, legacyToken, get cookie() { return cookie; }, get csrf() { return csrf; } };
+  return { center, directory, origin, port, internalOrigin, internalPort, closed, request, login, legacyToken, get cookie() { return cookie; }, get csrf() { return csrf; } };
 }
 
-async function onlineCenter(t) {
-  const h = await setup(t), key = await h.center.registry.createKey({ name: 'Reserved capacity', slug: 'capacity' });
+async function onlineCenter(t, options) {
+  const h = await setup(t, options), key = await h.center.registry.createKey({ name: 'Reserved capacity', slug: 'capacity' });
   const joined = await h.center.registry.join({ version: 1, slug: key.slug, key: key.key, node: { id: 'a'.repeat(32), mode: 'terminal' } });
   const metas = { slug: key.slug, credential: joined.credential, nodeId: 'a'.repeat(32), mode: 'terminal' };
   const plugin = (op, content, extra = {}) => h.request('/internal/frp-plugin?op=' + op, { method: 'POST', authenticated: false, body: { content, ...extra } });
@@ -90,6 +94,51 @@ function rawCenterRequest(t, h, path, { method = 'GET', headers = {}, body = '' 
   });
   return { socket, closed, response };
 }
+
+async function holdCenterHeaders(t, server, port, maximum) {
+  const held = [];
+  for (let index = 0; index < maximum; index++) {
+    const accepted = once(server, 'connection');
+    const socket = net.createConnection({ host: '127.0.0.1', port }); t.after(() => socket.destroy());
+    await Promise.all([accepted, once(socket, 'connect')]);
+    socket.on('error', () => {}); socket.write('GET /healthz HTTP/1.1\r\nHost: 127.0.0.1'); held.push(socket);
+  }
+  return held;
+}
+
+test('separate center listener admits real node callbacks even when every public socket has unfinished headers', { timeout: 10000 }, async t => {
+  const h = await onlineCenter(t, { isolated: true });
+  h.center.server.closeIdleConnections(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.center.server.maxConnections, CENTER_CONNECTION_LIMITS.public);
+  assert.equal(h.center.internalServer.maxConnections, CENTER_CONNECTION_LIMITS.internal);
+  await holdCenterHeaders(t, h.center.server, h.port, CENTER_CONNECTION_LIMITS.public);
+  assert.equal((await h.route()).status, 204); assert.equal((await (await h.ping()).json()).reject, false);
+  assert.deepEqual(await (await h.request('/internal/healthz')).json(), { ok: true, isolated: true });
+  await h.center.close(); assert.equal(h.center.server.listening, false); assert.equal(h.center.internalServer.listening, false);
+});
+
+test('unfinished internal headers cannot consume the public listener connection budget', { timeout: 5000 }, async t => {
+  const h = await setup(t, { isolated: true });
+  await holdCenterHeaders(t, h.center.internalServer, h.internalPort, CENTER_CONNECTION_LIMITS.internal);
+  assert.equal((await h.request('/healthz')).status, 200);
+});
+
+test('dedicated center listeners reject cross-role paths and preserve Host checks before dispatch', async t => {
+  const h = await onlineCenter(t, { isolated: true });
+  for (const path of ['/internal/healthz', '/internal/route-auth?path=/node/capacity/', '/internal/frp-plugin?op=Ping']) {
+    const response = await fetch(h.origin + path); assert.equal(response.status, 404); assert.equal(response.headers.get('connection'), 'close');
+  }
+  for (const path of ['/healthz', '/admin/', '/admin/api/login', '/api/join']) {
+    const response = await fetch(h.internalOrigin + path); assert.equal(response.status, 404); assert.equal(response.headers.get('connection'), 'close');
+  }
+  const withHost = host => new Promise((resolve, reject) => {
+    const request = http.get(h.internalOrigin + '/internal/healthz', { headers: { host } }, response => { response.resume(); response.once('end', () => resolve(response.statusCode)); });
+    request.once('error', reject);
+  });
+  assert.equal(await withHost('unconfigured.example.test'), 400);
+  assert.equal(await withHost(new URL(h.origin).host), 200, 'Caddy forwards the public Host to internal route auth');
+  assert.equal((await h.route()).status, 204);
+});
 
 test('center rejects framed GET/HEAD bodies before static, redirect, public or internal dispatch', { timeout: 10000 }, async t => {
   const h = await setup(t); let routes = 0;

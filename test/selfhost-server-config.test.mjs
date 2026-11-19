@@ -16,7 +16,9 @@ test('Caddy routes node paths through auth and frps while keeping internals priv
   const config = caddyConfig('desk.example.com');
   assert.match(config, /servers \{\n\t\tprotocols h1 h2/);
   assert.match(config, /handle \/internal\/\* \{\n\t\trespond 404/);
-  assert.match(config, /forward_auth 127\.0\.0\.1:36180/);
+  assert.match(config, /forward_auth 127\.0\.0\.1:36181/);
+  assert.match(config, /reverse_proxy 127\.0\.0\.1:36180/);
+  assert.match(config, /keepalive_idle_conns_per_host 16/);
   assert.match(config, /path=\{(?:http\.request\.uri\.path|http\.request\.uri)\}/);
   assert.match(config, /reverse_proxy 127\.0\.0\.1:18080/);
   assert.match(config, /header_up Host \{host\}/);
@@ -35,6 +37,7 @@ test('frps requires TLS, exact plugin operations and loopback management', () =>
   assert.match(config, /bindPort = 7000/); assert.match(config, /vhostHTTPPort = 18080/);
   assert.match(config, /transport\.tls\.force = true/); assert.match(config, /webServer\.addr = "127\.0\.0\.1"/);
   assert.match(config, /ops = \["Login", "NewProxy", "CloseProxy", "Ping"\]/);
+  assert.match(config, /addr = "127\.0\.0\.1:36181"/);
   assert(!config.includes('allowPorts'));
   assert.throws(() => frpsConfig({ token: 'short', adminPassword: 'a'.repeat(24) }), /token/);
   assert.throws(() => frpsConfig({ token, adminPassword: 'short' }), /管理密码/);
@@ -50,12 +53,23 @@ test('systemd units isolate privileges and have explicit memory, task and file b
 test('generated environment and renewal hook contain no embedded credentials', () => {
   const env = centerEnvironment({ domain: 'desk.example.com' }), hook = certbotHook('desk.example.com');
   assert.match(env, /SELFHOST_ORIGIN=https:\/\/desk\.example\.com/);
+  assert.match(env, /SELFHOST_CENTER_PORT=36180\nSELFHOST_INTERNAL_PORT=36181/);
   assert.match(env, /SELFHOST_TURN_SECRET_FILE=/);
   assert(!/=.{64,}/.test(env));
   assert.match(hook, /install -o root -g codex-selfhost -m 0640/);
   assert.match(hook, /systemctl restart codex-selfhost-frps\.service/);
   assert.match(hook, /systemctl restart codex-selfhost-caddy\.service/);
   assert.match(hook, /systemctl restart codex-selfhost-coturn\.service/);
+});
+
+test('generated Caddy, frps and environment agree on a custom internal listener without exposing it publicly', () => {
+  const caddy = caddyConfig('desk.example.com', { centerPort: 37180, internalPort: 37181 });
+  const frps = frpsConfig({ token: 't'.repeat(64), adminPassword: 'a'.repeat(24), internalPort: 37181 });
+  const env = centerEnvironment({ domain: 'desk.example.com', port: 37180, internalPort: 37181 });
+  assert.match(caddy, /forward_auth 127\.0\.0\.1:37181/); assert.match(caddy, /reverse_proxy 127\.0\.0\.1:37180/);
+  assert.match(frps, /addr = "127\.0\.0\.1:37181"/); assert.match(env, /SELFHOST_INTERNAL_PORT=37181/);
+  assert.throws(() => centerEnvironment({ domain: 'desk.example.com', internalPort: 36180 }), /端口/);
+  assert.throws(() => caddyConfig('desk.example.com', { internalPort: '36181\ninvalid' }), /端口/);
 });
 
 test('coturn uses short-lived auth secrets, the requested relay range and private-peer denial', () => {

@@ -1,5 +1,6 @@
 export const SELFHOST_VERSIONS = Object.freeze({ node: '24.22.2', caddy: '2.6.2', caddyPackage: '2.6.2-6ubuntu0.24.04.3', frp: '0.72.0', coturn: '4.6.1-1build4', certbot: '2.9.0-1' });
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/i;
+const validPort = port => Number.isInteger(port) && port > 1024 && port < 65536;
 
 export function serverDomain(value) {
   if (typeof value !== 'string' || !DOMAIN.test(value) || value.length > 253) throw Error('中心域名无效');
@@ -45,8 +46,9 @@ export function caddyAcmeBootstrap(domain, webroot, previous) {
   return previous.slice(0, start) + site;
 }
 
-export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [], webroot = '/var/lib/codex-selfhost/acme' } = {}) {
+export function caddyConfig(domain, { tlsDirectory = '/etc/codex-selfhost/tls', centerPort = 36180, internalPort = 36181, frpHttpPort = 18080, redirectHttp = true, adminCidrs = [], webroot = '/var/lib/codex-selfhost/acme' } = {}) {
   domain = serverDomain(domain);
+  if (![centerPort, internalPort, frpHttpPort].every(validPort)) throw Error('中心代理端口无效');
   if (!Array.isArray(adminCidrs) || adminCidrs.some(cidr => typeof cidr !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-fA-F:]+\/\d{1,3}$/.test(cidr))) throw Error('管理页访问 CIDR 无效');
   const effectiveAdminCidrs = [...new Set([...adminCidrs, '127.0.0.1/32', '::1/128'])];
   const adminGuard = adminCidrs.length ? `
@@ -88,9 +90,12 @@ ${adminGuard}
 	}
 
 	handle /node/* {
-		forward_auth 127.0.0.1:${centerPort} {
+		forward_auth 127.0.0.1:${internalPort} {
 			uri /internal/route-auth?path={http.request.uri.path}
 			copy_headers X-Selfhost-Node
+			transport http {
+				keepalive_idle_conns_per_host 16
+			}
 		}
 		reverse_proxy 127.0.0.1:${frpHttpPort} {
 			header_up Host {host}
@@ -121,8 +126,8 @@ http://${domain} {
 `;
 }
 
-export function frpsConfig({ bindPort = 7000, httpPort = 18080, adminPort = 17500, centerPort = 36180, token, adminPassword, tlsDirectory = '/etc/codex-selfhost/tls' }) {
-  if (![bindPort, httpPort, adminPort, centerPort].every(port => Number.isInteger(port) && port > 1024 && port < 65536)) throw Error('frps 内部端口无效');
+export function frpsConfig({ bindPort = 7000, httpPort = 18080, adminPort = 17500, centerPort, internalPort = centerPort ?? 36181, token, adminPassword, tlsDirectory = '/etc/codex-selfhost/tls' }) {
+  if (![bindPort, httpPort, adminPort, internalPort].every(validPort)) throw Error('frps 内部端口无效');
   if (typeof token !== 'string' || token.length < 32 || /[\r\n\0]/.test(token)) throw Error('frp token 无效');
   if (typeof adminPassword !== 'string' || adminPassword.length < 16 || /[\r\n\0]/.test(adminPassword)) throw Error('frps 管理密码无效');
   return `bindAddr = "0.0.0.0"
@@ -144,17 +149,19 @@ webServer.password = ${JSON.stringify(adminPassword)}
 
 [[httpPlugins]]
 name = "codex-selfhost"
-addr = "127.0.0.1:${centerPort}"
+addr = "127.0.0.1:${internalPort}"
 path = "/internal/frp-plugin"
 ops = ["Login", "NewProxy", "CloseProxy", "Ping"]
 `;
 }
 
-export function centerEnvironment({ domain, publicIp, dataDirectory = '/var/lib/codex-selfhost', port = 36180, frpPort = 7000, configDirectory = '/etc/codex-selfhost' }) {
+export function centerEnvironment({ domain, publicIp, dataDirectory = '/var/lib/codex-selfhost', port = 36180, internalPort = 36181, frpPort = 7000, configDirectory = '/etc/codex-selfhost' }) {
   domain = serverDomain(domain);
+  if (![port, internalPort, frpPort].every(validPort) || port === internalPort) throw Error('中心监听端口无效或重复');
   return `SELFHOST_ORIGIN=https://${domain}
 SELFHOST_PUBLIC_HOST=${domain}
 SELFHOST_CENTER_PORT=${port}
+SELFHOST_INTERNAL_PORT=${internalPort}
 SELFHOST_STATE_DIR=${dataDirectory}
 SELFHOST_FRP_SERVER_PORT=${frpPort}
 SELFHOST_FRP_TLS_NAME=${domain}

@@ -28,6 +28,7 @@ const ASSETS = new Map([
 const BODY_LIMIT = 16 * 1024, PLUGIN_LIMIT = 128 * 1024;
 export const CENTER_REQUEST_LIMITS = Object.freeze({ public: 32, internal: 32 });
 export const CENTER_CONNECTION_LIMITS = Object.freeze({ total: 256, public: 224, internal: 32 });
+const INTERNAL_PATHS = new Set(['/internal/frp-plugin', '/internal/route-auth', '/internal/healthz']);
 
 function reply(res, status, value, headers = {}) {
   if (res.headersSent || res.destroyed) return;
@@ -58,7 +59,7 @@ async function assets(helpFile, login) {
 }
 
 export async function createSelfhostCenter({
-  origin, host = '127.0.0.1', port = 36180, dataDir, stateFile = join(dataDir, 'state.json'),
+  origin, host = '127.0.0.1', port = 36180, internalPort, dataDir, stateFile = join(dataDir, 'state.json'),
   username = 'admin', password, publicHost = new URL(origin).hostname, frpServerPort = 7000, frpTlsServerName = publicHost,
   frpToken, turnSecret, turnRealm = publicHost, turnTtlMs = TURN_TTL_MS, closeTunnel = async () => {}, sessionMs = 7 * 24 * 60 * 60 * 1000,
   frpsAdmin, turnRelay, helpFile,
@@ -66,6 +67,7 @@ export async function createSelfhostCenter({
   const parsed = new URL(origin);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw Error('中心 PUBLIC_ORIGIN 必须是 HTTP(S) 根地址');
   if (!password || typeof password !== 'string' || password.length < 16 || password.length > 512) throw Error('中心管理员密码长度无效');
+  if (internalPort !== undefined && (!Number.isInteger(internalPort) || internalPort < 0 || internalPort > 65535 || internalPort !== 0 && internalPort === port)) throw Error('中心内部监听端口无效或与公共监听重复');
   if (!frpToken || typeof frpToken !== 'string' || frpToken.length < 16 || frpToken.length > 512 || /[\r\n\0]/.test(frpToken)) throw Error('frp 接入密钥长度无效');
   const authConfig = { dataDir, username, password, sessionMs, secureCookies: parsed.protocol === 'https:', nodeId: 'center_admin', entryBasePath: '/admin/', sessionRevision: 'codex-selfhost-admin-v2' };
   const login = createLoginIdentity(username, 'center');
@@ -92,6 +94,7 @@ export async function createSelfhostCenter({
   const jsonBody = (req, limit) => bodies[admitted.get(req)].read(req, limit);
   const allowedHosts = new Set([parsed.host.toLowerCase()]);
   const internalHosts = new Set([`127.0.0.1:${Number(port)}`, `localhost:${Number(port)}`]);
+  if (internalPort !== undefined) for (const hostname of ['127.0.0.1', 'localhost']) internalHosts.add(`${hostname}:${internalPort}`);
   let closing = false, timer, loginBusy = 0;
 
   const hostAllowed = req => allowedHosts.has(String(req.headers.host || '').toLowerCase()) || loopbackAddress(req.socket.remoteAddress) && internalHosts.has(String(req.headers.host || '').toLowerCase());
@@ -137,6 +140,10 @@ export async function createSelfhostCenter({
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader('x-frame-options', 'DENY');
     if (parsed.protocol === 'https:') res.setHeader('strict-transport-security', 'max-age=31536000');
+    if (path === '/internal/healthz' && req.method === 'GET') {
+      if (!loopbackAddress(req.socket.remoteAddress)) throw selfhostError(403, '内部接口不可公开访问');
+      return reply(res, 200, { ok: true, isolated: internalPort !== undefined });
+    }
     if (path === '/internal/frp-plugin') {
       if (req.method !== 'POST') throw selfhostError(405, '只允许 POST');
       return plugin(req, res);
@@ -244,7 +251,7 @@ export async function createSelfhostCenter({
     throw selfhostError(404, '资源不存在');
   }
 
-  const server = http.createServer((req, res) => {
+  const handleRequest = internalListener => (req, res) => {
     const reject = (error, close = false) => {
       if (close) {
         res.shouldKeepAlive = false; res.setHeader('connection', 'close');
@@ -255,21 +262,28 @@ export async function createSelfhostCenter({
     };
     let path;
     try { path = new URL(req.url, 'http://internal').pathname; } catch { reject(selfhostError(400, '请求路径无效'), true); return; }
+    if (internalPort !== undefined && internalListener !== INTERNAL_PATHS.has(path)) { reject(selfhostError(404, '资源不存在'), true); return; }
+    if (internalListener && !loopbackAddress(req.socket.remoteAddress)) { reject(selfhostError(403, '内部接口不可公开访问'), true); return; }
     // Keep idle sockets charged, and reclassify Caddy's reused connections for
     // each request. Only trusted local internal routes can use reserved slots.
-    const kind = ['/internal/frp-plugin', '/internal/route-auth'].includes(path) && loopbackAddress(req.socket.remoteAddress) && hostAllowed(req) ? 'internal' : 'public';
+    const kind = INTERNAL_PATHS.has(path) && loopbackAddress(req.socket.remoteAddress) && hostAllowed(req) ? 'internal' : 'public';
     if (closing || !admitConnection(req.socket, kind) || requests[kind] >= CENTER_REQUEST_LIMITS[kind]) { reject(selfhostError(503, '中心请求繁忙或正在关闭，请稍后重试'), true); return; }
     requests[kind]++; admitted.set(req, kind);
     void route(req, res).catch(reject).finally(() => { requests[kind]--; admitted.delete(req); });
-  });
-  server.requestTimeout = 30_000; server.headersTimeout = 10_000; server.maxHeadersCount = 64; server.maxConnections = CENTER_CONNECTION_LIMITS.total;
+  };
+  const server = http.createServer(handleRequest(false));
+  const internalServer = internalPort === undefined ? undefined : http.createServer(handleRequest(true));
+  for (const listener of [server, internalServer].filter(Boolean)) {
+    listener.requestTimeout = 30_000; listener.headersTimeout = 10_000; listener.maxHeadersCount = 64;
+    listener.maxConnections = internalServer ? listener === server ? CENTER_CONNECTION_LIMITS.public : CENTER_CONNECTION_LIMITS.internal : CENTER_CONNECTION_LIMITS.total;
+  }
   timer = setInterval(() => { if (!closing) void registry.sweep().catch(() => {}); }, 5000); timer.unref();
   return {
-    server, registry,
+    server, internalServer, registry,
     async close() {
       if (closing) return; closing = true; clearInterval(timer);
       bodies.public.close(); bodies.internal.close();
-      if (server.listening) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+      await Promise.all([server, internalServer].filter(listener => listener?.listening).map(listener => new Promise(resolve => { listener.close(resolve); listener.closeAllConnections(); })));
       await auth.close();
     },
   };

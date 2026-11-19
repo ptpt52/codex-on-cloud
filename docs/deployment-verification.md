@@ -31,6 +31,8 @@ sudo /opt/codex-selfhost/bin/node \
 
 显式验证中心管理员登录时增加 `--login`。默认读取 `/etc/codex-selfhost/server.env`；自定义配置目录使用 `--config-dir /自己的配置目录`。该目录和管理员密码可能需要 root 读取权限。中心不检查节点的助手包，助手验收在每个工作台节点执行。
 
+配置了 `SELFHOST_INTERNAL_PORT` 时，还会在中心本机检查独立回环端口的 `/internal/healthz`，要求返回 `ok` 与 `isolated` 均为 true；该项失败不能被公网 `/healthz` 成功替代。旧共享监听配置会列为待人工迁移，按原参数完整运行中心 `install` 以同步 Caddy/frps 后重验。
+
 使用正式安装的 `/opt/codex-selfhost/bin/node`，不依赖 `bootstrap/node/bin/node`；安装器可能直接复用正式运行时，引导目录不保证存在。命令中的脚本路径相对保留的中心源码仓库，不是在任意目录运行。
 
 私有 CA：节点自动沿用已保存的 `SELFHOST_CA_FILE`；也可增加 `--ca-file /path/to/ca.pem` 明确信任证书。中心使用私有证书时同样显式提供 CA。每次 HTTPS 请求保留证书链、有效期和主机名校验，不修改全局信任。

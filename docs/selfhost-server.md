@@ -27,12 +27,13 @@
 Caddy  https://<domain>
   |- /             -> 公开首页：管理入口和在线节点
   |- /admin/       -> 中心管理服务 127.0.0.1:36180
-  `- /node/<slug>/ -> route auth -> frps 127.0.0.1:18080 -> frpc -> 节点 Panel
+  `- /node/<slug>/ -> route auth 127.0.0.1:36181 -> frps 127.0.0.1:18080 -> frpc -> 节点 Panel
 
 节点 frpc
   | TLS 主动连接 <domain>:7000
   v
 frps
+  `- Login / Ping / NewProxy / CloseProxy -> 中心内部接口 127.0.0.1:36181
 
 浏览器 <-> coturn :3478 / :5349 / UDP 49160-49223 <-> 节点
 ```
@@ -66,6 +67,8 @@ frps
 | 22 | TCP | SSH；应只允许 VPN、堡垒机或固定运维网段 |
 
 云服务器安全组必须单独放行以上端口。安装器默认只生成 UFW 配置建议，不修改防火墙。只有在同时指定 `--configure-ufw` 和 `--ssh-cidr` 时才配置 UFW，避免锁死 SSH。
+
+中心公共服务 `36180` 与内部回调 `36181`、frps HTTP 中转 `18080`、frps 管理 `17500` 均只监听回环地址，不向公网放行。公共连接最多 224 个，内部连接最多 32 个；内部授权的 Caddy 空闲连接池最多 16 个。公共慢请求头不能占用内部监听的容量，公共端口也不提供 `/internal/*` 接口。
 
 ## DNS
 
@@ -159,13 +162,19 @@ sudo ./scripts/selfhost-server.sh install \
 sudo ./scripts/selfhost-server.sh status
 ```
 
-重复执行同一 `install` 命令会以固定依赖更新中心应用，并保留上一版应用目录。需要回滚时：
+重复执行同一 `install` 命令会以固定依赖更新中心应用，并保留上一版应用目录。
+
+旧配置未设置 `SELFHOST_INTERNAL_PORT` 时，更新应用仍保留原共享监听，避免已有 Caddy/frps 地址失配。完整重跑原 `install` 命令会配套生成 `SELFHOST_INTERNAL_PORT=36181`、Caddy 路由授权地址和 frps 插件地址，并验收内部监听；不单独修改其中一个文件。已有授权、凭据和节点路径沿用原状态。
+
+需要回滚时：
 
 ```bash
 sudo ./scripts/selfhost-server.sh rollback
 ```
 
 回滚切回上一版中心应用并重启中心及 frps 服务，使用与安装相同的有界事务机制，但不备份或恢复证书、配置文件，也不停止或重启 Caddy、TURN，保留同期的证书续期和配置修改。目录切换、服务启动或健康检查失败时恢复回滚前的版本；进程中断或恢复失败时保留记录，运行下文的 `recover` 按记录的应用范围恢复，不重复执行版本切换。授权状态、节点任务和已有工作区不会被删除。完整安装失败的恢复仍按原记录恢复全部配置与服务。
+
+已启用独立内部监听时，若上一版应用不支持此配置，`rollback` 会在切换和重启前拒绝。确需回到旧版时，在单独的旧版源码检出目录运行原完整 `install` 命令，使应用、`server.env`、Caddyfile 与 frps.toml 配套恢复；保留当前源码和配置供故障恢复，不仅交换应用目录。
 
 安装更新由独立锁串行执行。证书切换期间保留已有 HTTPS，签发失败时恢复原配置、应用目录和原服务状态。更新备份仅位于服务器私有的 `/opt/codex-selfhost/update-backup`，最多 32 个配置文件、合计 8 MiB，恢复清单最多 32 KiB；不会备份节点工作区。成功或恢复完成后自动删除备份。若恢复未完成，备份保留并阻止再次安装，排除故障后执行：
 
@@ -234,14 +243,18 @@ sudo systemctl restart codex-selfhost-center.service
 
 ## 验收
 
-在保留的中心源码仓库运行[中心自动验收命令](deployment-verification.md#自建中心)，检查实际 HTTPS、首页、管理子路径和公开节点列表；普通节点模式与中心模式分别报告。需要单项定位时使用以下命令：
+在保留的中心源码仓库运行[中心自动验收命令](deployment-verification.md#自建中心)，检查独立内部监听、实际 HTTPS、首页、管理子路径和公开节点列表；普通节点模式与中心模式分别报告。需要单项定位时使用以下命令：
 
 在中心服务器核对系统服务，再从客户端检查 HTTPS：
 
 ```sh
 sudo ./scripts/selfhost-server.sh status
 curl -fsS --max-time 15 https://desk.example.com/healthz
+# 在中心主机执行；自定义端口时使用 server.env 中的 SELFHOST_INTERNAL_PORT
+curl -fsS --max-time 3 http://127.0.0.1:36181/internal/healthz
 ```
+
+独立内部监听应返回 `ok: true` 和 `isolated: true`。旧共享配置在自动验收中提示待迁移，不能将它当作已经实现慢请求头隔离；按原安装参数完整升级后再次验收。
 
 在已接入节点的完整路径检查工作台就绪状态：
 
