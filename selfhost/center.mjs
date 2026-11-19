@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createAuth, cookieToken, sessionCookie } from '../panel/auth.mjs';
 import { canonicalLoginUsername, createLoginIdentity, renderLoginForm } from '../panel/login-identity.mjs';
 import { SelfhostRegistry } from './registry.mjs';
-import { selfhostError } from './protocol.mjs';
+import { ROUTE_AUTH_LIMITS, selfhostError } from './protocol.mjs';
 import { TURN_TTL_MS, turnCredentials } from './turn.mjs';
 import { clientAddress, loopbackAddress } from './client-address.mjs';
 import { frpsProxyProbe } from './frps-admin.mjs';
@@ -79,6 +79,7 @@ export async function createSelfhostCenter({
   // and Caddy's internal route authorization. Both classes have fixed bounds.
   const bodies = { public: createJSONBodies(), internal: createJSONBodies() };
   const requests = { public: 0, internal: 0 }, admitted = new WeakMap();
+  let routeAuthRequests = 0;
   const connections = { public: new Set(), internal: new Set() }, connectionKinds = new WeakMap();
   const admitConnection = (socket, kind) => {
     const previous = connectionKinds.get(socket);
@@ -267,9 +268,13 @@ export async function createSelfhostCenter({
     // Keep idle sockets charged, and reclassify Caddy's reused connections for
     // each request. Only trusted local internal routes can use reserved slots.
     const kind = INTERNAL_PATHS.has(path) && loopbackAddress(req.socket.remoteAddress) && hostAllowed(req) ? 'internal' : 'public';
-    if (closing || !admitConnection(req.socket, kind) || requests[kind] >= CENTER_REQUEST_LIMITS[kind]) { reject(selfhostError(503, '中心请求繁忙或正在关闭，请稍后重试'), true); return; }
+    const routeAuth = kind === 'internal' && path === '/internal/route-auth';
+    if (closing || !admitConnection(req.socket, kind) || requests[kind] >= CENTER_REQUEST_LIMITS[kind] || routeAuth && routeAuthRequests >= ROUTE_AUTH_LIMITS.requests) { reject(selfhostError(503, '中心请求繁忙或正在关闭，请稍后重试'), true); return; }
     requests[kind]++; admitted.set(req, kind);
-    void route(req, res).catch(reject).finally(() => { requests[kind]--; admitted.delete(req); });
+    if (routeAuth) routeAuthRequests++;
+    // Keep abandoned reads charged until registry work actually settles. A
+    // proxy timeout cannot create another unbounded tail on its storage queue.
+    void route(req, res).catch(reject).finally(() => { requests[kind]--; if (routeAuth) routeAuthRequests--; admitted.delete(req); });
   };
   const server = http.createServer(handleRequest(false));
   const internalServer = internalPort === undefined ? undefined : http.createServer(handleRequest(true));

@@ -11,6 +11,10 @@ export const SELFHOST_LIMITS = Object.freeze({
   name: 80,
 });
 
+// Route checks originate in public traffic. Bound both Caddy sockets and
+// retained registry reads below the private listener's 32 callback slots.
+export const ROUTE_AUTH_LIMITS = Object.freeze({ connections: 16, requests: 16, headerMs: 2000 });
+
 export const SLUG = /^[a-z0-9-]{1,48}$/;
 export const NODE_ID = /^[a-f0-9]{32}$/;
 export const KEY = /^coc_[A-Za-z0-9_-]{43}$/;

@@ -1,3 +1,5 @@
+import { ROUTE_AUTH_LIMITS } from './protocol.mjs';
+
 export const SELFHOST_VERSIONS = Object.freeze({ node: '24.22.2', caddy: '2.6.2', caddyPackage: '2.6.2-6ubuntu0.24.04.3', frp: '0.72.0', coturn: '4.6.1-1build4', certbot: '2.9.0-1' });
 const DOMAIN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/i;
 const validPort = port => Number.isInteger(port) && port > 1024 && port < 65536;
@@ -93,8 +95,13 @@ ${adminGuard}
 		forward_auth 127.0.0.1:${internalPort} {
 			uri /internal/route-auth?path={http.request.uri.path}
 			copy_headers X-Selfhost-Node
+			# Caddy 2.6 requires a positive failure threshold for this request limit.
+			max_fails 1
+			unhealthy_request_count ${ROUTE_AUTH_LIMITS.requests}
 			transport http {
-				keepalive_idle_conns_per_host 16
+				max_conns_per_host ${ROUTE_AUTH_LIMITS.connections}
+				keepalive_idle_conns_per_host ${ROUTE_AUTH_LIMITS.connections}
+				response_header_timeout ${ROUTE_AUTH_LIMITS.headerMs / 1000}s
 			}
 		}
 		reverse_proxy 127.0.0.1:${frpHttpPort} {

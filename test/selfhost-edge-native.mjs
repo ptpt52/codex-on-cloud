@@ -9,6 +9,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from 'node:fs/promises
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { caddyAcmeConfig, caddyConfig, certbotHook } from '../selfhost/server-config.mjs';
+import { verifyRouteAuthCapacity } from './selfhost-route-auth-native.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'codex-edge-native-'));
 const listen = async server => { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; };
@@ -48,6 +49,7 @@ try {
   }
   assert(internalCalls >= 3); assert.equal(publicInternalCalls, 0);
   await stop();
+  await verifyRouteAuthCapacity({ binary, directory, tlsDir, ca });
   // Exercise both generated shell phases without touching users or services.
   const bin = join(directory, 'bin'), calls = join(directory, 'calls'), issued = join(directory, 'issued'); await mkdir(bin); await mkdir(issued);
   for (const name of ['fullchain.pem', 'privkey.pem']) await writeFile(join(issued, name), await readFile(join(tlsDir, name)));

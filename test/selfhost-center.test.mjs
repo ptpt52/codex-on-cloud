@@ -12,6 +12,7 @@ import { joinNode, leaveNode, nodeDoctor } from '../selfhost/node.mjs';
 import { centerRequest } from '../panel/center-http.mjs';
 import { createAuth } from '../panel/auth.mjs';
 import { createHmac } from 'node:crypto';
+import { ROUTE_AUTH_LIMITS } from '../selfhost/protocol.mjs';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -38,8 +39,8 @@ async function setup(t, { turnSecret, legacy = false, helpPage, isolated = false
   if (isolated) { center.internalServer.listen(internalPort, '127.0.0.1'); await once(center.internalServer, 'listening'); }
   t.after(async () => { await center.close(); await rm(directory, { recursive: true, force: true }); });
   let cookie = '', csrf = '';
-  const request = (path, { method = 'GET', body, headers = {}, authenticated = true } = {}) => fetch((path.startsWith('/internal/') ? internalOrigin : origin) + path, {
-    method,
+  const request = (path, { method = 'GET', body, headers = {}, authenticated = true, signal } = {}) => fetch((path.startsWith('/internal/') ? internalOrigin : origin) + path, {
+    method, signal,
     headers: { origin, ...(authenticated && cookie ? { cookie } : {}), ...(method === 'GET' ? {} : { 'x-csrf-token': csrf, 'content-type': 'application/json' }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual',
   });
@@ -274,22 +275,44 @@ test('incomplete plugin bodies cannot consume public JSON or internal GET admiss
   } finally { for (const item of pending) item.request.destroy(); }
 });
 
-test('internal operation admission is bounded without consuming public capacity', { timeout: 5000 }, async t => {
+test('route auth admission is bounded without consuming public or frps capacity', { timeout: 5000 }, async t => {
   const h = await onlineCenter(t);
   h.center.server.closeIdleConnections(); await new Promise(resolve => setImmediate(resolve));
   let release, entered = 0, ready, timeout;
   const gate = new Promise(resolve => { release = resolve; }), admitted = new Promise(resolve => { ready = resolve; });
   const routeAllowed = h.center.registry.routeAllowed.bind(h.center.registry);
-  h.center.registry.routeAllowed = async (...args) => { if (++entered === CENTER_REQUEST_LIMITS.internal) ready(); await gate; return routeAllowed(...args); };
-  const pending = Array.from({ length: CENTER_REQUEST_LIMITS.internal }, () => h.route());
+  h.center.registry.routeAllowed = async (...args) => { if (++entered === ROUTE_AUTH_LIMITS.requests) ready(); await gate; return routeAllowed(...args); };
+  const pending = Array.from({ length: ROUTE_AUTH_LIMITS.requests }, () => h.route());
   for (const response of pending) void response.catch(() => {});
   try {
     await Promise.race([admitted, new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('internal requests did not enter')), 3000); })]);
     clearTimeout(timeout);
     const excess = await h.route(); assert.equal(excess.status, 503); assert.equal((await excess.json()).outcome, 'rejected');
     assert.equal((await h.request('/healthz')).status, 200);
+    assert.equal((await (await h.ping()).json()).reject, false);
     release(); assert((await Promise.all(pending)).every(response => response.status === 204));
   } finally { clearTimeout(timeout); release(); await Promise.allSettled(pending); }
+});
+
+for (const isolated of [false, true]) test(`abandoned route auth reads retain only their reserved slots until storage settles (${isolated ? 'separate' : 'legacy'} listener)`, { timeout: 5000 }, async t => {
+  const h = await onlineCenter(t, { isolated });
+  const gate = Promise.withResolvers(), admitted = Promise.withResolvers(), controllers = [];
+  let entered = 0, timeout;
+  const original = h.center.registry.routeAllowed.bind(h.center.registry);
+  h.center.registry.routeAllowed = async (...args) => { if (++entered === ROUTE_AUTH_LIMITS.requests) admitted.resolve(); await gate.promise; return original(...args); };
+  const pending = Array.from({ length: ROUTE_AUTH_LIMITS.requests }, () => {
+    const controller = new AbortController(); controllers.push(controller);
+    const request = h.request('/internal/route-auth?path=/node/capacity/', { signal: controller.signal }); void request.catch(() => {}); return request;
+  });
+  try {
+    await Promise.race([admitted.promise, new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('route checks did not enter')), 3000); })]); clearTimeout(timeout);
+    for (const controller of controllers) controller.abort(); await Promise.allSettled(pending);
+    for (let attempt = 0; attempt < 3; attempt++) assert.equal((await h.route()).status, 503);
+    assert.equal(entered, ROUTE_AUTH_LIMITS.requests, 'cancellation cannot append more retained reads to a held registry queue');
+    assert.equal((await (await h.ping()).json()).reject, false);
+    gate.resolve(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await h.route()).status, 204);
+  } finally { clearTimeout(timeout); gate.resolve(); for (const controller of controllers) controller.abort(); await Promise.allSettled(pending); }
 });
 
 test('both center JSON classes enforce the absolute deadline and recover their admission', { timeout: 18000 }, async t => {

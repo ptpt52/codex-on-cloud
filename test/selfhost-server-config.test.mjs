@@ -19,6 +19,10 @@ test('Caddy routes node paths through auth and frps while keeping internals priv
   assert.match(config, /forward_auth 127\.0\.0\.1:36181/);
   assert.match(config, /reverse_proxy 127\.0\.0\.1:36180/);
   assert.match(config, /keepalive_idle_conns_per_host 16/);
+  assert.match(config, /max_conns_per_host 16/);
+  assert.match(config, /unhealthy_request_count 16/);
+  assert.match(config, /max_fails 1/);
+  assert.match(config, /response_header_timeout 2s/);
   assert.match(config, /path=\{(?:http\.request\.uri\.path|http\.request\.uri)\}/);
   assert.match(config, /reverse_proxy 127\.0\.0\.1:18080/);
   assert.match(config, /header_up Host \{host\}/);
