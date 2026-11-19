@@ -276,8 +276,11 @@ export async function createSelfhostCenter({
     // proxy timeout cannot create another unbounded tail on its storage queue.
     void route(req, res).catch(reject).finally(() => { requests[kind]--; if (routeAuth) routeAuthRequests--; admitted.delete(req); });
   };
-  const server = http.createServer(handleRequest(false));
-  const internalServer = internalPort === undefined ? undefined : http.createServer(handleRequest(true));
+  // The native default sweep is 30 seconds; keep the actual header release
+  // close to the configured 10-second deadline on both listeners.
+  const httpOptions = { connectionsCheckingInterval: 1000 };
+  const server = http.createServer(httpOptions, handleRequest(false));
+  const internalServer = internalPort === undefined ? undefined : http.createServer(httpOptions, handleRequest(true));
   for (const listener of [server, internalServer].filter(Boolean)) {
     listener.requestTimeout = 30_000; listener.headersTimeout = 10_000; listener.maxHeadersCount = 64;
     listener.maxConnections = internalServer ? listener === server ? CENTER_CONNECTION_LIMITS.public : CENTER_CONNECTION_LIMITS.internal : CENTER_CONNECTION_LIMITS.total;

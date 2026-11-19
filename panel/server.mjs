@@ -64,7 +64,10 @@ function reply(res, status, data, headers = {}) {
 
 // Apply the same admission bounds to TCP and private Tunnel listeners. File
 // streams keep their longer deadline independently of the JSON reader budget.
-function configureHTTP(server) {
+function createHTTP(handler) {
+  // Node's default 30-second sweep can hold incomplete headers well beyond
+  // our 15-second deadline. Configure the sweep before either listener starts.
+  const server = http.createServer({ connectionsCheckingInterval: 1000 }, handler);
   server.requestTimeout = 310_000;
   server.headersTimeout = 15_000;
   server.maxHeadersCount = 64;
@@ -797,7 +800,7 @@ export async function createPanel(config) {
         ...(error.code && error.access ? { code: error.code, access: error.access } : {}) });
     });
   };
-  const server = configureHTTP(http.createServer(handleRequest));
+  const server = createHTTP(handleRequest);
   async function upgrade(req, socket, head) {
     const deny = status => socket.end(`HTTP/1.1 ${status} Rejected\r\n${config.nodeId ? 'X-Codex-Node-Id: ' + config.nodeId + '\r\n' : ''}Connection: close\r\nContent-Length: 0\r\n\r\n`);
     try { gatewayIdentity(req); } catch { return deny(403); }
@@ -913,7 +916,7 @@ export async function createPanel(config) {
   async function startTunnel(path) {
     if (stopTunnel || tunnelStarting || closing || !server.listening) throw Error('私有 Tunnel 接口无法启动');
     tunnelStarting = true;
-    const ingress = configureHTTP(http.createServer((req, res) => { tunnelRequests.add(req); handleRequest(req, res); }));
+    const ingress = createHTTP((req, res) => { tunnelRequests.add(req); handleRequest(req, res); });
     ingress.on('upgrade', (req, socket, head) => { tunnelRequests.add(req); void upgrade(req, socket, head).catch(() => socket.destroy()); });
     try {
       const stop = await listenPrivateHTTP(ingress, path);
