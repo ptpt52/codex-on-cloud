@@ -9,9 +9,10 @@ import { createServer } from 'node:net';
 import { once } from 'node:events';
 import WebSocket from 'ws';
 import { setupGateway } from '../scripts/setup-gateway.mjs';
-import { buildGateway, GATEWAY_COMPATIBILITY_DATE } from '../scripts/build-gateway.mjs';
+import { buildGateway } from '../scripts/build-gateway.mjs';
 import { decodeGatewayCode } from '../gateway/protocol.mjs';
 import { gatewayHTTPFixture } from './gateway-http-fixture.mjs';
+import { verifyGatewayCancellation } from './gateway-cancellation-native.mjs';
 
 const tools = process.env.WORKER_TOOLS;
 if (!tools) throw Error('请设置 WORKER_TOOLS，指向固定 wrangler@4.158.0 的工具目录');
@@ -22,7 +23,8 @@ try {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening'); const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   const origin = 'http://127.0.0.1:' + port; h = await gatewayHTTPFixture({ origin }); const a = await h.add(1), b = await h.add(2);
   const setup = await setupGateway({ root, origin, backendZone: 'localhost' }), output = join(root, 'build'); await buildGateway({ config: setup.config, output, passwordFile: setup.passwordFile });
-  const bindings = JSON.parse(await readFile(join(output, 'worker-secrets.json'))), options = { name: 'gateway-test', host: '127.0.0.1', port, cf: false, scriptPath: join(output, 'worker.mjs'), modules: true, modulesRoot: output, compatibilityDate: GATEWAY_COMPATIBILITY_DATE, bindings,
+  const builtConfig = JSON.parse(await readFile(join(output, 'wrangler.json')));
+  const bindings = JSON.parse(await readFile(join(output, 'worker-secrets.json'))), options = { name: 'gateway-test', host: '127.0.0.1', port, cf: false, scriptPath: join(output, 'worker.mjs'), modules: true, modulesRoot: output, compatibilityDate: builtConfig.compatibility_date, compatibilityFlags: builtConfig.compatibility_flags, bindings,
     durableObjects: { GATEWAY_REGISTRY: { className: 'GatewayState', useSQLite: true } }, resourcePersistencePath: join(root, 'state'), log: new Log(LogLevel.ERROR) };
   runtime = new Miniflare(convertV4MiniflareOptions(options)); await runtime.ready;
   let cookie = '', csrf = '';
@@ -91,5 +93,6 @@ try {
   await runtime.dispose(); runtime = new Miniflare(convertV4MiniflareOptions(options)); await runtime.ready;
   const restored = await (await control('nodes')).json(); assert.equal(restored.nodes.length, 2); assert.equal(restored.activeId, b.gatewayEntry.id);
   assert.deepEqual(a.terminalInputs, []); assert.deepEqual(b.terminalInputs, []); assert.equal(a.managementStats.restarts + b.managementStats.restarts, 0);
+  await verifyGatewayCancellation({ Miniflare, Log, LogLevel, convertV4MiniflareOptions, output, origin, config: builtConfig });
   console.log('PASS actual workerd/SQLite: independent gateway authentication, dynamic enrollment, atomic selection, streaming HTTP upload/download, WSS pass-through retained across selection, native helper pinned to its granting node, helper handshake rejection codes preserved, stale-node rejection, and persistent routing after Worker restart. No CF API or production input.');
 } finally { socket?.terminate(); agentSocket?.terminate(); poolSocket?.terminate(); await runtime?.dispose(); await h?.close(); await rm(root, { recursive: true, force: true }); }

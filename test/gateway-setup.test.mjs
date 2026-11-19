@@ -25,6 +25,7 @@ test('gateway setup and build preserve passwords and emit a bounded standalone W
   const built = await buildGateway({ config: configured.config, passwordFile: configured.passwordFile, output: join(root, 'build') }), source = await readFile(join(built.output, 'worker.mjs'), 'utf8');
   assert(source.includes('class GatewayState')); assert(!source.includes(password.trim())); assert(!source.includes('api.cloudflare.com')); assert(Buffer.byteLength(source) < 262144);
   const config = JSON.parse(await readFile(join(built.output, 'wrangler.json'))); assert.equal(config.routes[0].pattern, 'desk.example.test'); assert.equal(config.workers_dev, false);
+  assert.equal(config.compatibility_date, '2026-11-01'); assert.deepEqual(config.compatibility_flags, ['enable_request_signal', 'request_signal_passthrough']);
   for (const name of ['worker.mjs', 'wrangler.json', 'worker-secrets.json']) assert.equal((await stat(join(built.output, name))).mode & 0o777, 0o600);
 });
 

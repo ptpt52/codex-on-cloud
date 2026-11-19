@@ -48,6 +48,8 @@ npx --yes wrangler@4.158.0 secret bulk data/gateway-build/worker-secrets.json \
 
 部署使用固定版本 Wrangler、SQLite Durable Object 和固定域名 Custom Domain，关闭 `workers.dev` 与预览入口。默认 Worker 名为 `codex-cloud-gateway`；确认自己账户中没有其他部署占用它。
 
+构建固定 `compatibility_date: "2026-11-01"`，并显式加入 `enable_request_signal` 与 `request_signal_passthrough`。两项分别启用客户端断开通知和向上游 `fetch` 传递取消；只在代码中监听或复制 `request.signal` 不足以覆盖运行时配置。该日期早于断开通知默认启用日期，见 [Cloudflare 兼容开关说明](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#enable-requestsignal-for-incoming-requests)。更新已有网关时重新构建并发布 Worker，核对实际部署的日期和两个开关；只更新节点或刷新网页不会应用此配置。
+
 同账户多套网关须使用独立 Worker 名。目前每次 `gateway:build` 都会重新生成默认名称，因此要在每次构建后、发布前，手动修改各自私有 `data/gateway-build/wrangler.json` 的 `name`；deploy 与 secret 命令均使用这份配置。已有网关更新保持原 Worker 名、DO 类名及迁移身份，避免丢失目录。不同 CF 账户可以使用相同默认名称。
 
 ## 3. 登记并选择第一台机器

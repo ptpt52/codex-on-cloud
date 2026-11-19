@@ -120,6 +120,8 @@ npm install --prefix /tmp/codex-worker-tools --no-save --ignore-scripts \
 WORKER_TOOLS=/tmp/codex-worker-tools npm run test:gateway:worker
 ```
 
+此命令从构建产物读取兼容日期和开关，另用真实 workerd 的直接 socket 注入 TCP RST：覆盖控制与路由的响应头/正文等待、节点下载的响应头等待和流式正文取消、完整上传后等待响应及部分上传中断，检查上游释放、无重放及后续正常访问。分别移除 `enable_request_signal`、`request_signal_passthrough` 的对照用例必须复现缺失行为。断线用例使用隔离 HTTP 夹具替代 DO 等待及节点上游，并通过测试专用 `waitUntil` 保持观察窗口；其他用例运行真实 SQLite DO 与私有面板入口。测试不修改生产 Worker，也不代表真实 Cloudflare 链路或手机/VPN 断线验收。
+
 `npm run test:rtc:nat` 需要 Linux 的 `iproute2`、`nftables`、固定 Go 和 Playwright 对应的 Chromium（`npx playwright install chromium`），也可用 `CHROME_PATH` 指定自己的 Chrome。缺少网络隔离条件时明确跳过，其他缺失依赖报错。`NAT_TEST_REQUIRED=1` 将缺少隔离条件也视为失败；CI 使用 `NAT_TEST_ROOT=1` 在 sudo 下只创建隔离网络，不修改主机网络。浏览器路径在提权前解析并显式传入，不依赖 root 的缓存或系统浏览器版本。
 
 原生检查命令及依赖见[CI 说明](ci.md)。`test:native` 会操作目标桌面、发送测试文字并重载面板，只能在专用验收实例使用。

@@ -44,7 +44,7 @@ export function createGateway({ config: source, assets = {}, request: upstream =
           'x-gateway-client': (await gatewayDigest(request.headers.get('cf-connecting-ip') || 'unknown')).slice(0, 32) });
         try {
           return await gatewayDeadline(request.signal, 10000, async signal => {
-            const result = await stub.fetch(new Request('https://registry.internal' + path + url.search, { method: request.method, headers: forwarded, body, signal }));
+            const result = await stub.fetch(new Request('https://registry.internal' + path + url.search, { method: request.method, headers: forwarded, body, signal }), { signal });
             const value = await gatewayJSON(result, 16384, signal);
             return reply(result.status, value, 'application/json; charset=utf-8', result.headers.has('set-cookie') ? { 'set-cookie': result.headers.get('set-cookie') } : {});
           });
@@ -58,7 +58,7 @@ export function createGateway({ config: source, assets = {}, request: upstream =
     try {
       if (pinned && (!/^[a-f0-9]{32}$/.test(pinned) || !/^Bearer (?:[a-f0-9]{32}\.)?[A-Za-z0-9_-]{43}$/.test(request.headers.get('authorization') || ''))) return error(400, '助手节点身份无效');
       node = await gatewayDeadline(request.signal, 4000, async signal => {
-        const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : ''), { signal }));
+        const result = await stub.fetch(new Request('https://registry.internal/route' + (pinned ? '?node=' + pinned : ''), { signal }), { signal });
         if (!result.ok) throw Error(); return gatewayJSON(result, 2048, signal);
       });
       // During a deferred DO update an older registry may ignore ?node and
@@ -84,7 +84,9 @@ export function createGateway({ config: source, assets = {}, request: upstream =
     forwarded.set('x-codex-gateway-client', request.headers.get('cf-connecting-ip') || '');
     try {
       request.signal.throwIfAborted();
-      const result = await upstream(new Request(destination, { method: request.method, headers: forwarded, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, redirect: 'manual', duplex: 'half', signal: request.signal }));
+      // Pass the signal explicitly as well as preserving it on the Request.
+      // The build also enables Cloudflare's incoming-signal passthrough flag.
+      const result = await upstream(new Request(destination, { method: request.method, headers: forwarded, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, redirect: 'manual', duplex: 'half', signal: request.signal }), { signal: request.signal });
       // A 101 Response retains its WebSocket object and streams frames directly.
       if (result.status === 101) return result;
       if (result.headers.get('x-codex-node-id') !== node.id) { await result.body?.cancel().catch(() => {}); throw Error('unexpected upstream identity'); }

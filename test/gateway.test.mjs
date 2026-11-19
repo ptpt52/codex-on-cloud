@@ -79,7 +79,8 @@ test('a switched browser scope never sends sensitive headers or file bytes to th
 });
 
 test('gateway propagates cancellation through registry control, routing and the selected upstream', async () => {
-  let dispatched; const seen = [], h = await setup({ request: request => {
+  let dispatched; const seen = [], h = await setup({ request: (request, options) => {
+    assert(options.signal, 'upstream fetch needs an explicit cancellation signal');
     seen.push(request); dispatched(request);
     return new Promise((_, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }));
   } });
@@ -87,7 +88,8 @@ test('gateway propagates cancellation through registry control, routing and the 
   const registry = h.registry;
   for (const path of ['/__nodes/api/nodes', '/api/state']) {
     let started; const ready = new Promise(resolve => { started = resolve; });
-    h.env.GATEWAY_REGISTRY.get = () => ({ fetch: request => {
+    h.env.GATEWAY_REGISTRY.get = () => ({ fetch: (request, options) => {
+      assert(options.signal, 'registry fetch needs an explicit cancellation signal');
       started(request); return new Promise((_, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }));
     } });
     const controller = new AbortController(), response = h.fetch(h.origin + path, { signal: controller.signal });

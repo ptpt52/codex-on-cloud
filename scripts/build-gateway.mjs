@@ -7,6 +7,9 @@ import { readStateFile, writeStateFile } from './state-files.mjs';
 import { gatewayConfig, GATEWAY_PREFIX } from '../gateway/protocol.mjs';
 const gatewayBuildRoot = fileURLToPath(new URL('../', import.meta.url));
 export const GATEWAY_COMPATIBILITY_DATE = '2026-11-01';
+// Enable both incoming disconnect notification and its propagation to fetch.
+// Keep the pinned date to avoid unrelated compatibility changes.
+export const GATEWAY_COMPATIBILITY_FLAGS = Object.freeze(['enable_request_signal', 'request_signal_passthrough']);
 export async function buildGateway({ config = join(gatewayBuildRoot, 'data/gateway.json'), output = join(gatewayBuildRoot, 'data/gateway-build'), passwordFile = join(gatewayBuildRoot, 'secrets/gateway_password') } = {}) {
   let parsed; try { parsed = JSON.parse(await readStateFile(config, 2048, true)); } catch { throw Error('请先运行 gateway:setup，或检查网关配置'); }
   const settings = gatewayConfig(parsed), password = (await readStateFile(passwordFile, 128, true)).trim();
@@ -19,7 +22,7 @@ export async function buildGateway({ config = join(gatewayBuildRoot, 'data/gatew
   const sources = await Promise.all(['protocol.mjs', 'registry.mjs', 'worker.mjs'].map(name => readFile(join(gatewayBuildRoot, 'gateway', name), 'utf8')));
   const source = sources.map(text => text.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n') + '\nconst GATEWAY_BOOTSTRAP = ' + JSON.stringify(settings) + ';\nclass GatewayState extends GatewayRegistry { constructor(state, env) { super(state, env, GATEWAY_BOOTSTRAP); } }\nexport { GatewayState };\nexport default createGateway(' + JSON.stringify({ config: settings, assets }) + ');\n';
   if (Buffer.byteLength(source) > 262144) throw Error('网关 Worker 超过 256 KiB');
-  const wrangler = { name: 'codex-cloud-gateway', main: 'worker.mjs', compatibility_date: GATEWAY_COMPATIBILITY_DATE, workers_dev: false, preview_urls: false,
+  const wrangler = { name: 'codex-cloud-gateway', main: 'worker.mjs', compatibility_date: GATEWAY_COMPATIBILITY_DATE, compatibility_flags: GATEWAY_COMPATIBILITY_FLAGS, workers_dev: false, preview_urls: false,
     routes: [{ pattern: new URL(settings.origin).host, custom_domain: true }], durable_objects: { bindings: [{ name: 'GATEWAY_REGISTRY', class_name: 'GatewayState' }] }, migrations: [{ tag: 'v1', new_sqlite_classes: ['GatewayState'] }] };
   await writeStateFile(join(output, 'worker.mjs'), source); await writeStateFile(join(output, 'wrangler.json'), JSON.stringify(wrangler, null, 2) + '\n');
   await writeStateFile(join(output, 'worker-secrets.json'), JSON.stringify({ GATEWAY_PASSWORD_HASH: createHash('sha256').update(password).digest('hex') }) + '\n');
