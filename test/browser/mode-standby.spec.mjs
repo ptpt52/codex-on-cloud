@@ -190,7 +190,12 @@ for (const direct of [false, true]) test(`${direct ? 'direct' : 'relay'}: return
     await login(page, app, { modeStandby: true, mode: 'terminal', workspaceLayout: 'sidebar' }); await prepared(page, 'desktop');
     if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
     const source = await page.locator('#desktop-frame').getAttribute('src');
-    await switchMode(page, 'desktop'); await expect(page.locator('#input-terminal')).toBeEnabled();
+    await switchMode(page, 'desktop');
+    // The cached desktop can be online on relay before its direct handoff.
+    // Finish that handoff before testing the parked terminal's restoration;
+    // otherwise it can disable the mode button between actionability and click.
+    if (direct) await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 });
+    await expect(page.locator('#input-terminal')).toBeEnabled();
     await expect.poll(() => parked.has('main')).toBe(true);
     await page.locator('#terminal-tabs [data-terminal-choice=aux1]').click(); await expect(page.locator('#input-terminal')).toHaveValue('aux1');
     await switchMode(page, 'terminal'); await expect(page.locator('#input-terminal')).toBeEnabled();
