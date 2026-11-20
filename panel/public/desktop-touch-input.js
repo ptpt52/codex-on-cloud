@@ -20,8 +20,11 @@ export function createDesktopTouchInput({ input, field, root, allowed, action })
     root.style.maxHeight = `${height}px`;
     root.classList.toggle('compact', width < 520); root.classList.toggle('short', height < 150);
     root.style.top = `${Math.max(top, bottom - root.getBoundingClientRect().height)}px`;
-    document.documentElement.style.setProperty('--desktop-touch-inset', `${Math.max(0, innerHeight - bottom)}px`);
-    document.documentElement.style.setProperty('--desktop-touch-height', `${root.getBoundingClientRect().height}px`);
+    const style = document.documentElement.style;
+    style.setProperty('--desktop-touch-inset', `${Math.max(0, innerHeight - bottom)}px`);
+    style.setProperty('--desktop-touch-height', `${root.getBoundingClientRect().height}px`);
+    style.setProperty('--desktop-touch-right', `${Math.max(0, innerWidth - right)}px`);
+    style.setProperty('--desktop-touch-width', `${width}px`);
     if (input.touch && !input.composing) {
       field.style.left = root.style.left; field.style.top = `${Math.max(top, parseFloat(root.style.top) - 32)}px`;
     }

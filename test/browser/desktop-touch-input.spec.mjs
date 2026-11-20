@@ -249,7 +249,9 @@ test('phone and tablet toolbar follows the visible viewport without resizing the
       }, { visibleWidth, visibleHeight });
       await expect.poll(async () => {
         const box = await frame.locator('#desktop-touch-input').boundingBox();
-        return !!box && box.x >= 0 && box.x + box.width <= visibleWidth + 1 && box.y + box.height <= visibleHeight && box.y >= 0;
+        const status = await frame.locator('#desktop-input-status').boundingBox();
+        return !!box && !!status && box.x >= 0 && box.x + box.width <= visibleWidth + 1 && box.y + box.height <= visibleHeight && box.y >= 0 &&
+          status.x >= box.x - 1 && status.x + status.width <= box.x + box.width + 1;
       }).toBe(true);
       expect(await frame.locator('.desktop-touch-keys').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       await expect(frame.locator('#desktop-input')).toBeFocused();

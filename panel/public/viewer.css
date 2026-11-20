@@ -36,4 +36,4 @@ body { touch-action: none; }
 .desktop-touch-menu [data-touch-action] { grid-column: span 2; }
 #desktop-touch-input.compact .desktop-touch-arrow, #desktop-touch-input.short .desktop-touch-heading { display: none; }
 .desktop-touch-typing #pointer-controls { display: none; }
-.desktop-touch-typing #desktop-input-status { bottom: calc(var(--desktop-touch-inset, 0px) + var(--desktop-touch-height, 80px) + 12px); }
+.desktop-touch-typing #desktop-input-status { box-sizing: border-box; right: var(--desktop-touch-right, 8px); bottom: calc(var(--desktop-touch-inset, 0px) + var(--desktop-touch-height, 80px) + 12px); max-width: var(--desktop-touch-width, calc(100% - 32px)); overflow-wrap: anywhere; }
