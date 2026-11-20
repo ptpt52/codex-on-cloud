@@ -2066,7 +2066,7 @@ window.addEventListener('message', event => {
     return;
   }
   if (event.data?.type === 'codex-pointer-options') {
-    if (!terminalMode() && canInput() && ['viewport', 'remote'].includes(event.data.scrollTarget)) updateDisplayPreferences({ scrollTarget: event.data.scrollTarget });
+    if (!terminalMode() && canInput(true) && ['viewport', 'remote'].includes(event.data.scrollTarget)) updateDisplayPreferences({ scrollTarget: event.data.scrollTarget });
     return;
   }
   if (event.data?.type === 'codex-transport') { renderConnection(); return; }

@@ -61,6 +61,25 @@ test('scroll target switches between local viewport motion and remote RFB wheel 
   } finally { await app.close(); }
 });
 
+test('the desktop scroll target remains switchable when the assistant target cannot load', async ({ page }) => {
+  await page.route('**/api/terminals', route => route.fulfill({ status: 503, json: { error: '终端列表暂不可用' } }));
+  const { app, frame } = await setup(page);
+  try {
+    await page.locator('#toggle-input-button').click();
+    await expect(page.locator('#draft-status')).toContainText('身份校验');
+    await expect(page.locator('#paste-button')).toBeDisabled();
+    await page.locator('#close-input-button').click();
+    const scroll = frame.locator('#pointer-scroll');
+    await expect(scroll).toHaveText('滚动画面');
+    await scroll.click();
+    await expect(scroll).toHaveText('滚动程序');
+    await scroll.click();
+    await expect(scroll).toHaveText('滚动画面');
+    expect(app.inputCalls).toEqual([]);
+    expect(app.vncConnections).toBe(1);
+  } finally { await app.close(); }
+});
+
 test('local scrolling and panning preserve the browser default for Ctrl+wheel', async ({ page }) => {
   const { app, pointers, frame } = await setup(page);
   try {
