@@ -1468,7 +1468,8 @@ async function inputAction(path, body, label, success, destination) {
     catch (error) { inputMessage('rejected', error.message); return { outcome: 'rejected' }; }
   }
   const controller = new AbortController(); inputController = controller;
-  const notice = { key: `assistant:${++inputNoticeSequence}`, source: 'assistant', mode: displayPreferences.mode, target: focused ? '' : noticeTarget(),
+  const source = desktopTextInput ? 'desktop-ime' : 'assistant';
+  const notice = { key: `${source}:${++inputNoticeSequence}`, source, mode: displayPreferences.mode, target: focused ? '' : noticeTarget(),
     action: ['/api/paste', '/api/edit'].includes(path) ? 'paste' : path === '/api/key' ? 'key' : 'terminal', keyName: body.key,
     path: controlReady && ['/api/paste', '/api/edit', '/api/key'].includes(path) ? views.active.transport === 'direct' ? 'direct' : 'terminal' : 'https' };
   const timeout = setTimeout(() => controller.abort(), 8000);

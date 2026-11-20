@@ -305,6 +305,7 @@ test('unknown touch paste discards queued Enter and never resends after reconnec
     await expect.poll(() => app.inputCalls.length).toBe(1);
     await frame.locator('[data-touch-key="Enter"]').click(); finish();
     await expect(frame.locator('#desktop-input-status')).toContainText('结果未知');
+    await expect(page.locator('#connection-notice')).toContainText('桌面直输：文字输入结果未知');
     await expect(frame.locator('#desktop-touch-panel')).toBeHidden();
     await expect(frame.locator('#desktop-input')).not.toBeFocused();
     expect(sent).toEqual([]);
