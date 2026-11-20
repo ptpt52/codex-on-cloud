@@ -414,14 +414,14 @@ function restoreDesktopFocus() {
 function hideWorkspacePanels() {
   if (workspacePanels.active) updateDisplayPreferences({ controlsCollapsed: true, collapsed: true, terminalInputCollapsed: true });
 }
-function toggleWorkspacePanel(name) {
+function toggleWorkspacePanel(name, desktopFocus = true) {
   historyToolsPortal.dismiss();
   const opening = workspacePanels.active !== name;
   shortcutMenu.close();
   updateDisplayPreferences({ controlsCollapsed: name !== 'tools' || !opening,
     ...(terminalMode() ? { terminalInputCollapsed: name !== 'input' || !opening } : { collapsed: name !== 'input' || !opening }) });
   if (opening) { workspacePanels.focus(); if (name === 'input') $('mobile-input').focus({ preventScroll: true }); }
-  else restoreDesktopFocus();
+  else if (desktopFocus) restoreDesktopFocus();
 }
 function sendDisplayPreferences() {
   if (views.standby) sendStandbyPreferences();
@@ -590,12 +590,12 @@ $('end-pan-button').addEventListener('click', () => {
 });
 $('pointer-mode').addEventListener('change', () => updateDisplayPreferences({ pointerMode: $('pointer-mode').value, pan: false }));
 $('scroll-target').addEventListener('change', () => updateDisplayPreferences({ scrollTarget: $('scroll-target').value }));
-$('toggle-input-button').addEventListener('click', () => toggleWorkspacePanel('input'));
-$('toggle-controls-button').addEventListener('click', () => toggleWorkspacePanel('tools'));
+$('toggle-input-button').addEventListener('click', event => toggleWorkspacePanel('input', event.detail > 0));
+$('toggle-controls-button').addEventListener('click', event => toggleWorkspacePanel('tools', event.detail > 0));
 $('workspace-layout').addEventListener('change', () => updateDisplayPreferences({ workspaceLayout: $('workspace-layout').value }));
 $('sidebar-top-layout').addEventListener('click', () => updateDisplayPreferences({ workspaceLayout: 'top' }));
-$('close-input-button').addEventListener('click', () => closeWorkspacePanel('input'));
-$('close-controls-button').addEventListener('click', () => closeWorkspacePanel('tools'));
+$('close-input-button').addEventListener('click', event => closeWorkspacePanel('input', event.detail > 0));
+$('close-controls-button').addEventListener('click', event => closeWorkspacePanel('tools', event.detail > 0));
 $('tools-fullscreen-button').addEventListener('click', () => { closeWorkspacePanel('tools'); $('fullscreen-button').click(); });
 for (const id of ['input-keyboard-button', 'assistant-send-button']) $(id).addEventListener('click', () => setInputDirection('send', true));
 renderDisplayControls();

@@ -81,6 +81,27 @@ test('IME Escape keeps the input assistant and draft; ordinary Escape returns fo
   } finally { await app.close(); }
 });
 
+test('keyboard panel dismissals keep focus on browser controls', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    const input = page.locator('#toggle-input-button'), tools = page.locator('#toggle-controls-button');
+    await input.click();
+    await expect(page.locator('[data-key="Enter"]')).toBeEnabled();
+    await page.locator('#close-input-button').press('Space');
+    await expect(input).toBeFocused();
+    await tools.press('Enter');
+    await page.locator('#close-controls-button').press('Enter');
+    await expect(tools).toBeFocused();
+    await tools.press('Enter');
+    await expect(page.locator('#workspace-tools')).toBeVisible();
+    await tools.press('Enter');
+    await expect(page.locator('#workspace-tools')).toBeHidden();
+    await expect(tools).toBeFocused();
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('tool dialogs retain confirmation and return focus without losing the input draft', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
