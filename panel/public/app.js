@@ -433,6 +433,7 @@ function sendDisplayPreferences() {
     busy: views.active.activationPending || (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardUI?.busy || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : views.active.scaleRevision === displayRevision ? views.active.scale : 0; }
+function desktopPanActive() { return !terminalMode() && displayPreferences.pan; }
 function renderFullscreenControls() {
   const active = Boolean(document.fullscreenElement);
   const label = active ? '退出全屏' : terminalMode() ? '全屏终端' : '全屏桌面';
@@ -497,6 +498,9 @@ function renderDisplayControls() {
   $('fit-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 'fit'));
   $('actual-size-button').setAttribute('aria-pressed', String(displayPreferences.zoom === 1));
   $('pan-button').setAttribute('aria-pressed', String(displayPreferences.pan));
+  const pan = desktopPanActive();
+  $('pan-input-note').hidden = !pan;
+  $('mobile-input').setAttribute('aria-describedby', pan ? 'terminal-target-note pan-input-note' : 'terminal-target-note');
   $('pointer-mode').value = displayPreferences.pointerMode;
   $('scroll-target').value = displayPreferences.scrollTarget;
   // Older saved preferences could have both inline sections expanded.
@@ -517,7 +521,8 @@ function updateDisplayPreferences(change) {
   browserPreferences.update(change);
   if (change.networkDebug !== undefined) { syncNetworkDebug(); if (Object.keys(change).length === 1) return; }
   renderDisplayControls();
-  sendDisplayPreferences();
+  if (change.pan !== undefined) renderInputControls();
+  else sendDisplayPreferences();
   scheduleViewport();
 }
 function wakeAllowed() {
@@ -646,6 +651,7 @@ $('auto-resolution').addEventListener('change', () => {
   renderDesktopSettings(); scheduleViewport();
 });
 function canInput(focused = false) {
+  if (desktopPanActive()) return false;
   return loggedIn && owned && !accessExpired && navigator.onLine && panelState === 'online' && desktopReady === true && views.inputReady() && !inputPaused() && !terminalBusy && (focused === true && !terminalMode() || terminalSelectionState === 'ready' && !desktopFocusUnconfirmed()) && (!terminalMode() || !views.active.reviewing) && !$('draft-leave-dialog').open && !controlsState.inputBusy && !controlsState.clipboardBusy && !clipboardUI?.busy && !accessUI?.blocking;
 }
 function canManageTerminals(allowPaused = false) {

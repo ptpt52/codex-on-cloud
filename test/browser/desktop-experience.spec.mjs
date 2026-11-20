@@ -146,6 +146,31 @@ test('desktop feedback is painted above the fullscreen tools and returns to the 
   } finally { await app.close(); }
 });
 
+test('desktop pan pauses assistant writes immediately while keeping the draft editable', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#pan-button').click();
+    await page.locator('#toggle-input-button').click();
+    const draft = page.locator('#mobile-input');
+    await draft.fill('拖动画面时保留的草稿');
+    await expect(page.locator('#pan-input-note')).toBeVisible();
+    await expect(page.locator('#paste-button')).toBeDisabled();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
+    expect(app.inputCalls).toEqual([]);
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#pan-button').click();
+    await page.locator('#toggle-input-button').click();
+    await expect(draft).toHaveValue('拖动画面时保留的草稿');
+    await expect(page.locator('#pan-input-note')).toBeHidden();
+    await page.locator('#paste-button').click();
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    expect(app.inputCalls).toHaveLength(1);
+    expect(app.inputCalls[0].action).toBe('paste');
+  } finally { await app.close(); }
+});
+
 test('partial saved terminal preferences preserve display choices without opening an unspecified tool panel', async ({ page }) => {
   const app = await fixture({ rfb: true });
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({
