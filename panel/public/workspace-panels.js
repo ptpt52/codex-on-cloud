@@ -60,9 +60,15 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
     const visible = window.visualViewport;
     const height = Math.max(1, Math.min(20000, visible?.height ?? innerHeight));
     const bottom = Math.max(0, Math.min(20000, innerHeight - height - (visible?.offsetTop ?? 0)));
-    document.documentElement.style.setProperty('--workspace-visible-height', `${height}px`);
-    document.documentElement.style.setProperty('--workspace-keyboard-inset', `${bottom}px`);
-    document.documentElement.classList.toggle('workspace-keyboard-open', bottom > 100);
+    const width = Math.max(1, Math.min(innerWidth, visible?.width ?? innerWidth));
+    const left = Math.max(0, Math.min(innerWidth - width, visible?.offsetLeft ?? 0));
+    const root = document.documentElement;
+    root.style.setProperty('--workspace-visible-height', `${height}px`);
+    root.style.setProperty('--workspace-keyboard-inset', `${bottom}px`);
+    root.style.setProperty('--workspace-visible-width', `${width}px`);
+    root.style.setProperty('--workspace-viewport-left', `${left}px`);
+    root.classList.toggle('workspace-keyboard-open', bottom > 100);
+    root.classList.toggle('workspace-viewport-narrow', width + 1 < innerWidth);
     cancelAnimationFrame(viewportFrame);
     viewportFrame = requestAnimationFrame(() => {
       const focused = document.activeElement;

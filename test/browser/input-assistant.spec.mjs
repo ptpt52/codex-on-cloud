@@ -87,6 +87,42 @@ test('switching direction cancels a pending preview without a late read, draft l
   } finally { release(); await app.close(); }
 });
 
+test('the zoomed input assistant follows visual panning and keeps its actions inside the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.assign(viewport, { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport });
+  });
+  const app = await fixture({ rfb: true, viewport: true });
+  try {
+    await login(page, app);
+    const dock = page.locator('#input-dock'), draft = page.locator('#mobile-input');
+    await draft.fill('放大后保留的桌面草稿');
+    const moveViewport = (left, type) => page.evaluate(({ left, type }) => {
+      Object.assign(visualViewport, { width: 254, height: 520, offsetLeft: left, offsetTop: 40 });
+      visualViewport.dispatchEvent(new Event(type));
+    }, { left, type });
+    await moveViewport(12, 'resize');
+    await expect.poll(async () => (await dock.boundingBox()).x).toBeCloseTo(20);
+    await moveViewport(104, 'scroll');
+    await expect.poll(async () => (await dock.boundingBox()).x).toBeCloseTo(112);
+    for (const selector of ['#close-input-button', '#paste-button', '[data-key="Enter"]', '#shortcuts-button']) {
+      const control = page.locator(selector);
+      await control.click({ trial: true });
+      const box = await control.boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(104);
+      expect(box.x + box.width).toBeLessThanOrEqual(358);
+    }
+    expect(await dock.locator('.assistant-body').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    await expect(draft).toHaveValue('放大后保留的桌面草稿');
+    await page.locator('#close-input-button').click();
+    await expect(dock).toBeHidden();
+    expect(app.inputCalls).toEqual([]);
+    expect(app.managementStats.viewportResizes).toBe(0);
+  } finally { await app.close(); }
+});
+
 test('a simulated visual keyboard keeps paste and Enter visible without resizing or restarting the desktop', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   // This exercises visualViewport geometry; a real OS keyboard needs device QA.
