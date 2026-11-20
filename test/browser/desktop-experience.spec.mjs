@@ -213,6 +213,33 @@ test('desktop feedback stays above tools in both layouts and returns to the page
   } finally { await app.close(); }
 });
 
+test('desktop feedback remains visible when a keyboard or zoom reduces the visible area', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.assign(viewport, { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport });
+  });
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-controls-button').click();
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { width: 254, height: 390, offsetLeft: 80, offsetTop: 40 });
+      visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await page.locator('#pan-button').click();
+    const toast = page.locator('#toast');
+    await expect(toast).toContainText('拖动模式');
+    await expect(toast).toHaveCSS('pointer-events', 'none');
+    await expect.poll(async () => {
+      const box = await toast.boundingBox();
+      return !!box && box.x >= 80 && box.x + box.width <= 334 && box.y >= 40 && box.y + box.height <= 430;
+    }).toBe(true);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('desktop pan pauses assistant writes immediately while keeping the draft editable', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
