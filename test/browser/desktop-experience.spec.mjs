@@ -100,6 +100,28 @@ test('tool dialogs retain confirmation and return focus without losing the input
   } finally { await app.close(); }
 });
 
+test('fullscreen tools name the exit action and reflect native fullscreen changes', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-controls-button').click();
+    await page.getByRole('button', { name: '全屏', exact: true }).and(page.locator('#tools-fullscreen-button')).click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.locator('#toggle-controls-button').click();
+    await expect(page.locator('#fullscreen-button')).toHaveAttribute('aria-label', '退出全屏');
+    await page.locator('#workspace-tools').getByRole('button', { name: '退出全屏', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBeUndefined();
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#tools-fullscreen-button').click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.evaluate(() => document.exitFullscreen());
+    await expect(page.locator('#fullscreen-button')).toHaveAttribute('aria-label', '全屏桌面');
+    await expect(page.locator('#tools-fullscreen-button')).toHaveText('全屏');
+    expect(app.vncConnections).toBe(1);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('partial saved terminal preferences preserve display choices without opening an unspecified tool panel', async ({ page }) => {
   const app = await fixture({ rfb: true });
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({

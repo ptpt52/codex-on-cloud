@@ -433,6 +433,19 @@ function sendDisplayPreferences() {
     busy: views.active.activationPending || (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardUI?.busy || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : views.active.scaleRevision === displayRevision ? views.active.scale : 0; }
+function renderFullscreenControls() {
+  const active = Boolean(document.fullscreenElement);
+  const label = active ? '退出全屏' : terminalMode() ? '全屏终端' : '全屏桌面';
+  const button = $('fullscreen-button');
+  if (button.title === label) return;
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.querySelector('.sidebar-only').textContent = active ? '退出全屏' : '全屏';
+  button.querySelector('path').setAttribute('d', active
+    ? 'M3 8h5V3m13 5h-5V3m5 13h-5v5M3 16h5v5'
+    : 'M8 3H3v5m13-5h5v5m0 8v5h-5m-8 0H3v-5');
+  $('tools-fullscreen-button').textContent = active ? '退出全屏' : '全屏';
+}
 function renderDisplayControls() {
   workspaceLayout.render();
   $('workspace-layout').value = displayPreferences.workspaceLayout;
@@ -463,7 +476,7 @@ function renderDisplayControls() {
   $('desktop-mode').parentElement.setAttribute('aria-label', `操作模式，当前为${terminalMode() ? '网页终端' : '桌面'}`);
   $('desktop-mode').title = '切换到桌面'; $('terminal-mode').title = '切换到网页终端';
   $('view-title').textContent = terminalMode() ? '网页终端' : '开发桌面';
-  $('fullscreen-button').setAttribute('aria-label', terminalMode() ? '全屏终端' : '全屏桌面');
+  renderFullscreenControls();
   $('terminal-font-label').textContent = String(displayPreferences.terminalFontSize);
   const fittedFont = views.active.geometry?.fontSize;
   $('terminal-font-label').title = displayPreferences.terminalWidthMode === 'scale' && fittedFont > displayPreferences.terminalFontSize
@@ -2093,7 +2106,10 @@ window.addEventListener('message', event => {
   else if (event.data.state !== 'connecting') return;
   renderConnection();
 });
-document.addEventListener('fullscreenchange', () => shortcutMenu.close());
+document.addEventListener('fullscreenchange', () => {
+  shortcutMenu.close();
+  renderFullscreenControls();
+});
 document.addEventListener('visibilitychange', () => {
   if (loggedIn) recordConnection('network-change', { reason: document.hidden ? 'hidden' : 'visible' }, displayPreferences.mode);
   if (document.hidden) connectionTrace.flush();
