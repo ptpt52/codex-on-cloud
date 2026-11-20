@@ -272,12 +272,17 @@ for (const name of ['gesturestart', 'gesturemove', 'gestureend']) screen.addEven
   }
   if (name === 'gestureend') scrollGesture = null;
 }, true);
-viewport.addEventListener('wheel', event => {
-  if (preferences.scrollTarget !== 'viewport' || preferences.pan || preferences.blocked) return;
-  event.preventDefault(); event.stopImmediatePropagation();
+function scrollViewport(event) {
+  event.preventDefault();
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
   viewport.scrollLeft += event.deltaX * unit;
   viewport.scrollTop += event.deltaY * unit;
+}
+viewport.addEventListener('wheel', event => {
+  if (preferences.scrollTarget !== 'viewport' || preferences.pan || preferences.blocked) return;
+  event.stopImmediatePropagation();
+  // Keep browser zoom available without sending a wheel event to noVNC.
+  if (!event.ctrlKey) scrollViewport(event);
 }, { capture: true, passive: false });
 
 // A separate input layer blocks taps, wheel events and keys before noVNC can send them.
@@ -307,10 +312,7 @@ panLayer.addEventListener('pointermove', event => {
 for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) panLayer.addEventListener(name, stopDrag);
 for (const name of ['click', 'contextmenu']) panLayer.addEventListener(name, event => event.preventDefault());
 panLayer.addEventListener('wheel', event => {
-  event.preventDefault();
-  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
-  viewport.scrollLeft += event.deltaX * unit;
-  viewport.scrollTop += event.deltaY * unit;
+  if (!event.ctrlKey) scrollViewport(event);
 }, { passive: false });
 panLayer.addEventListener('keydown', event => {
   const steps = { ArrowLeft: [-60, 0], ArrowRight: [60, 0], ArrowUp: [0, -60], ArrowDown: [0, 60], PageUp: [0, -viewport.clientHeight], PageDown: [0, viewport.clientHeight] };

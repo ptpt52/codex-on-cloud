@@ -61,6 +61,31 @@ test('scroll target switches between local viewport motion and remote RFB wheel 
   } finally { await app.close(); }
 });
 
+test('local scrolling and panning preserve the browser default for Ctrl+wheel', async ({ page }) => {
+  const { app, pointers, frame } = await setup(page);
+  try {
+    const scroll = (target, ctrlKey) => target.evaluate((element, modified) => {
+      const viewport = document.getElementById('viewport');
+      viewport.scrollTop = 0;
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 180, ctrlKey: modified });
+      element.dispatchEvent(event);
+      return { cancelled: event.defaultPrevented, scrolled: viewport.scrollTop > 0 };
+    }, ctrlKey);
+    const checkWheel = async target => {
+      expect(await scroll(target, true)).toEqual({ cancelled: false, scrolled: false });
+      expect(await scroll(target, false)).toEqual({ cancelled: true, scrolled: true });
+    };
+    await checkWheel(frame.locator('#screen canvas'));
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#pan-button').click();
+    await page.locator('#close-controls-button').click();
+    const panLayer = frame.locator('#pan-layer');
+    await expect(panLayer).toBeVisible();
+    await checkWheel(panLayer);
+    expect(pointers).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('relative touch moves without clicking and supports left, right and explicitly held drag', async ({ page, context }) => {
   const { app, pointers, frame } = await setup(page);
   const client = await context.newCDPSession(page);
