@@ -145,6 +145,42 @@ test('relative touch moves without clicking and supports left, right and explici
   } finally { await client.detach(); await app.close(); }
 });
 
+test('trackpad controls stay reachable in the visible viewport with or without the keyboard shortcut', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 600 });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 });
+    if (window !== parent) return;
+    const viewport = new EventTarget();
+    Object.assign(viewport, { width: 390, height: 600, offsetTop: 0, offsetLeft: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport });
+  });
+  const { app, frame } = await setup(page);
+  try {
+    await trackpad(page);
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { width: 254, height: 370, offsetTop: 30, offsetLeft: 12 });
+      visualViewport.dispatchEvent(new Event('resize'));
+    });
+    const controls = frame.locator('#pointer-controls'), keyboard = frame.locator('#desktop-touch-keyboard');
+    const expectInViewport = async () => expect.poll(async () => {
+      const box = await controls.boundingBox(), key = await keyboard.boundingBox();
+      return box && box.x >= 12 && box.x + box.width <= 266 && box.y + box.height <= 400 &&
+        (!key || box.y + box.height <= key.y);
+    }).toBe(true);
+    await expect(keyboard).toBeVisible();
+    await expectInViewport();
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#desktop-ime').uncheck();
+    await page.locator('#close-controls-button').click();
+    await expect(keyboard).toBeHidden();
+    await expectInViewport();
+    const scroll = frame.locator('#pointer-scroll');
+    await scroll.click();
+    await expect(scroll).toHaveText('滚动程序');
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('a displaced trackpad cursor returns to the visible desktop without a remote click', async ({ page, context }) => {
   const { app, pointers, frame } = await setup(page);
   const client = await context.newCDPSession(page);

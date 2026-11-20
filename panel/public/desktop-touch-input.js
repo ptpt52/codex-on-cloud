@@ -9,19 +9,25 @@ export function createDesktopTouchInput({ input, field, root, allowed, action })
   const touchDevice = () => coarse.matches || navigator.maxTouchPoints > 0;
   function layout() {
     layoutFrame = 0;
-    if (destroyed || root.hidden) return;
+    if (destroyed) return;
     const visible = host.visualViewport, box = frame?.getBoundingClientRect() || { left: 0, top: 0 };
     const left = Math.max(0, (visible?.offsetLeft || 0) - box.left) + 8;
     const right = Math.min(innerWidth, (visible?.offsetLeft || 0) + (visible?.width || host.innerWidth) - box.left) - 8;
     const top = Math.max(0, (visible?.offsetTop || 0) - box.top) + 8;
     const bottom = Math.min(innerHeight, (visible?.offsetTop || 0) + (visible?.height || host.innerHeight) - box.top) - 8;
-    const width = Math.max(0, Math.min(540, right - left)), height = Math.max(44, bottom - top);
+    const availableWidth = Math.max(0, right - left), bottomInset = Math.max(8, innerHeight - bottom);
+    const style = document.documentElement.style;
+    style.setProperty('--desktop-pointer-center', `${left + availableWidth / 2}px`);
+    style.setProperty('--desktop-pointer-width', `${availableWidth}px`);
+    // On narrow screens the full trackpad toolbar needs its own row above the keyboard button.
+    style.setProperty('--desktop-pointer-bottom', `${bottomInset + (!root.hidden && availableWidth < 340 ? 52 : 0)}px`);
+    if (root.hidden) return;
+    const width = Math.min(540, availableWidth), height = Math.max(44, bottom - top);
     root.style.width = `${width}px`; root.style.left = `${Math.max(left, right - width)}px`;
     root.style.maxHeight = `${height}px`;
     root.classList.toggle('compact', width < 520); root.classList.toggle('short', height < 150);
     root.style.top = `${Math.max(top, bottom - root.getBoundingClientRect().height)}px`;
-    const style = document.documentElement.style;
-    style.setProperty('--desktop-touch-inset', `${Math.max(0, innerHeight - bottom)}px`);
+    style.setProperty('--desktop-touch-inset', `${bottomInset}px`);
     style.setProperty('--desktop-touch-height', `${root.getBoundingClientRect().height}px`);
     style.setProperty('--desktop-touch-right', `${Math.max(0, innerWidth - right)}px`);
     style.setProperty('--desktop-touch-width', `${width}px`);
