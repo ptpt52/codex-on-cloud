@@ -113,6 +113,23 @@ test('narrow dropdown remains in the visual viewport, has touch-sized rows and s
   } finally { await app.close(); }
 });
 
+test('fullscreen shortcut fallback can be clicked and dismisses without sending a key', async ({ page }) => {
+  await page.addInitScript(() => { HTMLElement.prototype.showPopover = undefined; });
+  const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#tools-fullscreen-button').click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await open(page);
+    await item(page, 'Enter').click({ trial: true });
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#shortcuts-menu')).toBeHidden();
+    await expect(page.locator('#shortcuts-button')).toBeFocused();
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('an open shortcut menu postpones background transport replacement until it closes', async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, webrtc: true }); let offers = 0;
   await page.clock.install();

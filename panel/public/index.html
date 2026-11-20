@@ -147,6 +147,12 @@
       <p id="input-status" class="input-status" role="status" hidden></p>
       <p id="draft-status" class="input-status" role="status" hidden></p>
     </section>
+    <div id="shortcuts-menu" class="shortcuts-menu" role="menu" aria-label="Codex 和终端快捷键" tabindex="-1" popover="auto" hidden>
+      <p class="shortcuts-title">Codex 和终端快捷键</p>
+      <p class="shortcuts-help">可上下滚动查看，点击条目发送一次。先点选远程 Codex 终端；用途按默认键位标注，自定义键位以当前程序为准。</p>
+      <div id="shortcuts-list"></div>
+      <p class="shortcuts-help">文本粘贴与 Enter 提交保持分开。关闭本列表的 Esc 不会发给远程桌面。</p>
+    </div>
     </section>
     <footer class="workspace-footer"><span><span class="status-dot"></span> 浏览器离开后，任务继续运行</span><span><span id="ui-update-note" hidden>界面有更新，保存草稿后刷新生效 · </span><span id="version-label"></span></span></footer>
   </main>
@@ -193,13 +199,6 @@
     <div class="settings-dialog-body"><p class="muted settings-help">旧临时登录将立即失效。管理员的登录、任务和助手规则保留。</p><p class="muted settings-help">已分享的助手 key 继续有效；撤销 key 需在对应助手页重新生成。</p></div>
     <div class="settings-dialog-footer confirmation-actions"><button id="access-confirm-cancel" class="secondary" type="button" autofocus>取消</button><button id="access-confirm-accept" class="primary" type="button">确认更新</button></div>
   </dialog>
-  <div id="shortcuts-menu" class="shortcuts-menu" role="menu" aria-label="Codex 和终端快捷键" tabindex="-1" popover="auto" hidden>
-    <p class="shortcuts-title">Codex 和终端快捷键</p>
-    <p class="shortcuts-help">可上下滚动查看，点击条目发送一次。先点选远程 Codex 终端；用途按默认键位标注，自定义键位以当前程序为准。</p>
-    <div id="shortcuts-list"></div>
-    <p class="shortcuts-help">文本粘贴与 Enter 提交保持分开。关闭本列表的 Esc 不会发给远程桌面。</p>
-  </div>
-
   <dialog id="terminal-switch-dialog" class="files-dialog terminal-switch-dialog" aria-labelledby="terminal-switch-title">
     <div class="dialog-heading"><h2 id="terminal-switch-title">选择终端</h2><button id="close-terminal-switch" class="quiet" type="button" aria-label="关闭会话列表">✕</button></div>
     <p class="muted">点击终端切换；“⋯”可重命名或结束终端。末尾“新开终端”创建 shell，草稿分别保留。</p>
