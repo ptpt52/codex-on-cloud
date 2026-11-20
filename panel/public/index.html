@@ -134,7 +134,7 @@
       <div class="draft-tools"><span id="draft-save-state" role="status"></span><div><button id="copy-draft" class="quiet" type="button">复制当前草稿</button><button id="export-drafts" class="quiet" type="button">导出本节点草稿</button></div></div>
       <div class="dock-bottom"><div class="keys" aria-label="快捷按键"><button data-key="ArrowUp" aria-label="上方向键">↑</button><button data-key="ArrowDown" aria-label="下方向键">↓</button><button data-key="Enter" class="enter-key">Enter ↵</button><button data-key="Ctrl+C" class="interrupt-key" title="确认后发送 Ctrl+C 中断当前命令">Ctrl C</button><button id="shortcuts-button" class="shortcuts-entry" type="button" aria-haspopup="menu" aria-controls="shortcuts-menu" aria-expanded="false" disabled>更多按键 ▾</button></div><span class="dock-note">粘贴后不会自动执行，按 Enter 提交</span></div>
       </section>
-      <section id="clipboard-dialog" class="clipboard-panel" aria-labelledby="clipboard-button" hidden>
+      <section id="clipboard-dialog" class="clipboard-panel" aria-labelledby="clipboard-button" tabindex="-1" hidden>
         <div class="clipboard-source-row"><label for="clipboard-source">读取来源<select id="clipboard-source"><option value="clipboard">远程剪贴板（复制的文字）</option><option value="primary">选中文字（鼠标选区）</option></select></label><button id="read-clipboard" class="secondary" type="button" disabled>读取远程文字</button></div>
         <p class="muted clipboard-help">先在远程复制或选中文字，再手动读取。每次最多 32 KiB。</p>
         <label for="clipboard-preview">远程文字预览</label>

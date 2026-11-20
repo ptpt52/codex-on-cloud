@@ -52,6 +52,24 @@ test('remote text is read only on request, copied after preview and cleared when
   } finally { await app.close(); }
 });
 
+test('keyboard clipboard reads keep focus in the preview and return it to the read button', async ({ page }) => {
+  const hold = gate();
+  const app = await fixture({ rfb: true, clipboardHook: () => hold.promise });
+  app.clipboardText.clipboard = '键盘读取的远程文字';
+  try {
+    await login(page, app); await open(page);
+    const read = page.locator('#read-clipboard');
+    await read.press('Enter');
+    await expect(page.locator('#clipboard-dialog')).toBeFocused();
+    await expect(read).toBeDisabled();
+    hold.release();
+    await expect(page.locator('#clipboard-preview')).toHaveValue(app.clipboardText.clipboard);
+    await expect(read).toBeFocused();
+    expect(app.clipboardReads).toEqual(['clipboard']);
+    expect(app.inputCalls).toEqual([]);
+  } finally { hold.release(); await app.close(); }
+});
+
 test('clipboard permission denial and missing browser API both provide manual selection', async ({ page }) => {
   const app = await fixture({ rfb: true }); app.clipboardText.clipboard = '手动复制😀\n第二行';
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('permission denied'); } } }));

@@ -35,7 +35,10 @@ export function createWorkbenchClipboard({ $, request, access, open, blocked, te
   });
   listen($('clipboard-source'), 'change', () => { clearClipboard(); renderClipboard(); changed(); });
   listen($('read-clipboard'), 'click', async () => {
-    if ($('read-clipboard').disabled) return;
+    const button = $('read-clipboard'), panel = $('clipboard-dialog');
+    if (button.disabled) return;
+    const hadFocus = document.activeElement === button;
+    if (hadFocus) panel.focus({ preventScroll: true });
     clearClipboard();
     const controller = new AbortController(), source = $('clipboard-source').value;
     clipboardController = controller;
@@ -54,7 +57,10 @@ export function createWorkbenchClipboard({ $, request, access, open, blocked, te
       if (clipboardController === controller) $('clipboard-status').textContent = controller.signal.aborted ? '读取超时，请手动重试。' : error.message;
     } finally {
       clearTimeout(timeout);
-      if (clipboardController === controller) { clipboardController = null; renderClipboard(); changed(); }
+      if (clipboardController === controller) {
+        clipboardController = null; renderClipboard(); changed();
+        if (hadFocus && document.activeElement === panel && !button.disabled) button.focus({ preventScroll: true });
+      }
     }
   });
   function selectClipboardText() {
