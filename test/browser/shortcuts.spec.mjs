@@ -40,6 +40,24 @@ test('opening, dismissing and navigating shortcuts sends nothing; selecting one 
   } finally { await app.close(); }
 });
 
+test('a keyboard-selected shortcut keeps browser focus in the assistant', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await openInput(page);
+    await page.locator('#mobile-input').fill('未发送的桌面草稿');
+    await open(page);
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(item(page, 'Tab')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#input-status')).toHaveAttribute('data-outcome', 'success');
+    expect(await page.locator('#input-dock').evaluate(element => element.contains(document.activeElement))).toBe(true);
+    await expect(page.locator('#mobile-input')).toHaveValue('未发送的桌面草稿');
+    expect(app.inputCalls).toEqual([{ action: 'key', key: 'Tab' }]);
+  } finally { await app.close(); }
+});
+
 test('session-changing shortcuts require confirmation, default Enter cancels and confirmed selection is fixed', async ({ page }) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } });
   try {

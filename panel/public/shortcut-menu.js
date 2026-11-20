@@ -54,8 +54,13 @@ export function createShortcutMenu({ button, menu, list, canSend, send, changed,
   menu.addEventListener('click', event => {
     const item = event.target.closest('[data-shortcut]');
     if (!open || !item || !list.contains(item) || item.disabled || !canSend() || !SHORTCUT_BY_KEY.has(item.dataset.shortcut) || !available(item.dataset.shortcut)) return;
-    const key = item.dataset.shortcut;
-    close(); send(key);
+    const key = item.dataset.shortcut, hadFocus = menu.contains(document.activeElement);
+    close(hadFocus); send(key);
+    // Sending can temporarily disable the menu button. Keep focus in the
+    // input panel if that leaves the browser without a focused control.
+    if (hadFocus && (document.activeElement === document.body || document.activeElement === button && button.disabled)) {
+      button.closest('[role="dialog"]')?.focus({ preventScroll: true });
+    }
   });
   menu.addEventListener('keydown', event => {
     if (event.key === 'Escape' || event.key === 'Tab') { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); } close(true); return; }
