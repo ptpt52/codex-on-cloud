@@ -113,6 +113,35 @@ test('narrow dropdown remains in the visual viewport, has touch-sized rows and s
   } finally { await app.close(); }
 });
 
+test('an open shortcut menu follows visual viewport scrolling', async ({ page }) => {
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.assign(viewport, { offsetTop: 0, offsetLeft: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport, configurable: true });
+  });
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await open(page);
+    const menu = page.locator('#shortcuts-menu');
+    const moveViewport = (top, type) => page.evaluate(({ top, type }) => {
+      Object.assign(visualViewport, { width: innerWidth, height: 300, offsetTop: top });
+      visualViewport.dispatchEvent(new Event(type));
+    }, { top, type });
+    const expectInViewport = async top => expect.poll(() => menu.evaluate((element, offset) => {
+      const { y, bottom } = element.getBoundingClientRect();
+      return y >= offset + 11 && bottom <= offset + 289;
+    }, top)).toBe(true);
+    await moveViewport(0, 'resize');
+    await expectInViewport(0);
+    await moveViewport(320, 'scroll');
+    await expectInViewport(320);
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('fullscreen shortcut fallback can be clicked and dismisses without sending a key', async ({ page }) => {
   await page.addInitScript(() => { HTMLElement.prototype.showPopover = undefined; });
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 } });

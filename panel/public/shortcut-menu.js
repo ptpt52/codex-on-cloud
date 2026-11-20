@@ -67,7 +67,9 @@ export function createShortcutMenu({ button, menu, list, canSend, send, changed,
     items[next]?.focus();
   });
   document.addEventListener('pointerdown', event => { if (open && !menu.contains(event.target) && !button.contains(event.target)) close(); }, true);
-  window.addEventListener('resize', position); window.visualViewport?.addEventListener('resize', position);
+  window.addEventListener('resize', position);
+  window.visualViewport?.addEventListener('resize', position);
+  window.visualViewport?.addEventListener('scroll', position);
   document.addEventListener('scroll', position, true);
   window.addEventListener('blur', () => close());
   window.addEventListener('pagehide', () => close());
