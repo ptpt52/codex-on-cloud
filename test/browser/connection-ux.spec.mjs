@@ -33,6 +33,28 @@ test('connection overview keeps current routes and actions visible with details 
   } finally { await app.close(); }
 });
 
+test('compact fullscreen keeps connection details reachable from tools', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open(page, app);
+    await page.locator('#close-connection').click();
+    await page.locator('#toggle-controls-button').click();
+    const status = page.locator('#tools-connection-button');
+    await expect(status).toBeHidden();
+    await page.locator('#tools-fullscreen-button').click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.locator('#toggle-controls-button').click();
+    await status.click();
+    await expect(page.locator('#connection-summary')).toHaveText('桌面在线');
+    await page.locator('#close-connection').click();
+    await expect(status).toBeFocused();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    expect(app.vncConnections).toBe(1);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('diagnostic failure stays separate from the live session and repeated refreshes cannot overlap', async ({ page }) => {
   const app = await fixture({ rfb: true }); let release, requests = 0;
   const gate = new Promise(resolve => { release = resolve; });

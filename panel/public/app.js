@@ -87,7 +87,7 @@ $('close-connection-notice').addEventListener('click', event => {
   const key = $('connection-notice').dataset.noticeKey;
   if (key) inputNotices.dismiss(key); else statusNoticeDismissed = true;
   renderInputNoticeHistory(); renderConnectionNotice();
-  $('connection-button').focus({ preventScroll: true });
+  ($('tools-connection-button').hidden ? $('connection-button') : $('toggle-controls-button')).focus({ preventScroll: true });
 });
 for (const name of ['keydown', 'keyup']) $('close-connection-notice').addEventListener(name, event => event.stopPropagation());
 function recordConnection(type, detail, mode, standby = false, view = mode === 'service' ? undefined : views.active.epoch) {
@@ -436,6 +436,7 @@ function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displ
 function desktopPanActive() { return !terminalMode() && displayPreferences.pan; }
 function renderFullscreenControls() {
   const active = Boolean(document.fullscreenElement);
+  $('tools-connection-button').hidden = !active || document.fullscreenElement.contains($('connection-button'));
   const label = active ? '退出全屏' : terminalMode() ? '全屏终端' : '全屏桌面';
   const button = $('fullscreen-button');
   if (button.title === label) return;
@@ -1808,7 +1809,7 @@ window.addEventListener('offline', () => {
   renderConnection();
   pollTimer = setTimeout(poll, 4000);
 });
-$('connection-button').addEventListener('click', () => {
+function openConnectionStatus() {
   $('direct-server-ip').value = directHints.value.server;
   $('direct-browser-ip').value = directHints.value.browser;
   $('import-direct-hints').hidden = !directHints.legacy;
@@ -1816,7 +1817,8 @@ $('connection-button').addEventListener('click', () => {
   $('connection-dialog').showModal();
   renderConnection();
   void loadDiagnostics();
-});
+}
+for (const id of ['connection-button', 'tools-connection-button']) $(id).addEventListener('click', openConnectionStatus);
 $('close-connection').addEventListener('click', () => $('connection-dialog').close());
 $('connection-dialog').addEventListener('close', stopDiagnostics);
 $('refresh-connection').addEventListener('click', () => { void poll(); void loadDiagnostics(); });

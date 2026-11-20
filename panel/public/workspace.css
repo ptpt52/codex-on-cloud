@@ -95,6 +95,7 @@
 .tools-panel .desktop-actions.tools-quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); }
 .tools-panel .view-button { min-height: 44px; min-width: 44px; padding: 8px; font-size: 12px; }
 .tools-panel .tools-quick-actions > button { min-width: 0; padding-inline: 4px; }
+#tools-connection-button { grid-column: 1 / -1; }
 .tools-panel .display-controls { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; justify-content: stretch; padding: 14px 0; margin: 0; border: 0; background: none; gap: 10px; }
 .tools-panel .zoom-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .tools-panel .zoom-controls > button { min-width: 0; padding-inline: 4px; }
