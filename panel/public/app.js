@@ -1103,6 +1103,7 @@ function stopPolling() {
   pollController = null;
 }
 function showLogin(message = '') {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   cachedResumePending = cachedViewReset = false;
   finishHintProbe();
   clearInputNotices();

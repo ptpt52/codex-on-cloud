@@ -143,6 +143,24 @@ test('fullscreen tools name the exit action and reflect native fullscreen change
   } finally { await app.close(); }
 });
 
+test('logging out from the fullscreen sidebar leaves an interactive login', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await login(page, app);
+    await page.locator('#fullscreen-button').click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.locator('#logout-button').click();
+    await page.locator('#accept-confirmation').click();
+    await expect(page.locator('#login-view')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement)).toBeNull();
+    await page.locator('#password').click();
+    await expect(page.locator('#password')).toBeFocused();
+    expect(app.managementStats.restarts).toBe(0);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('desktop settings open and close without leaving fullscreen', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
