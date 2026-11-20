@@ -171,6 +171,28 @@ test('desktop pan pauses assistant writes immediately while keeping the draft ed
   } finally { await app.close(); }
 });
 
+test('pan mode keeps an exit on the unobstructed desktop and resumes without sending input', async ({ page }) => {
+  const app = await fixture({ rfb: true, rfbSize: { width: 1600, height: 2600 } });
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await login(page, app);
+    const exit = page.locator('#end-pan-button');
+    const panLayer = page.frameLocator('#desktop-frame').locator('#pan-layer');
+    await expect(exit).toBeHidden();
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#pan-button').click();
+    await expect(exit).toBeHidden();
+    await page.locator('#close-controls-button').click();
+    await expect(panLayer).toBeVisible();
+    await expect(exit).toBeVisible();
+    await exit.click();
+    await expect(panLayer).toBeHidden();
+    await expect(exit).toBeHidden();
+    expect(app.inputCalls).toEqual([]);
+    expect(app.vncConnections).toBe(1);
+  } finally { await app.close(); }
+});
+
 test('partial saved terminal preferences preserve display choices without opening an unspecified tool panel', async ({ page }) => {
   const app = await fixture({ rfb: true });
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({

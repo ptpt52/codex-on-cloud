@@ -463,3 +463,4 @@
 .draft-leave-dialog .muted { font-size: 12px; line-height: 1.6; }
 @media (max-width: 700px) { .draft-tools { gap: 2px; } .draft-tools > div { margin-left: auto; } }
 .workspace-keyboard-open .draft-tools { display: none; }
+.end-pan-button{position:absolute;right:max(12px,env(safe-area-inset-right));bottom:max(12px,env(safe-area-inset-bottom));min-height:44px;z-index:2;box-shadow:0 2px 12px #0005}

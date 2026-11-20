@@ -506,6 +506,7 @@ function renderDisplayControls() {
   // Older saved preferences could have both inline sections expanded.
   // Input takes the shared panel slot until the user chooses another tool.
   workspacePanels.render(!inputCollapsed() ? 'input' : !displayPreferences.controlsCollapsed ? 'tools' : '');
+  $('end-pan-button').hidden = !(pan && loggedIn && owned && views.active.state === 'connected' && !workspacePanels.active);
   if (workspacePanels.active !== 'input' || terminalOnly) { clearClipboard(); inputDirection = 'send'; }
   renderClipboard();
   $('tools-title').textContent = terminalMode() ? '终端工具' : '桌面工具';
@@ -582,6 +583,10 @@ for (const [id, factor] of [['zoom-out-button', 0.8], ['zoom-in-button', 1.25]])
 $('pan-button').addEventListener('click', () => {
   updateDisplayPreferences({ pan: !displayPreferences.pan });
   toast(displayPreferences.pan ? '拖动模式：移动画面，不会点击远程桌面' : '操作模式：可以点击远程桌面');
+});
+$('end-pan-button').addEventListener('click', () => {
+  updateDisplayPreferences({ pan: false });
+  restoreDesktopFocus();
 });
 $('pointer-mode').addEventListener('change', () => updateDisplayPreferences({ pointerMode: $('pointer-mode').value, pan: false }));
 $('scroll-target').addEventListener('change', () => updateDisplayPreferences({ scrollTarget: $('scroll-target').value }));
