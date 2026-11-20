@@ -164,24 +164,31 @@ test('desktop settings open and close without leaving fullscreen', async ({ page
   } finally { await app.close(); }
 });
 
-test('desktop feedback is painted above the fullscreen tools and returns to the page on exit', async ({ page }) => {
+test('desktop feedback stays above tools in both layouts and returns to the page on fullscreen exit', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
+    await page.setViewportSize({ width: 390, height: 844 });
     await login(page, app);
+    const toast = page.locator('#toast');
+    const expectPainted = async () => {
+      await expect(toast).toContainText('拖动模式');
+      await expect(toast).toHaveCSS('pointer-events', 'none');
+      await expect.poll(() => toast.evaluate(element => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        element.style.pointerEvents = 'auto';
+        try { return element.contains(document.elementFromPoint(x + width / 2, y + height / 2)); }
+        finally { element.style.removeProperty('pointer-events'); }
+      })).toBe(true);
+    };
     await page.locator('#toggle-controls-button').click();
+    await page.locator('#pan-button').click();
+    await expectPainted();
+    await page.locator('#pan-button').click();
     await page.locator('#tools-fullscreen-button').click();
     await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
     await page.locator('#toggle-controls-button').click();
     await page.locator('#pan-button').click();
-    const toast = page.locator('#toast');
-    await expect(toast).toContainText('拖动模式');
-    await expect(toast).toHaveCSS('pointer-events', 'none');
-    await expect.poll(() => toast.evaluate(element => {
-      const { x, y, width, height } = element.getBoundingClientRect();
-      element.style.pointerEvents = 'auto';
-      try { return element.contains(document.elementFromPoint(x + width / 2, y + height / 2)); }
-      finally { element.style.removeProperty('pointer-events'); }
-    })).toBe(true);
+    await expectPainted();
     await page.locator('#tools-fullscreen-button').click();
     await expect.poll(() => toast.evaluate(element => element.parentElement === document.body)).toBe(true);
     expect(app.inputCalls).toEqual([]);

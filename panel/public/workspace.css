@@ -211,7 +211,7 @@
 .clipboard-panel .clipboard-actions { display: flex; gap: 8px; }
 .clipboard-panel .clipboard-actions button { min-height: 44px; padding: 10px 14px; font-size: 12px; }
 .desktop-card:fullscreen .workspace-panel { bottom: 8px; max-height: calc(100dvh - 72px); }
-.desktop-card:fullscreen .toast { z-index: 26; pointer-events: none; }
+.toast { z-index: 26; pointer-events: none; }
 .desktop-card:fullscreen .tools-panel { top: 60px; }
 .desktop-card:fullscreen .input-dock { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
 .workspace-keyboard-open .input-dock .assistant-directions { display: none; }
