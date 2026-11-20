@@ -128,12 +128,13 @@ test('oversized saved resolution requires explicit restart confirmation and neve
   } finally { release(); await app.close(); }
 });
 
-test('refresh locks settings fields until the saved values arrive, then accepts edits without overwriting them', async ({ page }) => {
+test('refresh locks settings fields while reading and preserves edits already made', async ({ page }) => {
   const app = await fixture({ rfb: true });
   let entered, release;
   const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
   try {
     await open(page, app);
+    await page.locator('#desktop-width').fill('1920');
     await page.route('**/api/desktop/settings', async route => {
       if (route.request().method() !== 'GET') return route.continue();
       const response = await route.fetch(); entered(); await hold; await route.fulfill({ response });
@@ -141,7 +142,9 @@ test('refresh locks settings fields until the saved values arrive, then accepts 
     await page.locator('#refresh-desktop-settings').click(); await started;
     for (const id of ['resolution-preset', 'desktop-width', 'desktop-height', 'save-desktop-settings']) await expect(page.locator(`#${id}`)).toBeDisabled();
     release();
-    await page.locator('#desktop-width').fill('1920');
+    await expect(page.locator('#save-desktop-settings')).toBeEnabled();
+    await expect(page.locator('#desktop-width')).toHaveValue('1920');
+    expect(app.managementStats.saves).toBe(0);
     await page.locator('#save-desktop-settings').click();
     await expect(page.locator('#settings-pending')).toContainText('待应用：1920 × 1600');
     await expect(page.locator('#desktop-width')).toHaveValue('1920');

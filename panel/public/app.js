@@ -1997,7 +1997,7 @@ $('desktop-settings-button').addEventListener('click', async () => {
 });
 $('close-desktop-settings').addEventListener('click', () => $('desktop-settings-dialog').close());
 $('desktop-settings-dialog').addEventListener('close', stopSettingsPolling);
-$('refresh-desktop-settings').addEventListener('click', () => { if (settingsBusy) return; $('confirm-desktop-restart').checked = false; stopSettingsPolling(); void loadDesktopSettings(true); });
+$('refresh-desktop-settings').addEventListener('click', () => { if (settingsBusy) return; $('confirm-desktop-restart').checked = false; stopSettingsPolling(); void loadDesktopSettings(); });
 $('resolution-preset').addEventListener('change', () => {
   if ($('resolution-preset').value !== 'custom') {
     const [width, height] = $('resolution-preset').value.split('x');
