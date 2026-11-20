@@ -93,6 +93,19 @@ test('streamed uploads and downloads preserve bytes and reject traversal/oversiz
   assert.equal(oversized, 413);
 });
 
+test('versioned browser downloads reject a same-size replacement without sending its contents', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  app.files.set('data.bin', Buffer.from('old'));
+  const { files: [selected] } = await (await app.request('/api/files')).json();
+  const path = '/api/files/data.bin?version=' + selected.version;
+  assert.equal(await (await app.request(path)).text(), 'old');
+  app.files.set('data.bin', Buffer.from('new'));
+  const stale = await app.request(path);
+  assert.equal(stale.status, 412);
+  assert.equal((await stale.json()).outcome, 'rejected');
+  assert.equal((await app.request(path + '&version=' + selected.version)).status, 400);
+});
+
 test('login survives a gateway restart; raw session tokens are not stored and password rotation revokes them', async () => {
   const first = await fixture(); const { cookie } = await first.login();
   const directory = first.directory;

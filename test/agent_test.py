@@ -57,6 +57,39 @@ class AgentTests(unittest.TestCase):
     def test_requires_internal_secret(self):
         self.assertEqual(self.request('GET', '/files', auth=False)[0], 401)
 
+    def test_download_checks_the_open_file_against_the_listed_version(self):
+        target = self.desktop.transfer_dir / 'data.bin'
+        target.write_bytes(b'old')
+        version = agent.file_version(target.stat())
+        headers = {'If-Match': '"' + version + '"'}
+        self.assertEqual(self.request('GET', '/files/data.bin', headers=headers), (200, b'old'))
+        replacement = self.desktop.transfer_dir / 'next.bin'
+        replacement.write_bytes(b'new')
+        replacement.replace(target)
+        self.assertEqual(self.request('GET', '/files/data.bin', headers=headers)[0], 412)
+
+    def test_a_download_changed_after_headers_ends_as_incomplete(self):
+        block = 64 * 1024
+        target = self.desktop.transfer_dir / 'data.bin'
+        target.write_bytes(b'a' * (2 * block))
+        send_headers = agent.Handler.end_headers
+
+        def change_after_headers(handler):
+            send_headers(handler)
+            with target.open('r+b') as contents:
+                contents.seek(block)
+                contents.write(b'b' * block)
+
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+        self.addCleanup(connection.close)
+        with patch.object(agent.Handler, 'end_headers', change_after_headers):
+            connection.request('GET', '/files/data.bin', headers={'Authorization': 'Bearer ' + self.desktop.secret})
+            with connection.getresponse() as response:
+                self.assertEqual(response.status, 200)
+                with self.assertRaises(http.client.IncompleteRead) as interrupted:
+                    response.read()
+                self.assertEqual(interrupted.exception.partial, b'a' * block)
+
     def test_disconnected_error_responses_do_not_escape_request_dispatch(self):
         for failure in [agent.AgentError(400, '上传未完成'), OSError('storage unavailable')]:
             handler = agent.Handler.__new__(agent.Handler)

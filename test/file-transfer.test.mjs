@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileDownload, observeUploadProgress, createUploadTrace } from '../panel/public/file-transfer.js';
+import { readFileDownload, observeUploadProgress, createUploadTrace, downloadFailure } from '../panel/public/file-transfer.js';
 import { createFileBuffer, FILE_MAX } from '../panel/public/file-wire.js';
 
 test('upload diagnostics keep the final partial byte count and reason with bounded sampling and no file reference', () => {
@@ -28,6 +28,22 @@ test('large download diagnostics retain their direction and actual path without 
   trace.start('direct', size, 'download'); trace.progress(size, size); trace.end(undefined, undefined, 'confirmed');
   assert.equal(events.length, 3); assert.ok(events.every(value => value.direction === 'download' && value.route === 'direct' && value.totalBytes === size));
   assert.equal(events.at(-1).loadedBytes, size); assert.equal(events.at(-1).outcome, 'confirmed');
+});
+
+test('download diagnostics distinguish underlying failure and explicit cancellation', () => {
+  assert.deepEqual(downloadFailure({ status: 404, outcome: 'rejected' }), { reason: 'http-status', status: 404, outcome: 'rejected' });
+  const save = Object.assign(Error('save failed'), { code: 'file_save_failed' });
+  assert.deepEqual(downloadFailure(save, AbortSignal.abort(save)), { reason: 'file_save_failed', status: undefined, outcome: 'unknown' });
+  assert.deepEqual(downloadFailure(undefined, AbortSignal.abort('browser-cancel')), { reason: 'browser-cancel', status: undefined, outcome: 'canceled' });
+  assert.deepEqual(downloadFailure(undefined, AbortSignal.abort('timeout')), { reason: 'timeout', status: undefined, outcome: 'unknown' });
+});
+
+test('HTTP download verifies the listed version before processing any bytes', async () => {
+  let canceled = false;
+  const stream = new ReadableStream({ cancel() { canceled = true; } });
+  const response = new Response(stream, { headers: { 'content-length': '5', etag: '"' + 'a'.repeat(64) + '"' } });
+  await assert.rejects(readFileDownload(response, 5, undefined, undefined, 'b'.repeat(64)), { status: 412, outcome: 'rejected' });
+  assert.equal(canceled, true);
 });
 
 test('file buffering handles tiny chunks, empty files and incomplete or oversized bodies with fixed byte bounds', async () => {

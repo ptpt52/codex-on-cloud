@@ -1,9 +1,26 @@
-import { FILE_MAX, FILE_DOWNLOAD_MAX, createFileBuffer } from './file-wire.js';
+import { FILE_MAX, FILE_DOWNLOAD_MAX, createFileBuffer, fileTimeoutCode } from './file-wire.js';
 
 export function transferSize(value) {
   if (value < 1024) return `${value} B`;
   if (value < 1048576) return `${(value / 1024).toFixed(1)} KiB`;
   return `${(value / 1048576).toFixed(1)} MiB`;
+}
+
+export function downloadFailure(error, signal) {
+  const cancellation = signal?.aborted ? signal.reason : undefined;
+  const status = Number.isInteger(error?.status) ? error.status : undefined;
+  const code = cancellation?.code || error?.code;
+  if (code === 'file_save_failed' || fileTimeoutCode(code)) return { reason: code, status, outcome: 'unknown' };
+  if (signal?.aborted) {
+    const reason = ['browser-cancel', 'timeout', 'offline', 'auth', 'page-hidden', 'closed'].includes(cancellation) ? cancellation : 'aborted';
+    return { reason, status, outcome: reason === 'timeout' ? 'unknown' : 'canceled' };
+  }
+  return {
+    reason: status ? 'http-status' : 'network',
+    status,
+    outcome: error?.outcome === 'rejected' || error?.outcome === undefined && status >= 400 && status < 500 && status !== 408
+      ? 'rejected' : 'unknown',
+  };
 }
 
 // One transfer, no filename or payload. Progress events are limited to one per
@@ -96,10 +113,15 @@ export function observeUploadProgress(request, report, signal) {
   return stop;
 }
 
-export async function readFileDownload(response, size, signal, progress) {
+export async function readFileDownload(response, size, signal, progress, version) {
   if (!Number.isSafeInteger(size) || size < 0 || size > FILE_MAX || !response.body) throw Error('文件大小无效，请刷新列表');
   const declared = response.headers.get('content-length');
-  if (declared !== null && Number(declared) !== size) { void response.body.cancel().catch(() => {}); throw Error('文件大小已变化，请刷新列表后重试'); }
+  const changed = version !== undefined && response.headers.get('etag') !== '"' + version + '"';
+  const wrongSize = declared !== null && Number(declared) !== size;
+  if (changed || wrongSize) {
+    void response.body.cancel().catch(() => {});
+    throw Object.assign(Error(wrongSize ? '文件大小已变化，请刷新列表后重试' : '文件已变化，请刷新列表后重试'), { status: 412, outcome: 'rejected' });
+  }
   const reader = response.body.getReader(), buffer = createFileBuffer(size); let loaded = 0;
   const abort = () => { void reader.cancel().catch(() => {}); };
   signal?.addEventListener('abort', abort, { once: true });

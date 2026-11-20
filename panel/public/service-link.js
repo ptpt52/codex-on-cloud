@@ -47,7 +47,11 @@ export function createServiceLink({ viewer, options, changed, canReplace = () =>
       if (channel.readyState === 'closed') queueMicrotask(reopen);
       else channel.addEventListener('close', reopen, { once: true });
       publish();
-    }, { window: candidate.features?.filesWindow || 4, maxDownload: Number.isSafeInteger(candidate.features?.filesDownloadMax) && candidate.features.filesDownloadMax >= FILE_MAX && candidate.features.filesDownloadMax <= FILE_DOWNLOAD_MAX ? candidate.features.filesDownloadMax : FILE_MAX });
+    }, {
+      window: candidate.features?.filesWindow || 4,
+      maxDownload: Number.isSafeInteger(candidate.features?.filesDownloadMax) && candidate.features.filesDownloadMax >= FILE_MAX && candidate.features.filesDownloadMax <= FILE_DOWNLOAD_MAX ? candidate.features.filesDownloadMax : FILE_MAX,
+      versionedDownloads: candidate.features?.filesDownloadVersion === 1,
+    });
     files = client; channel.addEventListener('open', publish, { once: true });
   }
   function install(candidate, route, version) {

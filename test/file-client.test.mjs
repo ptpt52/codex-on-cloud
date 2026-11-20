@@ -24,6 +24,21 @@ test('large downloads require an advertised limit and a streaming sink before an
  assert.equal(starts,0);
 });
 
+test('a legacy ready size mismatch sends an explicit recoverable cancel', async t => {
+ const a=new Channel(),b=new Channel();a.peer=b;b.peer=a;
+ const failures=[], controls=[], progress=[];
+ const client=createFileClient(a,recoverable=>failures.push(recoverable),{window:16});
+ t.after(()=>client.close());
+ b.addEventListener('message',event=>{
+  const value=JSON.parse(event.data); controls.push(value.type);
+  if(value.type==='start')b.send(JSON.stringify({type:'ready',id:value.id,size:5,window:16}));
+  if(value.type==='cancel')b.send(JSON.stringify({type:'cancelled',id:value.id}));
+ });
+ await assert.rejects(client.download('changed.bin',4,undefined,loaded=>progress.push(loaded)),{status:412,outcome:'rejected'});
+ await new Promise(setImmediate);
+ assert.deepEqual(controls,['start','cancel']);assert.deepEqual(progress,[]);assert.deepEqual(failures,[true]);
+});
+
 test('a slow download sink applies receive-window backpressure and cancellation cannot close or finish its partial file', async t => {
  const a=new Channel(),b=new Channel();a.peer=b;b.peer=a;
  const client=createFileClient(a,()=>{},{window:16,maxDownload:FILE_DOWNLOAD_MAX});

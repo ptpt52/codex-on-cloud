@@ -19,6 +19,7 @@ export const TRACE_LABELS = Object.freeze({
   'rpc-failed': '直连控制请求失败', 'rpc-recovered': '迟到回复已排空，控制通道恢复', 'control-closed': '直连控制通道已关闭',
   'recheck-start': '开始手动直连重测', 'recheck-switch': '候选验证完成，准备切换', 'recheck-ended': '手动直连重测结束',
   'file-start': '开始传输文件', 'file-progress': '文件传输进度', 'file-ended': '本次文件传输结束', 'file-list-ended': '文件目录读取结束',
+  'file-handoff': '已交给浏览器下载',
   'capture-start': '开始记录网络调试日志',
 });
 export const TRACE_STAGES = Object.freeze({ gathering: '收集地址', queued: '等待协商名额', signaling: '交换连接信息', connecting: '建立加密通道', ready: '通道已建立' });
@@ -46,6 +47,7 @@ export const TRACE_REASONS = Object.freeze({
   file_busy: '文件服务正在处理另一项上传或删除', file_exists: '已有同名文件，未覆盖',
   file_read_failed: '本机文件读取失败，请重新选择文件',
   file_read_busy: '本机仍有未结束的文件读取', file_read_timeout: '本机文件读取超时',
+  file_save_failed: '浏览器保存通道失败', 'browser-cancel': '浏览器取消保存',
   file_ack_timeout: '文件分块确认超时，请检查文件状态后手动重试',
   file_buffer_timeout: '文件发送缓冲超时，请检查文件状态后手动重试',
   'file-progress': '文件数据或确认仍在推进，连接保持活跃',
@@ -157,7 +159,7 @@ export function createConnectionTrace(now = () => Date.now(), { storage, scope =
     // retaining the last 32 events as chronological context. Bounds stay fixed.
     while (events.length > TRACE_LIMITS.events || bytes({ version: 2, events }) > TRACE_LIMITS.bytes - 1024) { evict(events); droppedEvents++; }
   }
-  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'heartbeat-timeout', 'input-pressure', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended', 'file-list-ended']);
+  const important = new Set(['capture-start', 'network-change', 'path-active', 'path-lost', 'heartbeat-timeout', 'input-pressure', 'probe-stopped', 'session-ended', 'view-start', 'view-ready', 'view-reused', 'view-discarded', 'first-frame', 'request-failed', 'request-recovered', 'rpc-failed', 'rpc-recovered', 'control-closed', 'recheck-ended', 'file-start', 'file-ended', 'file-handoff', 'file-list-ended']);
   function evict(list) {
     const index = list.findIndex((event, index) => index < list.length - 32 && !important.has(event.type));
     list.splice(index < 0 ? 0 : index, 1);

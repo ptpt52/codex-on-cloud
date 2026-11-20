@@ -37,7 +37,8 @@ export async function createDownloadSink(name, size, signal, cancelled = () => {
     // handshake even if the worker has already disappeared.
     clearTimeout(timer); retirement = setTimeout(() => cleanup(), 1500);
   }
-  const arm = ms => { clearTimeout(timer); timer = setTimeout(() => { abort(); cancelled(); }, ms); };
+  function failed(reason = failure()) { abort(reason); cancelled(reason); }
+  const arm = ms => { clearTimeout(timer); timer = setTimeout(failed, ms); };
   port.onmessage = ({ data }) => {
     if (ended) { if (['error', 'done'].includes(data?.type)) cleanup(); return; }
     if (data?.type === 'ready') frame.contentWindow.postMessage({ type: 'download-save', token }, location.origin);
@@ -45,9 +46,9 @@ export async function createDownloadSink(name, size, signal, cancelled = () => {
     else if (data?.type === 'pull') { credit = true; waiting?.resolve(); waiting = undefined; }
     else if (data?.type === 'accepted') { acknowledged?.resolve(); acknowledged = undefined; }
     else if (data?.type === 'done') { completed.resolve(); }
-    else { abort(); cleanup(); cancelled(); }
+    else { failed(data?.type === 'error' && data.reason === 'consumer-cancel' ? 'browser-cancel' : failure()); cleanup(); }
   };
-  port.onmessageerror = () => { abort(); cancelled(); };
+  port.onmessageerror = () => failed();
   const cancel = () => abort(signal?.reason);
   // Keep the listener separate from the public abort method's optional reason.
   signal?.addEventListener('abort', cancel, { once: true });

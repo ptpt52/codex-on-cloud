@@ -1,5 +1,5 @@
 import { createFileWire, createFileBuffer, sendFileChunks, FILE_CHUNK, FILE_MAX, FILE_DOWNLOAD_MAX, FILE_DOWNLOAD_TIMEOUT, fileTimeoutCode } from './file-wire.js';
-import { uploadOptions, uploadResult, recoverableFileStatus } from './file-upload.js';
+import { uploadOptions, uploadResult, recoverableFileStatus, validFileVersion } from './file-upload.js';
 import { FORWARD_CLIENTS } from './forward-platform.js';
 import { validTransferWindow } from './transfer-window.js';
 // Amortize File/provider access over one maximum window, independently of
@@ -29,7 +29,7 @@ function readBlock(file, start, end, signal) {
   }).then(bytes => { pendingReads--; finish(null, bytes); }, () => { pendingReads--; finish(readError('file_read_failed')); });
  });
 }
-export function createFileClient(channel, failed = () => {}, { window = 4, maxDownload = FILE_MAX } = {}) {
+export function createFileClient(channel, failed = () => {}, { window = 4, maxDownload = FILE_MAX, versionedDownloads = false } = {}) {
  if (!validTransferWindow(window)) throw Error('文件窗口能力无效');
  if (!Number.isSafeInteger(maxDownload) || maxDownload < FILE_MAX || maxDownload > FILE_DOWNLOAD_MAX) throw Error('文件下载能力无效');
  let active,id=0,recoverable=false,cancelingId=0,cancelTimer;
@@ -52,10 +52,16 @@ export function createFileClient(channel, failed = () => {}, { window = 4, maxDo
    settle(Object.assign(Error(typeof value.message==='string'?value.message:'文件传输失败'),{status:Number.isInteger(value.status)?value.status:502,outcome,...(fileTimeoutCode(value.code)?{code:value.code}:{}),...(['file_busy','file_exists'].includes(value.fileCode)?{fileCode:value.fileCode}:{})}));wire.close();return;
   }
   if(value.type==='ready'){
-   if(entry.started||!Number.isSafeInteger(value.size)||value.size<0||value.size>(entry.sink?maxDownload:FILE_MAX)||(entry.direction==='upload'||entry.helper||entry.sink)&&value.size!==entry.size)throw unknown();
+   if(entry.started||!Number.isSafeInteger(value.size)||value.size<0||value.size>FILE_DOWNLOAD_MAX||entry.direction==='upload'&&value.size!==entry.size)throw unknown();
    const selected=value.window??4;
    if(!validTransferWindow(selected)||selected>window)throw unknown();
-   wire.setWindow(selected);entry.started=true;entry.size=value.size;entry.progressAt=performance.now();
+   wire.setWindow(selected);
+   // Older peers can send ready for a file that changed since listing. Cancel
+   // that file explicitly so the shared service association stays available.
+   if(entry.direction==='download'&&value.size!==entry.size){
+    cancel(entry,Object.assign(Error('文件大小已变化，请刷新列表后重试'),{status:412,outcome:'rejected'}));return;
+   }
+   entry.started=true;entry.progressAt=performance.now();
    if(entry.direction==='download'){if(!entry.sink)entry.buffer=createFileBuffer(entry.size);entry.progress?.(0,entry.size);}
    if(entry.direction==='upload')void(async()=>{
     async function* source(){
@@ -90,19 +96,22 @@ export function createFileClient(channel, failed = () => {}, { window = 4, maxDo
   cancelTimer=setTimeout(()=>wire.close(),1500);
   try{wire.send({type:'cancel',id:entry.id});}catch{wire.close();}
  }
- function transfer(direction,name,size,file,upload,signal,helper,progress,sink){
+ function transfer(direction,name,size,file,upload,signal,helper,progress,sink,version){
   if(signal?.aborted)return Promise.reject(signal.reason||unknown());
   if(!wire.ready||active||cancelingId||id>=2147483647||!Number.isSafeInteger(size)||size<0||size>(direction==='download'&&sink?maxDownload:FILE_MAX)||sink&&(!['write','close','abort'].every(key=>typeof sink[key]==='function')||direction!=='download'))return Promise.reject(Object.assign(Error('文件直连繁忙、未就绪或文件超过大小限制（普通传输 50 MiB，大文件下载 1 GiB）'),{outcome:'rejected'}));
   if(direction==='upload'&&size>0&&pendingReads>=FILE_READ_LIMITS.pending)return Promise.reject(readError('file_read_busy','rejected'));
+  if(version!==undefined&&(!versionedDownloads||!validFileVersion(version)))return Promise.reject(Object.assign(Error('当前文件通道无法核对所选版本'),{outcome:'rejected'}));
   wire.resetMetrics();
   return new Promise((resolve,reject)=>{
    const abort=()=>cancel(entry,signal?.reason||unknown());
    const entry=active={id:++id,direction,size,file,sink,helper:!!helper,received:0,readMs:0,started:false,endSent:false,readController:direction==='upload'?new AbortController():undefined,signal,abort,progress,resolve,reject,timer:setTimeout(abort,direction==='download'&&size>FILE_MAX?FILE_DOWNLOAD_TIMEOUT:300000)};
    signal?.addEventListener('abort',abort,{once:true});
-   try{wire.send({type:'start',id:entry.id,direction,name,size,...(window>4?{window}:{}),...(direction==='upload'?{upload:uploadOptions(upload)}:{}),...(helper?{helper}:{})});}catch(err){settle(err);wire.close();}
+   try{wire.send({type:'start',id:entry.id,direction,name,size,...(window>4?{window}:{}),...(direction==='upload'?{upload:uploadOptions(upload)}:{}),...(helper?{helper}:{}),...(version?{version}:{})});}catch(err){settle(err);wire.close();}
   });
  }
- return{get maxDownload(){return maxDownload;},get ready(){return wire.ready&&!cancelingId;},get busy(){return !!active||!!cancelingId;},get progressing(){const age=active?.progressAt===undefined?Infinity:performance.now()-active.progressAt;return age>=0&&age<6000;},upload(file,options,signal,progress){return transfer('upload',file.name,file.size,file,options,signal,undefined,progress);},download(name,size,signal,progress){return transfer('download',name,size,undefined,undefined,signal,undefined,progress);},downloadTo(name,size,sink,signal,progress){return transfer('download',name,size,undefined,undefined,signal,undefined,progress,sink);},downloadHelper(helper,size,signal,progress){
+ return{get maxDownload(){return maxDownload;},get versionedDownloads(){return versionedDownloads;},get ready(){return wire.ready&&!cancelingId;},get busy(){return !!active||!!cancelingId;},get progressing(){const age=active?.progressAt===undefined?Infinity:performance.now()-active.progressAt;return age>=0&&age<6000;},upload(file,options,signal,progress){return transfer('upload',file.name,file.size,file,options,signal,undefined,progress);},
+ download(name,size,signal,progress,version){return transfer('download',name,size,undefined,undefined,signal,undefined,progress,undefined,version);},
+ downloadTo(name,size,sink,signal,progress,version){return transfer('download',name,size,undefined,undefined,signal,undefined,progress,sink,version);},downloadHelper(helper,size,signal,progress){
   if(!helper||!Object.hasOwn(FORWARD_CLIENTS,helper.arch)||!Number.isSafeInteger(size)||size<=0||size>32*1024*1024)return Promise.reject(Object.assign(Error('助手下载参数无效'),{outcome:'rejected'}));
   return transfer('download',FORWARD_CLIENTS[helper.arch].name,size,undefined,undefined,signal,helper,progress);
  },close(){wire.close();}};

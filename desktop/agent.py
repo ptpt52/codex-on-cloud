@@ -287,6 +287,9 @@ class Handler(BaseHTTPRequestHandler):
                         desktop.upload_lock.release()
                     return self.json(200, {'ok': True, 'name': name})
                 if self.command == 'GET':
+                    expected = self.headers.get('If-Match')
+                    if expected is not None and not re.fullmatch(r'"[a-f0-9]{64}"', expected):
+                        raise AgentError(400, '下载文件版本无效')
                     try:
                         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
                     except OSError:
@@ -295,14 +298,32 @@ class Handler(BaseHTTPRequestHandler):
                         info = os.fstat(source.fileno())
                         if not stat.S_ISREG(info.st_mode):
                             raise AgentError(400, '只允许下载普通文件')
+                        version = '"' + file_version(info) + '"'
+                        if expected is not None and expected != version:
+                            raise AgentError(412, '文件已变化，请刷新列表后重试')
                         self.send_response(200)
                         self.send_header('Content-Type', 'application/octet-stream')
                         self.send_header('Content-Length', str(info.st_size))
-                        self.send_header('ETag', '"' + file_version(info) + '"')
+                        self.send_header('ETag', version)
                         self.send_header('Connection', 'close')
                         self.end_headers()
-                        shutil.copyfileobj(source, self.wfile, 64 * 1024)
                         self.close_connection = True
+                        # Hold the final block until the open file's metadata is
+                        # verified. Closing early leaves an incomplete HTTP body
+                        # instead of acknowledging a mix of file versions.
+                        remaining = info.st_size
+                        try:
+                            while remaining:
+                                length = min(remaining, 64 * 1024)
+                                contents = source.read(length)
+                                if len(contents) != length:
+                                    break
+                                remaining -= length
+                                if not remaining and '"' + file_version(os.fstat(source.fileno())) + '"' != version:
+                                    break
+                                self.wfile.write(contents)
+                        except OSError:
+                            return  # Headers already sent. End the incomplete body.
                     return
                 try:
                     length = int(self.headers.get('Content-Length', '-1'))

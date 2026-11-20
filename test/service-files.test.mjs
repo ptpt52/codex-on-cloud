@@ -155,7 +155,25 @@ test('an early HTTP rejection drains already-sent file frames until the rejectio
  files.close();assert.deepEqual(failed,[true]);
 });
 async function setup(t,options={}){const app=await fixture({webrtc:true,...options});t.after(()=>app.close());await app.login();await app.claim();await app.request('/api/security/temporary-account',{method:'POST',body:{enabled:true,username:'visitor',password:'temporary-test-password',durationMs:3600000}});const c=await serviceClient(app);t.after(()=>c.close());return {app,c};}
-async function fileClient(c,window=4,failed=()=>{}){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter,failed,{window});for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
+async function fileClient(c,window=4,failed=()=>{}){const channel=c.peer.createDataChannel('codex-files',{ordered:true,protocol:'files-v1'});const adapter={get readyState(){return channel.readyState;},get bufferedAmount(){return channel.bufferedAmount;},send:x=>channel.send(x),close:()=>channel.close(),addEventListener(type,fn){if(type==='message')channel.onMessage.subscribe(data=>fn({data}));else if(type==='close')channel.stateChange.subscribe(s=>{if(s==='closed')fn();});else if(type==='error')channel.error.subscribe(fn);}};const client=createFileClient(adapter,failed,{window,versionedDownloads:true});for(let i=0;i<200&&!client.ready;i++)await new Promise(r=>setTimeout(r,10));assert.equal(client.ready,true);return client;}
+
+test('stale download versions and sizes are rejected before file data while preserving the service peer', async t => {
+ const {app,c}=await setup(t), name='snapshot.bin';
+ app.files.set(name,Buffer.from('old'));
+ const [selected]=(await c.rpc('files')).value.files;
+ assert.equal((await c.rpc('ping')).value.filesDownloadVersion,1);
+ app.files.set(name,Buffer.from('new'));
+ for(const version of [selected.version,undefined]){
+  const failures=[], progress=[], files=await fileClient(c,16,value=>failures.push(value));
+  if(version===undefined)app.files.set(name,Buffer.from('larger'));
+  await assert.rejects(files.download(name,selected.size,undefined,loaded=>progress.push(loaded),version),{status:412,outcome:'rejected'});
+  assert.deepEqual(progress,[]);assert.deepEqual(failures,[true]);
+  assert.equal((await c.rpc('ping')).ok,true);
+ }
+ const [current]=(await c.rpc('files')).value.files;
+ const files=await fileClient(c,16);
+ assert.equal(await (await files.download(name,current.size,undefined,undefined,current.version)).text(),'larger');
+});
 test('the real HTTP busy gate rejects a DTLS upload without retiring either service or replaying the file',async t=>{
  const {app,c}=await setup(t),other=await serviceClient(app);t.after(()=>other.close());
  const first=await fileClient(c,16),recovered=[],second=await fileClient(other,16,value=>recovered.push(value));

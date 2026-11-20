@@ -22,7 +22,7 @@ import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
 import { createForwardAgents } from './forward-agents.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
-import { readUploadHeaders, uploadHeaders, validTransferName, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './public/file-upload.js';
+import { readUploadHeaders, uploadHeaders, validTransferName, validFileVersion, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './public/file-upload.js';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
 import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
@@ -121,7 +121,7 @@ export async function createPanel(config) {
   const forwarding = createForwarding(config);
   const forwardAgents = createForwardAgents(config, forwarding);
   const forwardDownloads = createForwardDownloads(config.forwardDownloadDir, { server: () => config.origin + (config.entryBasePath && config.entryBasePath !== '/' ? config.entryBasePath : '') });
-  const fileTransfers = createFileTransfers({ downloadTimeoutMs: FILE_DOWNLOAD_TIMEOUT });
+  const fileTransfers = createFileTransfers({ maxDownloads: 3, downloadTimeoutMs: FILE_DOWNLOAD_TIMEOUT, downloadIdleMs: 60_000 });
   const fileCatalog = createFileCatalog();
   const helperTransfers = createFileTransfers({ limit: 2, busyStatus: 429, busyMessage: '助手下载繁忙，请稍后重试' });
   const turnCache = createTurnCache(signal => requestTurnCredentials({ endpoint: config.selfhostNode.turnEndpoint, node: config.selfhostNode, ca: config.selfhostCaBundle, signal }));
@@ -732,6 +732,9 @@ export async function createPanel(config) {
       let name;
       try { name = decodeURIComponent(encoded); } catch { throw new HttpError(400, '文件名无效'); }
       if (!validTransferName(name, req.method === 'PUT')) throw new HttpError(400, '文件名无效');
+      const versions = url.searchParams.getAll('version');
+      const version = versions[0];
+      if (versions.length && (req.method !== 'GET' || versions.length !== 1 || !validFileVersion(version))) throw new HttpError(400, '下载文件版本无效');
       const token = cookieToken(req.headers.cookie), progressId = req.headers['x-codex-transfer-id'];
       if (progressId !== undefined && (req.method !== 'PUT' || typeof progressId !== 'string' || !/^[a-f0-9]{32}$/.test(progressId))) throw new HttpError(400, '上传进度标识无效');
       const transfer = fileTransfers.begin(req, res, () => !!auth.get(token), session.role === 'temporary' && req.method === 'PUT', progressId ? { id: progressId, owner: token, size: Number(req.headers['content-length']) } : undefined);
@@ -769,12 +772,29 @@ export async function createPanel(config) {
         if ([400, 409, 412, 413, 429, 507].includes(response.status) && result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
         return reply(res, response.status, result);
       }
-      const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${config.agentSecret}` }, signal: transfer.signal });
+      const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
+        headers: { authorization: `Bearer ${config.agentSecret}`, ...(version ? { 'if-match': '"' + version + '"' } : {}) }, signal: transfer.signal,
+      });
       transfer.check();
-      if (!response.ok) return reply(res, response.status, await response.json());
+      if (!response.ok) {
+        const result = await response.json();
+        transfer.check();
+        if (response.status >= 400 && response.status < 500 && response.status !== 408 &&
+            result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
+        return reply(res, response.status, result);
+      }
       const etag = response.headers.get('etag');
+      if (version && etag !== '"' + version + '"') throw new HttpError(412, '文件已变化，请刷新列表后重试');
+      const length = response.headers.get('content-length');
+      if (length !== null && Number(length) > MAX_UPLOAD) transfer.extendDownloadDeadline();
+      transfer.downloadProgress();
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}), ...(/^"[a-f0-9]{64}"$/.test(etag || '') ? { etag } : {}) });
-      await pipeline(response.body, res);
+      await pipeline(response.body, async function* (source) {
+        for await (const bytes of source) {
+          transfer.downloadProgress();
+          yield bytes;
+        }
+      }, res);
       return;
       } finally {
         if (uploadStream) { req.unpipe(uploadStream); uploadStream.destroy(); }

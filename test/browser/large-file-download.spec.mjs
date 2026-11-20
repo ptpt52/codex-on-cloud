@@ -129,3 +129,53 @@ test('140 MiB uses actual WebRTC and bounded native saving without browser HTTPS
     console.log(JSON.stringify({ kind: 'large-download', bytes: size, MiBps: Math.round(size / 1048576 / ((performance.now() - start) / 1000) * 100) / 100, hashVerified: true, browserHTTPFileBodies: bodies }));
   } finally { await app.close(); }
 });
+
+test('large-file selection verifies its listed version and logs HTTPS handoff and explicit rejections', async ({ page }) => {
+  test.setTimeout(60000);
+  const app = await fixture({ webrtc: true, mode: 'terminal' });
+  const name = 'listed.bin', size = 51 * 1024 * 1024;
+  app.files.set(name, Buffer.alloc(size, 11));
+  app.files.set('removed.bin', Buffer.from('old'));
+  try {
+    await page.goto(app.config.origin);
+    await page.locator('#password').fill(app.config.password);
+    await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await page.locator('#connection-button').click();
+    await page.locator('#connection-trace > summary').click();
+    await page.locator('#connection-debug-toggle').check();
+    await page.keyboard.press('Escape');
+    await page.locator('#files-button').click();
+    await expect(page.locator('#file-transport')).toContainText('大文件下载最多 1 GiB');
+    const direct = filename => page.locator('.file-row').filter({ hasText: filename }).getByRole('link', { name: '下载', exact: true });
+    const fallback = page.getByRole('link', { name: 'HTTPS 下载', exact: true });
+    const events = () => page.evaluate(() => {
+      const log = JSON.parse(sessionStorage.getItem('codex-cloud.network-log.v2') || '{"entries":[]}');
+      return log.entries.flatMap(entry => entry.events);
+    });
+    await expect(fallback).toHaveAttribute('href', /[?&]version=[a-f0-9]{64}/);
+    const downloading = page.waitForEvent('download');
+    await fallback.click();
+    expect(await (await downloading).failure()).toBeNull();
+    app.files.delete('removed.bin');
+    await direct('removed.bin').press('Enter');
+    await expect(page.locator('#upload-status')).toContainText('文件不存在');
+    await expect(page.locator('#file-transport')).toContainText('大文件下载最多 1 GiB', { timeout: 10000 });
+    app.files.set(name, Buffer.alloc(size, 29));
+    const pending = page.waitForEvent('download');
+    await direct(name).press('Enter');
+    const stale = await pending;
+    await expect(page.locator('#upload-status')).toContainText('文件已变化');
+    const downloads = async () => (await events()).filter(event => event.direction === 'download');
+    await expect.poll(downloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'file-ended', route: 'direct', status: 412, loadedBytes: 0, reason: 'http-status', outcome: 'rejected' }),
+      expect.objectContaining({ type: 'file-handoff', route: 'https', totalBytes: size }),
+      expect.objectContaining({ type: 'file-ended', route: 'direct', status: 404, loadedBytes: 0, reason: 'http-status', outcome: 'rejected' }),
+    ]));
+    const handoff = (await downloads()).find(event => event.type === 'file-handoff');
+    expect(handoff).not.toHaveProperty('outcome');
+    expect(handoff).not.toHaveProperty('loadedBytes');
+    expect(JSON.stringify(await downloads())).not.toContain(name);
+    await stale.cancel();
+  } finally { await app.close(); }
+});

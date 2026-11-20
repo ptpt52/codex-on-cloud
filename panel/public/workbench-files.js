@@ -1,8 +1,8 @@
 import { FILE_MAX, FILE_DOWNLOAD_TIMEOUT, fileTimeoutCode } from './file-wire.js';
 import { canStreamDownload, createDownloadSink } from './file-download.js';
-import { createUploadPrompt, uploadResult, validTransferName, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './file-upload.js';
+import { createUploadPrompt, uploadResult, validTransferName, validFileVersion, fileDownloadPath, transferFilePath, quoteFilePath, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './file-upload.js';
 import { createFileListReader, readFilePages } from './file-list.js';
-import { createFileProgress, observeUploadProgress, createUploadTrace } from './file-transfer.js';
+import { createFileProgress, observeUploadProgress, createUploadTrace, downloadFailure } from './file-transfer.js';
 import { nodeLink } from './node-scope.js';
 
 // One transfer or deletion, one directory read, two expiring download URLs. No replay.
@@ -30,7 +30,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       const available = validTransferName(file.name); row.dataset.unavailable = String(!available);
       const detail = document.createElement('span'); detail.textContent = file.name;
       const info = document.createElement('small'); info.textContent = sizeLabel(file.size) + (available ? '' : ' · 文件名无法在网页使用，请在节点主机改名'); detail.append(info);
-      const link = document.createElement('a'); if (available) link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.textContent = '下载'; link.download = file.name;
+      const link = document.createElement('a'); if (available) link.href = nodeLink(fileDownloadPath(file.name, file.version)); link.textContent = '下载'; link.download = file.name;
       if (!available) link.tabIndex = -1;
       link.addEventListener('click', event => {
         event.preventDefault();
@@ -233,14 +233,18 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
   }
   function nativeDownload(file) {
     $('upload-status').textContent = '文件内容：HTTPS（本次下载）；请在浏览器下载列表查看进度或取消。';
-    const link = document.createElement('a'); link.href = nodeLink(`/api/files/${encodeURIComponent(file.name)}`); link.download = file.name;
+    const link = document.createElement('a'); link.href = nodeLink(fileDownloadPath(file.name, file.version)); link.download = file.name;
     document.body.append(link); link.click(); link.remove();
+    trace('file-handoff', { route: 'https', direction: 'download', totalBytes: file.size });
   }
   async function downloadFile(file) {
     if (fileTransferController || fileDeletion) return toast('请先完成当前文件操作。');
     if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
     if (!state().loggedIn || state().accessExpired || !navigator.onLine || !$('files-dialog').open) return;
-    const client = serviceLink.files, large = file.size > FILE_MAX;
+    const version = validFileVersion(file.version) ? file.version : undefined;
+    const available = serviceLink.files;
+    const client = version && !available?.versionedDownloads ? null : available;
+    const large = file.size > FILE_MAX;
     if (large && (!client || file.size > client.maxDownload || !canStreamDownload())) { nativeDownload(file); return; }
     const generation = state().generation, controller = fileTransferController = new AbortController();
     const timer = setTimeout(() => controller.abort('timeout'), large ? FILE_DOWNLOAD_TIMEOUT : 300000), downloadTrace = createUploadTrace(trace);
@@ -254,18 +258,26 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     try {
       let blob;
       if (large) {
-        sink = await createDownloadSink(file.name, file.size, controller.signal, () => controller.abort('save-cancelled'));
+        sink = await createDownloadSink(file.name, file.size, controller.signal, reason => controller.abort(reason));
         if (!current() || controller.signal.aborted) { sink.abort(); return; }
-        await client.downloadTo(file.name, file.size, sink, controller.signal, report);
-      } else blob = client ? await client.download(file.name, file.size, controller.signal, report)
-        : await api(`/api/files/${encodeURIComponent(file.name)}`, { signal: controller.signal, progress: report, downloadSize: file.size });
+        await client.downloadTo(file.name, file.size, sink, controller.signal, report, version);
+      } else blob = client ? await client.download(file.name, file.size, controller.signal, report, version)
+        : await api(fileDownloadPath(file.name, version), { signal: controller.signal, progress: report, downloadSize: file.size, downloadVersion: version });
       if (!current() || controller.signal.aborted) { progress.end(large ? '下载已取消，请在浏览器下载列表核对文件。' : '下载已取消，未生成下载文件。'); return; }
       if (blob) saveDirectFile(blob, file.name);
       downloadTrace.end(undefined, undefined, 'confirmed'); progress.end('下载完成，已交给浏览器保存。', true); $('upload-status').textContent = `下载完成：${file.name}`;
     } catch (error) {
-      sink?.abort(error); downloadTrace.end(controller.signal.aborted ? 'aborted' : fileTimeoutCode(error.code) ? error.code : 'network', error.status, controller.signal.aborted ? 'canceled' : 'unknown');
-      progress.end(controller.signal.aborted ? large ? '下载已取消，请在浏览器下载列表核对文件。' : '下载已取消，未生成下载文件。' : '下载未完成，不会自动重试。');
-      if (current()) $('upload-status').textContent = controller.signal.aborted ? large ? '下载已中断，请在浏览器下载列表核对并清理未完成文件。' : '下载已中断，未保存不完整文件。' : `${error.message}；请刷新列表后手动重试。`;
+      sink?.abort(error);
+      const { reason, status, outcome } = downloadFailure(error, controller.signal);
+      downloadTrace.end(reason, status, outcome);
+      const canceled = outcome === 'canceled';
+      progress.end(canceled ? large ? '下载已取消，请在浏览器下载列表核对文件。' : '下载已取消，未生成下载文件。' : '下载未完成，不会自动重试。');
+      if (current()) {
+        const message = controller.signal.reason?.message || error?.message;
+        $('upload-status').textContent = canceled
+          ? large ? '下载已中断，请在浏览器下载列表核对并清理未完成文件。' : '下载已中断，未保存不完整文件。'
+          : reason === 'timeout' ? '下载超时，请手动重试。' : message || '下载未完成，请手动重试。';
+      }
     } finally {
       clearTimeout(timer);
       downloadTrace.end('aborted', undefined, 'canceled');

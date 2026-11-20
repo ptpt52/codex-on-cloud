@@ -12,6 +12,9 @@ export function validTransferName(name, upload = false) {
   const bytes = new TextEncoder().encode(name);
   return bytes.length <= (upload ? 240 : 255) && new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) === name;
 }
+export const validFileVersion = version => typeof version === 'string' && /^[a-f0-9]{64}$/.test(version);
+export const fileDownloadPath = (name, version) => '/api/files/' + encodeURIComponent(name) +
+  (validFileVersion(version) ? '?version=' + version : '');
 export function transferFilePath(directory, name) {
   if (typeof directory !== 'string' || !directory.startsWith('/') || /[\x00-\x1f\x7f]/.test(directory) || new TextEncoder().encode(directory).length > 4096) throw Error('服务器共享目录尚未就绪，请刷新后重试');
   if (!validTransferName(name)) throw Error('此文件名无法在网页使用，请先在节点主机改名');

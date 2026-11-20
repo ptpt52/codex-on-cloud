@@ -871,7 +871,7 @@ function toast(message, failure = false) {
   $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
-async function api(path, { method = 'GET', body, raw, signal, upload, progress, downloadSize, transferId } = {}) {
+async function api(path, { method = 'GET', body, raw, signal, upload, progress, downloadSize, downloadVersion, transferId } = {}) {
   if (method !== 'GET' && (pageLeaving || cachedResumePending)) throw Object.assign(Error('正在核对返回页面的会话，本次操作未发送'), { outcome: 'rejected' });
   if (path === '/api/terminals' && method === 'POST' && body?.action === 'create' && terminalMode() && views.active.terminalCreateReady && owned && views.active.state === 'connected') {
     return framePanelRequest('create-terminal', { name: body.name, ...(body.terminalId === undefined ? {} : { terminalId: body.terminalId }) }, signal);
@@ -930,7 +930,7 @@ async function api(path, { method = 'GET', body, raw, signal, upload, progress, 
   }
   const invalidResponse = () => Object.assign(new Error('服务响应不完整，请刷新状态确认结果'), { status: response.status, outcome: 'unknown', code: 'invalid_response' });
   if (response.ok && method === 'PUT' && raw instanceof Blob && !signal?.aborted) progress?.(raw.size, raw.size);
-  if (downloadSize !== undefined && response.ok) return readFileDownload(response, downloadSize, signal, progress);
+  if (downloadSize !== undefined && response.ok) return readFileDownload(response, downloadSize, signal, progress, downloadVersion);
   const data = await response.json().catch(error => {
     if (signal?.aborted) throw signal.reason || error;
     if (response.ok) throw invalidResponse();

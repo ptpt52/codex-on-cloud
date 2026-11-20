@@ -84,7 +84,7 @@ export function createServiceRTC({ config, authorized, port, connectFiles, helpe
         ...(connectFiles ? { connectFiles: (channel, live, fail) => { if (entry.candidate) { void entry.close(); return; } return connectFiles(channel, live, headers, controller.signal, fail); } } : {}),
         performControl: async (action, value, live) => {
           if (!valid() || !live()) throw error(401, '登录或服务连接已失效');
-          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, filesWindow: connectFiles ? 16 : 4, filesDownloadMax: connectFiles ? FILE_DOWNLOAD_MAX : 0, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
+          if (action === 'ping') return { ready: true, filesProtocol: connectFiles ? 1 : 0, filesWindow: connectFiles ? 16 : 4, filesDownloadMax: connectFiles ? FILE_DOWNLOAD_MAX : 0, filesDownloadVersion: connectFiles ? 1 : 0, helperDownloadsProtocol: connectFiles && helperDownloads ? 1 : 0 };
           if (action === 'promote') {
             if (!entry.candidate) throw error(409, '服务连接已变化');
             const previous = pages.get(base);

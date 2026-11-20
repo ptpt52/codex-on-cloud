@@ -46,11 +46,40 @@ test('a transfer deadline closes a stalled response and releases its capacity', 
 });
 
 test('large download deadlines cover the HTTP bridge while uploads retain their five-minute budget', t => {
-  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'] });
   const transfers = createFileTransfers({ downloadTimeoutMs: 1800000 }); t.after(() => transfers.close());
-  const download = channel(), upload = channel(); download.req.method = 'GET'; upload.req.method = 'PUT';
-  const downloading = transfers.begin(download.req, download.res, () => true), uploading = transfers.begin(upload.req, upload.res, () => true);
-  t.mock.timers.tick(300000); assert.equal(uploading.signal.aborted, true); assert.equal(downloading.signal.aborted, false);
+  const download = channel(), small = channel(), upload = channel();
+  download.req.method = small.req.method = 'GET'; upload.req.method = 'PUT';
+  const downloading = transfers.begin(download.req, download.res, () => true);
+  const smallDownload = transfers.begin(small.req, small.res, () => true);
+  const uploading = transfers.begin(upload.req, upload.res, () => true);
+  t.mock.timers.tick(1000);
+  downloading.extendDownloadDeadline();
+  t.mock.timers.tick(299000);
+  assert.equal(uploading.signal.aborted, true); assert.equal(smallDownload.signal.aborted, true); assert.equal(downloading.signal.aborted, false);
   t.mock.timers.tick(1500000); assert.equal(downloading.signal.aborted, true); assert.equal(download.res.destroyed, true);
   assert.throws(() => createFileTransfers({ downloadTimeoutMs: 1800001 }));
+});
+
+test('stalled downloads keep one slot available for writes and release on idle after cleanup', t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'] });
+  const transfers = createFileTransfers({ maxDownloads: 3, downloadIdleMs: 60_000 });
+  t.after(() => transfers.close());
+  const begin = method => {
+    const { req, res } = channel(); req.method = method; res.headersSent = true;
+    return transfers.begin(req, res, () => true);
+  };
+  const [active, ...stalled] = Array.from({ length: 3 }, () => begin('GET'));
+  assert.throws(() => begin('GET'), { status: 503 });
+  begin('PUT').finish(); begin('POST').finish();
+  t.mock.timers.tick(50_000);
+  active.downloadProgress();
+  t.mock.timers.tick(10_000);
+  assert.equal(active.signal.aborted, false);
+  for (const transfer of stalled) assert.throws(transfer.check, { status: 408 });
+  assert.throws(() => begin('GET'), { status: 503 });
+  for (const transfer of stalled) transfer.finish();
+  begin('GET').finish();
+  t.mock.timers.tick(50_000);
+  assert.throws(active.check, { status: 408 });
 });

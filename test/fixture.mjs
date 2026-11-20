@@ -67,7 +67,12 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
         files.set(actual, body); return res.end(JSON.stringify({ ok: true, name: actual, size: body.length }));
       }
       if (!files.has(name)) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: '文件不存在' })); }
-      res.setHeader('content-length', files.get(name).length); res.setHeader('etag', '"' + fileVersion(files.get(name)) + '"'); return res.end(files.get(name));
+      const content = files.get(name), etag = '"' + fileVersion(content) + '"';
+      if (req.headers['if-match'] !== undefined && req.headers['if-match'] !== etag) {
+        res.writeHead(412, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: '文件已变化，请刷新列表后重试' }));
+      }
+      res.setHeader('content-length', content.length); res.setHeader('etag', etag); return res.end(content);
     }
     if (['/paste', '/key', '/terminal'].includes(req.url)) {
       received.at(-1).body = JSON.parse(body);
