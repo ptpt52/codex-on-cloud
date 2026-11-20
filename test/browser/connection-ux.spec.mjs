@@ -55,6 +55,34 @@ test('compact fullscreen keeps connection details reachable from tools', async (
   } finally { await app.close(); }
 });
 
+test('connection diagnostics keep close and refresh reachable when the visual viewport is cropped', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.assign(viewport, { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport });
+  });
+  const app = await fixture({ rfb: true });
+  try {
+    await open(page, app);
+    await expect(page.locator('#refresh-connection')).toBeEnabled();
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { width: 254, height: 520, offsetLeft: 12, offsetTop: 40 });
+      visualViewport.dispatchEvent(new Event('resize'));
+    });
+    const dialog = page.locator('#connection-dialog');
+    await expect.poll(async () => {
+      const box = await dialog.boundingBox();
+      return !!box && box.x >= 12 && box.x + box.width <= 266 && box.y >= 40 && box.y + box.height <= 560;
+    }).toBe(true);
+    expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await page.locator('#refresh-connection').click({ trial: true });
+    await page.locator('#close-connection').click();
+    await expect(dialog).toBeHidden();
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('diagnostic failure stays separate from the live session and repeated refreshes cannot overlap', async ({ page }) => {
   const app = await fixture({ rfb: true }); let release, requests = 0;
   const gate = new Promise(resolve => { release = resolve; });
