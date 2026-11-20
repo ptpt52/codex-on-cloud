@@ -2,12 +2,16 @@ import { entryURL } from './entry-path.js';
 
 export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabled, claim, changed, activity = () => {}, toast }) {
   const $ = id => document.getElementById(id), dialog = $('access-dialog'), unlockDialog = $('unlock-dialog'), confirmation = $('access-confirm');
-  let controller, unlockController, busy = false, loading = false, unlocking = false, current, confirmResolve, sharedCredential, savingSection = '';
+  const lockButton = $('screen-lock-button');
+  let controller, unlockController, busy = false, loading = false, locking = false, unlocking = false, current, confirmResolve, sharedCredential, savingSection = '';
   const clearPasswords = () => { $('screen-lock-password').value = $('temporary-password').value = $('temporary-share').value = ''; $('temporary-share').hidden = true; sharedCredential = null; $('temporary-copy').disabled = true; };
   function closeConfirmation() { if (confirmation.open) confirmation.close(); if (confirmResolve) { const resolve = confirmResolve; confirmResolve = null; resolve(false); } }
   function update() {
     $('access-actions').hidden = !allowed();
-    $('screen-lock-button').hidden = !allowed() || !lockEnabled();
+    lockButton.hidden = !allowed() || !lockEnabled();
+    lockButton.disabled = locking || busy;
+    const lockLabel = locking ? '正在锁定…' : '立即锁定';
+    if (lockButton.textContent !== lockLabel) lockButton.textContent = lockLabel;
     if (!allowed() && dialog.open) dialog.close();
     if ((!canUnlock() || !needsUnlock()) && unlockDialog.open) unlockDialog.close();
     for (const id of ['screen-lock-save', 'temporary-save']) $(id).disabled = busy || loading || !current || !allowed();
@@ -61,10 +65,15 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
   $('access-settings-button').addEventListener('click', () => void open());
   $('access-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { controller?.abort(); controller = null; closeConfirmation(); clearPasswords(); });
-  $('screen-lock-button').addEventListener('click', async () => {
-    if (!allowed() || busy) return;
-    try { const value = await api('/api/security/lock', { method: 'POST', body: {} }); changed(value.access); }
-    catch (error) { toast(error.message, true); }
+  lockButton.addEventListener('click', async () => {
+    if (!allowed() || !lockEnabled() || busy || locking) return;
+    locking = true; update(); activity();
+    try {
+      const value = await api('/api/security/lock', { method: 'POST', body: {}, signal: AbortSignal.timeout(15000) });
+      changed(value.access);
+    } catch (error) {
+      if (allowed()) toast(error.outcome === 'rejected' ? error.message : '锁定结果未知，请查看连接状态确认。', true);
+    } finally { locking = false; update(); activity(); }
   });
   function confirmUpdate(enabled) {
     $('access-confirm-title').textContent = enabled ? '更新临时访问？' : '停用临时账号？';
@@ -110,5 +119,5 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
   const close = () => { if (dialog.open) dialog.close(); if (unlockDialog.open) unlockDialog.close(); closeConfirmation(); clearPasswords(); };
   for (const modal of [dialog, unlockDialog, confirmation]) modal.addEventListener('toggle', activity);
   window.addEventListener('pagehide', close);
-  return { update, unlock, close, get blocking() { return dialog.open || unlockDialog.open || confirmation.open || busy || unlocking; } };
+  return { update, unlock, close, get blocking() { return dialog.open || unlockDialog.open || confirmation.open || busy || locking || unlocking; } };
 }

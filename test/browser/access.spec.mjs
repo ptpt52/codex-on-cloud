@@ -54,6 +54,35 @@ test('screen settings, first-entry unlock and each takeover require a fresh pass
   } finally { await other?.close(); await app.close(); }
 });
 
+test('a pending screen lock pauses desktop input and blocks repeated lock requests', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  let release, requests = 0;
+  const hold = new Promise(resolve => { release = resolve; });
+  try {
+    await app.login(); await app.claim();
+    expect((await app.request('/api/security/screen-lock', { method: 'POST', body: { enabled: true, password: pin } })).status).toBe(200);
+    await login(page, app); await unlock(page);
+    await page.route('**/api/security/lock', async route => {
+      requests++; await hold; await route.continue();
+    });
+    await page.locator('#toggle-controls-button').click();
+    const lock = page.locator('#screen-lock-button');
+    await lock.click();
+    await expect(lock).toHaveText('正在锁定…');
+    await expect(lock).toBeDisabled();
+    await expect.poll(() => requests).toBe(1);
+    for (let n = 0; n < 3; n++) await lock.dispatchEvent('click');
+    await page.locator('#toggle-input-button').click();
+    await expect(page.locator('[data-key="Enter"]')).toBeDisabled();
+    release();
+    await expect(page.locator('#connection-status')).toContainText('屏幕已锁定');
+    await expect(page.locator('#desktop-frame')).toBeHidden();
+    expect(requests).toBe(1);
+    expect(app.inputCalls).toEqual([]);
+    expect(app.managementStats.restarts).toBe(0);
+  } finally { release(); await app.close(); }
+});
+
 test('temporary browser login exposes only status, authenticated helper downloads and file transfer and is revoked immediately', async ({ page }, info) => {
   const app = await fixture({ rfb: true, rfbSize: { width: 640, height: 480 }, forwardPorts: '*' });
   try {
