@@ -1877,7 +1877,7 @@ function clipboardAccess() {
 }
 function clipboardOpen() { return workspacePanels.active === 'input' && inputDirection === 'receive' && !terminalOnly; }
 function setInputDirection(direction, focus = false) {
-  if (direction === 'receive' && !clipboardAccess()) return;
+  if (direction === 'receive' && (inputDirection === 'receive' || !clipboardAccess())) return;
   shortcutMenu.close();
   clearClipboard(); inputDirection = direction;
   renderClipboard(); renderInputControls(); renderDesktopSettings(); sendDisplayPreferences();

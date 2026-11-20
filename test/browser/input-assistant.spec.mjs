@@ -55,6 +55,9 @@ test('send and receive directions preserve the draft and clear remote text when 
     expect(app.clipboardReads).toEqual([]);
     await page.locator('#read-clipboard').click();
     await expect(page.locator('#clipboard-preview')).toHaveValue(app.clipboardText.clipboard);
+    await page.locator('#clipboard-button').click();
+    await expect(page.locator('#clipboard-preview')).toHaveValue(app.clipboardText.clipboard);
+    expect(app.clipboardReads).toEqual(['clipboard']);
     await page.locator('#assistant-send-button').click();
     await expect(page.locator('#clipboard-dialog')).toBeHidden();
     await expect(page.locator('#clipboard-preview')).toHaveValue('');
@@ -78,6 +81,9 @@ test('switching direction cancels a pending preview without a late read, draft l
     await login(page, app); await page.locator('#mobile-input').fill('保留草稿');
     await page.locator('#clipboard-button').click(); await page.locator('#read-clipboard').click();
     await expect.poll(() => app.clipboardReads.length).toBe(1);
+    await page.locator('#clipboard-button').click();
+    await expect(page.locator('#read-clipboard')).toBeDisabled();
+    await expect(page.locator('#clipboard-status')).toContainText('正在读取');
     await page.locator('#assistant-send-button').click(); release();
     await expect(page.locator('#mobile-input')).toHaveValue('保留草稿');
     await page.locator('#clipboard-button').click();
