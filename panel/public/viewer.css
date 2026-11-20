@@ -26,13 +26,13 @@ body { touch-action: none; }
 #desktop-touch-input button:disabled { opacity: .45; }
 #desktop-touch-input button:focus-visible { outline: 3px solid #f7971d; outline-offset: -3px; }
 #desktop-touch-input #desktop-touch-keyboard { padding-inline: 12px; box-shadow: 0 2px 8px #0005; }
-#desktop-touch-panel { box-sizing: border-box; width: 100%; max-height: inherit; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid #68615d; border-radius: 10px; background: #292929f5; box-shadow: 0 3px 12px #0005; pointer-events: auto; touch-action: pan-y; }
-.desktop-touch-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #ccc; padding: 0 2px 4px; }
+#desktop-touch-panel { box-sizing: border-box; display: flex; flex-direction: column; width: 100%; max-height: inherit; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid #68615d; border-radius: 10px; background: #292929f5; box-shadow: 0 3px 12px #0005; pointer-events: auto; touch-action: pan-y; }
+.desktop-touch-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 6px; color: #ccc; padding: 0 2px 4px; }
 #desktop-touch-input .desktop-touch-heading button { min-height: 28px; border: 0; padding: 2px 8px; color: #ffd095; background: transparent; }
-.desktop-touch-keys { display: flex; flex-wrap: wrap; gap: 4px; }
+.desktop-touch-keys { display: flex; flex: none; flex-wrap: wrap; gap: 4px; }
 .desktop-touch-keys button { flex: 1 1 0; }
 #desktop-touch-input .desktop-touch-enter { flex-grow: 1.25; background: #f7971d; color: #231815; border-color: #f7971d; font-weight: 700; }
-.desktop-touch-menu { display: grid; grid-template-columns: repeat(4, minmax(44px, 1fr)); gap: 4px; margin-bottom: 6px; }
+.desktop-touch-menu { display: grid; grid-template-columns: repeat(4, minmax(44px, 1fr)); gap: 4px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-bottom: 6px; }
 .desktop-touch-menu [data-touch-action] { grid-column: span 2; }
 #desktop-touch-input.compact .desktop-touch-arrow, #desktop-touch-input.short .desktop-touch-heading { display: none; }
 .desktop-touch-typing #pointer-controls { display: none; }

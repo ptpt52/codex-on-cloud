@@ -263,6 +263,37 @@ test('phone and tablet toolbar follows the visible viewport without resizing the
   } finally { await app.close(); }
 });
 
+test('a short visual viewport reserves the common touch keys while the extra keys scroll', async ({ page }) => {
+  const app = await fixture({ rfb: true }), sent = keys(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    if (window !== parent) return;
+    const viewport = new EventTarget();
+    Object.assign(viewport, { width: 390, height: 844, offsetTop: 0, offsetLeft: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport });
+  });
+  try {
+    const frame = await login(page, app);
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { height: 152, offsetTop: 108 });
+      visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await expect(frame.locator('#desktop-touch-input')).toHaveClass(/\bshort\b/);
+    await frame.locator('#desktop-touch-more').click();
+    const menu = frame.locator('#desktop-touch-menu'), close = frame.locator('#desktop-touch-close');
+    await expect.poll(() => menu.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await expect.poll(() => close.evaluate(el => {
+      const button = el.getBoundingClientRect(), panel = el.closest('section').getBoundingClientRect();
+      return button.top >= panel.top && button.bottom <= panel.bottom;
+    })).toBe(true);
+    await menu.locator('[data-touch-action="assistant"]').click({ trial: true });
+    await close.click();
+    await expect(frame.locator('#desktop-touch-panel')).toBeHidden();
+    expect(sent).toEqual([]);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('unknown touch paste discards queued Enter and never resends after reconnect', async ({ page }) => {
   const app = await fixture({ rfb: true }), sent = keys(page); let finish;
   try {
