@@ -42,6 +42,37 @@ test('tools keep their close button and preference status reachable while keyboa
   }
 });
 
+test('zoomed desktop tools stay inside the visual viewport and keep their close button usable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.assign(viewport, { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+    Object.defineProperty(window, 'visualViewport', { value: viewport });
+  });
+  const app = await fixture({ rfb: true });
+  try {
+    await page.goto(app.config.origin);
+    await page.locator('#password').fill(app.config.password);
+    await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await page.locator('#toggle-controls-button').click();
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { width: 254, height: 520, offsetLeft: 80, offsetTop: 40 });
+      visualViewport.dispatchEvent(new Event('scroll'));
+    });
+    const panel = page.locator('#workspace-tools');
+    await expect.poll(async () => {
+      const box = await panel.boundingBox();
+      return !!box && box.x >= 80 && box.x + box.width <= 334 && box.y >= 40 && box.y + box.height <= 560;
+    }).toBe(true);
+    await page.locator('#fit-button').click({ trial: true });
+    await page.locator('#close-controls-button').click();
+    await expect(panel).toBeHidden();
+    expect(app.vncConnections).toBe(1);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('server desktop settings keep their heading and result visible while scrolling without replacing the viewer', async ({ page }) => {
   const app = await fixture({ rfb: true, viewport: true });
   try {

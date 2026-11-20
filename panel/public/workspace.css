@@ -425,6 +425,11 @@
 .workspace-viewport-narrow #input-dock .panel-heading > div { display: flex; justify-content: flex-end; flex-wrap: wrap; margin-inline-start: auto; }
 .workspace-viewport-narrow #input-dock .keys { flex-wrap: wrap; }
 .workspace-viewport-narrow #input-dock .composer textarea { min-width: 0; }
+:is(.workspace-keyboard-open, .workspace-viewport-narrow) #workspace-tools {
+  inset: auto auto calc(var(--workspace-keyboard-inset) + 8px) calc(var(--workspace-viewport-left) + 8px);
+  width: min(420px, calc(var(--workspace-visible-width) - 16px));
+  max-height: calc(var(--workspace-visible-height) - 16px);
+}
 .history-tools-floating.history-tools-sidebar { border: 0; border-bottom: 1px solid #4a4a4a; border-radius: 0; box-shadow: none; animation: history-sidebar-in 160ms cubic-bezier(.2,.8,.2,1); }
 @keyframes history-sidebar-in { from { clip-path: inset(0 0 100% 0); opacity: 0; } to { clip-path: inset(0); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .history-tools-floating.history-tools-sidebar { animation: none; } }
