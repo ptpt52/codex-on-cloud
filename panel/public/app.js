@@ -2109,6 +2109,10 @@ window.addEventListener('message', event => {
 document.addEventListener('fullscreenchange', () => {
   shortcutMenu.close();
   renderFullscreenControls();
+  // Fullscreen paints only its own subtree above the page.
+  const card = $('desktop-card');
+  const host = document.fullscreenElement === card ? card : document.body;
+  if ($('toast').parentElement !== host) host.append($('toast'));
 });
 document.addEventListener('visibilitychange', () => {
   if (loggedIn) recordConnection('network-change', { reason: document.hidden ? 'hidden' : 'visible' }, displayPreferences.mode);

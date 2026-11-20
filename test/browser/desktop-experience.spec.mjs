@@ -122,6 +122,30 @@ test('fullscreen tools name the exit action and reflect native fullscreen change
   } finally { await app.close(); }
 });
 
+test('desktop feedback is painted above the fullscreen tools and returns to the page on exit', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#tools-fullscreen-button').click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#pan-button').click();
+    const toast = page.locator('#toast');
+    await expect(toast).toContainText('拖动模式');
+    await expect(toast).toHaveCSS('pointer-events', 'none');
+    await expect.poll(() => toast.evaluate(element => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      element.style.pointerEvents = 'auto';
+      try { return element.contains(document.elementFromPoint(x + width / 2, y + height / 2)); }
+      finally { element.style.removeProperty('pointer-events'); }
+    })).toBe(true);
+    await page.locator('#tools-fullscreen-button').click();
+    await expect.poll(() => toast.evaluate(element => element.parentElement === document.body)).toBe(true);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('partial saved terminal preferences preserve display choices without opening an unspecified tool panel', async ({ page }) => {
   const app = await fixture({ rfb: true });
   await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({
