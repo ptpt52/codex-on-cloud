@@ -145,6 +145,35 @@ test('relative touch moves without clicking and supports left, right and explici
   } finally { await client.detach(); await app.close(); }
 });
 
+test('a displaced trackpad cursor returns to the visible desktop without a remote click', async ({ page, context }) => {
+  const { app, pointers, frame } = await setup(page);
+  const client = await context.newCDPSession(page);
+  try {
+    await trackpad(page);
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#actual-size-button').click();
+    await page.locator('#close-controls-button').click();
+    const canvas = frame.locator('#screen canvas'), viewport = frame.locator('#viewport');
+    await expect.poll(() => canvas.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(3000);
+    const bounds = await page.locator('#desktop-stage').boundingBox();
+    await swipe(client, Math.round(bounds.x + 100), Math.round(bounds.y + 100), { dx: 10, dy: 15 });
+    const cursor = frame.locator('#touch-cursor');
+    await expect(cursor).toBeVisible();
+    await expect.poll(() => pointers.length).toBeGreaterThan(0);
+    const before = pointers.length;
+    await viewport.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await expect.poll(() => cursor.evaluate(el => {
+      const icon = el.getBoundingClientRect(), view = document.getElementById('viewport').getBoundingClientRect();
+      return icon.top >= view.top && icon.bottom <= view.bottom;
+    })).toBe(true);
+    expect(pointers).toHaveLength(before);
+    const firstVisibleRow = await viewport.evaluate(el => el.scrollTop);
+    await frame.locator('#pointer-left').click();
+    await expect.poll(() => pointers.slice(before).find(value => value.buttons === 1)?.y).toBeGreaterThan(firstVisibleRow);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await client.detach(); await app.close(); }
+});
+
 test('two-finger trackpad scrolling respects the target and a cancelled touch never clicks', async ({ page, context }) => {
   const { app, pointers, frame } = await setup(page);
   const client = await context.newCDPSession(page);

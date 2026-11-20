@@ -9,18 +9,26 @@ export function createDesktopPointer({ viewport, screen, cursor, controls, chang
   const available = () => ready && canvas?.isConnected && !options.pan && !options.blocked && !document.hidden && navigator.onLine;
   const scale = () => canvas?.width ? canvas.getBoundingClientRect().width / canvas.width : 0;
   const clamp = (value, maximum) => Math.max(0, Math.min(maximum - 1, value));
-  function locate() {
+  function locate(reveal = false) {
     const factor = scale();
     if (!factor) return false;
-    if (!position) {
+    if (!position || reveal) {
       const rect = canvas.getBoundingClientRect(), bounds = viewport.getBoundingClientRect();
-      position = { x: clamp((bounds.left + bounds.width / 2 - rect.left) / factor, canvas.width), y: clamp((bounds.top + bounds.height / 2 - rect.top) / factor, canvas.height) };
+      const middleX = clamp((bounds.left + bounds.width / 2 - rect.left) / factor, canvas.width);
+      const middleY = clamp((bounds.top + bounds.height / 2 - rect.top) / factor, canvas.height);
+      if (!position) position = { x: middleX, y: middleY };
+      else {
+        const x = rect.left + position.x * factor, y = rect.top + position.y * factor;
+        if (x < bounds.left || x >= bounds.right) position.x = middleX;
+        if (y < bounds.top || y >= bounds.bottom) position.y = middleY;
+      }
     }
     return true;
   }
   function renderCursor() {
     cursor.hidden = !available() || options.pointerMode !== 'trackpad' || !shown || !position;
     if (cursor.hidden) return;
+    if (!dragging) locate(true);
     const rect = canvas.getBoundingClientRect(), factor = scale();
     cursor.style.left = `${rect.left + position.x * factor}px`;
     cursor.style.top = `${rect.top + position.y * factor}px`;
@@ -54,8 +62,9 @@ export function createDesktopPointer({ viewport, screen, cursor, controls, chang
     if (wasBusy) changed();
   }
   function click(button = 0) {
-    if (!available() || !locate()) return;
+    if (!available()) return;
     if (dragging) { reset(); return; }
+    if (!locate(true)) return;
     shown = true;
     mouse('mousedown', button === 2 ? 2 : 1, button);
     mouse('mouseup', 0, button);
@@ -113,9 +122,9 @@ export function createDesktopPointer({ viewport, screen, cursor, controls, chang
   $('pointer-left').addEventListener('click', () => click());
   $('pointer-right').addEventListener('click', () => click(2));
   $('pointer-drag').addEventListener('click', () => {
-    if (!available() || !locate()) return;
+    if (!available()) return;
     if (dragging) reset();
-    else { dragging = true; shown = true; mouse('mousedown', 1); render(); changed(); }
+    else if (locate(true)) { dragging = true; shown = true; mouse('mousedown', 1); render(); changed(); }
   });
   $('pointer-scroll').addEventListener('click', () => {
     reset(); chooseScroll(options.scrollTarget === 'viewport' ? 'remote' : 'viewport');
