@@ -122,6 +122,27 @@ test('fullscreen tools name the exit action and reflect native fullscreen change
   } finally { await app.close(); }
 });
 
+test('desktop settings open and close without leaving fullscreen', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await login(page, app);
+    await page.locator('#toggle-controls-button').click();
+    await page.locator('#tools-fullscreen-button').click();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.locator('#toggle-controls-button').click();
+    const settings = page.locator('#desktop-settings-button');
+    await settings.click();
+    await expect(page.locator('#desktop-settings-dialog')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await page.locator('#close-desktop-settings').click();
+    await expect(settings).toBeFocused();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    expect(app.vncConnections).toBe(1);
+    expect(app.managementStats.restarts).toBe(0);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('desktop feedback is painted above the fullscreen tools and returns to the page on exit', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {

@@ -1989,7 +1989,6 @@ async function settingsAction(path, body) {
   }
 }
 $('desktop-settings-button').addEventListener('click', async () => {
-  if (document.fullscreenElement) await document.exitFullscreen();
   $('desktop-settings-dialog').showModal();
   $('desktop-settings-status').textContent = '';
   $('confirm-desktop-restart').checked = false;
