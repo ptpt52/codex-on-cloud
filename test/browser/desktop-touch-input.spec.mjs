@@ -241,20 +241,23 @@ test('phone and tablet toolbar follows the visible viewport without resizing the
     });
     const frame = await login(page, app);
     const resizes = app.managementStats.viewportResizes;
-    for (const [width, height, visibleHeight] of [[320, 900, 480], [390, 900, 480], [1024, 900, 480], [844, 390, 210]]) {
+    for (const [width, height, visibleHeight, visibleWidth = width] of [[320, 900, 480], [390, 900, 480], [1024, 900, 480], [844, 390, 210], [390, 900, 480, 254]]) {
       await page.setViewportSize({ width, height });
-      await page.evaluate(visibleHeight => {
-        Object.assign(visualViewport, { width: innerWidth, height: visibleHeight, offsetTop: 0 });
+      await page.evaluate(({ visibleWidth, visibleHeight }) => {
+        Object.assign(visualViewport, { width: visibleWidth, height: visibleHeight, offsetTop: 0 });
         visualViewport.dispatchEvent(new Event('resize'));
-      }, visibleHeight);
+      }, { visibleWidth, visibleHeight });
       await expect.poll(async () => {
         const box = await frame.locator('#desktop-touch-input').boundingBox();
-        return !!box && box.x >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= visibleHeight && box.y >= 0;
+        return !!box && box.x >= 0 && box.x + box.width <= visibleWidth + 1 && box.y + box.height <= visibleHeight && box.y >= 0;
       }).toBe(true);
       expect(await frame.locator('.desktop-touch-keys').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       await expect(frame.locator('#desktop-input')).toBeFocused();
       if (test.info().project.name === 'mobile' && [320, 1024].includes(width)) await page.screenshot({ path: test.info().outputPath(`touch-keyboard-${width}.png`) });
     }
+    await frame.locator('#desktop-touch-close').click();
+    await expect(frame.locator('#desktop-touch-panel')).toBeHidden();
+    expect(app.inputCalls).toEqual([]);
     await page.waitForTimeout(1500);
     expect(app.managementStats.viewportResizes).toBe(resizes); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
