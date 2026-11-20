@@ -163,6 +163,7 @@
 .settings-dialog-footer { display: flex; align-items: center; flex: none; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--line); background: var(--surface); }
 .settings-dialog-footer p { flex: 1; min-width: 0; min-height: 1.5em; max-height: 6em; margin: 0; overflow: auto; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; }
 .settings-dialog-footer > button { flex: none; min-height: 44px; font-size: 12px; }
+#refresh-desktop-settings[aria-disabled=true] { opacity: .6; cursor: default; }
 .settings-footer-hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .settings-dialog-footer #access-status:empty { display: none; }
 .settings-dialog-footer:has(#access-status:not(:empty)) .settings-footer-hint { display: none; }

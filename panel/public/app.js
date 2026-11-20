@@ -1901,6 +1901,9 @@ function renderDesktopSettings() {
   const writable = loggedIn && owned && !pageLeaving && !cachedResumePending && !accessExpired && !views.active.paused && panelState === 'online' && controlsState.available && !controlsState.maintenance && !controlsState.inputBusy && !controlsState.clipboardBusy && !controlsState.viewportBusy && !viewportResizing && !clipboardUI?.busy && !inputBusy && desktopSettings && !settingsController && !settingsBusy && !desktopSettings.busy;
   const adaptive = followsViewport() && controlsState.viewport?.supported;
   const live = desktopSettings?.canResize === true;
+  const refresh = $('refresh-desktop-settings'), refreshLabel = settingsController ? '正在刷新…' : '刷新设置';
+  refresh.setAttribute('aria-disabled', String(!!settingsController || settingsBusy));
+  if (refresh.textContent !== refreshLabel) refresh.textContent = refreshLabel;
   for (const id of ['resolution-preset', 'desktop-width', 'desktop-height']) $(id).disabled = !writable || !!adaptive;
   const dirty = settingsDirty();
   $('save-desktop-settings').disabled = !writable || !dirty;
@@ -2000,7 +2003,7 @@ $('desktop-settings-button').addEventListener('click', async () => {
 });
 $('close-desktop-settings').addEventListener('click', () => $('desktop-settings-dialog').close());
 $('desktop-settings-dialog').addEventListener('close', stopSettingsPolling);
-$('refresh-desktop-settings').addEventListener('click', () => { if (settingsBusy) return; $('confirm-desktop-restart').checked = false; stopSettingsPolling(); void loadDesktopSettings(); });
+$('refresh-desktop-settings').addEventListener('click', () => { if (settingsController || settingsBusy) return; $('confirm-desktop-restart').checked = false; void loadDesktopSettings(); });
 $('resolution-preset').addEventListener('change', () => {
   if ($('resolution-preset').value !== 'custom') {
     const [width, height] = $('resolution-preset').value.split('x');
