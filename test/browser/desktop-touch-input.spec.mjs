@@ -65,8 +65,9 @@ test('one tap enables touch IME and candidate confirmation never submits; explic
     await expect(frame.locator('#desktop-input')).toBeFocused();
     await frame.locator('#desktop-touch-close').click();
     await expect(frame.locator('#desktop-touch-panel')).toBeHidden();
-    await expect(frame.locator('#desktop-touch-keyboard')).toBeVisible();
+    await expect(frame.locator('#desktop-touch-keyboard')).toBeFocused();
     await expect(frame.locator('#desktop-input')).toHaveValue('');
+    expect(sent).toEqual([0xff0d, 0xff51]);
     expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });

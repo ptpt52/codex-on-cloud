@@ -50,7 +50,10 @@ export function createDesktopTouchInput({ input, field, root, allowed, action })
     schedule();
   }
   toggle.addEventListener('click', () => { if (allowed() && input.openTouch()) update(); });
-  root.querySelector('#desktop-touch-close').addEventListener('click', () => { input.closeTouch(); update(); });
+  root.querySelector('#desktop-touch-close').addEventListener('click', () => {
+    input.closeTouch(); update();
+    if (!root.hidden) toggle.focus({ preventScroll: true });
+  });
   // Keep the soft keyboard open while using keys or expanding the menu.
   root.addEventListener('pointerdown', event => { if (input.touch && event.target.closest('button')) event.preventDefault(); });
   root.addEventListener('click', event => {
