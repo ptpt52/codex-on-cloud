@@ -5,6 +5,42 @@ import { fixture } from '../fixture.mjs';
 test.use({ serviceWorkers: 'block' });
 async function login(page, app) { await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click(); await expect(page.locator('#connection-status')).toContainText('终端在线'); }
 
+test('desktop file transfer stays in the visual viewport with a reachable close control', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    app.files.set('handoff.txt', Buffer.from('sample'));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      const viewport = new EventTarget();
+      Object.assign(viewport, { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+      Object.defineProperty(window, 'visualViewport', { value: viewport });
+    });
+    await page.goto(app.config.origin);
+    await page.locator('#password').fill(app.config.password);
+    await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await page.locator('#files-button').click();
+    await expect(page.locator('#file-list')).toContainText('handoff.txt');
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { width: 254, height: 400, offsetLeft: 12, offsetTop: 40 });
+      visualViewport.dispatchEvent(new Event('resize'));
+    });
+    const dialog = page.locator('#files-dialog'), close = page.locator('#close-files');
+    await expect.poll(async () => {
+      const box = await dialog.boundingBox();
+      return !!box && box.x >= 12 && box.x + box.width <= 266 && box.y >= 40 && box.y + box.height <= 440;
+    }).toBe(true);
+    await dialog.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await expect(close).toBeInViewport();
+    const closeBox = await close.boundingBox();
+    expect(closeBox.width).toBeGreaterThanOrEqual(44);
+    expect(closeBox.y + closeBox.height).toBeLessThanOrEqual(440);
+    await close.click();
+    await expect(dialog).toBeHidden();
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('a stalled directory read times out and can be refreshed without replaying uploads', async ({ page }) => {
   const app = await fixture({ mode: 'terminal' }); let release, stall = true;
   const gate = new Promise(resolve => { release = resolve; });

@@ -439,7 +439,7 @@
   max-width: none;
   max-height: calc(var(--workspace-visible-height) - 16px);
 }
-:is(.workspace-keyboard-open, .workspace-viewport-narrow) .settings-dialog {
+:is(.workspace-keyboard-open, .workspace-viewport-narrow) :is(.settings-dialog, .transfer-dialog) {
   position: fixed;
   inset: auto auto calc(var(--workspace-keyboard-inset) + 8px) calc(var(--workspace-viewport-left) + var(--workspace-visible-width) / 2);
   margin: 0;
@@ -458,7 +458,9 @@
 @media (prefers-reduced-motion: reduce) { .history-tools-floating.history-tools-sidebar { animation: none; } }
 
 /* Transfer actions stay with each file; paths are never submitted as input. */
-.transfer-dialog { width: 620px; max-width: calc(100vw - 24px); }
+.transfer-dialog { width: 620px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; }
+.transfer-dialog > .dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.transfer-dialog #close-files { flex: none; min-width: 44px; min-height: 44px; }
 .transfer-dialog #transfer-path { overflow-wrap: anywhere; }
 .transfer-dialog #open-transfer-directory { min-height: 44px; margin-top: 12px; font-size: 12px; }
 .transfer-dialog .upload-zone { width: 100%; min-height: 100px; margin: 16px 0; transition: background .15s, border-color .15s; }
