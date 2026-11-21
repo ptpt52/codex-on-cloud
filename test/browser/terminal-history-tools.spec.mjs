@@ -182,6 +182,35 @@ test('copying a history snapshot retains keyboard focus while the clipboard is p
   } finally { await app.close(); }
 });
 
+test('manual history copying keeps its action buttons reachable in a short window', async ({ page }, info) => {
+  const app = await fixture({ terminalHistory: 'SHORT-WINDOW-COPY\n' });
+  try {
+    await page.setViewportSize({ width: 320, height: 540 });
+    const frame = await snapshot(page, app);
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }));
+    await frame.locator('#history-tools-toggle').click();
+    await page.locator('#history-copy-all').click();
+    const dialog = page.locator('#history-copy-manual'), field = page.locator('#history-copy-text');
+    await expect(dialog).toBeVisible();
+    const original = await field.inputValue();
+    await field.evaluate(element => element.setSelectionRange(0, 1));
+    await page.setViewportSize({ width: 320, height: 170 });
+    await expect.poll(async () => (await dialog.boundingBox()).height).toBeLessThanOrEqual(154);
+    await dialog.hover({ position: { x: 20, y: 26 } });
+    await page.mouse.wheel(0, 400);
+    await expect.poll(() => dialog.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    const selectAll = page.locator('#history-copy-select');
+    await expect(selectAll).toBeInViewport({ ratio: 1 });
+    await page.screenshot({ path: info.outputPath('history-copy-short-window.png') });
+    await selectAll.click();
+    expect(await field.evaluate(element => [element.selectionStart, element.selectionEnd])).toEqual([0, original.length]);
+    await field.press('Escape');
+    await expect(dialog).toBeHidden();
+    expect(app.terminalInputs).toEqual([]);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('the copy window button writes the browser clipboard even when the Clipboard API is unavailable', async ({ page, context }) => {
   const app = await fixture({ terminalHistory: 'COPY-BUTTON 中文\n    preserved spaces\n' });
   try {
