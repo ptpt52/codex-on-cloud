@@ -186,13 +186,15 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function applySearch(navigate = false) {
     const top = archive.scrollTop, left = archive.scrollLeft;
+    const selected = matches.length ? Math.max(0, Math.min(current, matches.length - 1)) : -1;
     groups = highlightHistoryRuns(archive, view.parsed, historyMatchRanges(view.parsed, matches));
     archive.scrollTop = top; archive.scrollLeft = left;
-    current = -1; setCurrent(matches.length ? 0 : -1, navigate && !!query.value);
+    current = -1; setCurrent(selected, navigate && !!query.value);
   }
   function search(navigate = false, ready) {
     clearTimeout(searchTimer); searchTimer = undefined;
     query.value = query.value.slice(0, 128).replace(/[\uD800-\uDBFF]$/, '');
+    if (appliedQuery !== query.value) current = -1;
     appliedQuery = query.value;
     const found = findHistoryMatches(view?.text || '', query.value); matches = found.matches; limited = found.limited;
     if (view) {
@@ -206,7 +208,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       };
       if (view.text.length < 32768) { renderHistoryRuns(archive, snapshot.parsed, [], grid); done(); applySearch(navigate); ready?.(); return; }
       const controller = renderController = new AbortController(); renderReady = ready; renderNavigate = navigate;
-      archive.textContent = '正在排版历史…'; archive.setAttribute('aria-busy', 'true'); groups = []; current = -1; update();
+      archive.textContent = '正在排版历史…'; archive.setAttribute('aria-busy', 'true'); groups = []; update();
       void renderHistoryRunsAsync(archive, snapshot.parsed, grid, { signal: controller.signal }).then(() => {
         if (disposed || renderController !== controller || view !== snapshot) return;
         renderController = undefined; archive.removeAttribute('aria-busy'); done();
@@ -227,7 +229,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function freezeLocal() {
     const parsed = captureHistoryBuffer(term);
-    cancelRender(); view = { parsed, text: historyText(parsed) }; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
+    cancelRender(); view = { parsed, text: historyText(parsed) }; current = -1; archiveLocal = true; archiveStyled = true; archiveSimplified = parsed.simplified;
     archiveTruncated = parsed.truncated; archiveAlternate = false; archiveOpen = true; archive.hidden = false; pixels = 0; gesture = undefined; clearCopy();
     search(false, () => { const height = parseFloat(getComputedStyle(archive).lineHeight) || 20; archive.scrollTop = parsed.viewportRow * height; }); update();
   }
@@ -311,7 +313,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       clearCopy(); archiveStyled = value.styled === true; archiveLocal = false;
       let parsed = parseHistoryStyles(value.text || '', archiveStyled);
       if (value.joined) parsed = wrapHistoryRows(parsed, value.cols, term._core.unicodeService);
-      cancelRender(); view = { parsed, text: historyText(parsed) }; archiveSimplified = parsed.simplified;
+      cancelRender(); view = { parsed, text: historyText(parsed) }; current = -1; archiveSimplified = parsed.simplified;
       archiveAlternate = value.alternate; archiveTruncated = value.truncated;
       archiveOpen = true; archive.hidden = false; updateTools();
       // Start a few rows above the latest view. A fixed two-screen jump used
@@ -465,6 +467,6 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, resize() { if (grid.update() && view) { cancelRender(); search(); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+  return { update, resize() { if (grid.update() && view) { cancelRender(); search(current >= 0 && toolsOpen); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); cancelRender(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

@@ -1,18 +1,18 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 
-async function prepare(page) {
-  await page.addInitScript(() => {
-    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true }));
+async function prepare(page, terminalWidthMode = 'viewport') {
+  await page.addInitScript(terminalWidthMode => {
+    if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', zoom: 'width', pan: false, collapsed: false, mode: 'terminal', terminalInputCollapsed: true, terminalWidthMode }));
     if (location.pathname !== '/terminal/index.html') return;
     let Terminal; window.terminalInstances = 0;
     Object.defineProperty(window, 'Terminal', { configurable: true, get: () => Terminal,
       set: Native => { Terminal = class extends Native { constructor(...args) { super(...args); window.toolsTerminal = this; window.terminalInstances++; } }; } });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { (window.copiedHistory ||= []).push(text); } } });
-  });
+  }, terminalWidthMode);
 }
-async function login(page, app) {
-  await prepare(page); await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
+async function login(page, app, terminalWidthMode) {
+  await prepare(page, terminalWidthMode); await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
   return page.frames().find(frame => frame.url().includes('/terminal/index.html'));
 }
@@ -269,6 +269,34 @@ test('an empty or immediately cleared search leaves the live terminal editable',
     await expect(archive).toBeHidden();
     await expect(frame.locator('.xterm-helper-textarea')).toBeEditable();
     expect(app.terminalHistoryReads).toEqual([]);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('history keeps the chosen search match when the terminal font is refitted', async ({ page }) => {
+  const app = await fixture({ terminalMaxCols: 60, terminalHistory: 'NEEDLE one\n' + 'gap\n'.repeat(60) + 'NEEDLE two\nNEEDLE three\n' });
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const frame = await login(page, app, 'scale');
+    await frame.locator('#history-up').click();
+    await expect(frame.locator('#history-archive')).toBeVisible();
+    await frame.locator('#history-tools-toggle').click();
+    const query = page.locator('#history-query'), status = page.locator('#history-find-state');
+    await query.fill('NEEDLE');
+    await expect(status).toHaveText('1/3');
+    await page.locator('#history-find-next').click();
+    await expect(status).toHaveText('2/3');
+    const fontSize = () => frame.evaluate(() => window.toolsTerminal.options.fontSize);
+    const original = await fontSize();
+    await page.setViewportSize({ width: 960, height: 844 });
+    await expect.poll(fontSize).toBeGreaterThan(original);
+    const match = frame.locator('#history-archive mark[data-current=true]');
+    await expect(status).toHaveText('2/3');
+    await expect(match).toHaveAttribute('data-match', '1');
+    await expect(match).toBeInViewport();
+    await query.fill('three');
+    await expect(status).toHaveText('1/1');
+    expect(app.terminalHistoryReads).toHaveLength(1);
     expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });
