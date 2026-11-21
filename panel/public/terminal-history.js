@@ -276,8 +276,9 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   function returnToLive(event) {
     const button = event.currentTarget, focused = button.ownerDocument.activeElement === button;
     live();
-    if (focused && (button.hidden || button.disabled)) focusControl(up.disabled ? toggle : up);
+    if (focused && (button.hidden || button.disabled)) focusHistoryToolbar();
   }
+  function focusHistoryToolbar() { focusControl(up.disabled ? toggle : up); }
   async function copy(text, label, source) {
     if (disposed || !toolsOpen || copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
@@ -454,7 +455,11 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (event.key === 'PageUp') turn(-1, true);
     else if (event.key === 'PageDown') turn(1, true);
     else if (event.key === 'Home') { if (archiveOpen) archive.scrollTop = 0; else term.scrollToTop(); }
-    else resetLocalView();
+    else {
+      const focusedArchive = archive.contains(document.activeElement);
+      resetLocalView();
+      if (focusedArchive) focusHistoryToolbar();
+    }
     update();
   }, { capture: true });
   listen(archive, 'scroll', update);

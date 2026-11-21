@@ -289,6 +289,20 @@ for (const id of ['history-new-output', 'history-latest']) test(`returning to li
   } finally { await app.close(); }
 });
 
+for (const key of ['End', 'Escape']) test(`${key} restores focus after leaving the history snapshot`, async ({ page }) => {
+  const app = await fixture({ terminalHistory: '历史快照\n' });
+  try {
+    const frame = await snapshot(page, app);
+    const archive = frame.locator('#history-archive');
+    await archive.press(key);
+    await expect(archive).toBeHidden();
+    await expect(frame.locator('#history-up')).toBeFocused();
+    expect(app.terminalHistoryReads).toHaveLength(1);
+    expect(app.terminalInputs).toEqual([]);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('search remains local across reconnect, respects IME composition, and caps highlighted matches', async ({ page }) => {
   const app = await fixture({ terminalHistory: '中文 中文\n' + 'a '.repeat(2500) });
   try {
