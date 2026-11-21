@@ -67,7 +67,10 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     if (disposed) return;
     const readable = state().loggedIn && !state().accessExpired && navigator.onLine && !!state().directory;
     const insertable = readable && canInsert();
-    for (const button of $('file-list').querySelectorAll('[data-file-copy]')) button.disabled = !readable || filePathCopyBusy || button.closest('.file-row').dataset.unavailable === 'true';
+    for (const button of $('file-list').querySelectorAll('[data-file-copy]')) {
+      button.disabled = !readable || button.closest('.file-row').dataset.unavailable === 'true';
+      button.setAttribute('aria-disabled', String(button.disabled || filePathCopyBusy));
+    }
     for (const button of $('file-list').querySelectorAll('[data-file-insert]')) { button.hidden = state().temporary; button.disabled = !insertable || button.closest('.file-row').dataset.unavailable === 'true'; }
     for (const button of $('file-list').querySelectorAll('[data-file-delete]')) {
       button.hidden = state().temporary;

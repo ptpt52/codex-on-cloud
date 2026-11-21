@@ -17,12 +17,13 @@ test('a previous path copy cannot unlock or replace a newer copy after reopening
     await login(page, app); await page.getByRole('button', { name: '复制 first.txt 的服务器路径' }).click();
     await expect.poll(() => page.evaluate(() => window.pathCopies.length)).toBe(1);
     await page.locator('#close-files').click(); await page.locator('#files-button').click();
-    const next = page.getByRole('button', { name: '复制 second.txt 的服务器路径' }); await expect(next).toBeEnabled(); await next.click();
+    const next = page.getByRole('button', { name: '复制 second.txt 的服务器路径' }); await expect(next).toBeEnabled(); await next.press('Enter');
     await expect.poll(() => page.evaluate(() => window.pathCopies.length)).toBe(2);
     await page.evaluate(() => window.pathCopies[0].reject(Error('old denied')));
-    await expect(next).toBeDisabled(); await expect(page.locator('#file-path-fallback')).toBeHidden();
+    await expect(next).toBeDisabled(); await expect(next).toBeFocused(); await expect(page.locator('#file-path-fallback')).toBeHidden();
+    await next.press('Enter'); expect(await page.evaluate(() => window.pathCopies.length)).toBe(2);
     await page.evaluate(() => window.pathCopies[1].resolve()); await expect(next).toBeEnabled();
-    await expect(page.locator('#file-list-status')).toContainText('已复制'); expect(app.inputCalls).toEqual([]);
+    await expect(next).toBeFocused(); await expect(page.locator('#file-list-status')).toContainText('已复制'); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
 });
 test('leaving during an upload never replays it and its late response cannot release a newer transfer', async ({ page }) => {

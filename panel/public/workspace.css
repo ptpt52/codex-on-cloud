@@ -461,7 +461,7 @@
 .transfer-dialog { width: 620px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; }
 .transfer-dialog > .dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--surface); }
 .transfer-dialog #close-files { flex: none; min-width: 44px; min-height: 44px; }
-.transfer-dialog #refresh-files[aria-disabled="true"] { opacity: .6; cursor: default; }
+.transfer-dialog :is(#refresh-files, [data-file-copy])[aria-disabled="true"] { opacity: .6; cursor: default; }
 .transfer-dialog #transfer-path { overflow-wrap: anywhere; }
 .transfer-dialog #open-transfer-directory { min-height: 44px; margin-top: 12px; font-size: 12px; }
 .transfer-dialog .upload-zone { width: 100%; min-height: 100px; margin: 16px 0; transition: background .15s, border-color .15s; }
