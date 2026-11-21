@@ -2100,6 +2100,7 @@ window.addEventListener('message', event => {
   if (event.data?.type === 'codex-terminal-composition' && terminalMode() && typeof event.data.composing === 'boolean') {
     views.active.composing = event.data.composing || historyToolsPortal.composing; renderInputControls(); return;
   }
+  if (event.data?.type === 'codex-terminal-input-focus' && terminalMode()) { workspacePanels.updateTerminalInput(); return; }
   if (event.data?.type === 'codex-desktop-input-state' && !terminalMode() && typeof event.data.composing === 'boolean') {
     views.active.composing = event.data.composing; views.active.touchInput = event.data.touch === true; renderInputControls(); scheduleViewport(); return;
   }

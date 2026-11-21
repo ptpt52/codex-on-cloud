@@ -52,6 +52,11 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
   function focus() {
     if (active) panels[active].focus({ preventScroll: true });
   }
+  function updateTerminalInput() {
+    const focused = document.activeElement;
+    const field = focused?.id === 'desktop-frame' ? focused.contentDocument?.activeElement : null;
+    document.documentElement.classList.toggle('workspace-terminal-input', field?.classList.contains('xterm-helper-textarea') === true);
+  }
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229 || composing() || event.defaultPrevented || !active || document.querySelector('dialog[open], #shortcuts-button[aria-expanded="true"]')) return;
     event.preventDefault(); event.stopPropagation(); close(active);
@@ -70,6 +75,7 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
     // Panning the visual viewport changes the bottom inset even when the keyboard stays open.
     root.classList.toggle('workspace-keyboard-open', innerHeight - height > 100);
     root.classList.toggle('workspace-viewport-narrow', width + 1 < innerWidth);
+    updateTerminalInput();
     cancelAnimationFrame(viewportFrame);
     viewportFrame = requestAnimationFrame(() => {
       const focused = document.activeElement;
@@ -92,11 +98,14 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
   window.addEventListener('resize', viewportChanged);
   window.visualViewport?.addEventListener('resize', viewportChanged);
   window.visualViewport?.addEventListener('scroll', viewportChanged);
-  document.addEventListener('focusin', event => { if (event.target.closest?.('.settings-dialog-body')) viewportChanged(); });
+  document.addEventListener('focusin', event => {
+    updateTerminalInput();
+    if (event.target.closest?.('.settings-dialog-body')) viewportChanged();
+  });
   const settingsObserver = new ResizeObserver(viewportChanged);
   document.querySelectorAll('.settings-dialog-body').forEach(body => settingsObserver.observe(body));
   viewportChanged();
-  return { render, focus, get active() { return active; } };
+  return { render, focus, updateTerminalInput, get active() { return active; } };
 }
 
 // One same-origin DOM panel and one placeholder. Adoption keeps the terminal's

@@ -221,8 +221,9 @@
 .toast { z-index: 26; pointer-events: none; }
 .desktop-card:fullscreen .tools-panel { top: 60px; }
 .desktop-card:fullscreen .input-dock { bottom: calc(8px + var(--workspace-keyboard-inset, 0px)); max-height: calc(var(--workspace-visible-height, 100dvh) - 16px); }
-/* Fit xterm's rows above an overlay keyboard using the parent visual viewport. */
-.workspace-keyboard-open .terminal-mode #desktop-frame { height: max(0px, calc(100% - var(--workspace-keyboard-inset))); }
+/* Keep xterm's input row above the overlay keyboard. A keyboard opened by
+   an outer-page field uses that panel's layout and keeps the PTY size. */
+.workspace-keyboard-open.workspace-terminal-input .terminal-mode #desktop-frame { height: max(0px, calc(100% - var(--workspace-keyboard-inset))); }
 .workspace-keyboard-open .input-dock .assistant-directions { display: none; }
 .workspace-keyboard-open .input-dock #terminal-target-note, .workspace-keyboard-open .input-dock .dock-note { display: none; }
 @media (max-width: 1000px) {

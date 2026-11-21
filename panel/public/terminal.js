@@ -270,6 +270,9 @@ function createTerminal() {
     cursorBlink: true, allowProposedApi: true, disableStdin: blocked || busy || !ready || document.hidden || !navigator.onLine,
     theme: { ...TERMINAL_THEME, overviewRulerBorder: TERMINAL_THEME.background } });
   fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(host); term.onData(raw);
+  const reportInputFocus = () => parent.postMessage({ type: 'codex-terminal-input-focus', frame }, location.origin);
+  term.textarea.addEventListener('focus', reportInputFocus);
+  term.textarea.addEventListener('blur', reportInputFocus);
   if (appleTouchInput()) retainedTerminal = attachRetainedTerminal({ field: term.textarea,
     allowed: () => ready && !blocked && !busy && !standby && !switching && !streamPaused && !pending && !history?.reviewing && !document.hidden && navigator.onLine,
     hasSelection: () => term.hasSelection(), clearSelection: () => term.clearSelection(), notice: message,
