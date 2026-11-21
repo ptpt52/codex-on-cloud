@@ -1499,7 +1499,7 @@ function inputDestination(strict = true) {
   if ((!terminal || terminal.token !== selectedTerminalToken || terminalSelectionState !== 'ready') && strict) throw new Error('所选终端不可用，请刷新列表后重新选择；本次输入未发送');
   return { terminalId: selectedTerminal, terminalToken: selectedTerminalToken };
 }
-function renderTerminalList() {
+function renderTerminalList(previousCatalog = []) {
   const select = $('input-terminal');
   select.replaceChildren(new Option('当前窗口（跟随桌面焦点）', ''));
   select.options[0].disabled = terminalMode();
@@ -1523,6 +1523,13 @@ function renderTerminalList() {
   $('create-terminal-form').dataset.full = String(terminalCapacityFull);
   $('terminal-create-help').textContent = terminalCatalog.length >= maxTerminals ? '终端名额已满，结束不用的终端后可再新建。' : '新建后自动切换到该终端。';
   $('terminal-empty').hidden = terminalCatalog.length > 0 || !terminalCatalogVerified;
+  const renameDrafts = new Map();
+  for (const terminal of previousCatalog) {
+    const editor = $(`terminal-edit-${terminal.id}`);
+    if (!terminal.supported || !editor || editor.hidden) continue;
+    const value = editor.querySelector('input').value;
+    if (value !== terminal.name) renameDrafts.set(`${terminal.id}:${terminal.token}`, value);
+  }
   const list = $('terminal-list'); list.replaceChildren();
   for (const terminal of terminalCatalog) {
     const row = document.createElement('div'); row.className = 'terminal-row'; row.dataset.terminal = terminal.id; row.dataset.supported = String(terminal.supported);
@@ -1534,12 +1541,13 @@ function renderTerminalList() {
     row.dataset.current = String(current);
     if (current) { const badge = document.createElement('span'); badge.className = 'terminal-current'; badge.textContent = terminalMode() ? '当前终端' : '输入目标'; heading.append(badge); }
     const editor = document.createElement('form'), input = document.createElement('input'), edit = document.createElement('button'), rename = document.createElement('button'), cancel = document.createElement('button'), open = document.createElement('button'), close = document.createElement('button');
-    editor.className = 'terminal-rename-inline'; editor.id = `terminal-edit-${terminal.id}`; editor.hidden = true;
-    input.value = terminal.name; input.maxLength = 24; input.required = true; input.autocomplete = 'off'; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
+    const draft = terminal.supported ? renameDrafts.get(`${terminal.id}:${terminal.token}`) : undefined;
+    editor.className = 'terminal-rename-inline'; editor.id = `terminal-edit-${terminal.id}`; editor.hidden = draft === undefined;
+    input.value = draft ?? terminal.name; input.maxLength = 24; input.required = true; input.autocomplete = 'off'; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
     edit.type = cancel.type = open.type = close.type = 'button'; rename.type = 'submit';
     edit.textContent = '重命名'; rename.textContent = '保存名称'; cancel.textContent = '取消'; open.textContent = '打开 / 切换';
     edit.className = cancel.className = 'secondary'; rename.className = open.className = 'primary';
-    edit.setAttribute('aria-expanded', 'false'); edit.setAttribute('aria-controls', editor.id);
+    edit.setAttribute('aria-expanded', String(!editor.hidden)); edit.setAttribute('aria-controls', editor.id);
     const target = { terminalId: terminal.id, terminalToken: terminal.token };
     edit.addEventListener('click', () => { if (!canManageTerminals() || !terminal.supported) return; editor.hidden = false; edit.setAttribute('aria-expanded', 'true'); input.focus(); input.select(); });
     cancel.addEventListener('click', () => { editor.hidden = true; input.value = terminal.name; edit.setAttribute('aria-expanded', 'false'); edit.focus(); });
@@ -1605,12 +1613,13 @@ async function terminalRequest(body, { waitForView = false } = {}) {
     if (body?.action === 'rename' && !result.terminals?.some(item => item.id === body.terminalId && item.token === body.terminalToken && item.name === body.name.trim())) throw new Error('名称保存未确认，请刷新列表核对。');
     const retainConnection = body?.action === 'create' && terminalMode() && views.active.loaded && views.active.terminalSwitchReady;
     if (body?.action === 'create' && (result.created !== result.opened || body.terminalId !== undefined && result.created !== body.terminalId || !result.terminals?.some(item => item.id === result.created && item.supported))) throw new Error('创建结果未确认，请刷新列表核对，不要重复新建。');
+    const previousCatalog = !body && $('terminals-dialog').open ? terminalCatalog : [];
     updateTerminalCatalog(result, retainConnection ? undefined : body ? result.opened : undefined);
     if (body?.action === 'open') desktopFocusFailureKey = '';
     clearTimeout(timeout);
     if (body?.action === 'create') $('new-terminal-name').value = '';
     $('terminals-status').textContent = `${body ? '终端操作已完成。' : ''}共 ${terminalCatalog.length} / ${maxTerminals} 个终端。`;
-    renderTerminalList();
+    renderTerminalList(previousCatalog);
     if (retainConnection) {
       const created = terminalCatalog.find(item => item.id === result.created);
       if (views.active.loaded && views.active.terminalSwitchReady) {
