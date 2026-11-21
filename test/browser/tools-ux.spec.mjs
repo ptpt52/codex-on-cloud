@@ -95,6 +95,42 @@ test('server desktop settings keep their heading and result visible while scroll
   } finally { await app.close(); }
 });
 
+test('desktop and access settings follow the cropped visual viewport', async ({ page }) => {
+  const app = await fixture({ rfb: true });
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      const viewport = new EventTarget();
+      Object.assign(viewport, { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+      Object.defineProperty(window, 'visualViewport', { value: viewport });
+    });
+    await page.goto(app.config.origin);
+    await page.locator('#password').fill(app.config.password);
+    await page.locator('#login-button').click();
+    await expect(page.locator('#connection-status')).toContainText('桌面在线');
+    await page.locator('#toggle-controls-button').click();
+    for (const [entry, panel, close] of [
+      ['desktop-settings-button', 'desktop-settings-dialog', 'close-desktop-settings'],
+      ['access-settings-button', 'access-dialog', 'access-close'],
+    ]) {
+      await page.locator('#' + entry).click();
+      await page.evaluate(() => {
+        Object.assign(visualViewport, { width: 254, height: 520, offsetLeft: 12, offsetTop: 40 });
+        visualViewport.dispatchEvent(new Event('resize'));
+      });
+      const dialog = page.locator('#' + panel);
+      await expect.poll(async () => {
+        const box = await dialog.boundingBox();
+        return !!box && box.x >= 12 && box.x + box.width <= 266 && box.y >= 40 && box.y + box.height <= 560;
+      }).toBe(true);
+      await page.locator('#' + close).click();
+      await expect(dialog).toBeHidden();
+    }
+    expect(app.managementStats.restarts).toBe(0);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('desktop and terminal access settings retain drafts and reachable close and feedback areas in short viewports', async ({ context }) => {
   test.setTimeout(60000);
   for (const mode of ['desktop', 'terminal']) {

@@ -439,6 +439,14 @@
   max-width: none;
   max-height: calc(var(--workspace-visible-height) - 16px);
 }
+:is(.workspace-keyboard-open, .workspace-viewport-narrow) .settings-dialog {
+  position: fixed;
+  inset: auto auto calc(var(--workspace-keyboard-inset) + 8px) calc(var(--workspace-viewport-left) + var(--workspace-visible-width) / 2);
+  margin: 0;
+  max-width: calc(var(--workspace-visible-width) - 16px);
+  max-height: min(900px, calc(var(--workspace-visible-height) - 16px));
+  transform: translateX(-50%);
+}
 :is(.workspace-keyboard-open, .workspace-viewport-narrow) #toast {
   left: calc(var(--workspace-viewport-left) + var(--workspace-visible-width) / 2);
   bottom: calc(var(--workspace-keyboard-inset) + max(12px, env(safe-area-inset-bottom)));
