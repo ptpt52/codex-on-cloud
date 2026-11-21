@@ -446,7 +446,7 @@
   max-width: none;
   max-height: calc(var(--workspace-visible-height) - 16px);
 }
-:is(.workspace-keyboard-open, .workspace-viewport-narrow) :is(.settings-dialog, .transfer-dialog) {
+:is(.workspace-keyboard-open, .workspace-viewport-narrow) :is(.settings-dialog, .transfer-dialog, .terminal-rename-dialog) {
   position: fixed;
   inset: auto auto calc(var(--workspace-keyboard-inset) + 8px) calc(var(--workspace-viewport-left) + var(--workspace-visible-width) / 2);
   margin: 0;
