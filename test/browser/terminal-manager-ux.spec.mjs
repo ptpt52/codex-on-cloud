@@ -56,6 +56,29 @@ test('an empty manager offers an explicit new shell and cancellation cannot recr
   } finally { await app.close(); }
 });
 
+test('terminal management accepts full Unicode names and blocks overlong names before submitting', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  const valid = '任务' + '🧪'.repeat(22);
+  try {
+    await login(page, app); await manager(page);
+    const create = page.locator('#new-terminal-name'), row = page.locator('[data-terminal=main]');
+    await create.fill('x'.repeat(25)); await create.press('Enter');
+    await expect(page.locator('#action-confirmation')).toBeHidden();
+    expect(await create.evaluate(element => element.validationMessage)).toContain('1–24');
+    await create.fill(valid); await expect(create).toHaveValue(valid); await create.press('Enter');
+    await expect(page.locator('#action-confirmation')).toBeVisible();
+    await page.locator('#cancel-confirmation').click();
+    await row.getByRole('button', { name: '重命名' }).click();
+    const field = row.locator('input');
+    await field.fill('x'.repeat(25)); await field.press('Enter');
+    expect(await field.evaluate(element => element.validationMessage)).toContain('1–24');
+    await field.fill(valid); await expect(field).toHaveValue(valid); await field.press('Enter');
+    await expect(row.locator('strong')).toHaveText(valid);
+    expect((await app.controls.listTerminals()).terminals).toHaveLength(1);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('inline rename cancels locally, protects IME Enter, and preserves the current terminal and draft', async ({ page }) => {
   const app = await fixture({ mode: 'terminal', rfb: true, seamless: true }); const writes = [];
   page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/terminals') writes.push(request.postDataJSON()); });

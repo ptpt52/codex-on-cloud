@@ -5,7 +5,7 @@ import { createWorkspaceLayout, createWorkspacePanels, createHistoryToolsPortal 
 import { createTerminalState, validTerminalIdentity, STATE_LIMIT } from './terminal-state.js';
 import { createViewLifecycle } from './view-lifecycle.js';
 import { TERMINAL_IDS, TERMINAL_CAPACITY, DEFAULT_TERMINAL_LIMIT } from './terminal-slots.js';
-import { createTerminalTabs, createTerminalActions } from './terminal-tabs.js';
+import { createTerminalTabs, createTerminalActions, terminalNameError } from './terminal-tabs.js';
 import { createAccessUI } from './access-ui.js';
 import { HISTORY_ROWS } from './terminal-history-limits.js';
 import { createBrowserPreferences, decodeBrowserPreferences, BROWSER_PREFERENCES_KEY } from './browser-preferences.js';
@@ -1546,21 +1546,24 @@ function renderTerminalList(previousCatalog = []) {
     const editor = document.createElement('form'), input = document.createElement('input'), edit = document.createElement('button'), rename = document.createElement('button'), cancel = document.createElement('button'), open = document.createElement('button'), close = document.createElement('button');
     const draft = terminal.supported ? renameDrafts.get(`${terminal.id}:${terminal.token}`) : undefined;
     editor.className = 'terminal-rename-inline'; editor.id = `terminal-edit-${terminal.id}`; editor.hidden = draft === undefined;
-    input.value = draft ?? terminal.name; input.maxLength = 24; input.required = true; input.autocomplete = 'off'; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
+    input.value = draft ?? terminal.name; input.maxLength = 48; input.required = true; input.autocomplete = 'off'; input.setAttribute('aria-label', `${terminal.id} 终端名称`);
     edit.type = cancel.type = open.type = close.type = 'button'; rename.type = 'submit';
     edit.textContent = '重命名'; rename.textContent = '保存名称'; cancel.textContent = '取消'; open.textContent = '打开 / 切换';
     edit.className = cancel.className = 'secondary'; rename.className = open.className = 'primary';
     edit.setAttribute('aria-expanded', String(!editor.hidden)); edit.setAttribute('aria-controls', editor.id);
     const target = { terminalId: terminal.id, terminalToken: terminal.token };
     edit.addEventListener('click', () => { if (!canManageTerminals() || !terminal.supported) return; editor.hidden = false; edit.setAttribute('aria-expanded', 'true'); input.focus(); input.select(); });
-    cancel.addEventListener('click', () => { editor.hidden = true; input.value = terminal.name; edit.setAttribute('aria-expanded', 'false'); edit.focus(); });
+    cancel.addEventListener('click', () => { editor.hidden = true; input.value = terminal.name; input.setCustomValidity(''); edit.setAttribute('aria-expanded', 'false'); edit.focus(); });
     let composing = false;
     editor.addEventListener('submit', async event => {
       event.preventDefault(); if (!terminal.supported || composing) return;
+      input.setCustomValidity(terminalNameError(input.value));
+      if (!input.reportValidity()) return;
       const result = await manageTerminals({ action: 'rename', ...target, name: input.value });
       if (result?.ok && $('terminals-dialog').open) list.querySelector(`[aria-controls="${editor.id}"]`)?.focus();
     });
     input.addEventListener('compositionstart', () => { composing = true; }); input.addEventListener('compositionend', () => { composing = false; });
+    input.addEventListener('input', () => input.setCustomValidity(''));
     editor.addEventListener('keydown', event => {
       if (event.key === 'Enter' && (composing || event.isComposing || event.keyCode === 229)) event.preventDefault();
       if (event.key === 'Escape' && !composing) { event.preventDefault(); event.stopPropagation(); cancel.click(); }
@@ -1686,7 +1689,14 @@ $('choose-terminal-button').addEventListener('click', () => {
   else { $('terminal-switch-dialog').showModal(); sendDisplayPreferences(); }
 });
 $('clear-stale-drafts').addEventListener('click', () => requestConfirmation('drafts-clear'));
-$('create-terminal-form').addEventListener('submit', event => { event.preventDefault(); if (canManageTerminals()) requestConfirmation('terminal-create', null, { action: 'create', name: $('new-terminal-name').value }); });
+const newTerminalName = $('new-terminal-name');
+newTerminalName.addEventListener('input', () => newTerminalName.setCustomValidity(''));
+$('create-terminal-form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!canManageTerminals()) return;
+  newTerminalName.setCustomValidity(terminalNameError(newTerminalName.value));
+  if (newTerminalName.reportValidity()) requestConfirmation('terminal-create', null, { action: 'create', name: newTerminalName.value });
+});
 $('input-terminal').addEventListener('change', () => selectTerminal($('input-terminal').value));
 function syncTerminalView(explicit = false) {
   if (!terminalMode() || !loggedIn || !owned || terminalSelectionState !== 'ready') return;

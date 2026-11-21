@@ -1,3 +1,10 @@
+export function terminalNameError(value) {
+  const name = value.trim();
+  if (!name) return '名称不能为空。';
+  if ([...name].length > 24 || new TextEncoder().encode(value).length > 96 || /[\x00-\x1f\x7f]/.test(value)) return '名称需为 1–24 个字符，不含控制字符。';
+  return '';
+}
+
 export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dialog, list, choose, openActions, manage, changed }) {
   let signature = '', currentTerminal, desktopContext = false;
   let layoutFrame = 0, closeFocusFrame = 0, overflowCount = 0, currentOverflow = false, dialogMode = 'all', pickerDialog = false, focusedControl, sidebarPicker = false;
@@ -207,8 +214,7 @@ export function createTerminalActions({ renameTerminal, closeTerminal, changed }
     button?.focus({ preventScroll: true });
   }
   function updateRename() {
-    const value = field.value.trim();
-    const invalidName = !value ? '名称不能为空。' : [...value].length > 24 || /[\x00-\x1f\x7f]/.test(value) ? '名称需为 1–24 个字符，不含控制字符。' : '';
+    const invalidName = terminalNameError(field.value.trim());
     field.disabled = cancel.disabled = saving;
     save.disabled = saving || composing || disabled || uncertain || !current(renameTarget) || !!invalidName;
     if (!saving) status.textContent = uncertain ? failure : !current(renameTarget) ? '终端已变化，请取消后重新选择。' : failure || invalidName || (disabled ? '当前暂时无法修改，请检查连接后手动保存。' : '');
