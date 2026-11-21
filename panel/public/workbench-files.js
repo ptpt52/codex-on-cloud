@@ -292,9 +292,16 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     const active = (type === 'dragenter' || type === 'dragover') && !fileTransferController && !fileDeletion && state().loggedIn && !state().accessExpired && navigator.onLine;
     $('upload-zone').classList.toggle('drag-over', active);
     if (type !== 'drop') { if (event.dataTransfer) event.dataTransfer.dropEffect = active ? 'copy' : 'none'; return; }
-    if (fileTransferController || fileDeletion) { toast('当前文件仍在处理中，请完成后再上传。'); return; }
     const items = event.dataTransfer.items, files = event.dataTransfer.files;
-    if (files.length !== 1 || items?.length !== 1 || items[0].webkitGetAsEntry?.()?.isDirectory) return toast('每次请拖入一个文件，不支持文件夹。', true);
+    let message;
+    if (fileTransferController || fileDeletion) message = '当前文件仍在处理中，请完成后再上传。';
+    else if (files.length !== 1 || items?.length !== 1 || items[0].webkitGetAsEntry?.()?.isDirectory) message = '每次请拖入一个文件，不支持文件夹。';
+    if (message) {
+      const status = $('upload-status');
+      status.textContent = message;
+      status.scrollIntoView({ block: 'nearest' });
+      return;
+    }
     void uploadFile(files[0]);
   });
 

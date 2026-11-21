@@ -41,6 +41,27 @@ test('desktop file transfer stays in the visual viewport with a reachable close 
   } finally { await app.close(); }
 });
 
+test('an invalid file drop reports the error inside the open transfer dialog', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    await login(page, app);
+    const dialog = page.locator('#files-dialog');
+    await page.locator('#files-button').click();
+    await dialog.evaluate(el => {
+      const files = [new File(['a'], 'first.txt'), new File(['b'], 'second.txt')];
+      const event = new Event('drop', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: { types: ['Files'], files, items: files } });
+      el.dispatchEvent(event);
+    });
+    const status = page.locator('#upload-status');
+    await expect(status).toContainText('每次请拖入一个文件');
+    await expect(status).toBeInViewport();
+    await expect(dialog).toBeVisible();
+    expect(app.received.filter(value => value.method === 'PUT')).toEqual([]);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('a stalled directory read times out and can be refreshed without replaying uploads', async ({ page }) => {
   const app = await fixture({ mode: 'terminal' }); let release, stall = true;
   const gate = new Promise(resolve => { release = resolve; });
