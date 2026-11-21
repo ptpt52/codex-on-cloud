@@ -255,8 +255,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   }
   function findCurrent(navigate = false) {
     if (!toolsOpen || disposed) return;
-    if (!ensureView()) search(navigate);
-    else if (navigate && query.value) setCurrent(matches.length ? 0 : -1, true);
+    if (!query.value || !ensureView()) search(navigate);
+    else if (navigate) setCurrent(matches.length ? 0 : -1, true);
   }
   function live() {
     const returnProgram = program || programScrolled;
@@ -368,7 +368,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(query, 'blur', () => { if (queryComposing) { queryComposing = false; scheduleSearch(); placeTools(); } });
   const moveMatch = direction => {
     if (!toolsOpen || disposed) return;
-    clearCopy(); const fresh = ensureView(), edited = searchTimer !== undefined || query.value !== appliedQuery;
+    clearCopy(); const fresh = !!query.value && ensureView(), edited = searchTimer !== undefined || query.value !== appliedQuery;
     if (edited) search();
     if (matches.length) setCurrent(fresh || edited ? direction < 0 ? matches.length - 1 : 0 : (current + direction + matches.length) % matches.length, true);
   };

@@ -251,6 +251,28 @@ test('opening local find freezes already received rows and styles without sendin
   } finally { await app.close(); }
 });
 
+test('an empty or immediately cleared search leaves the live terminal editable', async ({ page }) => {
+  const app = await fixture();
+  try {
+    const frame = await login(page, app);
+    await frame.locator('#history-tools-toggle').click();
+    const archive = frame.locator('#history-archive'), query = page.locator('#history-query');
+    await query.press('Enter');
+    await expect(archive).toBeHidden();
+    await query.evaluate(el => {
+      for (const text of ['短暂输入', '']) {
+        el.value = text;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await expect(page.locator('#history-find-state')).toHaveText('输入关键词');
+    await expect(archive).toBeHidden();
+    await expect(frame.locator('.xterm-helper-textarea')).toBeEditable();
+    expect(app.terminalHistoryReads).toEqual([]);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('a timeout while retrieving older history is visible and leaves the local snapshot intact', async ({ page }) => {
   const hold = Promise.withResolvers();
   const app = await fixture({ terminalHistoryHook: () => hold.promise });
