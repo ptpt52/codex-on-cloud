@@ -443,14 +443,23 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     event.preventDefault(); event.stopImmediatePropagation(); scroll(event.deltaY, event.deltaMode);
   }, { capture: true, passive: false });
   listen(host, 'touchstart', event => {
-    if (archiveOpen) return;
+    if (archiveOpen && (!archiveLocal || archive.scrollTop > 0 || !archive.contains(event.target))) return;
     gesture = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY, vertical: false } : undefined;
   }, { capture: true, passive: true });
   listen(host, 'touchmove', event => {
-    if (archiveOpen) return;
     if (!gesture || event.touches.length !== 1) { gesture = undefined; return; }
     const touch = event.touches[0], dx = touch.clientX - gesture.x, dy = gesture.y - touch.clientY;
     if (!gesture.vertical && (Math.abs(dy) < 8 || Math.abs(dy) <= Math.abs(dx))) return;
+    if (archiveOpen) {
+      // Leave scrolling inside the snapshot to the browser. A new outward
+      // gesture at its top can request older output, like the mouse wheel.
+      gesture = undefined;
+      if (dy < 0 && archiveLocal && archive.scrollTop <= 0 && allowed()) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        void fetchHistory(Math.min(distance(true), -dy));
+      }
+      return;
+    }
     gesture.vertical = true; gesture.x = touch.clientX; gesture.y = touch.clientY;
     event.preventDefault(); event.stopImmediatePropagation(); scroll(dy);
   }, { capture: true, passive: false });

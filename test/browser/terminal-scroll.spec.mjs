@@ -87,3 +87,31 @@ test('a full-screen snapshot explains its limited scope and never pages the prog
     expect(app.terminalHistoryReads.length).toBe(1); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
+
+test('a new touch gesture at the top of a local snapshot can fetch older history', async ({ page }) => {
+  const app = await fixture({ terminalHistory: 'REMOTE-OLDER\n' + lines(180) });
+  try {
+    const frame = await login(page, app), archive = frame.locator('#history-archive');
+    const bytes = Buffer.from(('LOCAL-ONLY\r\n').repeat(160)).toString('base64');
+    app.terminalChildren.at(-1).stdout.write(JSON.stringify({ type: 'output', data: bytes }) + '\n');
+    await expect.poll(() => frame.evaluate(() => window.scrollTerminal.buffer.active.baseY)).toBeGreaterThan(0);
+    await frame.evaluate(() => window.scrollTerminal.scrollLines(-3));
+    await frame.locator('#history-tools-toggle').click();
+    await expect(archive).toContainText('LOCAL-ONLY');
+    const swipe = options => archive.evaluate((element, { x, y, startAt }) => {
+      element.scrollTop = startAt;
+      const finger = (clientX, clientY) => new Touch({ identifier: 1, target: element, clientX, clientY });
+      element.dispatchEvent(new TouchEvent('touchstart', { touches: [finger(100, 130)], bubbles: true }));
+      element.dispatchEvent(new TouchEvent('touchmove', { touches: [finger(100 + x, 130 + y)], bubbles: true, cancelable: true }));
+      element.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true }));
+    }, options);
+    await swipe({ x: 40, y: 4, startAt: 0 });
+    await swipe({ x: 0, y: 35, startAt: 24 });
+    expect(app.terminalHistoryReads).toEqual([]);
+    await swipe({ x: 0, y: 35, startAt: 0 });
+    await expect(archive).toContainText('REMOTE-OLDER');
+    expect(app.terminalHistoryReads).toHaveLength(1);
+    expect(app.terminalInputs).toEqual([]);
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
