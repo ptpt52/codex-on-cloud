@@ -273,6 +273,11 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     }
     update();
   }
+  function returnToLive(event) {
+    const button = event.currentTarget, focused = button.ownerDocument.activeElement === button;
+    live();
+    if (focused && (button.hidden || button.disabled)) focusControl(up.disabled ? toggle : up);
+  }
   async function copy(text, label, source) {
     if (disposed || !toolsOpen || copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
@@ -351,8 +356,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (toolsOpen) cancelRead(); else resetLocalView();
     program = next; pixels = 0; gesture = undefined; update();
   });
-  listen(up, 'click', () => turn(-1, false, true)); listen(down, 'click', () => turn(1, false, true)); listen(latest, 'click', live);
-  listen(newer, 'click', live);
+  listen(up, 'click', () => turn(-1, false, true)); listen(down, 'click', () => turn(1, false, true)); listen(latest, 'click', returnToLive);
+  listen(newer, 'click', returnToLive);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
   listen(historyControl('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });
   const scheduleSearch = () => { if (!toolsOpen) return; clearCopy(); clearTimeout(searchTimer); searchTimer = setTimeout(() => findCurrent(true), 150); updateTools(); };

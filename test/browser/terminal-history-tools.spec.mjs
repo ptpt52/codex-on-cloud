@@ -275,6 +275,20 @@ test('a timeout while retrieving older history is visible and leaves the local s
   } finally { hold.resolve(); await app.close(); }
 });
 
+for (const id of ['history-new-output', 'history-latest']) test(`returning to live from ${id} puts keyboard focus on the history toolbar`, async ({ page }) => {
+  const app = await fixture({ terminalHistory: '快照\n' });
+  try {
+    const frame = await snapshot(page, app);
+    if (id === 'history-new-output') output(app, 'NEW OUTPUT\r\n');
+    const button = frame.locator('#' + id);
+    await expect(button).toBeVisible();
+    await button.press('Enter');
+    await expect(frame.locator('#history-archive')).toBeHidden();
+    await expect(frame.locator('#history-up')).toBeFocused();
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('search remains local across reconnect, respects IME composition, and caps highlighted matches', async ({ page }) => {
   const app = await fixture({ terminalHistory: '中文 中文\n' + 'a '.repeat(2500) });
   try {
