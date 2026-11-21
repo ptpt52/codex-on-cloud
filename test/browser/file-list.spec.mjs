@@ -117,10 +117,12 @@ test('administrator deletion defaults to cancel, checks the selected version and
     app.files.set(name, Buffer.from('original')); app.files.set('keep.txt', Buffer.from('keep'));
     await login(page, app); await page.locator('#files-button').click();
     const remove = page.getByRole('button', { name: `删除 ${name}`, exact: true }), dialog = page.locator('#file-delete-dialog');
-    await remove.click(); await expect(dialog).toBeVisible(); await expect(page.locator('#file-delete-name')).toHaveText(name);
+    await remove.press('Enter'); await expect(dialog).toBeVisible(); await expect(page.locator('#file-delete-name')).toHaveText(name);
     await expect(page.locator('#file-delete-cancel')).toBeFocused();
     await page.keyboard.press('Enter'); await expect(dialog).toBeHidden();
-    await remove.click(); await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
+    await expect(remove).toBeFocused();
+    await remove.press('Enter'); await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
+    await expect(remove).toBeFocused();
     expect(app.received.filter(req => req.method === 'DELETE')).toHaveLength(0);
     await remove.click(); app.files.set(name, Buffer.from('newer'));
     await page.locator('#file-delete-confirm').click(); await expect(page.locator('#upload-status')).toContainText('文件已变化');

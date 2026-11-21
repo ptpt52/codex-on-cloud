@@ -48,7 +48,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       const remove = document.createElement('button'); remove.className = 'quiet interrupt-key'; remove.type = 'button'; remove.textContent = '删除'; remove.dataset.fileDelete = '';
       remove.setAttribute('aria-label', `删除 ${file.name}`);
       try { fileDeleteOptions({ name: file.name, version: file.version }); } catch { remove.dataset.unavailable = 'true'; }
-      remove.addEventListener('click', () => void deleteFile(file));
+      remove.addEventListener('click', () => void deleteFile(file, remove));
       actions.append(link);
       if (file.size > FILE_MAX && available) {
         const fallback = document.createElement('a'); fallback.href = link.href; fallback.download = file.name; fallback.textContent = 'HTTPS 下载';
@@ -150,12 +150,13 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
   listen($('file-delete-dialog'), 'keydown', event => {
     if (event.key === 'Enter' && event.target !== $('file-delete-confirm')) { event.preventDefault(); finishDeleteConfirmation(false); }
   });
-  async function deleteFile(file) {
+  async function deleteFile(file, trigger) {
     if (fileDeletion || fileTransferController || serviceLink.files?.busy) return toast('请先完成当前文件操作。');
     if (disposed || !state().loggedIn || state().accessExpired || state().temporary || !navigator.onLine || !deleteSupported || !$('files-dialog').open) return;
     let snapshot; try { snapshot = fileDeleteOptions({ name: file.name, version: file.version }); } catch (error) { return toast(error.message, true); }
     const entry = fileDeletion = { controller: new AbortController(), generation: state().generation, sent: false };
     const current = () => !disposed && fileDeletion === entry && entry.generation === state().generation && state().loggedIn && !state().accessExpired && !state().temporary;
+    const restoreFocus = document.activeElement === trigger;
     renderFileControls();
     try {
       const confirmed = await new Promise(resolve => {
@@ -175,7 +176,11 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
         ? '删除结果未确认，请刷新文件列表核对；不会自动重试。' : `${error.message}；请刷新文件列表后重新选择。`;
     } finally {
       clearTimeout(entry.timer); finishDeleteConfirmation(false);
-      if (fileDeletion === entry) { fileDeletion = undefined; renderFileControls(); }
+      if (fileDeletion === entry) {
+        fileDeletion = undefined;
+        renderFileControls();
+        if (!entry.sent && restoreFocus && $('files-dialog').open && trigger.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true });
+      }
     }
   }
   function cancelDeletion() { finishDeleteConfirmation(false); fileDeletion?.controller.abort(); }
