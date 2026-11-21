@@ -1531,7 +1531,9 @@ function renderTerminalList(previousCatalog = []) {
     const editor = $(`terminal-edit-${terminal.id}`);
     if (!terminal.supported || !editor || editor.hidden) continue;
     const value = editor.querySelector('input').value;
-    if (value !== terminal.name) renameDrafts.set(`${terminal.id}:${terminal.token}`, value);
+    // Remember an open editor even before the user types. An untouched field
+    // should still pick up any new name in the refreshed catalog.
+    renameDrafts.set(`${terminal.id}:${terminal.token}`, value === terminal.name ? null : value);
   }
   const list = $('terminal-list'); list.replaceChildren();
   for (const terminal of terminalCatalog) {

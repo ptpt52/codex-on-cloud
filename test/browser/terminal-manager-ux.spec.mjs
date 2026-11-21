@@ -93,8 +93,13 @@ test('inline rename cancels locally, protects IME Enter, and preserves the curre
     await edit.click(); await expect(field).toBeFocused(); await expect(edit).toHaveAttribute('aria-expanded', 'true');
     await field.fill('尚未保存'); await field.press('Escape'); await expect(page.locator('#terminals-dialog')).toBeVisible(); await expect(edit).toBeFocused();
     await expect(field).toBeHidden(); expect(writes).toEqual([]);
-    await edit.click(); await expect(field).toHaveValue('后台日志'); await field.fill('诊断日志');
     const refresh = page.locator('#refresh-terminals');
+    await edit.click(); await expect(field).toHaveValue('后台日志');
+    await app.controls.manageTerminals({ action: 'rename', terminalId: 'aux1', terminalToken: original.terminals[1].token, name: '后台日志已更新' });
+    await refresh.click();
+    await expect(edit).toHaveAttribute('aria-expanded', 'true');
+    await expect(field).toHaveValue('后台日志已更新');
+    await field.fill('诊断日志');
     await refresh.click(); await expect(refresh).toBeEnabled();
     await expect(edit).toHaveAttribute('aria-expanded', 'true'); await expect(field).toHaveValue('诊断日志');
     expect(writes).toEqual([]);
