@@ -288,6 +288,8 @@ export function createTerminalActions({ renameTerminal, closeTerminal, changed }
     if (result?.ok) { rename.close(); return; }
     uncertain = result?.outcome === 'unknown';
     failure = result?.message || '当前无法修改，请检查连接后重新操作。'; updateRename();
+    const focused = document.activeElement;
+    if (!uncertain && (!rename.contains(focused) || focused === rename)) field.focus({ preventScroll: true });
   });
   window.addEventListener('resize', () => { if (menu.open) menu.close(); });
   window.visualViewport?.addEventListener('resize', placeMenu);

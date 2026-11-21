@@ -146,6 +146,31 @@ test('desktop right click and keyboard context menu use the same actions without
   } finally { await app.close(); }
 });
 
+test('a rejected rename preserves the draft and restores focus to the name', async ({ page }) => {
+  const app = await setup(page), hold = Promise.withResolvers();
+  let writes = 0;
+  try {
+    await page.route('**/api/terminals', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      writes++;
+      await hold.promise;
+      await route.fulfill({ status: 409, json: { outcome: 'rejected', error: '名称暂未保存，请修改后重试' } });
+    });
+    await edit(page, 'main');
+    const field = page.locator('#terminal-rename-name');
+    await field.fill('待修改的名称');
+    await field.press('Enter');
+    await expect(field).toBeDisabled();
+    await expect.poll(() => writes).toBe(1);
+    hold.resolve();
+    await expect(page.locator('#terminal-rename-status')).toHaveText('名称暂未保存，请修改后重试');
+    await expect(field).toHaveValue('待修改的名称');
+    await expect(field).toBeFocused();
+    expect(writes).toBe(1);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { hold.resolve(); await app.close(); }
+});
+
 test('an unknown save result is not retried and a later reload reads the actual saved name', async ({ page }) => {
   const app = await setup(page); let writes = 0;
   try {
