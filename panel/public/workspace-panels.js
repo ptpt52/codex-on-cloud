@@ -67,7 +67,8 @@ export function createWorkspacePanels({ tools, input, toolsButton, inputButton, 
     root.style.setProperty('--workspace-keyboard-inset', `${bottom}px`);
     root.style.setProperty('--workspace-visible-width', `${width}px`);
     root.style.setProperty('--workspace-viewport-left', `${left}px`);
-    root.classList.toggle('workspace-keyboard-open', bottom > 100);
+    // Panning the visual viewport changes the bottom inset even when the keyboard stays open.
+    root.classList.toggle('workspace-keyboard-open', innerHeight - height > 100);
     root.classList.toggle('workspace-viewport-narrow', width + 1 < innerWidth);
     cancelAnimationFrame(viewportFrame);
     viewportFrame = requestAnimationFrame(() => {
