@@ -163,7 +163,15 @@ export function createTerminalTabs({ bar, tabs, mobileButton, mobileActions, dia
     // must reveal its focused item, including when the window is short.
     buttons[next].focus({ preventScroll: !vertical() });
   });
-  mobileButton.addEventListener('click', () => { pickerDialog = true; dialogMode = compact.matches || sidebarPicker ? 'all' : 'overflow'; filterList(); dialog.showModal(); changed(); });
+  mobileButton.addEventListener('click', () => {
+    pickerDialog = true;
+    dialogMode = compact.matches || sidebarPicker ? 'all' : 'overflow';
+    filterList();
+    dialog.showModal();
+    const selected = list.querySelector('[data-terminal-choice][aria-pressed=true]:not(:disabled)');
+    if (shown(selected)) selected.focus();
+    changed();
+  });
   dialog.addEventListener('close', () => {
     pickerDialog = false; dialogMode = 'all'; filterList();
     // Let the dialog finish restoring its invoker before returning focus to

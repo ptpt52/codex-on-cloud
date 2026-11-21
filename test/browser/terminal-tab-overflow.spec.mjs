@@ -82,6 +82,24 @@ async function fitted(page) {
   });
 }
 
+test('opening the compact picker reveals and focuses the current terminal', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 540 });
+  const app = await setup(page, 8);
+  try {
+    await choose(page, 'aux7');
+    const connections = app.terminalConnections;
+    const selected = list(page).locator('[data-terminal-choice=aux7]');
+    await picker(page).press('Enter');
+    await expect(selected).toHaveAttribute('aria-pressed', 'true');
+    await expect(selected).toBeFocused();
+    await expect(selected).toBeInViewport();
+    await page.keyboard.press('Escape');
+    await expect(picker(page)).toBeFocused();
+    expect(app.terminalConnections).toBe(connections);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('desktop keeps the tabs that fit and lists only the remaining entries in More', async ({ page }, info) => {
   test.skip(info.project.use.hasTouch || info.project.use.isMobile, 'Desktop responsive layout');
   await page.setViewportSize({ width: 1280, height: 900 });
