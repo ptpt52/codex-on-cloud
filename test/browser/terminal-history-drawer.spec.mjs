@@ -35,6 +35,13 @@ test('find and copy grows upward from the terminal edge without moving controls 
       expect(await geometry()).toEqual(before);
       expect(await frame.locator('#history-up').boundingBox()).toEqual(button);
       await expect(page.locator('#history-query')).toBeInViewport(); await expect(page.locator('#history-tools-close')).toBeInViewport();
+      const feedback = page.locator('#history-find-state');
+      await expect(feedback).toHaveText('输入关键词');
+      await expect(feedback).toBeInViewport();
+      expect(await feedback.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      await page.locator('#history-query').fill('DRAWER-HISTORY');
+      await expect(feedback).toHaveText('1/100');
+      expect(await feedback.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       expect(await drawer.evaluate(el => ({ shadow: getComputedStyle(el).boxShadow, bottom: getComputedStyle(el).borderBottomLeftRadius }))).toEqual({ shadow: 'none', bottom: '0px' });
       expect(await drawer.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       await drawer.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished.catch(() => {}))));

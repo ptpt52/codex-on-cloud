@@ -300,7 +300,7 @@
 .history-tools-floating button:focus-visible, .history-tools-floating input:focus-visible, .history-tools-floating textarea:focus-visible { outline: 2px solid #f7971d; outline-offset: -2px; }
 .history-tools-floating .history-tools-close { position: absolute; top: 8px; right: 8px; z-index: 2; }
 .history-tools-floating #history-query { box-sizing: border-box; flex: 1; width: 110px; min-width: 64px; min-height: 44px; padding: 6px; border: 1px solid #666; border-radius: 6px; background: #222; color: #e7eee9; font: 16px/1.5 system-ui, sans-serif; }
-.history-tools-floating #history-find-state { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c7c7c7; font-size: 11px; }
+.history-tools-floating #history-find-state { flex: 0 1 auto; min-width: 0; max-width: 7.5em; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c7c7c7; font-size: 11px; }
 .history-tools-floating #history-copy-state { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .history-tools-floating #history-copy-state:empty { display: none; }
 .history-tools-floating #history-copy-selection { min-width: 68px; }

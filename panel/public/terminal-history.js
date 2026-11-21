@@ -158,7 +158,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     download.disabled = !contentAvailable;
     retryCopy.disabled = copying || !manual.open || !copyText.value;
     retryCopy.textContent = copying && manual.open ? '复制中…' : '复制到本机';
-    const result = queryComposing ? '输入中…' : renderController ? '正在排版…' : searchTimer !== undefined ? '查找中…' : !view && !loading ? query.value ? '回车查找当前画面' : '输入关键词查找当前画面' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
+    const result = queryComposing ? '输入中…' : renderController ? '正在排版…' : searchTimer !== undefined ? '查找中…' : !view && !loading ? query.value ? '回车查找' : '输入关键词' : !query.value ? '输入关键词' : !matches.length ? '无匹配' : `${current + 1}/${matches.length}${limited ? '+' : ''}`;
     const description = !view ? loading ? '等待历史读取完成' : `实时画面 · ${result}` : `${archiveLocal ? '本地已加载内容' : '远端历史快照'} · ${result}`;
     const feedback = !manual.hidden ? '手动复制窗口已打开' : copying ? '复制中…' : copyState.textContent;
     findState.textContent = floating() ? feedback || result : description;
