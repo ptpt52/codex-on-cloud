@@ -199,7 +199,7 @@ let controlReady = false, controlPending = null, controlSequence = 0, desktopTex
 let panelSequence = 0, panelRoute = 'https', rtcConfig;
 const panelRequests = new Map();
 let switchTimer;
-let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '';
+let desktopSettings = null, settingsController = null, settingsTimer, settingsBusy = false, settingsLoadError = '', settingsActionStatus = '';
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalFocusBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
@@ -1910,15 +1910,15 @@ function renderDesktopSettings() {
   for (const id of ['maximize-terminal', 'restore-terminal']) $(id).disabled = !writable;
   $('apply-desktop-settings').disabled = !!adaptive || !writable || dirty || !desktopSettings?.applyRequired || (live ? !views.active.resizeReady || !views.active.nativeIdle || views.active.state !== 'connected' : !desktopSettings?.session?.recoverable || !$('confirm-desktop-restart').checked);
   $('desktop-restart-notice').hidden = !desktopSettings?.restartRequired;
+  const status = $('desktop-settings-status'), message = settingsLoadError || settingsActionStatus || desktopSettings?.job?.message || '';
+  if (status.textContent !== message) status.textContent = message;
   if (!desktopSettings) return;
-  const { actual, saved, session, job } = desktopSettings;
+  const { actual, saved, session } = desktopSettings;
   $('settings-current').textContent = actual ? `当前实际分辨率：${actual.width} × ${actual.height}` : '桌面尚未就绪，仍可保存下次启动的配置。';
   $('settings-pending').textContent = adaptive ? '桌面尺寸正在跟随浏览器窗口；关闭此选项后使用固定尺寸。'
     : desktopSettings.applyRequired ? `待应用：${saved.width} × ${saved.height}；${live ? '可立即生效，当前任务继续运行。' : '当前显示无法直接调整，需确认重启。'}` : `已应用：${saved.width} × ${saved.height}；当前分辨率无需重启。`;
   $('settings-recovery').textContent = session?.resumeId ? `将恢复会话 ${session.resumeId}，项目：${session.cwd}` : session?.recoverable ? '当前为 shell，重启后打开新的 shell，不自动启动任务。' : '当前会话无法准确识别或存在多个窗格。结束前台任务后再应用分辨率。';
   $('apply-desktop-settings').textContent = live ? '立即应用分辨率' : session?.resumeId ? '重启桌面并恢复会话' : '重启桌面应用设置';
-  if (settingsLoadError) $('desktop-settings-status').textContent = settingsLoadError;
-  else if (job) $('desktop-settings-status').textContent = job.message;
 }
 function stopSettingsPolling() {
   clearTimeout(settingsTimer);
@@ -1946,7 +1946,7 @@ async function loadDesktopSettings(resetForm = false) {
     renderDesktopSettings();
     if (next.busy) settingsTimer = setTimeout(() => void loadDesktopSettings(), 800);
   } catch (error) {
-    if (settingsController === controller && loggedIn) { settingsLoadError = error.message; $('desktop-settings-status').textContent = settingsLoadError; }
+    if (settingsController === controller && loggedIn) settingsLoadError = error.message;
   } finally {
     clearTimeout(timeout);
     if (settingsController === controller) { settingsController = null; renderDesktopSettings(); }
@@ -1964,6 +1964,12 @@ async function settingsAction(path, body) {
   const pausesInput = path.endsWith('/apply');
   if (pausesInput) { maintenancePending = true; controlsState = { ...controlsState, maintenance: true }; renderConnection(); }
   settingsLoadError = '';
+  settingsActionStatus = {
+    '/api/desktop/settings': '正在保存分辨率设置…',
+    '/api/desktop/resolution': '正在应用分辨率…',
+    '/api/desktop/apply': '正在请求重启桌面…',
+    '/api/desktop/terminal-display': '正在调整终端窗口…',
+  }[path];
   settingsBusy = true; renderDesktopSettings();
   try {
     const result = await api(path, { method: 'POST', body, signal: controller?.signal || AbortSignal.timeout(10000) });
@@ -1973,19 +1979,23 @@ async function settingsAction(path, body) {
       viewportApplied = '';
       await waitForViewport(result.actual, controller.signal);
     }
-    if (result.job) desktopSettings = { ...desktopSettings, job: result.job, busy: true };
-    else $('desktop-settings-status').textContent = '服务器分辨率已保存，需显式应用。';
+    if (result.job) {
+      desktopSettings = { ...desktopSettings, job: result.job, busy: true };
+      settingsActionStatus = '';
+    }
     $('confirm-desktop-restart').checked = false;
     stopSettingsPolling();
     await loadDesktopSettings(true);
-    if (live) $('desktop-settings-status').textContent = '分辨率已立即应用，当前任务保留，无需重启。';
+    if (live) settingsActionStatus = '分辨率已立即应用，当前任务保留，无需重启。';
+    else if (!result.job) settingsActionStatus = '服务器分辨率已保存，需显式应用。';
   } catch (error) {
     if (live && !controller.signal.aborted && (!error.status || error.status >= 500)) {
       clearTimeout(timeout);
       await waitForViewport(expected, controller.signal).catch(() => {});
     }
     if (live) await loadDesktopSettings(true);
-    $('desktop-settings-status').textContent = live && (!error.status || error.status >= 500) ? '分辨率应用结果未确认，请刷新设置查看；不会自动重试或重启桌面。' : error.message;
+    settingsLoadError = '';
+    settingsActionStatus = live && (!error.status || error.status >= 500) ? '分辨率应用结果未确认，请刷新设置查看；不会自动重试或重启桌面。' : error.message;
   }
   finally {
     clearTimeout(timeout);
@@ -1997,13 +2007,13 @@ async function settingsAction(path, body) {
 }
 $('desktop-settings-button').addEventListener('click', async () => {
   $('desktop-settings-dialog').showModal();
-  $('desktop-settings-status').textContent = '';
+  if (!settingsBusy) settingsActionStatus = '';
   $('confirm-desktop-restart').checked = false;
   await loadDesktopSettings(true);
 });
 $('close-desktop-settings').addEventListener('click', () => $('desktop-settings-dialog').close());
 $('desktop-settings-dialog').addEventListener('close', stopSettingsPolling);
-$('refresh-desktop-settings').addEventListener('click', () => { if (settingsController || settingsBusy) return; $('confirm-desktop-restart').checked = false; void loadDesktopSettings(); });
+$('refresh-desktop-settings').addEventListener('click', () => { if (settingsController || settingsBusy) return; settingsActionStatus = ''; $('confirm-desktop-restart').checked = false; void loadDesktopSettings(); });
 $('resolution-preset').addEventListener('change', () => {
   if ($('resolution-preset').value !== 'custom') {
     const [width, height] = $('resolution-preset').value.split('x');

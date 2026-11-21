@@ -43,6 +43,8 @@ test('save persists pending settings; only explicit confirmed apply restarts and
 
 test('shared window controls preserve tasks and browser preferences expose no global font update', async ({ page }) => {
   const app = await fixture({ rfb: true });
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
   try {
     await open(page, app);
     await expect(page.locator('#terminal-font-size')).toHaveCount(0);
@@ -50,10 +52,21 @@ test('shared window controls preserve tasks and browser preferences expose no gl
     await expect(page.locator('#maximize-terminal')).toBeEnabled();
     await page.locator('#maximize-terminal').click();
     await expect.poll(() => app.managementStats.maximizes).toBe(1);
+    const status = page.locator('#desktop-settings-status');
+    await expect(status).toHaveText('终端显示已更新');
     await expect(page.locator('#restore-terminal')).toBeEnabled();
+    await page.route('**/api/desktop/terminal-display', async route => { await hold; await route.continue(); }, { times: 1 });
     await page.locator('#restore-terminal').click();
+    await expect(status).toHaveText('正在调整终端窗口…');
+    await expect(page.locator('#restore-terminal')).toBeDisabled();
+    release();
     await expect.poll(() => app.managementStats.restores).toBe(1);
+    await expect(status).toHaveText('终端显示已更新');
     await expect(page.locator('#restore-terminal')).toBeEnabled();
+    await page.route('**/api/desktop/terminal-display', route => route.fulfill({ status: 409, json: { error: '终端窗口暂不可用' } }), { times: 1 });
+    await page.locator('#restore-terminal').click();
+    await expect(page.locator('#restore-terminal')).toBeEnabled();
+    await expect(status).toHaveText('终端窗口暂不可用');
     expect(app.managementStats.fontChanges).toBe(0); expect(app.managementStats.restarts).toBe(0); expect(app.managementStats.resumes).toBe(0);
     expect(app.inputCalls).toHaveLength(0);
     await page.locator('#desktop-width').fill('9999');
@@ -62,7 +75,7 @@ test('shared window controls preserve tasks and browser preferences expose no gl
     expect(await page.locator('#desktop-width').evaluate(input => input.validity.rangeOverflow)).toBe(true);
     await page.locator('#close-desktop-settings').click();
     await expect(page.locator('#desktop-settings-dialog')).not.toBeVisible();
-  } finally { await app.close(); }
+  } finally { release(); await app.close(); }
 });
 
 test('saved in-range resolution applies exact pixels without restart, reconnect or input and persists as the fixed target', async ({ page }) => {
