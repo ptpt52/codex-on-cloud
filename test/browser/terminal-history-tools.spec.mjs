@@ -159,6 +159,29 @@ test('clipboard stub receives only the selected plain text or current snapshot, 
   } finally { await app.close(); }
 });
 
+test('copying a history snapshot retains keyboard focus while the clipboard is pending', async ({ page }) => {
+  const app = await fixture({ terminalHistory: '剪贴板测试快照\n' });
+  try {
+    const frame = await snapshot(page, app);
+    await frame.evaluate(() => {
+      window.snapshotCopies = [];
+      navigator.clipboard.writeText = text => new Promise(resolve => window.snapshotCopies.push({ text, resolve }));
+    });
+    await frame.locator('#history-tools-toggle').click();
+    const copy = page.locator('#history-copy-all');
+    await copy.press('Enter');
+    await expect(copy).toBeDisabled();
+    await expect(copy).toBeFocused();
+    await copy.press('Enter');
+    expect(await frame.evaluate(() => window.snapshotCopies.length)).toBe(1);
+    await frame.evaluate(() => window.snapshotCopies[0].resolve());
+    await expect(copy).toBeEnabled();
+    await expect(copy).toBeFocused();
+    await expect(page.locator('#history-find-state')).toContainText('已复制当前快照');
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('the copy window button writes the browser clipboard even when the Clipboard API is unavailable', async ({ page, context }) => {
   const app = await fixture({ terminalHistory: 'COPY-BUTTON 中文\n    preserved spaces\n' });
   try {

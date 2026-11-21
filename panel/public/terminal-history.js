@@ -150,7 +150,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     query.disabled = !view && !!loading;
     previousMatch.disabled = nextMatch.disabled = !!renderController || !matches.length && (!!view || !!loading || !query.value);
     const contentAvailable = view ? !!view.text.length : !loading;
-    copyAll.disabled = copying || !contentAvailable; copySelection.disabled = copying || !selectedText();
+    copyAll.disabled = !contentAvailable; copySelection.disabled = !selectedText();
+    for (const button of [copyAll, copySelection]) button.setAttribute('aria-disabled', String(copying || button.disabled));
     download.disabled = !contentAvailable;
     retryCopy.disabled = copying || !manual.open || !copyText.value;
     retryCopy.textContent = copying && manual.open ? '复制中…' : '复制到本机';
@@ -378,8 +379,12 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(tools, 'codex-history-reset', clearCopy);
   listen(window, 'pageshow', () => { if (toolsOpen) placeTools(); });
   listen(copySelection, 'mousedown', event => event.preventDefault());
-  listen(copySelection, 'click', () => { const text = selectedText(); if (text) { ensureView(); void copy(text, '选区', copySelection); } });
-  listen(copyAll, 'click', () => { ensureView(); void copy(view?.text || '', '当前快照', copyAll); });
+  listen(copySelection, 'click', () => {
+    if (copying) return;
+    const text = selectedText();
+    if (text) { ensureView(); void copy(text, '选区', copySelection); }
+  });
+  listen(copyAll, 'click', () => { if (!copying) { ensureView(); void copy(view?.text || '', '当前快照', copyAll); } });
   listen(download, 'click', () => {
     if (disposed || !toolsOpen) return;
     ensureView(); if (!view?.text) return;

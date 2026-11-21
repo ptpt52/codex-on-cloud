@@ -296,7 +296,7 @@
 .history-tools-floating .history-find-row { padding-right: 50px; }
 .history-tools-floating .history-copy-row { margin-top: 2px; flex-wrap: wrap; }
 .history-tools-floating button { box-sizing: border-box; flex: none; min-width: 44px; min-height: 44px; padding: 4px; border: 1px solid #666; border-radius: 6px; background: #333; color: #e7eee9; font: 12px/1.5 system-ui, sans-serif; white-space: nowrap; }
-.history-tools-floating button:disabled { opacity: .5; cursor: default; }
+.history-tools-floating button:is(:disabled, [aria-disabled=true]) { opacity: .5; cursor: default; }
 .history-tools-floating button:focus-visible, .history-tools-floating input:focus-visible, .history-tools-floating textarea:focus-visible { outline: 2px solid #f7971d; outline-offset: -2px; }
 .history-tools-floating .history-tools-close { position: absolute; top: 8px; right: 8px; z-index: 2; }
 .history-tools-floating #history-query { box-sizing: border-box; flex: 1; width: 110px; min-width: 64px; min-height: 44px; padding: 6px; border: 1px solid #666; border-radius: 6px; background: #222; color: #e7eee9; font: 16px/1.5 system-ui, sans-serif; }
