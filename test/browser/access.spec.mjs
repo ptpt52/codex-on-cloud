@@ -38,6 +38,7 @@ test('screen settings, first-entry unlock and each takeover require a fresh pass
     await page.locator('#screen-lock-enabled').check(); await page.locator('#screen-lock-password').fill(pin); await page.locator('#screen-lock-save').click();
     await expect(page.locator('#access-dialog')).toBeHidden(); await expect(page.locator('#unlock-dialog')).toBeVisible();
     await page.locator('#unlock-password').fill('wrong'); await page.locator('#unlock-submit').click(); await expect(page.locator('#unlock-error')).toContainText('密码不正确'); await expect(page.locator('#unlock-password')).toHaveValue('');
+    await expect(page.locator('#unlock-password')).toBeFocused();
     await unlock(page);
     other = await browser.newContext({ viewport: page.viewportSize(), isMobile: info.project.name === 'mobile', hasTouch: info.project.name === 'mobile' });
     const second = await other.newPage(); await login(second, app); await expect(second.locator('#unlock-dialog')).toBeVisible();

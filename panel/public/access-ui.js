@@ -57,7 +57,15 @@ export function createAccessUI({ api, allowed, canUnlock, needsUnlock, lockEnabl
     $('unlock-password').value = ''; unlocking = true; update();
     const request = new AbortController(); unlockController = request;
     try { await claim(value, AbortSignal.any([request.signal, AbortSignal.timeout(15000)])); if (unlockDialog.open) unlockDialog.close(); }
-    catch (error) { if (!request.signal.aborted && unlockDialog.open) $('unlock-error').textContent = error.message || '未能确认解锁结果，请重新输入密码'; }
+    catch (error) {
+      if (!request.signal.aborted && unlockDialog.open) {
+        $('unlock-error').textContent = error.message || '未能确认解锁结果，请重新输入密码';
+        const focused = document.activeElement;
+        if (!unlockDialog.contains(focused) || focused === unlockDialog || focused === $('unlock-submit')) {
+          $('unlock-password').focus({ preventScroll: true });
+        }
+      }
+    }
     finally { if (unlockController === request) unlockController = null; unlocking = false; update(); }
   });
   for (const id of ['unlock-cancel', 'unlock-close']) $(id).addEventListener('click', () => unlockDialog.close());
