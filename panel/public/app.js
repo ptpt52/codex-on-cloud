@@ -1757,7 +1757,7 @@ for (const button of document.querySelectorAll('[data-key]')) button.addEventLis
 });
 $('fullscreen-button').addEventListener('click', () => {
   if (document.fullscreenElement) document.exitFullscreen().catch(error => toast(error.message, true));
-  else if ($('desktop-card').requestFullscreen) $('desktop-card').requestFullscreen().catch(error => toast(error.message, true));
+  else if (document.fullscreenEnabled && $('desktop-card').requestFullscreen) $('desktop-card').requestFullscreen().catch(error => toast(error.message, true));
   else toast('此浏览器不支持网页全屏，可以横屏或添加到主屏幕使用');
 });
 document.addEventListener('codex-desktop-touch-action', event => {

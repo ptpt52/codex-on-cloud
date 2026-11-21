@@ -143,7 +143,7 @@ test('fullscreen either works with reachable controls or offers a usable fallbac
   const app = await fixture({ terminalHistory: historyText });
   try {
     const frame = await login(page, app, true); await page.locator('#toggle-controls-button').click();
-    const supported = await page.evaluate(() => !!document.getElementById('desktop-card').requestFullscreen);
+    const supported = await page.evaluate(() => Boolean(document.fullscreenEnabled && document.getElementById('desktop-card').requestFullscreen));
     await page.locator('#tools-fullscreen-button').click();
     if (supported) {
       await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');

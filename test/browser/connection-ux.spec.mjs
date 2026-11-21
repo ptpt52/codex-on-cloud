@@ -33,23 +33,34 @@ test('connection overview keeps current routes and actions visible with details 
   } finally { await app.close(); }
 });
 
-test('compact fullscreen keeps connection details reachable from tools', async ({ page }) => {
+test('top-layout fullscreen or its fallback keeps connection details reachable', async ({ page }) => {
   const app = await fixture({ rfb: true });
   try {
     await page.setViewportSize({ width: 390, height: 844 });
+    // Firefox may expand the layout viewport to the screen size on entry.
+    await page.addInitScript(() => localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top' })));
     await open(page, app);
     await page.locator('#close-connection').click();
     await page.locator('#toggle-controls-button').click();
     const status = page.locator('#tools-connection-button');
     await expect(status).toBeHidden();
+    const supported = await page.evaluate(() => Boolean(document.fullscreenEnabled && document.getElementById('desktop-card').requestFullscreen));
     await page.locator('#tools-fullscreen-button').click();
-    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
-    await page.locator('#toggle-controls-button').click();
-    await status.click();
+    if (supported) {
+      await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+      await page.locator('#toggle-controls-button').click();
+      await status.click();
+    } else {
+      await expect(page.locator('#toast')).toContainText('不支持网页全屏');
+      await page.locator('#connection-button').click();
+    }
     await expect(page.locator('#connection-summary')).toHaveText('桌面在线');
-    await page.locator('#close-connection').click();
-    await expect(status).toBeFocused();
-    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id)).toBe('desktop-card');
+    await expect(page.locator('#close-connection')).toBeVisible();
+    // Native fullscreen can change Firefox's pointer coordinate mapping.
+    await page.locator('#close-connection').press('Enter');
+    await expect(page.locator('#connection-dialog')).toBeHidden();
+    if (supported) await expect(status).toBeFocused();
+    await expect.poll(() => page.evaluate(() => document.fullscreenElement?.id ?? null)).toBe(supported ? 'desktop-card' : null);
     expect(app.vncConnections).toBe(1);
     expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
