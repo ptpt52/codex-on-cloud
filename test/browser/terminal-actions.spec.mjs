@@ -29,7 +29,7 @@ async function actions(page, id) {
 async function edit(page, id) { await actions(page, id); await activate(page.locator('#terminal-action-rename')); await expect(page.locator('#terminal-rename-dialog')).toBeVisible(); }
 const renamed = async (app, id) => (await app.controls.listTerminals()).terminals.find(item => item.id === id);
 
-test('the rename dialog stays within the visible area above the phone keyboard', async ({ page }) => {
+async function mockMobileViewport(page) {
   await page.setViewportSize({ width: 390, height: 540 });
   await page.addInitScript(() => {
     if (window !== parent) return;
@@ -37,22 +37,48 @@ test('the rename dialog stays within the visible area above the phone keyboard',
     Object.assign(visible, { width: 390, height: 540, offsetLeft: 0, offsetTop: 0 });
     Object.defineProperty(window, 'visualViewport', { value: visible });
   });
+}
+const cropMobileViewport = page => page.evaluate(() => {
+  Object.assign(visualViewport, { width: 230, height: 230, offsetLeft: 130, offsetTop: 104 });
+  visualViewport.dispatchEvent(new Event('resize'));
+});
+const insideMobileViewport = async locator => {
+  const box = await locator.boundingBox();
+  return !!box && box.x >= 130 && box.x + box.width <= 360 && box.y >= 104 && box.y + box.height <= 334;
+};
+
+test('the rename dialog stays within the visible area above the phone keyboard', async ({ page }) => {
+  await mockMobileViewport(page);
   const app = await setup(page);
   try {
     await edit(page, 'main');
     const dialog = page.locator('#terminal-rename-dialog'), field = page.locator('#terminal-rename-name');
-    await page.evaluate(() => {
-      Object.assign(visualViewport, { width: 230, height: 230, offsetLeft: 130, offsetTop: 104 });
-      visualViewport.dispatchEvent(new Event('resize'));
-    });
-    await expect.poll(async () => {
-      const box = await dialog.boundingBox();
-      return box && box.x >= 130 && box.x + box.width <= 360 && box.y >= 104 && box.y + box.height <= 334;
-    }).toBe(true);
+    await cropMobileViewport(page);
+    await expect.poll(() => insideMobileViewport(dialog)).toBe(true);
     await expect(field).toBeFocused();
     await field.fill('现有终端');
     await activate(page.locator('#terminal-rename-cancel'));
     await expect(dialog).toBeHidden();
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
+test('the open terminal action menu follows changes to the visual viewport', async ({ page }) => {
+  await mockMobileViewport(page);
+  const app = await setup(page);
+  try {
+    await actions(page, 'main');
+    const menu = page.locator('#terminal-action-menu');
+    await cropMobileViewport(page);
+    await expect.poll(() => insideMobileViewport(menu)).toBe(true);
+    const before = await menu.boundingBox();
+    await page.evaluate(() => {
+      visualViewport.offsetTop += 200;
+      visualViewport.dispatchEvent(new Event('scroll'));
+    });
+    await expect.poll(async () => (await menu.boundingBox()).y).toBeGreaterThan(before.y);
+    await activate(page.locator('#terminal-action-dismiss'));
+    await expect(menu).toBeHidden();
     expect(app.terminalInputs).toEqual([]);
   } finally { await app.close(); }
 });

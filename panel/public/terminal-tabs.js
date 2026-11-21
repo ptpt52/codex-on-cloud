@@ -214,19 +214,23 @@ export function createTerminalActions({ renameTerminal, closeTerminal, changed }
     if (!saving) status.textContent = uncertain ? failure : !current(renameTarget) ? '终端已变化，请取消后重新选择。' : failure || invalidName || (disabled ? '当前暂时无法修改，请检查连接后手动保存。' : '');
   }
   function close() { if (menu.open) menu.close(); if (rename.open) rename.close(); }
+  function placeMenu() {
+    if (!menu.open || !invoker?.isConnected) return;
+    const box = invoker.getBoundingClientRect(), view = window.visualViewport;
+    const left = (view?.offsetLeft || 0) + 8, top = (view?.offsetTop || 0) + 8;
+    const width = Math.max(1, (view?.width || innerWidth) - 16), height = Math.max(1, (view?.height || innerHeight) - 16);
+    menu.style.width = `${Math.min(280, width)}px`; menu.style.maxHeight = `${height}px`;
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(left, Math.min(box.right - rect.width, left + width - rect.width))}px`;
+    menu.style.top = `${Math.max(top, Math.min(box.bottom + 6, top + height - rect.height))}px`;
+  }
   function open(target, anchor) {
     const terminal = current(target);
     if (disabled || !visible || !terminal || rename.open) return;
     menuTarget = { ...terminal }; invoker = anchor;
     $('terminal-action-title').textContent = terminal.name;
-    const box = anchor.getBoundingClientRect(), view = window.visualViewport;
-    const left = (view?.offsetLeft || 0) + 8, top = (view?.offsetTop || 0) + 8;
-    const width = (view?.width || innerWidth) - 16, height = (view?.height || innerHeight) - 16;
-    menu.style.width = `${Math.min(280, width)}px`; menu.style.maxHeight = `${height}px`;
     if (!menu.open) menu.showModal();
-    const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(left, Math.min(box.right - rect.width, left + width - rect.width))}px`;
-    menu.style.top = `${Math.max(top, Math.min(box.bottom + 6, top + height - rect.height))}px`;
+    placeMenu();
     $('terminal-action-rename').focus({ preventScroll: true }); changed();
   }
   $('terminal-action-dismiss').addEventListener('click', () => menu.close());
@@ -286,6 +290,8 @@ export function createTerminalActions({ renameTerminal, closeTerminal, changed }
     failure = result?.message || '当前无法修改，请检查连接后重新操作。'; updateRename();
   });
   window.addEventListener('resize', () => { if (menu.open) menu.close(); });
+  window.visualViewport?.addEventListener('resize', placeMenu);
+  window.visualViewport?.addEventListener('scroll', placeMenu);
   return {
     open, close,
     get busy() { return menu.open || rename.open; },
