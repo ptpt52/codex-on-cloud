@@ -1562,7 +1562,13 @@ function renderTerminalList(previousCatalog = []) {
       input.setCustomValidity(terminalNameError(input.value));
       if (!input.reportValidity()) return;
       const result = await manageTerminals({ action: 'rename', ...target, name: input.value });
-      if (result?.ok && $('terminals-dialog').open) list.querySelector(`[aria-controls="${editor.id}"]`)?.focus();
+      const dialog = $('terminals-dialog');
+      if (!dialog.open) return;
+      if (result?.ok) { list.querySelector(`[aria-controls="${editor.id}"]`)?.focus(); return; }
+      const focused = document.activeElement;
+      if (result?.outcome === 'rejected' && input.isConnected && !input.disabled && (focused === document.body || focused === dialog || editor.contains(focused))) {
+        input.focus({ preventScroll: true });
+      }
     });
     input.addEventListener('compositionstart', () => { composing = true; }); input.addEventListener('compositionend', () => { composing = false; });
     input.addEventListener('input', () => input.setCustomValidity(''));

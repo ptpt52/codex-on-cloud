@@ -119,3 +119,35 @@ test('inline rename cancels locally, protects IME Enter, and preserves the curre
     expect(app.terminalConnections).toBe(connections); expect(app.terminalInputs).toEqual([]); expect(app.inputCalls).toEqual([]); expect(app.managementStats.restarts).toBe(0);
   } finally { await app.close(); }
 });
+
+test('a rejected inline rename brings keyboard focus back to the editable name', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' }), hold = Promise.withResolvers();
+  let attempts = 0;
+  try {
+    await login(page, app); await manager(page);
+    const original = (await app.controls.listTerminals()).terminals[0];
+    await page.route('**/api/terminals', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      if (++attempts !== 1) return route.continue();
+      await hold.promise;
+      await route.fulfill({ status: 409, json: { outcome: 'rejected', error: '当前名称未保存，请调整后重试' } });
+    });
+    const row = page.locator('[data-terminal=main]'), field = row.getByRole('textbox');
+    await row.getByRole('button', { name: '重命名' }).click();
+    await field.fill('待保存名称');
+    await field.press('Enter');
+    await expect(field).toBeDisabled();
+    hold.resolve();
+    await expect(page.locator('#terminals-status')).toHaveText('当前名称未保存，请调整后重试');
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue('待保存名称');
+    expect(attempts).toBe(1);
+    expect((await app.controls.listTerminals()).terminals[0]).toEqual(original);
+    await field.fill('确认后的名称');
+    await field.press('Enter');
+    await expect(row.locator('strong')).toHaveText('确认后的名称');
+    expect(attempts).toBe(2);
+    expect(app.terminalInputs).toEqual([]);
+    expect(app.inputCalls).toEqual([]);
+  } finally { hold.resolve(); await app.close(); }
+});
