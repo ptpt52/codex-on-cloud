@@ -70,7 +70,9 @@ test('a stalled directory read times out and can be refreshed without replaying 
     await page.route(/\/api\/files(?:\?.*)?$/, async route => { if (stall) { await gate; await route.fulfill({ json: { files: [] } }).catch(() => {}); } else await route.continue(); });
     await page.locator('#files-button').click(); await expect(page.locator('#file-list-status')).toContainText('正在读取');
     await page.clock.fastForward(8001); await expect(page.locator('#file-list-status')).toContainText('读取文件列表超时'); await expect(page.locator('#files-button')).toBeEnabled();
-    stall = false; await page.locator('#refresh-files').click(); await expect(page.locator('#file-list')).toContainText('kept.txt');
+    const refresh = page.locator('#refresh-files');
+    stall = false; await refresh.press('Enter'); await expect(page.locator('#file-list')).toContainText('kept.txt');
+    await expect(refresh).toBeEnabled(); await expect(refresh).toBeFocused();
     expect(app.received.filter(req => req.method === 'PUT')).toHaveLength(0); expect(app.inputCalls).toEqual([]);
   } finally { release(); await app.close(); }
 });

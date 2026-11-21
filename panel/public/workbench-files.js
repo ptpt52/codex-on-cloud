@@ -124,7 +124,14 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
   listen($('close-files'), 'click', () => $('files-dialog').close());
   listen($('files-dialog'), 'close', () => { if (!fileDeletion?.sent) finishDeleteConfirmation(false); filePathGeneration++; filePathCopyBusy = false; fileListReader.cancel(); $('file-path-preview').value = ''; $('file-path-fallback').hidden = true; $('upload-zone').classList.remove('drag-over'); });
   listen($('upload-zone'), 'click', () => { if (!$('upload-zone').disabled) $('upload-input').click(); });
-  listen($('refresh-files'), 'click', () => void action($('refresh-files'), loadFiles));
+  const refresh = $('refresh-files');
+  listen(refresh, 'click', async () => {
+    if (fileListReader.busy || !$('files-dialog').open) return;
+    refresh.setAttribute('aria-disabled', 'true');
+    try { await loadFiles(); }
+    catch { /* The file list displays the read error. */ }
+    finally { refresh.removeAttribute('aria-disabled'); }
+  });
   const uploadPrompt = createUploadPrompt({
     dialog: $('file-conflict-dialog'), filename: $('file-conflict-name'), detail: $('file-conflict-detail'),
     cancel: $('file-conflict-cancel'), rename: $('file-conflict-rename'), replace: $('file-conflict-replace'),
