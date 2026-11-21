@@ -100,6 +100,26 @@ test('opening the compact picker reveals and focuses the current terminal', asyn
   } finally { await app.close(); }
 });
 
+test('the compact picker keeps its close and list controls visible while scrolling sessions', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 540 });
+  const app = await setup(page, 8);
+  try {
+    await picker(page).click();
+    const body = page.locator('.terminal-switch-body'), close = page.locator('#close-terminal-switch');
+    const original = await close.boundingBox();
+    await list(page).locator('[data-terminal-choice=aux7]').focus();
+    await expect.poll(() => body.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    for (const selector of ['#close-terminal-switch', '#terminal-switch-refresh', '#terminal-switch-manage']) {
+      await expect(page.locator(selector)).toBeInViewport();
+    }
+    expect(await close.boundingBox()).toEqual(original);
+    expect(original.width).toBeGreaterThanOrEqual(44);
+    await close.click();
+    await expect(page.locator('#terminal-switch-dialog')).toBeHidden();
+    expect(app.terminalInputs).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('desktop keeps the tabs that fit and lists only the remaining entries in More', async ({ page }, info) => {
   test.skip(info.project.use.hasTouch || info.project.use.isMobile, 'Desktop responsive layout');
   await page.setViewportSize({ width: 1280, height: 900 });

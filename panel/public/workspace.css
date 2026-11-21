@@ -39,7 +39,11 @@
 .terminal-session-button > span:last-child { flex: none; }
 .terminal-session-bar[data-overflow=true] .terminal-session-button { display: flex; flex: 0 0 136px; width: 136px; }
 .terminal-session-button[data-active=true] { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); }
-.terminal-switch-dialog { max-height: 85dvh; overflow: auto; }
+.terminal-switch-dialog { max-height: 85dvh; overflow: hidden; }
+.terminal-switch-dialog[open] { display: flex; flex-direction: column; }
+.terminal-switch-dialog > :is(.dialog-heading, .terminal-switch-footer) { flex: none; }
+.terminal-switch-dialog .dialog-heading button { min-height: 44px; min-width: 44px; }
+.terminal-switch-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .terminal-switch-list { display: grid; gap: 8px; margin: 14px 0; }
 .terminal-choice-row { display: flex; gap: 6px; min-width: 0; }
 .terminal-choice-row .terminal-choice { flex: 1; min-width: 0; }

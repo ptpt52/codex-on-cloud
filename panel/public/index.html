@@ -201,10 +201,14 @@
   </dialog>
   <dialog id="terminal-switch-dialog" class="files-dialog terminal-switch-dialog" aria-labelledby="terminal-switch-title">
     <div class="dialog-heading"><h2 id="terminal-switch-title">选择终端</h2><button id="close-terminal-switch" class="quiet" type="button" aria-label="关闭会话列表">✕</button></div>
-    <p class="muted">点击终端切换；“⋯”可重命名或结束终端。末尾“新开终端”创建 shell，草稿分别保留。</p>
-    <div id="terminal-switch-list" class="terminal-switch-list"></div>
-    <p id="terminal-switch-status" class="muted" role="status"></p>
-    <div class="clipboard-actions"><button id="terminal-switch-refresh" class="secondary" type="button">刷新列表</button><button id="terminal-switch-manage" class="secondary" type="button">管理终端</button></div>
+    <div class="terminal-switch-body">
+      <p class="muted">点击终端切换；“⋯”可重命名或结束终端。末尾“新开终端”创建 shell，草稿分别保留。</p>
+      <div id="terminal-switch-list" class="terminal-switch-list"></div>
+    </div>
+    <div class="terminal-switch-footer">
+      <p id="terminal-switch-status" class="muted" role="status"></p>
+      <div class="clipboard-actions"><button id="terminal-switch-refresh" class="secondary" type="button">刷新列表</button><button id="terminal-switch-manage" class="secondary" type="button">管理终端</button></div>
+    </div>
   </dialog>
   <dialog id="terminal-action-menu" class="files-dialog terminal-action-menu" aria-labelledby="terminal-action-title">
     <div class="dialog-heading"><h2 id="terminal-action-title">终端操作</h2><button id="terminal-action-dismiss" class="quiet" type="button" aria-label="关闭终端操作">✕</button></div>
