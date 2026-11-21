@@ -31,6 +31,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       const detail = document.createElement('span'); detail.textContent = file.name;
       const info = document.createElement('small'); info.textContent = sizeLabel(file.size) + (available ? '' : ' · 文件名无法在网页使用，请在节点主机改名'); detail.append(info);
       const link = document.createElement('a'); if (available) link.href = nodeLink(fileDownloadPath(file.name, file.version)); link.textContent = '下载'; link.download = file.name;
+      link.setAttribute('aria-label', `下载 ${file.name}`);
       if (!available) link.tabIndex = -1;
       link.addEventListener('click', event => {
         event.preventDefault();
@@ -52,6 +53,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       actions.append(link);
       if (file.size > FILE_MAX && available) {
         const fallback = document.createElement('a'); fallback.href = link.href; fallback.download = file.name; fallback.textContent = 'HTTPS 下载';
+        fallback.setAttribute('aria-label', `HTTPS 下载 ${file.name}`);
         fallback.addEventListener('click', event => {
           event.preventDefault();
           if (!state().loggedIn || state().accessExpired || !navigator.onLine || fileTransferController || fileDeletion) return toast('请先完成当前文件操作并恢复连接。');

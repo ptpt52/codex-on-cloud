@@ -68,7 +68,7 @@ for (const cancelFromBrowser of [false, true]) test(`a large direct download can
     await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await page.locator('#files-button').click();
     await expect(page.locator('#file-transport')).toContainText('大文件下载最多 1 GiB', { timeout: 15000 });
-    const downloading = page.waitForEvent('download'); await page.getByRole('link', { name: '下载', exact: true }).click();
+    const downloading = page.waitForEvent('download'); await page.getByRole('link', { name: '下载 large-cancel.bin', exact: true }).click();
     const download = await downloading;
     await expect.poll(() => page.locator('#file-progress-meter').getAttribute('value')).not.toBe('0');
     if (cancelFromBrowser) await download.cancel(); else await page.locator('#cancel-file-transfer').click();
@@ -120,7 +120,7 @@ test('140 MiB uses actual WebRTC and bounded native saving without browser HTTPS
     await expect(page.locator('#connection-status')).toContainText('终端在线'); await page.locator('#files-button').click();
     await expect(page.locator('#file-transport')).toContainText('大文件下载最多 1 GiB', { timeout: 15000 });
     const downloaded = page.waitForEvent('download'), start = performance.now();
-    await page.getByRole('link', { name: '下载', exact: true }).click();
+    await page.getByRole('link', { name: '下载 large-140MiB.bin', exact: true }).click();
     const download = await downloaded, stream = await download.createReadStream(), digest = createHash('sha256'); let received = 0;
     for await (const chunk of stream) { received += chunk.length; digest.update(chunk); }
     expect(received).toBe(size); expect(digest.digest('hex')).toBe(expected);
@@ -147,8 +147,8 @@ test('large-file selection verifies its listed version and logs HTTPS handoff an
     await page.keyboard.press('Escape');
     await page.locator('#files-button').click();
     await expect(page.locator('#file-transport')).toContainText('大文件下载最多 1 GiB');
-    const direct = filename => page.locator('.file-row').filter({ hasText: filename }).getByRole('link', { name: '下载', exact: true });
-    const fallback = page.getByRole('link', { name: 'HTTPS 下载', exact: true });
+    const direct = filename => page.getByRole('link', { name: `下载 ${filename}`, exact: true });
+    const fallback = page.getByRole('link', { name: `HTTPS 下载 ${name}`, exact: true });
     const events = () => page.evaluate(() => {
       const log = JSON.parse(sessionStorage.getItem('codex-cloud.network-log.v2') || '{"entries":[]}');
       return log.entries.flatMap(entry => entry.events);

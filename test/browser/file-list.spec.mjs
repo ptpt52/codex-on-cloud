@@ -62,6 +62,21 @@ test('an invalid file drop reports the error inside the open transfer dialog', a
   } finally { await app.close(); }
 });
 
+test('each download link announces its file name', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    for (const name of ['交接文件.txt', '另一份文件.txt']) app.files.set(name, Buffer.from('sample'));
+    await login(page, app); await page.locator('#files-button').click();
+    const list = page.locator('#file-list');
+    for (const name of ['交接文件.txt', '另一份文件.txt']) {
+      const link = list.getByRole('link', { name: `下载 ${name}`, exact: true });
+      await expect(link).toHaveText('下载');
+      await expect(link).toHaveAttribute('download', name);
+    }
+    expect(app.inputCalls).toEqual([]);
+  } finally { await app.close(); }
+});
+
 test('a stalled directory read times out and can be refreshed without replaying uploads', async ({ page }) => {
   const app = await fixture({ mode: 'terminal' }); let release, stall = true;
   const gate = new Promise(resolve => { release = resolve; });

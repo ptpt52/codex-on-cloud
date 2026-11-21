@@ -33,7 +33,7 @@ test('login, Chinese input without automatic submit, files and logout work on a 
   await expect(page.locator('#upload-status')).toContainText('上传完成');
   await expect(page.locator('#file-list')).toContainText('手机资料.txt');
   const download = page.waitForEvent('download');
-  await page.locator('#file-list').getByRole('link', { name: '下载' }).last().click();
+  await page.locator('#file-list').getByRole('link', { name: '下载 手机资料.txt', exact: true }).click();
   expect((await download).suggestedFilename()).toBe('手机资料.txt');
   await page.getByRole('button', { name: '关闭文件中转' }).click();
   await page.getByRole('button', { name: '退出', exact: true }).click();
