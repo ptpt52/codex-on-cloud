@@ -64,8 +64,11 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     latest.disabled = !reviewing && !program && !programScrolled;
     let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? nativeWheel() ? '程序翻页：滚轮按程序原生方式滚动；按钮整页翻动' : '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
-    if (archiveOpen) label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
-    if (archiveOpen && archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
+    if (archiveOpen && !loading) {
+      if (archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
+      else label += archiveSimplified ? ' · 部分样式已简化' : archiveStyled ? ' · 保留颜色与样式' : ' · 纯文本';
+      if (notice) label = `${notice} · ${label}`;
+    }
     if (renderController) label += ' · 正在排版，可返回实时';
     if (program && reviewing) label += ' · 程序翻页已暂停，点上翻/下翻继续，保留查找工具';
     if (toolsOpen && !reviewing) label += ' · 查找复制已展开，终端仍可输入';

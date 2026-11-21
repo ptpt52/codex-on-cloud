@@ -251,6 +251,30 @@ test('opening local find freezes already received rows and styles without sendin
   } finally { await app.close(); }
 });
 
+test('a timeout while retrieving older history is visible and leaves the local snapshot intact', async ({ page }) => {
+  const hold = Promise.withResolvers();
+  const app = await fixture({ terminalHistoryHook: () => hold.promise });
+  try {
+    const frame = await login(page, app);
+    output(app, 'LOCAL-HISTORY\r\n'.repeat(150));
+    await expect.poll(() => frame.evaluate(() => window.toolsTerminal.buffer.active.baseY)).toBeGreaterThan(0);
+    await frame.evaluate(() => window.toolsTerminal.scrollLines(-3));
+    await frame.locator('#history-tools-toggle').click();
+    const archive = frame.locator('#history-archive'), status = frame.locator('#history-state');
+    await expect(archive).toContainText('LOCAL-HISTORY');
+    const original = await archive.textContent();
+    await archive.evaluate(element => { element.scrollTop = 0; });
+    await frame.locator('#history-up').click();
+    await expect(status).toContainText('正在按需补取历史');
+    await expect(status).toContainText('历史读取超时', { timeout: 10000 });
+    await expect(archive).toHaveText(original);
+    await expect(archive).toBeVisible();
+    await expect(frame.locator('#history-up')).toBeEnabled();
+    expect(app.terminalHistoryReads).toHaveLength(1);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { hold.resolve(); await app.close(); }
+});
+
 test('search remains local across reconnect, respects IME composition, and caps highlighted matches', async ({ page }) => {
   const app = await fixture({ terminalHistory: '中文 中文\n' + 'a '.repeat(2500) });
   try {
