@@ -56,7 +56,10 @@ test('dropping files uses the same single-file upload and explicit conflict conf
     const chooser = page.waitForEvent('filechooser'); await page.locator('#upload-zone').press('Enter');
     await (await chooser).setFiles([]);
     await drop(['one.txt', 'two.txt']);
-    await expect(page.locator('#toast')).toContainText('每次请拖入一个文件'); expect(writes(app)).toHaveLength(0);
+    const status = page.locator('#files-dialog #upload-status');
+    await expect(status).toBeVisible();
+    await expect(status).toContainText('每次请拖入一个文件');
+    expect(writes(app)).toHaveLength(0);
     await drop(['资料.txt']); await expect(page.locator('#file-conflict-dialog')).toBeVisible();
     expect(writes(app)).toHaveLength(0); expect(app.files.get('资料.txt').toString()).toBe('original');
     await page.locator('#file-conflict-rename').click();
