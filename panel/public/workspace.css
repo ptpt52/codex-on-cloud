@@ -391,7 +391,7 @@
 .sidebar-history #terminal-tools > button[aria-pressed=true] { background: #f7971d; border-color: #f7971d; color: #231815; }
 .sidebar-history #terminal-tools > button[aria-expanded=true] { background: #403021; border-color: #f7971d; color: #ffc477; }
 .sidebar-history #terminal-tools > button:focus-visible { outline: 2px solid #f7971d; outline-offset: 2px; }
-.sidebar-history #terminal-tools > button:disabled { cursor: default; }
+.sidebar-history #terminal-tools > button:is(:disabled, [aria-disabled=true]) { opacity: .5; cursor: default; }
 .sidebar-history #history-status-row { grid-column: 1 / -1; min-width: 0; }
 /* Reserve two lines so paging and search notices cannot move the controls. */
 .sidebar-history #history-state { display: block; height: 2.8em; overflow: hidden; line-height: 1.4; color: #c7c7c7; }
@@ -405,7 +405,7 @@
 .sidebar-actions #connection-button { --sidebar-action-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M4 20v-4M9 20v-8M14 20V8M19 20V4'/%3E%3C/svg%3E"); }
 .sidebar-actions #fullscreen-button::before { content: none; }
 .sidebar-actions > button:hover { background: var(--surface-hover); }
-.sidebar-history #terminal-tools > button:not(:disabled):not([aria-pressed=true]):not([aria-expanded=true]):hover { background: #3a3a3a; }
+.sidebar-history #terminal-tools > button:not(:disabled, [aria-disabled=true], [aria-pressed=true], [aria-expanded=true]):hover { background: #3a3a3a; }
 .sidebar-actions > button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-line); }
 .sidebar-actions .sidebar-only { display: inline; margin-left: 0; }
 .sidebar-account { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 8px; border-top: 1px solid var(--line); padding-top: 8px; }

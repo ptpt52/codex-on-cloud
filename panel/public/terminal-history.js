@@ -40,6 +40,11 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
       frame: new URLSearchParams(location.search).get('frame'), open: toolsOpen, composing: queryComposing, focus,
     } }));
   }
+  function setPagingDisabled(button, disabled) {
+    // An async snapshot must not eject keyboard focus from its paging button.
+    button.setAttribute('aria-disabled', String(disabled));
+    button.tabIndex = disabled ? -1 : 0;
+  }
   // Respect alternate screens. Treating tmux's cursor-addressed redraws as
   // ordinary scrollback mixes screen fragments into the history. Its alternate
   // buffer has no scrollback, so an upward gesture reads one bounded snapshot.
@@ -59,8 +64,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     mode.setAttribute('aria-pressed', String(program));
     up.title = paging ? '向程序发送 PageUp，保留查找工具和关键词' : '本地回看，每次最多 3 行；到顶后按需补取历史';
     down.title = paging ? '向程序发送 PageDown，保留查找工具和关键词' : '本地回看，每次最多 3 行';
-    up.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed());
-    down.disabled = !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing);
+    setPagingDisabled(up, !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed()));
+    setPagingDisabled(down, !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing));
     latest.disabled = !reviewing && !program && !programScrolled;
     let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? nativeWheel() ? '程序翻页：滚轮按程序原生方式滚动；按钮整页翻动' : '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
@@ -280,7 +285,8 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     live();
     if (focused && (button.hidden || button.disabled)) focusHistoryToolbar();
   }
-  function focusHistoryToolbar() { focusControl(up.disabled ? toggle : up); }
+  const pagingDisabled = button => button.getAttribute('aria-disabled') === 'true';
+  function focusHistoryToolbar() { focusControl(pagingDisabled(up) ? toggle : up); }
   async function copy(text, label, source) {
     if (disposed || !toolsOpen || copying || !text) return;
     if (text.length > HISTORY_TEXT_LIMIT || new TextEncoder().encode(text).length > HISTORY_TEXT_LIMIT) { copyState.textContent = '选区超过 1 MiB，请缩小选区'; return; }
@@ -359,7 +365,9 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (toolsOpen) cancelRead(); else resetLocalView();
     program = next; pixels = 0; gesture = undefined; update();
   });
-  listen(up, 'click', () => turn(-1, false, true)); listen(down, 'click', () => turn(1, false, true)); listen(latest, 'click', returnToLive);
+  listen(up, 'click', () => { if (!pagingDisabled(up)) turn(-1, false, true); });
+  listen(down, 'click', () => { if (!pagingDisabled(down)) turn(1, false, true); });
+  listen(latest, 'click', returnToLive);
   listen(newer, 'click', returnToLive);
   listen(toggle, 'click', () => { if (toolsOpen) closeTools(); else openTools(); });
   listen(historyControl('history-tools-close'), 'click', () => { closeTools(); toggle.focus({ preventScroll: true }); });

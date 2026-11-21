@@ -314,12 +314,17 @@ test('a timeout while retrieving older history is visible and leaves the local s
     await expect(archive).toContainText('LOCAL-HISTORY');
     const original = await archive.textContent();
     await archive.evaluate(element => { element.scrollTop = 0; });
-    await frame.locator('#history-up').click();
+    const up = frame.locator('#history-up');
+    await up.press('Enter');
     await expect(status).toContainText('正在按需补取历史');
+    await expect(up).toBeDisabled();
+    await expect(up).toBeFocused();
+    await page.keyboard.press('Enter');
     await expect(status).toContainText('历史读取超时', { timeout: 10000 });
     await expect(archive).toHaveText(original);
     await expect(archive).toBeVisible();
-    await expect(frame.locator('#history-up')).toBeEnabled();
+    await expect(up).toBeEnabled();
+    await expect(up).toBeFocused();
     expect(app.terminalHistoryReads).toHaveLength(1);
     expect(app.terminalInputs).toEqual([]);
   } finally { hold.resolve(); await app.close(); }
