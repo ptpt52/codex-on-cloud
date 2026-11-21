@@ -203,6 +203,7 @@ let desktopSettings = null, settingsController = null, settingsTimer, settingsBu
 let viewportTimer, viewportController, viewportWaiter, viewportApplied = '', viewportResizing = false;
 let confirmation = null, uiGeneration = 0;
 let terminalCatalog = [], terminalSlots = [], selectedTerminal = '', terminalBusy = false, terminalFocusBusy = false, terminalSwitching = false, terminalController = null, terminalLoadAttempted = false;
+let terminalSwitchReadStatus = '';
 let maxTerminals = DEFAULT_TERMINAL_LIMIT;
 let selectedTerminalToken = '', terminalSelectionState = 'loading', terminalCatalogVerified = false, adoptWindowDraft = false;
 let screenLock = null, wakeOperation = null, wakeEligible = false, wakeGeneration = 0, wakeFailed = false, pageLeaving = false, cachedResumePending = false, cachedViewReset = false;
@@ -393,8 +394,7 @@ function renderTerminalSelection() {
     : draftNotice || (terminalState.persistenceFailed ? '浏览器未能保存草稿，刷新前请复制重要文字。' : '');
   $('draft-status').textContent = message; $('draft-status').hidden = !message;
   renderDraftSafety();
-  $('terminal-switch-status').textContent = invalid || desktopFocusUnconfirmed() ? message : terminalSelectionState === 'loading' ? '正在核对终端…' : '';
-  $('terminal-switch-refresh').disabled = !loggedIn || terminalBusy;
+  $('terminal-switch-status').textContent = terminalSwitchReadStatus || (invalid || desktopFocusUnconfirmed() ? message : terminalSelectionState === 'loading' ? '正在核对终端…' : '');
   $('terminal-switch-manage').disabled = !loggedIn || terminalBusy;
   const stale = terminalCatalogVerified ? terminalState.stale(terminalCatalog, draftIdentity) : 0;
   $('clear-stale-drafts').disabled = !stale || terminalBusy || !!confirmation;
@@ -673,7 +673,10 @@ function renderInputControls() {
   $('input-terminal').disabled = !canManageTerminals() || inputComposing || views.active.composing || !!confirmation;
   $('create-terminal').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
   $('new-terminal-name').disabled = !canManageTerminals() || terminalCatalog.length >= maxTerminals;
-  $('refresh-terminals').disabled = !loggedIn || terminalBusy;
+  for (const id of ['refresh-terminals', 'terminal-switch-refresh']) {
+    $(id).disabled = !loggedIn;
+    $(id).setAttribute('aria-disabled', String(!loggedIn || terminalBusy));
+  }
   $('paste-target').disabled = !!selectedTerminal;
   $('desktop-mode').disabled = $('terminal-mode').disabled = modeChangeBusy() || !!confirmation;
   $('terminal-view-select').disabled = !canManageTerminals() || inputComposing || views.active.composing || !!confirmation;
@@ -1668,8 +1671,15 @@ $('terminal-view-manage').addEventListener('click', openTerminalManager);
 $('close-terminals').addEventListener('click', () => $('terminals-dialog').close());
 $('terminals-dialog').addEventListener('close', () => { sendDisplayPreferences(); scheduleViewport(); });
 $('refresh-terminals').addEventListener('click', () => void loadTerminals());
-$('terminal-switch-refresh').addEventListener('click', () => void loadTerminals());
-$('terminal-switch-dialog').addEventListener('close', () => { sendDisplayPreferences(); scheduleViewport(); });
+$('terminal-switch-refresh').addEventListener('click', async () => {
+  if (!loggedIn || terminalBusy || !$('terminal-switch-dialog').open) return;
+  terminalSwitchReadStatus = '正在读取终端列表…';
+  const result = await loadTerminals();
+  if (!$('terminal-switch-dialog').open) return;
+  terminalSwitchReadStatus = result?.ok && terminalSelectionState === 'ready' ? `已刷新，共 ${terminalCatalog.length} 个终端。` : result?.message || '';
+  renderTerminalSelection();
+});
+$('terminal-switch-dialog').addEventListener('close', () => { terminalSwitchReadStatus = ''; sendDisplayPreferences(); scheduleViewport(); });
 $('terminal-switch-dialog').addEventListener('toggle', () => sendDisplayPreferences());
 $('choose-terminal-button').addEventListener('click', () => {
   if (terminalSelectionState === 'closed') selectTerminal('new');

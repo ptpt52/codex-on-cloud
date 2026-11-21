@@ -52,6 +52,7 @@
 .terminal-choice small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .terminal-choice[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent-line); }
 #terminal-switch-status { min-height: 1.7em; font-size: 12px; }
+:is(#refresh-terminals, #terminal-switch-refresh)[aria-disabled=true] { opacity: .6; cursor: default; }
 .terminal-action-menu { position: fixed; margin: 0; width: min(280px, calc(100vw - 16px)); padding: 12px; }
 .terminal-action-menu .dialog-heading { gap: 8px; margin-bottom: 8px; }
 .terminal-action-menu h2 { min-width: 0; overflow-wrap: anywhere; font-size: 15px; }

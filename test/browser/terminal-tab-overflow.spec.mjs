@@ -120,6 +120,39 @@ test('the compact picker keeps its close and list controls visible while scrolli
   } finally { await app.close(); }
 });
 
+test('refreshing the picker reports progress and failures without dropping keyboard focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 540 });
+  const app = await setup(page, 2);
+  const hold = Promise.withResolvers();
+  let reads = 0, fail = true;
+  try {
+    await page.route('**/api/terminals', async route => {
+      if (route.request().method() !== 'GET') return route.continue();
+      reads++;
+      if (!fail) return route.continue();
+      await hold.promise;
+      await route.fulfill({ status: 503, json: { error: '终端列表暂不可用' } });
+    });
+    await picker(page).click();
+    const refresh = page.locator('#terminal-switch-refresh'), status = page.locator('#terminal-switch-status');
+    await refresh.press('Enter');
+    await expect(status).toContainText('正在读取');
+    await expect(refresh).toBeDisabled();
+    await expect(refresh).toBeFocused();
+    await refresh.dispatchEvent('click');
+    hold.resolve();
+    await expect(status).toHaveText('终端列表暂不可用');
+    expect(reads).toBe(1);
+    await expect(refresh).toBeFocused();
+    fail = false;
+    await refresh.press('Enter');
+    await expect(status).toHaveText('已刷新，共 2 个终端。');
+    await expect(refresh).toBeFocused();
+    expect(reads).toBe(2);
+    expect(app.terminalInputs).toEqual([]);
+  } finally { hold.resolve(); await app.close(); }
+});
+
 test('desktop keeps the tabs that fit and lists only the remaining entries in More', async ({ page }, info) => {
   test.skip(info.project.use.hasTouch || info.project.use.isMobile, 'Desktop responsive layout');
   await page.setViewportSize({ width: 1280, height: 900 });
