@@ -121,13 +121,18 @@ test('temporary direct uploads use the same rename and exact-version confirmatio
  const app=await fixture({webrtc:true});app.files.set('shared.txt',Buffer.from('original'));let bodies=0,signals=0;page.on('request',r=>{if(r.url().endsWith('/api/service/rtc'))signals++;});
  try{
   await page.route('**/api/files/**',r=>{bodies++;return r.abort();});await login(app,page);await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:15000});
-  const select=()=>page.locator('#upload-input').setInputFiles({name:'shared.txt',mimeType:'text/plain',buffer:Buffer.from('new')});
+  const select = async (name = 'shared.txt', content = 'new') => {
+   const input = page.locator('#upload-input');
+   // Upload confirmation can arrive before the list refresh releases the input.
+   await expect(input).toBeEnabled();
+   await input.setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(content) });
+  };
   await select();await expect(page.locator('#file-conflict-dialog')).toBeVisible();await page.locator('#file-conflict-rename').click();await expect(page.locator('#upload-status')).toContainText('上传完成：shared (2).txt');expect(app.files.get('shared.txt').toString()).toBe('original');
   await select();await expect(page.locator('#file-conflict-dialog')).toBeVisible();await page.locator('#file-conflict-replace').click();await expect(page.locator('#upload-status')).toContainText('上传完成：shared.txt');expect(app.files.get('shared.txt').toString()).toBe('new');
   await select();await expect(page.locator('#file-conflict-dialog')).toBeVisible();app.files.set('shared.txt',Buffer.from('newer'));await page.locator('#file-conflict-replace').click();await expect(page.locator('#upload-status')).toContainText('原文件已变化');expect(app.files.get('shared.txt').toString()).toBe('newer');expect(bodies).toBe(0);
   expect(app.received.filter(r=>r.method==='PUT')).toHaveLength(2);expect(app.vncConnections).toBe(0);expect(app.inputCalls).toEqual([]);
   await expect(page.locator('#file-transport')).toHaveText(/^文件内容：WebRTC /,{timeout:5000});expect(signals).toBe(1);
-  await page.locator('#upload-input').setInputFiles({name:'after-conflict.txt',mimeType:'text/plain',buffer:Buffer.from('same service peer')});await expect(page.locator('#upload-status')).toContainText('上传完成：after-conflict.txt');expect(bodies).toBe(0);expect(signals).toBe(1);
+  await select('after-conflict.txt', 'same service peer');await expect(page.locator('#upload-status')).toContainText('上传完成：after-conflict.txt');expect(bodies).toBe(0);expect(signals).toBe(1);
  }finally{await app.close();}
 });
 test('revoking a temporary account dismisses a pending replacement without uploading',async({page})=>{

@@ -6,7 +6,11 @@ async function open(page, app) {
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线'); await page.locator('#files-button').click();
 }
-const select = (page, name = '资料.txt') => page.locator('#upload-input').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('new content') });
+async function select(page, name = '资料.txt') {
+  const input = page.locator('#upload-input');
+  await expect(input).toBeEnabled();
+  await input.setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('new content') });
+}
 const writes = app => app.received.filter(r => r.method === 'PUT' && r.url.startsWith('/files/'));
 
 test('files provide full paths with manual copy fallback and add a quoted path to the existing draft without sending', async ({ page }) => {
@@ -111,7 +115,7 @@ test('same-name upload defaults to cancel and offers accessible rename and versi
     await page.keyboard.press('Enter'); await expect(dialog).toBeHidden(); await expect(page.locator('#upload-status')).toContainText('已取消');
     expect(app.files.get('资料.txt').toString()).toBe('original'); expect(writes(app)).toHaveLength(0);
     await select(page); await expect(dialog).toBeVisible(); await page.keyboard.press('Escape'); await expect(dialog).toBeHidden();
-    await expect(page.locator('#upload-input')).toBeEnabled(); await select(page); await expect(dialog).toBeVisible();
+    await select(page); await expect(dialog).toBeVisible();
     await page.setViewportSize({ width: 320, height: 740 });
     for (const id of ['cancel', 'rename', 'replace']) {
       const box = await page.locator('#file-conflict-' + id).boundingBox(); expect(box.height).toBeGreaterThanOrEqual(44); expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(320);
