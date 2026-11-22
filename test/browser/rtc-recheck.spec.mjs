@@ -209,12 +209,35 @@ for (const mode of ['terminal', 'desktop']) for (const seamless of [true, false]
     page.on('request', request => { if (request.url().endsWith(`/api/${mode}/rtc`)) offers.push(request.postDataJSON()); });
     await page.addInitScript(({ mode, seamless }) => {
       if (window === parent) localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, mode }));
-      // Mock only old-path TURN diagnostics; ICE/DTLS and payloads stay real.
-      if (mode === 'terminal' && seamless) {
+      if (mode === 'terminal' && seamless && location.pathname === '/terminal/index.html') {
+        // Give the manual candidate a clear advantage before testing the held
+        // key. Leave ICE, DTLS and application messages on their real paths.
+        const delayEcho = (target, delay, isEcho) => target.addEventListener('message', event => {
+          const { data } = event;
+          if (!event.isTrusted || !isEcho(data)) return;
+          event.stopImmediatePropagation();
+          setTimeout(() => target.dispatchEvent(new MessageEvent('message', { data })), delay);
+        });
+        const Socket = WebSocket;
+        window.WebSocket = class extends Socket {
+          constructor(...args) {
+            super(...args);
+            if (new URL(this.url).pathname === '/session/connect') {
+              delayEcho(this, 750, data => typeof data === 'string' && JSON.parse(data).type === 'pong');
+            }
+          }
+        };
         const PC = RTCPeerConnection; let count = 0;
         window.RTCPeerConnection = class extends PC {
           constructor(...args) { super(...args); this.oldTurn = count++ === 0; }
           async getStats(...args) { const stats = await super.getStats(...args); return this.oldTurn && window.mockTurn ? new Map([...stats].map(([id, row]) => [id, row.type === 'remote-candidate' ? { ...row, candidateType: 'relay' } : row])) : stats; }
+          createDataChannel(label, options) {
+            const channel = super.createDataChannel(label, options);
+            if (this.oldTurn && label === 'codex-health') {
+              delayEcho(channel, 350, data => data instanceof ArrayBuffer && data.byteLength === 4);
+            }
+            return channel;
+          }
         };
       }
       if (location.pathname === '/terminal/index.html') {
