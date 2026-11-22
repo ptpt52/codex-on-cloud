@@ -60,9 +60,10 @@ test('a prefixed panel strips only its exact entry and emits prefixed assets and
   assert.equal(manifest.icons[0].src, '/node/a/icon.svg');
   const worker = await (await app.rawRequest('/node/a/sw.js')).text();
   assert.match(worker, /const BASE = '\/node\/a\/'/);
-  assert.match(worker, /'entry-path\.js'/);
+  assert.ok(worker.includes(`"/node/a/entry-path.js?ui=${app.panel.uiRevision}"`));
   assert(!worker.includes('__ENTRY_BASE_PATH__'));
   assert(!worker.includes('__UI_REVISION__'));
+  assert(!worker.includes('__UI_SHELL_URLS__'));
 
   await app.login();
   assert.equal((await app.request('/api/me')).status, 200);

@@ -33,7 +33,7 @@ import { createFileCatalog, FILE_CATALOG_LIMITS } from './file-catalog.mjs';
 import { readResponseBytes } from '../native/response-body.mjs';
 import { createServiceRTC } from './service-rtc.mjs';
 import { attachServiceFiles } from './service-files.mjs';
-import { createUIAssets, NOVNC_VERSION, STATIC_CACHE } from './ui-assets.mjs';
+import { createUIAssets, isViewerAsset, NOVNC_VERSION, STATIC_CACHE } from './ui-assets.mjs';
 import { listenPrivateHTTP } from '../native/private-http.mjs';
 import { loginClient } from './login-client.mjs';
 import { stripEntryPath } from './entry-path.mjs';
@@ -801,7 +801,7 @@ export async function createPanel(config) {
         transfer.finish();
       }
     }
-    if (path.startsWith('/desktop/') || path.startsWith('/terminal/')) {
+    if (isViewerAsset(path)) {
       const session = requireSession(req);
       // Iframe navigations carry their page identifier in the URL. Static
       // modules have no private data; all streams and actions check ownership.

@@ -26,7 +26,7 @@ flowchart LR
 
 网页终端的 [附加控制器](../panel/terminal-attachment.mjs) 单独管理 PTY 查看进程，与 StreamSession 网络连接及 tmux 任务分开。终端退出或附加失败后，保留只读画面和已认证连接，选择其他终端时复用连接；未附加终端最多保留 60 秒，之后只回收查看连接。重新附加必须由用户选择，不自动启动已结束任务；旧附加进程的回调按代次丢弃，未附加期间拒绝输入，不设重放队列。锁屏、退出登录和接管仍撤销整个查看会话。
 
-工作台按功能管理短期操作：[文件控制器](../panel/public/workbench-files.js) 持有单项传输、目录读取、同名确认与两个限时下载 URL；[剪贴板控制器](../panel/public/workbench-clipboard.js) 持有一次显式读取及可清空预览。[页面生命周期](../panel/public/workspace-lifetime.js) 在离开页面时统一清理这些操作，返回后由工作区重新核验身份与控制权。旧操作的响应不能释放新操作的忙碌状态，不会在重连时补发输入、复制或上传。关闭文件对话框仍允许当前传输继续，离开页面则取消等待并提示核对未确认的结果。
+工作台按功能管理短期操作。[文件控制器](../panel/public/workbench-files.js) 持有单项传输、目录读取、同名确认与两个限时下载 URL。[剪贴板控制器](../panel/public/workbench-clipboard.js) 持有一次显式读取及可清空预览。[页面生命周期](../panel/public/workspace-lifetime.js) 在离开页面时清理这些操作，返回后由工作区重新核验身份与控制权。操作结果和目录刷新分别记录。离开页面时取消未提交的操作，保留已确认的结果，提示核对已提交但未收到回执的操作。退出登录时清空文件列表和结果。连接恢复后等待用户发起下一次操作。
 
 桌面部署包括 desktop、actions、files、manager、panel；纯终端包括 terminal、files、manager、panel。cloudflared 和自建 frpc 是可选入口组件，不是任务宿主。中心服务器与节点使用不同的服务及权限，详见[中心部署](selfhost-server.md)和[服务生命周期](reliability.md)。
 
@@ -42,7 +42,7 @@ HTTP 与 WebSocket 保留登录、Host、Origin 和 CSRF 检查。Cookie 为 Htt
 
 HTTPS／WSS 提供登录、控制和中转；网络条件允许时，WebRTC 使用可靠、有序 DataChannel，配合认证协商与 DTLS。直连失败可回退，输入不能被两条路径重复执行。候选与 UDP 范围见[网络说明](lan.md)，协议及背压限制见[开发参考](network-protocol.md)。自建中心可向在线节点签发短期 TURN 凭据，仅放行指定公网 IPv4 与 relay 端口范围；普通 Cloudflare 模式没有通用 TURN 配置入口。
 
-固定网关增加 Worker 与独立 SQLite DO：DO 保存动态节点目录和默认路由，不保存终端或文件流。Worker 验证后端身份并流式转发；节点只在私有接入口接受其代理凭据，随后继续验证浏览器 Origin、CSRF 与节点身份。旧页面和下载不能在路由切换后操作另一节点。[网关](gateway.md)
+固定网关增加 Worker 与独立 SQLite DO：DO 保存动态节点目录和默认路由，不保存终端或文件流。Worker 验证后端身份并流式转发；节点只在私有接入口接受其代理凭据，随后继续验证浏览器 Origin、CSRF 与节点身份。旧页面和下载不能在路由切换后操作另一节点。网关管理页每批最多并行探测四个节点，刷新、换页或切换节点时取消上一批浏览器请求。服务端独立限制实际探测数并合并同节点的请求。[网关](gateway.md)
 
 自建中心使用 Caddy 提供 HTTPS 与路径入口，frps / frpc 将请求送到节点的回环面板，中心管理授权与节点登录分别校验。中心不持有节点工作区或 Codex 凭据；节点仍执行自己的 Host、Origin、CSRF 和节点身份检查。[中心与节点](selfhost-server.md#拓扑)
 

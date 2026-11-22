@@ -7,7 +7,7 @@ import { nodeLink } from './node-scope.js';
 
 // One transfer or deletion, one directory read, two expiring download URLs. No replay.
 export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink, startService, canInsert, canOpenDirectory, insertDraft, openDirectory, trace, changed = () => {} }) {
-  let fileTransferController, fileTransferPath, fileDeletion, deleteSupported = false, filePathCopyBusy = false, filePathGeneration = 0, disposed = false;
+  let fileTransfer, fileDeletion, deleteSupported = false, filePathCopyBusy = false, filePathGeneration = 0, disposed = false;
   const listeners = [];
   const listen = (element, type, handler) => { element.addEventListener(type, handler); listeners.push(() => element.removeEventListener(type, handler)); };
   function sizeLabel(size) { return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`; }
@@ -56,7 +56,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
         fallback.setAttribute('aria-label', `HTTPS 下载 ${file.name}`);
         fallback.addEventListener('click', event => {
           event.preventDefault();
-          if (!state().loggedIn || state().accessExpired || !navigator.onLine || fileTransferController || fileDeletion) return toast('请先完成当前文件操作并恢复连接。');
+          if (!state().loggedIn || state().accessExpired || !navigator.onLine || fileTransfer || fileDeletion) return toast('请先完成当前文件操作并恢复连接。');
           nativeDownload(file);
         });
         actions.append(fallback);
@@ -67,24 +67,26 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
   }
   function renderFileControls() {
     if (disposed) return;
-    const readable = state().loggedIn && !state().accessExpired && navigator.onLine && !!state().directory;
+    const view = state(), busy = !!(fileTransfer || fileDeletion);
+    const online = view.loggedIn && !view.accessExpired && navigator.onLine;
+    const readable = online && !!view.directory;
     const insertable = readable && canInsert();
     for (const button of $('file-list').querySelectorAll('[data-file-copy]')) {
       button.disabled = !readable || button.closest('.file-row').dataset.unavailable === 'true';
       button.setAttribute('aria-disabled', String(button.disabled || filePathCopyBusy));
     }
-    for (const button of $('file-list').querySelectorAll('[data-file-insert]')) { button.hidden = state().temporary; button.disabled = !insertable || button.closest('.file-row').dataset.unavailable === 'true'; }
+    for (const button of $('file-list').querySelectorAll('[data-file-insert]')) { button.hidden = view.temporary; button.disabled = !insertable || button.closest('.file-row').dataset.unavailable === 'true'; }
     for (const button of $('file-list').querySelectorAll('[data-file-delete]')) {
-      button.hidden = state().temporary;
-      button.disabled = !readable || state().temporary || !deleteSupported || !!fileTransferController || !!fileDeletion || button.dataset.unavailable === 'true';
+      button.hidden = view.temporary;
+      button.disabled = !readable || view.temporary || !deleteSupported || busy || button.dataset.unavailable === 'true';
       button.title = !deleteSupported ? '文件服务需要更新后才能删除文件' : '';
     }
-    $('open-transfer-directory').hidden = state().terminalOnly || state().terminalMode || state().temporary;
+    $('open-transfer-directory').hidden = view.terminalOnly || view.terminalMode || view.temporary;
     $('open-transfer-directory').disabled = !readable || !canOpenDirectory();
-    $('upload-zone').disabled = !state().loggedIn || state().accessExpired || !navigator.onLine || !!fileTransferController || !!fileDeletion;
+    $('upload-zone').disabled = !online || busy;
     $('upload-input').disabled = $('upload-zone').disabled;
-    $('files-button').setAttribute('aria-busy', String(!!fileTransferController || !!fileDeletion));
-    for (const link of $('file-list').querySelectorAll('a')) link.setAttribute('aria-disabled', String(!readable || !!fileTransferController || !!fileDeletion || link.closest('.file-row').dataset.unavailable === 'true'));
+    $('files-button').setAttribute('aria-busy', String(busy));
+    for (const link of $('file-list').querySelectorAll('a')) link.setAttribute('aria-disabled', String(!readable || busy || link.closest('.file-row').dataset.unavailable === 'true'));
   }
   async function copyFilePath(name) {
     if (filePathCopyBusy || !state().loggedIn || state().accessExpired || !$('files-dialog').open) return;
@@ -156,7 +158,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     if (event.key === 'Enter' && event.target !== $('file-delete-confirm')) { event.preventDefault(); finishDeleteConfirmation(false); }
   });
   async function deleteFile(file, trigger) {
-    if (fileDeletion || fileTransferController || serviceLink.files?.busy) return toast('请先完成当前文件操作。');
+    if (fileDeletion || fileTransfer || serviceLink.files?.busy) return toast('请先完成当前文件操作。');
     if (disposed || !state().loggedIn || state().accessExpired || state().temporary || !navigator.onLine || !deleteSupported || !$('files-dialog').open) return;
     let snapshot; try { snapshot = fileDeleteOptions({ name: file.name, version: file.version }); } catch (error) { return toast(error.message, true); }
     const entry = fileDeletion = { controller: new AbortController(), generation: state().generation, sent: false };
@@ -174,6 +176,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       $('upload-status').textContent = `正在删除：${snapshot.name}…`;
       fileDeleteResult(await api('/api/files/delete', { method: 'POST', body: snapshot, signal: entry.controller.signal }), snapshot.name);
       if (!current()) return;
+      entry.confirmed = true;
       $('upload-status').textContent = `已删除：${snapshot.name}`;
       try { await loadFiles(entry.controller.signal); } catch { if (current()) $('upload-status').textContent = `已删除：${snapshot.name}；列表刷新失败，请手动刷新。`; }
     } catch (error) {
@@ -190,16 +193,16 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
   }
   function cancelDeletion() { finishDeleteConfirmation(false); fileDeletion?.controller.abort(); }
   async function uploadFile(file) {
-    if (fileTransferController || fileDeletion) return toast('请先完成当前文件操作。');
+    if (fileTransfer || fileDeletion) return toast('请先完成当前文件操作。');
     if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
     if (!file || !state().loggedIn || state().accessExpired || !navigator.onLine || !$('files-dialog').open) return;
     if (!validTransferName(file.name, true)) { toast('文件名无效或超过 240 字节，请改名后上传。', true); $('upload-input').value = ''; return; }
     if (file.size > 50 * 1024 * 1024) { toast('文件不能超过 50 MiB', true); $('upload-input').value = ''; return; }
-    const generation = state().generation, controller = fileTransferController = new AbortController();
+    const generation = state().generation, controller = new AbortController(), transfer = fileTransfer = { controller };
     const progress = fileProgress.start({ name: file.name, size: file.size, direction: 'upload', cancel: () => controller.abort('user') });
     const timer = setTimeout(() => controller.abort('timeout'), 300000), uploadTrace = createUploadTrace(trace);
-    const current = () => !disposed && fileTransferController === controller && generation === state().generation && state().loggedIn && !state().accessExpired;
-    let sending = false, stopProgress = () => {};
+    const current = () => !disposed && fileTransfer === transfer && generation === state().generation && state().loggedIn && !state().accessExpired;
+    let stopProgress = () => {};
     $('upload-input').disabled = true;
     renderFileControls();
     $('upload-status').textContent = `正在检查 ${file.name}…`;
@@ -213,10 +216,9 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       if (!current()) return;
       if (!upload || controller.signal.aborted) { $('upload-status').textContent = '已取消上传，原文件保留。'; progress.end('已取消，未发送文件内容。'); return; }
       $('upload-status').textContent = `正在上传 ${file.name}…`;
-      sending = true;
       const client = serviceLink.files;
-      fileTransferPath = client ? 'direct' : 'https'; changed();
-      uploadTrace.start(client ? 'direct' : 'https', file.size);
+      transfer.path = client ? 'direct' : 'https'; changed();
+      uploadTrace.start(transfer.path, file.size);
       progress.route(client ? 'WebRTC' : 'HTTPS'); progress.progress(0, file.size);
       const report = (loaded, total, metrics) => { if (current() && !controller.signal.aborted) { progress.progress(loaded, total); uploadTrace.progress(loaded, total, metrics); } };
       let result;
@@ -231,11 +233,13 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
       stopProgress();
       if (!current()) return;
       const { name } = uploadResult(result);
+      transfer.confirmed = true;
       uploadTrace.end(undefined, undefined, 'confirmed');
       $('upload-status').textContent = `上传完成：${name}`;
       progress.end('上传已确认完成。', true);
       try { await loadFiles(controller.signal); } catch { if (current()) $('upload-status').textContent = `上传完成：${name}；列表刷新失败，请手动刷新，不要重复上传。`; }
     } catch (error) {
+      const sending = !!transfer.path;
       uploadTrace.end(controller.signal.aborted ? ['timeout', 'offline', 'auth', 'page-hidden'].includes(controller.signal.reason) ? controller.signal.reason : 'aborted' : ['file_read_failed', 'file_read_busy', 'file_read_timeout'].includes(error.code) || fileTimeoutCode(error.code) ? error.code : error.fileCode || (error.status ? 'http-status' : 'network'), error.status,
         error.outcome === 'rejected' ? 'rejected' : 'unknown');
       progress.end(controller.signal.aborted ? sending ? '上传已中断；请刷新列表核对服务器结果。' : '已取消，未发送文件内容。'
@@ -245,7 +249,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
         : `${sending && error.outcome !== 'rejected' && (!error.status || error.outcome === 'unknown') ? '上传结果未确认：' : ''}${error.message}；不会自动重试，请刷新文件列表后重新选择。`;
     } finally {
       stopProgress(); clearTimeout(timer);
-      if (fileTransferController === controller) { fileTransferController = fileTransferPath = undefined; changed(); $('upload-input').disabled = false; $('upload-input').value = ''; renderFileControls(); }
+      if (fileTransfer === transfer) { fileTransfer = undefined; changed(); $('upload-input').value = ''; renderFileControls(); }
     }
   }
   function nativeDownload(file) {
@@ -255,7 +259,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     trace('file-handoff', { route: 'https', direction: 'download', totalBytes: file.size });
   }
   async function downloadFile(file) {
-    if (fileTransferController || fileDeletion) return toast('请先完成当前文件操作。');
+    if (fileTransfer || fileDeletion) return toast('请先完成当前文件操作。');
     if (serviceLink.files?.busy) return toast('文件直连正在处理其他下载，请完成后再操作。');
     if (!state().loggedIn || state().accessExpired || !navigator.onLine || !$('files-dialog').open) return;
     const version = validFileVersion(file.version) ? file.version : undefined;
@@ -263,13 +267,14 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     const client = version && !available?.versionedDownloads ? null : available;
     const large = file.size > FILE_MAX;
     if (large && (!client || file.size > client.maxDownload || !canStreamDownload())) { nativeDownload(file); return; }
-    const generation = state().generation, controller = fileTransferController = new AbortController();
+    const generation = state().generation, controller = new AbortController();
+    const transfer = fileTransfer = { controller, path: client ? 'direct' : 'https' };
     const timer = setTimeout(() => controller.abort('timeout'), large ? FILE_DOWNLOAD_TIMEOUT : 300000), downloadTrace = createUploadTrace(trace);
     let sink;
-    fileTransferPath = client ? 'direct' : 'https'; changed();
-    const current = () => !disposed && fileTransferController === controller && generation === state().generation && state().loggedIn && !state().accessExpired;
+    changed();
+    const current = () => !disposed && fileTransfer === transfer && generation === state().generation && state().loggedIn && !state().accessExpired;
     const progress = fileProgress.start({ name: file.name, size: file.size, direction: 'download', route: client ? 'WebRTC' : 'HTTPS', cancel: () => controller.abort('user') });
-    downloadTrace.start(client ? 'direct' : 'https', file.size, 'download');
+    downloadTrace.start(transfer.path, file.size, 'download');
     const report = (loaded, total) => { if (current() && !controller.signal.aborted) { progress.progress(loaded, total); downloadTrace.progress(loaded, total); } };
     $('upload-input').disabled = true; renderFileControls(); $('upload-status').textContent = `正在下载 ${file.name}…`;
     try {
@@ -282,6 +287,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
         : await api(fileDownloadPath(file.name, version), { signal: controller.signal, progress: report, downloadSize: file.size, downloadVersion: version });
       if (!current() || controller.signal.aborted) { progress.end(large ? '下载已取消，请在浏览器下载列表核对文件。' : '下载已取消，未生成下载文件。'); return; }
       if (blob) saveDirectFile(blob, file.name);
+      transfer.confirmed = true;
       downloadTrace.end(undefined, undefined, 'confirmed'); progress.end('下载完成，已交给浏览器保存。', true); $('upload-status').textContent = `下载完成：${file.name}`;
     } catch (error) {
       sink?.abort(error);
@@ -298,7 +304,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     } finally {
       clearTimeout(timer);
       downloadTrace.end('aborted', undefined, 'canceled');
-      if (fileTransferController === controller) { fileTransferController = fileTransferPath = undefined; changed(); $('upload-input').disabled = false; renderFileControls(); }
+      if (fileTransfer === transfer) { fileTransfer = undefined; changed(); renderFileControls(); }
     }
   }
   listen($('upload-input'), 'change', () => void uploadFile($('upload-input').files[0]));
@@ -306,12 +312,12 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
     if (!event.dataTransfer?.types.includes('Files')) return;
     event.preventDefault();
     if (type === 'dragleave' && $('files-dialog').contains(event.relatedTarget)) return;
-    const active = (type === 'dragenter' || type === 'dragover') && !fileTransferController && !fileDeletion && state().loggedIn && !state().accessExpired && navigator.onLine;
+    const active = (type === 'dragenter' || type === 'dragover') && !fileTransfer && !fileDeletion && state().loggedIn && !state().accessExpired && navigator.onLine;
     $('upload-zone').classList.toggle('drag-over', active);
     if (type !== 'drop') { if (event.dataTransfer) event.dataTransfer.dropEffect = active ? 'copy' : 'none'; return; }
     const items = event.dataTransfer.items, files = event.dataTransfer.files;
     let message;
-    if (fileTransferController || fileDeletion) message = '当前文件仍在处理中，请完成后再上传。';
+    if (fileTransfer || fileDeletion) message = '当前文件仍在处理中，请完成后再上传。';
     else if (files.length !== 1 || items?.length !== 1 || items[0].webkitGetAsEntry?.()?.isDirectory) message = '每次请拖入一个文件，不支持文件夹。';
     if (message) {
       const status = $('upload-status');
@@ -324,27 +330,38 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
 
   function reset(reason = 'closed') {
     filePathGeneration++; filePathCopyBusy = false;
-    const controller = fileTransferController; fileTransferController = fileTransferPath = undefined; controller?.abort(reason); changed();
+    const transfer = fileTransfer; fileTransfer = undefined; transfer?.controller.abort(reason); changed();
     cancelDeletion(); uploadPrompt.cancel(); fileListReader.cancel(); clearFileURLs(); fileProgress.clear();
-    $('upload-input').disabled = false; $('file-path-preview').value = ''; $('file-path-fallback').hidden = true;
+    $('upload-input').value = ''; $('file-path-preview').value = ''; $('file-path-fallback').hidden = true;
+    if (reason !== 'page-hidden') {
+      deleteSupported = false;
+      $('upload-status').textContent = '';
+      $('file-list').replaceChildren();
+    }
     $('upload-zone').classList.remove('drag-over'); renderFileControls();
   }
   return {
-    get busy() { return !!fileTransferController || !!fileDeletion || fileListReader.busy; },
-    get transferPath() { return fileTransferPath; },
+    get busy() { return !!fileTransfer || !!fileDeletion || fileListReader.busy; },
+    get transferPath() { return fileTransfer?.path; },
     update: renderFileControls, saveDownload: saveDirectFile, reset,
     revalidate() {
       fileListReader.revalidate(); uploadPrompt.revalidate();
       if (state().temporary || fileDeletion?.generation !== state().generation) cancelDeletion();
-      if (!state().loggedIn || state().accessExpired) { fileTransferController?.abort('auth'); cancelDeletion(); }
+      if (!state().loggedIn || state().accessExpired) { fileTransfer?.controller.abort('auth'); cancelDeletion(); }
       else if (!navigator.onLine) {
         // The default-route hint cannot revoke an admitted LAN/VPN transfer.
         // Its channel, ACK/read deadlines and five-minute budget still apply.
-        if (fileTransferPath !== 'direct') fileTransferController?.abort('offline');
+        if (fileTransfer?.path !== 'direct') fileTransfer?.controller.abort('offline');
         cancelDeletion();
       }
     },
-    suspend() { const pending = !!fileTransferController || !!fileDeletion?.sent; reset('page-hidden'); if (pending) $('upload-status').textContent = '页面已离开，文件操作结果未确认；请刷新列表核对，不会自动重试。'; },
-    dispose() { if (disposed) return; disposed = true; reset(); for (const remove of listeners) remove(); uploadPrompt.dispose(); fileProgress.dispose(); $('file-list').replaceChildren(); },
+    suspend() {
+      const uncertain = (fileTransfer?.path && !fileTransfer.confirmed) || (fileDeletion?.sent && !fileDeletion.confirmed);
+      const unsent = (fileTransfer && !fileTransfer.path) || (fileDeletion && !fileDeletion.sent);
+      reset('page-hidden');
+      if (uncertain) $('upload-status').textContent = '页面已离开，文件操作结果未确认；请刷新列表核对，不会自动重试。';
+      else if (unsent) $('upload-status').textContent = '页面已离开，文件操作已取消，未发送文件变更请求。';
+    },
+    dispose() { if (disposed) return; disposed = true; reset(); for (const remove of listeners) remove(); uploadPrompt.dispose(); fileProgress.dispose(); },
   };
 }

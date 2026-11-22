@@ -93,6 +93,12 @@ export const ASSETS = new Map([
   ['/terminal/xterm.css', ['../../node_modules/@xterm/xterm/css/xterm.css', 'text/css; charset=utf-8']],
 ]);
 
+// Keep the public shell aligned with the asset allowlist. The authenticated
+// viewer namespaces and the worker script itself stay outside the cache.
+export const isViewerAsset = route => route.startsWith('/desktop/') || route.startsWith('/terminal/');
+const shellRoutes = [...ASSETS.keys()].filter(route => route !== '/sw.js' && !isViewerAsset(route));
+const shellPlaceholder = "'__UI_SHELL_URLS__'";
+
 async function boundedRead(url) {
   const file = await open(url, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -135,6 +141,7 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
       }
       const hash = createHash('sha256');
       hash.update('login-identity:v1:' + JSON.stringify(login));
+      hash.update('offline-shell:v1:' + JSON.stringify(shellRoutes));
       hash.update('novnc:' + NOVNC_VERSION);
       if (nodeId) hash.update('node:' + nodeId);
       if (gateway) hash.update('gateway:v1');
@@ -147,8 +154,9 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
       // Reject a deployment still writing files; publish only a complete snapshot.
       for (const [route, [name]] of ASSETS) if (!(await boundedRead(new URL(name, root))).equals(raw.get(route).bytes)) throw Error('资源仍在修改，未发布；请完成文件更新后重试');
       const publicAssetPath = route => entryBasePath === '/' ? route : route === '/' ? entryBasePath : entryBasePath.slice(0, -1) + route;
+      const versionedAssetPath = route => publicAssetPath(route) + '?ui=' + revision;
       const imports = Object.fromEntries([...raw.keys()].filter(route => route.endsWith('.js') && route !== '/sw.js').flatMap(route => {
-        const value = publicAssetPath(route) + '?ui=' + revision;
+        const value = versionedAssetPath(route);
         return [[route, value], [publicAssetPath(route), value]];
       }));
       // A versioned prefix also pins noVNC's relative transitive imports. Keep
@@ -175,7 +183,12 @@ export async function createUIAssets({ root = PUBLIC, validate = true, nodeId = 
           bytes = Buffer.from(html);
         }
         if (route === '/manifest.webmanifest') bytes = Buffer.from(bytes.toString().replaceAll('__ENTRY_BASE_PATH__', entryBasePath));
-        if (route === '/sw.js') bytes = Buffer.from(bytes.toString().replaceAll('__UI_REVISION__', revision).replaceAll('__ENTRY_BASE_PATH__', entryBasePath));
+        if (route === '/sw.js') {
+          const worker = bytes.toString();
+          if (!worker.includes(shellPlaceholder)) throw Error('离线界面资源清单占位符缺失');
+          bytes = Buffer.from(worker.replaceAll('__UI_REVISION__', revision).replaceAll('__ENTRY_BASE_PATH__', entryBasePath)
+            .replace(shellPlaceholder, JSON.stringify(shellRoutes.map(versionedAssetPath))));
+        }
         prepared.set(route, { ...asset, bytes });
       }
       const version = { revision, assets: prepared, scriptHash };

@@ -43,6 +43,46 @@ async function releaseGatewayResponse(page) {
   await page.evaluate(() => new Promise(requestAnimationFrame));
 }
 
+test('refresh retires the previous node probes and ignores a late unauthorized reply', async ({ page }) => {
+  const h = await gatewayHTTPFixture(); await h.add(1); await h.add(2);
+  try {
+    await page.addInitScript(() => {
+      const fetchOriginal = window.fetch.bind(window);
+      window.gatewayProbes = [];
+      window.fetch = (url, options) => {
+        if (url !== '/__nodes/api/probe') return fetchOriginal(url, options);
+        return new Promise(resolve => window.gatewayProbes.push({ signal: options.signal, resolve }));
+      };
+    });
+    await control(page, h);
+    await expect.poll(() => page.evaluate(() => window.gatewayProbes.length)).toBe(2);
+    await page.locator('#refresh').click();
+    await expect.poll(() => page.evaluate(() => window.gatewayProbes.length)).toBe(4);
+    expect(await page.evaluate(() => window.gatewayProbes.map(probe => probe.signal.aborted))).toEqual([true, true, false, false]);
+
+    await page.evaluate(() => {
+      window.gatewayProbes[0].resolve(new Response('{}', { status: 401 }));
+      window.gatewayProbes[1].resolve(Response.json({ ready: true }));
+      for (const probe of window.gatewayProbes.slice(2)) probe.resolve(Response.json({ ready: false, checkedAt: null }));
+    });
+    await expect(page.locator('.node-health')).toHaveText(['当前不可用', '当前不可用']);
+    await expect(page.locator('#workspace')).toBeVisible();
+    await expect(page.locator('#login')).toBeHidden();
+  } finally { await h.close(); }
+});
+
+test('an unsuccessful refresh keeps the previous node list and shows the read error', async ({ page }) => {
+  const h = await gatewayHTTPFixture(); await h.add(1); await h.add(2);
+  try {
+    await control(page, h);
+    await page.route('**/__nodes/api/nodes?offset=0', route => route.fulfill({ status: 503, json: { error: '节点列表暂不可用' } }), { times: 1 });
+    await page.locator('#refresh').click();
+    await expect(page.locator('#refresh')).toBeEnabled();
+    await expect(page.locator('#status')).toHaveText('节点列表暂不可用');
+    await expect(page.locator('#nodes .node-row')).toHaveCount(2);
+  } finally { await h.close(); }
+});
+
 test('cached gateway returns recover interrupted loads and ignore retired success and 401 responses', async ({ page }) => {
   const h = await gatewayHTTPFixture(); await h.add(1); const b = await h.add(2);
   try {

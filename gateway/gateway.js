@@ -1,17 +1,21 @@
 const $ = id => document.getElementById(id), prefix = '/__nodes/';
 let state = null, csrf = '', offset = 0, generation = 0, busy = false, pending = null, loading = false, lifecycle = 0, suspended = false;
+let probeController;
 const controllers = new Set();
 const current = epoch => epoch === lifecycle && !suspended;
+function stopProbes() { probeController?.abort(); probeController = undefined; }
 function update() { for (const id of ['refresh', 'previous', 'next', 'create-code']) $(id).disabled = busy || loading; for (const button of document.querySelectorAll('[data-action]')) button.disabled = busy || loading || button.dataset.current === 'true'; }
 function message(value, error = false) { $('status').textContent = value; $('status').classList.toggle('error', error); }
-function loggedOut(note = '') { lifecycle++; generation++; for (const controller of controllers) controller.abort(); controllers.clear(); state = null; csrf = ''; busy = loading = false; closeConfirmation(); $('boot-status').hidden = true; $('workspace').hidden = $('logout').hidden = true; $('login').hidden = false; $('login-submit').disabled = false; $('code-value').value = ''; $('new-code').hidden = true; $('login-error').textContent = note; }
+function loggedOut(note = '') { lifecycle++; generation++; stopProbes(); for (const controller of controllers) controller.abort(); controllers.clear(); state = null; csrf = ''; busy = loading = false; closeConfirmation(); $('boot-status').hidden = true; $('workspace').hidden = $('logout').hidden = true; $('login').hidden = false; $('login-submit').disabled = false; $('code-value').value = ''; $('new-code').hidden = true; $('login-error').textContent = note; }
 async function api(path, { method = 'GET', body, signal } = {}) {
   const epoch = lifecycle;
   if (!current(epoch)) throw new DOMException('页面已离开', 'AbortError');
   const controller = new AbortController(); controllers.add(controller); const timer = setTimeout(() => controller.abort(), 10000);
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
-    const response = await fetch(prefix + 'api/' + path, { method, credentials: 'same-origin', redirect: 'error', headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(method === 'GET' ? {} : { 'x-csrf-token': csrf }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
+    const response = await fetch(prefix + 'api/' + path, { method, credentials: 'same-origin', redirect: 'error', headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(method === 'GET' ? {} : { 'x-csrf-token': csrf }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: requestSignal });
     let value; try { value = await response.json(); } catch { throw Error('响应未确认，请刷新状态核对'); }
+    requestSignal.throwIfAborted();
     if (!current(epoch)) throw new DOMException('页面已离开', 'AbortError');
     if (response.status === 401 && path !== 'login') loggedOut('网关登录已过期');
     if (!response.ok) throw Object.assign(Error(value.error || '请求未完成'), { status: response.status });
@@ -38,25 +42,32 @@ function render() {
   update();
 }
 async function probes(epoch) {
+  if (!state || busy || epoch !== generation) return;
+  stopProbes();
+  const controller = probeController = new AbortController();
   const nodes = [...state.nodes]; let index = 0;
-  await Promise.all(Array.from({ length: Math.min(4, nodes.length) }, async () => {
-    while (index < nodes.length && epoch === generation && state && !busy) {
-      const node = nodes[index++]; try {
-        const value = await api('probe', { method: 'POST', body: { nodeId: node.id } });
-        if (epoch !== generation || !state) return; Object.assign(node, value);
-        const row = [...$('nodes').children].find(row => row.dataset.nodeId === node.id); if (row) renderHealth(row, node);
-      } catch { if (epoch !== generation) return; }
-    }
-  }));
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, nodes.length) }, async () => {
+      while (index < nodes.length && !controller.signal.aborted && epoch === generation && state && !busy) {
+        const node = nodes[index++]; try {
+          const value = await api('probe', { method: 'POST', body: { nodeId: node.id }, signal: controller.signal });
+          if (epoch !== generation || !state) return; Object.assign(node, value);
+          const row = [...$('nodes').children].find(row => row.dataset.nodeId === node.id); if (row) renderHealth(row, node);
+        } catch { /* A failed probe leaves the last known status. */ }
+      }
+    }));
+  } finally { if (probeController === controller) probeController = undefined; }
 }
 async function load(probe = true) {
   if (suspended) return;
+  stopProbes();
   const epoch = ++generation; loading = true; update();
   try {
     const value = await api('nodes?offset=' + offset); if (epoch !== generation) return;
     if (!value || value.version !== 1 || !Array.isArray(value.nodes) || value.nodes.length > 16 || typeof value.csrf !== 'string' || !Number.isSafeInteger(value.revision)) throw Error('节点列表响应无效');
     state = value; csrf = value.csrf; $('boot-status').hidden = true; $('login').hidden = true; $('workspace').hidden = $('logout').hidden = false; render();
     if (probe) void probes(epoch);
+    return true;
   } catch (error) { if (epoch === generation) { if (!state || error.status === 401) loggedOut(error.status === 401 ? '' : error.message); else message(error.message, true); } }
   finally { if (epoch === generation) { loading = false; update(); } }
 }
@@ -81,13 +92,13 @@ $('logout').addEventListener('click', async () => {
   catch (error) { if (current(epoch)) message(error.message, true); }
   finally { if (current(epoch)) { busy = false; update(); } }
 });
-$('refresh').addEventListener('click', () => { const epoch = lifecycle; message('正在刷新节点状态…'); void load().then(() => { if (current(epoch) && state) message('列表已刷新；状态为最近一次检查结果。'); }); });
+$('refresh').addEventListener('click', () => { const epoch = lifecycle; message('正在刷新节点状态…'); void load().then(loaded => { if (loaded && current(epoch)) message('列表已刷新；状态为最近一次检查结果。'); }); });
 $('previous').addEventListener('click', () => { if (!busy && offset) { offset = Math.max(0, offset - 16); void load(); } });
 $('next').addEventListener('click', () => { if (!busy && state?.next !== null) { offset = state.next; void load(); } });
 $('cancel').addEventListener('click', closeConfirmation); $('confirmation').addEventListener('cancel', event => { event.preventDefault(); closeConfirmation(); });
 $('confirmation').addEventListener('keydown', event => { if (event.key === 'Enter' && document.activeElement !== $('accept')) { event.preventDefault(); closeConfirmation(); } });
 $('accept').addEventListener('click', async () => {
-  const action = pending; if (!action || busy || !state || suspended) return; const epoch = lifecycle; closeConfirmation(); busy = true; generation++; update();
+  const action = pending; if (!action || busy || !state || suspended) return; const epoch = lifecycle; closeConfirmation(); busy = true; generation++; stopProbes(); update();
   const operation = [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   try {
     if (action.kind === 'remove') { await api('nodes/' + action.node.id, { method: 'DELETE', body: { revision: action.revision } }); if (!current(epoch)) return; offset = 0; await load(); if (current(epoch)) message('节点登记已移除，原机器和任务保持。'); }
@@ -117,6 +128,7 @@ $('code-form').addEventListener('submit', async event => {
 $('copy-code').addEventListener('click', async () => { const epoch = lifecycle; try { await navigator.clipboard.writeText($('code-value').value); if (current(epoch)) message('接入码已复制，请仅提供给自己的节点。'); } catch { if (current(epoch)) { $('code-value').focus(); $('code-value').select(); message('请手动复制已选中的接入码。'); } } });
 window.addEventListener('pagehide', () => {
   suspended = true; lifecycle++; generation++;
+  stopProbes();
   for (const controller of controllers) controller.abort(); controllers.clear();
   state = null; csrf = ''; busy = false; loading = true; closeConfirmation();
   $('login-submit').disabled = false; $('code-value').value = ''; $('password').value = ''; $('new-code').hidden = true;
@@ -129,7 +141,7 @@ window.addEventListener('pageshow', event => {
   suspended = false; message('正在重新核对网关登录与节点状态…');
   // Restore with reads only. Interrupted switches, removals, logins and
   // enrollment mutations may already have committed and must never be replayed.
-  void load(false).then(() => { if (current(epoch) && state) message('网关登录与节点状态已重新核对；未重发离开前的操作。'); });
+  void load(false).then(loaded => { if (loaded && current(epoch)) message('网关登录与节点状态已重新核对；未重发离开前的操作。'); });
 });
 if (new URLSearchParams(location.search).has('unavailable')) message('当前节点暂不可用，可选择其他已接入机器。', true);
 void load();

@@ -19,6 +19,11 @@ test('complete version snapshots are bounded and atomic; invalid syntax, missing
   await symlink(new URL('app.js', snapshot.root), script); await assert.rejects(assets.reload()); await unlink(script);
   await writeFile(script, Buffer.alloc(UI_LIMITS.file + 1)); await assert.rejects(assets.reload());
   await writeFile(script, original); assert.equal((await assets.reload()).changed, false);
+  const worker = new URL('sw.js', snapshot.root), originalWorker = await readFile(worker);
+  await writeFile(worker, "const SHELL = [];\n");
+  await assert.rejects(assets.reload(), /离线界面资源清单占位符缺失/);
+  assert.equal(assets.revision, initial);
+  await writeFile(worker, originalWorker);
   for (let i = 0; i < UI_LIMITS.generations; i++) {
     await writeFile(script, Buffer.concat([original, Buffer.from('\n// revision ' + i)])); await assets.reload();
   }

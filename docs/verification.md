@@ -49,7 +49,7 @@ DESKTOP_IME_TEST_IOS=1 DESKTOP_IME_TEST_DIRECT=1 npm run test:desktop-input
 
 可将 `DESKTOP_IME_TEST_TK_PYTHON` 指向已安装 Tk 的 Python，再运行原生规格，验证真实普通应用的 Ctrl+V 及剪贴板准备期间换窗拒绝；未设置时会明确跳过此部分。所有组合事件由测试注入，不代表真实系统输入法候选窗、手机系统键盘或生产 Codex 已验收。
 
-中文与数字、空格的顺序、全角标点、输入框清理和点击位置附近的候选窗处理，参考了 [WechatOnCloud 的输入法实现](https://github.com/Gloridust/WechatOnCloud/blob/86d82519c5e6b28aae7ef3caa279086afa244d4d/panel/web/src/pages/Desktop.tsx#L27)。本项目的等待缓冲限制为 64 项、待发送文字合计 32 KiB；iOS 每段的前后编辑快照也各限 32 KiB，最多 64 项，快照文字合计不超过 4 MiB。结果未知时清理后续输入，原有远程剪贴板按键路径保留。改写动作独立于粘贴，旧后台不支持时会拒绝，不会忽略删除而直接追加；部署须更新面板和桌面管理进程，新模块须同时进入 UI 资源清单与离线壳。
+中文与数字、空格的顺序、全角标点、输入框清理和点击位置附近的候选窗处理，参考了 [WechatOnCloud 的输入法实现](https://github.com/Gloridust/WechatOnCloud/blob/86d82519c5e6b28aae7ef3caa279086afa244d4d/panel/web/src/pages/Desktop.tsx#L27)。本项目的等待缓冲限制为 64 项、待发送文字合计 32 KiB；iOS 每段的前后编辑快照也各限 32 KiB，最多 64 项，快照文字合计不超过 4 MiB。结果未知时清理后续输入，原有远程剪贴板按键路径保留。改写动作独立于粘贴，旧后台不支持时会拒绝，不会忽略删除而直接追加；部署须更新面板和桌面管理进程。公共模块登记到 UI 资源白名单后，由面板生成对应的离线缓存清单。
 
 触屏功能也对照同一版本的功能键及输入条（`Desktop.tsx` 的 `FUNC_KEYS`、`sendImeText`）：采用明确的“退格”文字，输入助手粘贴后保留本地焦点，补测中文后连续数字、空格和全角标点的顺序。实现使用本项目独立输入框和有界队列，不依赖 KasmVNC 私有输入框；粘贴与 Enter 分开，未知结果不继续发送后续按键。
 
