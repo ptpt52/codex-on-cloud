@@ -1,5 +1,6 @@
 """Real isolated tmux history checks; no X11, Codex or production session."""
 import importlib.util
+import io
 import os
 from pathlib import Path
 import shlex
@@ -186,6 +187,24 @@ class TerminalResizeNoticeTests(unittest.TestCase):
 
 
 class DetachedReaderTests(unittest.TestCase):
+    def test_piped_codex_requires_this_tty_and_a_process_from_the_current_launch(self):
+        old = (7000, 7000, 0, -1, 98)
+        current = (7001, 7001, 0, -1, 102)
+        tty = '/dev/pts/123'
+        with patch.object(terminal, 'open', create=True, side_effect=lambda *_: io.BytesIO(b'systemd-run\0--pipe\0/usr/bin/codex\0resume\0')), \
+                patch.object(terminal.os, 'readlink', return_value=tty), \
+                patch.object(terminal.os, 'stat', return_value=SimpleNamespace(st_rdev=34939)), \
+                patch.object(terminal, 'codex_executable', return_value=True), \
+                patch.object(terminal, 'detached_readers', return_value=[(7000, old), (7001, current)]) as scan, \
+                patch.object(terminal, 'detached_reader', side_effect=lambda pid, _: {7000: old, 7001: current}[pid]):
+            self.assertIsNone(terminal.piped_codex(6000, 100, 34938, None))
+            scan.assert_not_called()
+            self.assertEqual(terminal.piped_codex(6000, 100, 34939, '7000:98'), '7001:102')
+            scan.assert_called_once_with(tty)
+            self.assertEqual(terminal.piped_codex(6000, 100, 34939, '7001:102'), '7001:102')
+            scan.assert_called_once_with(tty)
+            self.assertIsNone(terminal.piped_codex(6000, 103, 34939, '7001:102'))
+
     def test_only_same_user_services_with_matching_terminal_stdio_qualify(self):
         state = (7000, 7000, 0, -1, 99)
         tty = '/dev/pts/123'

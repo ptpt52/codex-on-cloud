@@ -339,8 +339,48 @@ def process_state(pid):
     return tuple(int(fields[index]) for index in (2, 3, 4, 5, 19))  # group, session, tty, foreground, birth
 
 
-def foreground_codex(pane_pid):
-    """Return the native Codex instance in this pane's foreground group."""
+def process_executable(pid):
+    return os.path.basename(os.readlink(f'/proc/{pid}/exe'))
+
+
+def codex_executable(pid):
+    try:
+        return process_executable(pid) in ('codex', 'codex (deleted)')
+    except OSError:
+        return False
+
+
+def piped_codex(launcher_pid, launcher_started, tty_device, previous):
+    """Find Codex behind a foreground systemd-run that passes through the PTY."""
+    path = f'/proc/{launcher_pid}'
+    with open(path + '/cmdline', 'rb') as source:
+        cmdline = source.read(8193)
+    if len(cmdline) > 8192:
+        return None
+    args = cmdline.split(b'\0')[1:]
+    if not {b'--pipe', b'-P'}.intersection(args) or not any(os.path.basename(arg) in (b'codex', b'codex.js') for arg in args):
+        return None
+    stdin = path + '/fd/0'
+    tty = os.readlink(stdin)
+    if not re.fullmatch(r'/dev/pts/[0-9]{1,10}', tty) or os.stat(stdin).st_rdev != tty_device:
+        return None
+
+    def current_run(pid, state):
+        if not state or state[4] < launcher_started or not codex_executable(pid) or detached_reader(pid, tty) != state:
+            return None
+        return f'{pid}:{state[4]}'
+
+    # Recheck the last match without scanning /proc while Codex stays attached.
+    if previous is not None:
+        pid = int(previous.split(':', 1)[0])
+        if current_run(pid, detached_reader(pid, tty)) == previous:
+            return previous
+    matches = [run for pid, state in detached_readers(tty) if (run := current_run(pid, state))]
+    return matches[0] if len(matches) == 1 else None
+
+
+def foreground_codex(pane_pid, previous=None):
+    """Return the native Codex instance currently using this pane's foreground."""
     try:
         pane = process_state(pane_pid)
         group = pane[3]
@@ -350,20 +390,25 @@ def foreground_codex(pane_pid):
         if leader[:4] != (group, *pane[1:4]):
             return None
 
-        def identity(pid, state):
+        def match(pid, state):
             if state[:4] != leader[:4]:
                 return None
-            executable = os.path.basename(os.readlink(f'/proc/{pid}/exe'))
-            if executable not in ('codex', 'codex (deleted)'):
+            exe = process_executable(pid)
+            if exe in ('codex', 'codex (deleted)'):
+                run = f'{pid}:{state[4]}'
+            elif exe == 'systemd-run':
+                run = piped_codex(pid, state[4], pane[2], previous)
+            else:
                 return None
-            if process_state(pid) == state and process_state(pane_pid) == pane:
-                return f'{pid}:{state[4]}'
+            if run and process_state(pid) == state and process_state(pane_pid) == pane:
+                return run
             return None
 
-        run = identity(group, leader)
-        if run is not None:
+        run = match(group, leader)
+        if run:
             return run
-        # The npm launcher spawns the native executable in its own job group.
+        # The npm launcher runs Codex as a child in the group. systemd-run
+        # may itself be the group leader or a child of a shell wrapper.
         with open(f'/proc/{group}/task/{group}/children', 'rb') as source:
             children = source.read(4097)
         if len(children) > 4096:
@@ -371,8 +416,8 @@ def foreground_codex(pane_pid):
         for child in children.split()[:32]:
             try:
                 pid = int(child)
-                run = identity(pid, process_state(pid))
-                if run is not None:
+                run = match(pid, process_state(pid))
+                if run:
                     return run
             except (OSError, ValueError, IndexError):
                 continue
@@ -682,7 +727,7 @@ def main():
         while child.poll() is None:
             resize_notice.poll()
             if foreground_enabled and time.monotonic() >= foreground_at:
-                observed = foreground_codex(pane_pid)
+                observed = foreground_codex(pane_pid, codex_run)
                 if observed != codex_run:
                     if not verify():
                         return

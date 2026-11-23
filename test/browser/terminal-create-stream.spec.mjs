@@ -66,6 +66,37 @@ async function choose(page, id) {
 }
 const stats = page => page.evaluate(() => ({ ...window.createStats }));
 
+for (const direct of [true, false]) test(`${direct ? 'direct' : 'relay'} attachment and tag switches use the target foreground paging mode`, async ({ page }) => {
+  const app = await setup(page, { direct });
+  try {
+    app.config.terminalCodexRuns = { main: null, aux1: '1201:20202', aux2: null };
+    const controls = await page.locator('#workspace-sidebar').isVisible() ? page : page.frameLocator('#desktop-frame');
+    const mode = controls.locator('#history-program');
+    const source = await page.locator('#desktop-frame').getAttribute('src');
+    await expect(mode).toHaveAttribute('aria-pressed', 'false');
+
+    await choose(page, 'new');
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await expect(mode).toHaveAttribute('aria-pressed', 'true');
+    await choose(page, 'new');
+    await expect(page.locator('#input-terminal')).toHaveValue('aux2');
+    await expect(mode).toHaveAttribute('aria-pressed', 'false');
+
+    await choose(page, 'aux1');
+    await expect(page.locator('#input-terminal')).toHaveValue('aux1');
+    await expect(mode).toHaveAttribute('aria-pressed', 'true');
+    expect(app.terminalInputs).toEqual([]);
+    await controls.locator('#history-up').click();
+    await expect.poll(() => app.terminalInputs).toEqual([{ terminalId: 'aux1', text: '\x1b[5~' }]);
+
+    await choose(page, 'main');
+    await expect(page.locator('#input-terminal')).toHaveValue('main');
+    await expect(mode).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.locator('#desktop-frame').getAttribute('src')).toBe(source);
+    expect(app.terminalInputs).toEqual([{ terminalId: 'aux1', text: '\x1b[5~' }]);
+  } finally { await app.close(); }
+});
+
 for (const direct of [true, false]) test(`${direct ? 'direct' : 'relay'} creation keeps its iframe and active connection, selects the new shell and preserves the original draft`, async ({ page }) => {
   const app = await setup(page, { direct }), requests = [];
   try {

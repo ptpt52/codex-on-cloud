@@ -305,7 +305,12 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
         }
       });
       setTimeout(() => {
-        const ready = () => { emit({ type: 'ready', widths: config.terminalWidths, columnAlignment: config.terminalColumnAlignment, codexRun: config.terminalCodexRun }); emit({ type: 'geometry', maxCols: terminalMaxCols }); emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') }); };
+        const ready = () => {
+          const codexRun = config.terminalCodexRuns ? config.terminalCodexRuns[target.terminalId] : config.terminalCodexRun;
+          emit({ type: 'ready', widths: config.terminalWidths, columnAlignment: config.terminalColumnAlignment, codexRun });
+          emit({ type: 'geometry', maxCols: terminalMaxCols });
+          emit({ type: 'output', data: Buffer.from(`\x1b[?2004h模拟文字终端 ${target.terminalId}\r\n中文显示\r\n$ `).toString('base64') });
+        };
         if (terminalReadyHook) void Promise.resolve().then(() => terminalReadyHook(target)).then(ready, () => child.kill()); else ready();
       }, 10);
       return child;
