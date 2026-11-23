@@ -271,6 +271,48 @@ class TerminalHistoryTests(unittest.TestCase):
         return subprocess.run(['tmux', '-S', cls.socket, *args], env=cls.env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3, check=check)
 
+    def test_foreground_codex_tracks_the_executable_across_shell_job_changes(self):
+        target = 'foreground-test:0.0'
+        executable = Path(self.temp.name) / 'codex'
+        shutil.copyfile(shutil.which('sleep'), executable)
+        executable.chmod(0o700)
+        self.run_tmux('new-session', '-d', '-s', 'foreground-test', 'bash --noprofile --norc -i')
+        self.addCleanup(self.run_tmux, 'kill-session', '-t', '=foreground-test', check=False)
+        pane_pid = int(self.run_tmux('display-message', '-p', '-t', target, '#{pane_pid}').stdout)
+
+        def send(text):
+            self.run_tmux('send-keys', '-t', target, '-l', text)
+            self.run_tmux('send-keys', '-t', target, 'Enter')
+
+        def observe(expected):
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                run = terminal.foreground_codex(pane_pid)
+                if expected(run):
+                    return run
+                time.sleep(0.03)
+            self.fail('foreground process did not change')
+
+        send(shlex.join([str(executable), '60']) + ' & echo BACKGROUND-""READY')
+        deadline = time.monotonic() + 3
+        while 'BACKGROUND-READY' not in self.run_tmux('capture-pane', '-p', '-t', target).stdout:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.03)
+        self.assertIsNone(terminal.foreground_codex(pane_pid))
+        send('fg')
+        first = observe(bool)
+        self.run_tmux('send-keys', '-t', target, 'C-z')
+        observe(lambda run: run is None)
+        send('fg')
+        observe(lambda run: run == first)
+        self.run_tmux('send-keys', '-t', target, 'C-c')
+        observe(lambda run: run is None)
+
+        # Simulate older Node runtimes, where the foreground launcher waits for a child.
+        send(shlex.join(['bash', '-c', shlex.join([str(executable), '60']) + ' & wait']))
+        second = observe(bool)
+        self.assertNotEqual(second, first)
+
     def test_new_panes_keep_more_than_2000_rows_with_a_10000_row_bound(self):
         values = self.run_tmux('display-message', '-p', '-t', self.pane, '#{history_limit}:#{history_size}').stdout.strip()
         limit, size = map(int, values.split(':'))

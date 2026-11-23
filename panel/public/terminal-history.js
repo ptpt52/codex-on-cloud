@@ -1,5 +1,5 @@
 // One in-memory xterm buffer: at most 20,000 history rows and 500 columns.
-// Local scrolling never sends input. Program paging is an explicit opt-in.
+// Local scrolling never sends input. Program paging sends keys on user gestures.
 import { parseHistoryStyles, renderHistoryRuns, renderHistoryRunsAsync, highlightHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, historyText, historyMatchRanges, wrapHistoryRows, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
 // Keep the fixed controls across reconnects even while their toolbar belongs
@@ -21,9 +21,23 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   const newer = document.createElement('button'); newer.id = 'history-new-output'; newer.type = 'button'; newer.hidden = true;
   newer.textContent = '有新输出 · 回到实时'; host.appendChild(newer);
   let program = false, reviewing = false, inputPaused = false, disposed = false, pixels = 0, lastPage = -Infinity, gesture, loading, notice = '';
+  let codexRun = null, pagingOverride;
   // Remote program scrolling is independent of the local buffer and toggle.
   // Keep a flag, never a queue or an automatically replayed return key.
   let programScrolled = false;
+
+  function setCodexRun(run) {
+    if (run === codexRun) return;
+    codexRun = run;
+    if (run && pagingOverride?.run !== run) pagingOverride = undefined;
+    program = run !== null && (pagingOverride?.enabled ?? true);
+    programScrolled = false;
+    pixels = 0;
+    gesture = undefined;
+    lastPage = -Infinity;
+    notice = '';
+    update();
+  }
   let archiveOpen = false, archiveAlternate = false, archiveTruncated = false;
   let unseen = false, archiveStyled = false, archiveSimplified = false;
   let view, archiveLocal = false, toolsOpen = false, searchTimer, queryComposing = false, appliedQuery = '', matches = [], groups = [], current = -1, limited = false;
@@ -363,6 +377,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(mode, 'click', () => {
     const next = !program;
     if (toolsOpen) cancelRead(); else resetLocalView();
+    if (codexRun) pagingOverride = { run: codexRun, enabled: next };
     program = next; pixels = 0; gesture = undefined; update();
   });
   listen(up, 'click', () => { if (!pagingDisabled(up)) turn(-1, false, true); });
@@ -484,6 +499,6 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, resize() { if (grid.update() && view) { cancelRender(); search(current >= 0 && toolsOpen); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+  return { update, setCodexRun, resize() { if (grid.update() && view) { cancelRender(); search(current >= 0 && toolsOpen); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); cancelRender(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

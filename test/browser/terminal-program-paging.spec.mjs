@@ -20,6 +20,44 @@ function output(app, text) {
 }
 const firstLine = frame => frame.evaluate(() => window.pagingTerminal.buffer.active.getLine(0)?.translateToString(true));
 
+test('foreground Codex enables paging per run and restores local history on exit', async ({ page }) => {
+  const app = await fixture();
+  app.config.terminalCodexRun = '1200:34567';
+  try {
+    const frame = await login(page, app);
+    const mode = frame.locator('#history-program');
+    const foreground = codexRun => app.terminalChildren.at(-1).stdout.write(`${JSON.stringify({ type: 'foreground', codexRun })}\n`);
+    await expect(mode).toHaveAttribute('aria-pressed', 'true');
+    expect(app.terminalInputs).toEqual([]);
+    await mode.click();
+    const attachments = app.terminalConnections;
+    await frame.evaluate(() => {
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await expect.poll(() => app.terminalConnections).toBeGreaterThan(attachments);
+    await expect(page.locator('#connection-status')).toContainText('终端在线');
+    await expect(mode).toHaveAttribute('aria-pressed', 'false');
+
+    foreground(null);
+    foreground('1200:34567');
+    await frame.locator('#history-up').click();
+    await expect(mode).toHaveAttribute('aria-pressed', 'false');
+    expect(app.terminalInputs).toEqual([]);
+
+    foreground('1200:45678');
+    await expect(mode).toHaveAttribute('aria-pressed', 'true');
+    expect(app.terminalInputs).toEqual([]);
+    await frame.locator('#history-up').click();
+    await expect.poll(() => app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
+
+    foreground(null);
+    await expect(mode).toHaveAttribute('aria-pressed', 'false');
+    await expect(frame.locator('#history-latest')).toBeDisabled();
+    expect(app.terminalInputs.map(value => value.text)).toEqual(['\x1b[5~']);
+  } finally { await app.close(); }
+});
+
 test('program wheels use fine native mouse reports without the page-key throttle, and fall back when mouse encoding is disabled', async ({ page }) => {
   const app = await fixture();
   try {

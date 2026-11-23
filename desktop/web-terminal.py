@@ -339,6 +339,48 @@ def process_state(pid):
     return tuple(int(fields[index]) for index in (2, 3, 4, 5, 19))  # group, session, tty, foreground, birth
 
 
+def foreground_codex(pane_pid):
+    """Return the native Codex instance in this pane's foreground group."""
+    try:
+        pane = process_state(pane_pid)
+        group = pane[3]
+        if not pane[2] or group <= 1:
+            return None
+        leader = process_state(group)
+        if leader[:4] != (group, *pane[1:4]):
+            return None
+
+        def identity(pid, state):
+            if state[:4] != leader[:4]:
+                return None
+            executable = os.path.basename(os.readlink(f'/proc/{pid}/exe'))
+            if executable not in ('codex', 'codex (deleted)'):
+                return None
+            if process_state(pid) == state and process_state(pane_pid) == pane:
+                return f'{pid}:{state[4]}'
+            return None
+
+        run = identity(group, leader)
+        if run is not None:
+            return run
+        # The npm launcher spawns the native executable in its own job group.
+        with open(f'/proc/{group}/task/{group}/children', 'rb') as source:
+            children = source.read(4097)
+        if len(children) > 4096:
+            return None
+        for child in children.split()[:32]:
+            try:
+                pid = int(child)
+                run = identity(pid, process_state(pid))
+                if run is not None:
+                    return run
+            except (OSError, ValueError, IndexError):
+                continue
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def detached_reader(pid, tty):
     """Identify a same-user service which inherited this pane's terminal fds.
 
@@ -568,9 +610,10 @@ def waiting_view(socket, slot):
 def main():
     socket, slot, token = sys.argv[1:4]
     capabilities = sys.argv[4:]
-    if len(capabilities) != len(set(capabilities)) or any(value not in ['--geometry', '--output-flow'] for value in capabilities):
+    if len(capabilities) != len(set(capabilities)) or any(value not in ['--geometry', '--output-flow', '--foreground'] for value in capabilities):
         raise ValueError('invalid capability')
     geometry_enabled = '--geometry' in capabilities
+    foreground_enabled = '--foreground' in capabilities
     output_credit = OutputCredit('--output-flow' in capabilities)
     session = SESSIONS[slot]
     if not socket.startswith('/') or len(socket.encode()) > 100:
@@ -627,13 +670,25 @@ def main():
             if child.poll() is not None or time.monotonic() >= deadline:
                 raise ValueError('terminal target unavailable')
             time.sleep(0.03)
+        pane_pid = int(token.split(':')[1])
+        codex_run = foreground_codex(pane_pid) if foreground_enabled else None
+        foreground_at = time.monotonic() + 0.5
         emit({'type': 'ready', 'columnAlignment': alignment, 'widths': widths,
+              **({'codexRun': codex_run} if foreground_enabled else {}),
               **({'outputWindow': output_credit.window} if output_credit.enabled else {})})
         last_id = 0
         last_width = None
         width_at = 0
         while child.poll() is None:
             resize_notice.poll()
+            if foreground_enabled and time.monotonic() >= foreground_at:
+                observed = foreground_codex(pane_pid)
+                if observed != codex_run:
+                    if not verify():
+                        return
+                    codex_run = observed
+                    emit({'type': 'foreground', 'codexRun': codex_run})
+                foreground_at = time.monotonic() + 0.5
             if geometry_enabled and time.monotonic() >= width_at:
                 if not verify():
                     return

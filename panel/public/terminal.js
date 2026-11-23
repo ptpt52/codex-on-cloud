@@ -154,7 +154,7 @@ function size() {
     if (screenHeight > 0) host.style.setProperty('--terminal-line-height', `${screenHeight / rows}px`);
     history?.resize();
     const sizeKey = `${cols}:${rows}:${widthMode}`;
-    if (ready && !standby && lastSize !== sizeKey && send({ type: 'resize', cols, rows, geometry: true, viewport: widthMode === 'viewport' })) lastSize = sizeKey;
+    if (ready && !standby && lastSize !== sizeKey && send({ type: 'resize', cols, rows, geometry: true, foreground: true, viewport: widthMode === 'viewport' })) lastSize = sizeKey;
     const reportKey = `${cols}:${rows}:${fittedSize.fontSize}`;
     if (lastReport !== reportKey) { lastReport = reportKey; parent.postMessage({ type: 'codex-terminal-size', frame, ...fittedSize }, location.origin); }
   });
@@ -434,6 +434,7 @@ function attachSocket(current) {
         catch { return retire(current); }
       }
       clearTimeout(connectingTimer); connectingTimer = undefined;
+      history?.setCodexRun(value.codexRun ?? null);
       ready = true; historyStyles = value.historyStyles === true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
       if (current.direct) directIssue = '';
       finishSwitch(); reportNetwork(); void refreshNetwork(); scheduleProbe(fastConnect && !probed ? 0 : probeDelay); probed = true;
@@ -445,6 +446,7 @@ function attachSocket(current) {
       return;
     }
     if (value.type === 'health' && ready) { health?.receive(value.nonce); reportNetwork(); void refreshNetwork(); return; }
+    if (value.type === 'foreground' && ready) { history?.setCodexRun(value.codexRun); return; }
     if (value.type === 'geometry' && ready) {
       if (!Number.isInteger(value.maxCols) || value.maxCols < 2 || value.maxCols > 500) return retire(current);
       if (columnLimit !== value.maxCols) { columnLimit = value.maxCols; size(); }

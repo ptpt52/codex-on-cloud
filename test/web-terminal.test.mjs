@@ -251,6 +251,25 @@ test('history styling is explicitly requested; legacy readers remain plain and m
   assert.equal(app.terminalHistoryReads.length, 2); assert.deepEqual(app.terminalInputs, []);
 });
 
+test('foreground changes are sent only after the client enables them', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
+  app.config.terminalCodexRun = null;
+  const { ws, records } = await connected(app); t.after(() => ws.terminate());
+  await until(() => records.some(value => value.type === 'ready'));
+  const child = app.terminalChildren.at(-1);
+  const notify = codexRun => child.stdout.write(`${JSON.stringify({ type: 'foreground', codexRun })}\n`);
+  notify('1500:12345');
+  ws.send(JSON.stringify({ type: 'resize', id: 1, cols: 80, rows: 24, geometry: true }));
+  await until(() => records.filter(value => value.type === 'geometry').length === 2);
+  assert.equal(records.some(value => value.type === 'foreground'), false);
+  ws.send(JSON.stringify({ type: 'resize', id: 2, cols: 80, rows: 24, foreground: true }));
+  await until(() => records.some(value => value.type === 'foreground'));
+  notify(null);
+  await until(() => records.filter(value => value.type === 'foreground').length === 2);
+  assert.deepEqual(records.filter(value => value.type === 'foreground').map(value => value.codexRun), ['1500:12345', null]);
+  assert.deepEqual(app.terminalInputs, []);
+});
+
 test('a helper cannot change a styled snapshot into another format while a read is pending', async t => {
   let entered, release; const started = new Promise(resolve => { entered = resolve; }), hold = new Promise(resolve => { release = resolve; });
   const app = await fixture({ terminalHistory: 'late', terminalHistoryHook: async () => { entered(); await hold; } }); t.after(() => { release(); return app.close(); }); await app.login(); await app.claim();
