@@ -225,6 +225,21 @@ test('center verification requires a separately configured internal listener to 
   assert(calls.includes(internal));
 });
 
+test('entry verification requires the expected response media type before accepting page or health markers', async t => {
+  const c = config(await temporary(t), { role: 'center', nodeId: undefined, services: [] });
+  const request = async target => {
+    switch (new URL(target).pathname) {
+      case '/': return new Response(null);
+      case '/admin/': return new Response('login-form', { headers: { 'content-type': 'text/html-backup' } });
+      case '/healthz': return new Response('{"ok":true}', { headers: { 'content-type': 'application/jsonp' } });
+      default: return new Response('{"nodes":[]}', { headers: { 'content-type': 'Application/JSON; charset=UTF-8' } });
+    }
+  };
+  const report = await verifyDeployment({}, { loadConfig: async () => c, run: goodRun, request });
+  for (const id of ['homepage', 'admin-page', 'entry']) assert.equal(status(report, id), 'fail', id);
+  assert.equal(status(report, 'public-nodes'), 'pass');
+});
+
 test('verification requests never follow redirects, reject non-loopback plaintext and bound actual response bytes', async t => {
   let redirected = 0;
   const server = http.createServer((req, res) => {

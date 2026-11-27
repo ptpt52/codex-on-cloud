@@ -211,9 +211,12 @@ export async function verifyDeployment(options = {}, dependencies = {}) {
   const origin = new URL(config.entry).origin;
   const fetch = (path, options = {}) => request(new URL(path, config.entry), { ca: config.ca, ...options,
     headers: { origin, ...(config.nodeId ? { 'x-codex-node': config.nodeId } : {}), ...options.headers } });
-  const json = async response => {
+  const requireType = (response, expected) => {
     if (response.status !== 200) throw failure('http_status', response.status);
-    if (!response.headers.get('content-type')?.includes('application/json')) throw failure('response_format');
+    if (response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== expected) throw failure('response_format');
+  };
+  const json = async response => {
+    requireType(response, 'application/json');
     try { return await response.json(); } catch { throw failure('response_format'); }
   };
   const ready = await attempt('entry', async () => {
@@ -234,8 +237,13 @@ export async function verifyDeployment(options = {}, dependencies = {}) {
       return value.ok === true && value.isolated === true;
     }, '中心独立回环监听已就绪。', '在中心主机执行验收，核对 SELFHOST_INTERNAL_PORT、Caddy forward_auth 和 frps 插件地址；用完整中心 install 同步升级配置。');
     else add('internal-listener', 'manual', '当前配置使用旧版共享监听；完整运行中心 install 可启用独立回环监听，并同步 Caddy/frps 配置。');
-    await attempt('homepage', async () => { const response = await fetch(''); return response.status === 200 && response.headers.get('content-type')?.includes('text/html') && (await response.text()).includes('/admin/'); }, '公开首页提供管理入口。', '检查 Caddy 首页路由。');
-    await attempt('admin-page', async () => { const response = await fetch('admin/'); return response.status === 200 && response.headers.get('content-type')?.includes('text/html') && (await response.text()).includes('login-form'); }, '管理子路径登录页可访问。', '核对 /admin/ 路由和管理网段白名单；从允许的网络执行。');
+    const pageContains = async (path, marker) => {
+      const response = await fetch(path);
+      requireType(response, 'text/html');
+      return (await response.text()).includes(marker);
+    };
+    await attempt('homepage', () => pageContains('', '/admin/'), '公开首页提供管理入口。', '检查 Caddy 首页路由。');
+    await attempt('admin-page', () => pageContains('admin/', 'login-form'), '管理子路径登录页可访问。', '核对 /admin/ 路由和管理网段白名单；从允许的网络执行。');
     await attempt('public-nodes', async () => Array.isArray((await json(await fetch('api/public/nodes'))).nodes), '匿名节点列表接口可访问。', '检查中心服务和公开节点列表接口。');
   }
   let helpers;
