@@ -66,7 +66,7 @@ function reply(res, status, data, headers = {}) {
 }
 
 async function fetchHelper(url, options) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, { ...options, redirect: 'manual' });
   // The helper confirms a completed operation or full download with HTTP 200.
   if (response.status !== 200 && response.status < 400) {
     await response.body?.cancel();

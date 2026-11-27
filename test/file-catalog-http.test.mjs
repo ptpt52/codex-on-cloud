@@ -44,3 +44,16 @@ test('oversized helper metadata is bounded before it can fill a directory snapsh
   app.config.fileAgentUrl = app.config.agentUrl;
   assert.equal((await app.request('/api/files?page=1')).status, 200);
 });
+
+test('the panel reports a moved helper endpoint without requesting a different catalog', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  const paths = [];
+  app.config.fileAgentUrl = await upstream(t, (req, res) => {
+    paths.push(req.url);
+    if (req.url === '/files') res.writeHead(307, { location: '/new-catalog' });
+    res.end(JSON.stringify({ files: [] }));
+  });
+  const response = await app.request('/api/files');
+  assert.equal(response.status, 502);
+  assert.deepEqual(paths, ['/files']);
+});
