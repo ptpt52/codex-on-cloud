@@ -31,6 +31,16 @@ test('diagnostics require login and expose only active connection counts', async
   assert.equal(upstream.headers.authorization, undefined);
 });
 
+test('file readiness refuses an oversized chunked helper record', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  const url = await endpoint(t, (_req, res) => {
+    res.write(' '.repeat(4096));
+    res.end(JSON.stringify({ ready: true, uploadProtocol: 1, quotaProtocol: 1 }));
+  });
+  app.config.fileAgentUrl = new URL(url).origin;
+  assert.deepEqual((await (await app.request('/api/diagnostics')).json()).files, { ready: false });
+});
+
 test('file readiness stays independent of unit availability and an active unit does not guarantee a working interface', async t => {
   const app = await fixture(); t.after(() => app.close());
   app.config.fileAgentUrl = 'http://127.0.0.1:1';

@@ -75,8 +75,8 @@ async function fetchHelper(url, options) {
   return response;
 }
 
-async function fileControlResult(response) {
-  const bytes = await readResponseBytes(response, 4096, '文件操作响应超过 4 KiB');
+async function helperJSON(response, maximum = 4096, message = '本机服务响应超过 4 KiB') {
+  const bytes = await readResponseBytes(response, maximum, message);
   return JSON.parse(bytes.toString('utf8'));
 }
 
@@ -274,7 +274,7 @@ export async function createPanel(config) {
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
-    const data = path === '/files' ? JSON.parse((await readResponseBytes(response, FILE_CATALOG_LIMITS.snapshotBytes, '文件列表元数据超过 2 MiB')).toString('utf8')) : await response.json();
+    const data = path === '/files' ? await helperJSON(response, FILE_CATALOG_LIMITS.snapshotBytes, '文件列表元数据超过 2 MiB') : await helperJSON(response);
     if (!response.ok) throw Object.assign(new HttpError(response.status, data.error || '桌面操作失败'), { outcome: data.outcome || (method !== 'GET' && response.status >= 500 ? 'unknown' : 'rejected') });
     return data;
   }
@@ -300,7 +300,7 @@ export async function createPanel(config) {
     const promise = (async () => {
       try {
         const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/health`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
-        const result = await response.json();
+        const result = await helperJSON(response);
         return response.ok && result.ready === true && result.uploadProtocol === 1 && result.quotaProtocol === 1;
       } catch { return false; }
     })();
@@ -411,10 +411,9 @@ export async function createPanel(config) {
       if (!backendVersionCache || backendVersionCache.at < Date.now() - 3000) {
         const readFileVersion = async () => {
           const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/backend-version`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
-          const chunks = []; let size = 0;
-          for await (const chunk of response.body) { size += chunk.length; if (size > 4096) throw Error('version response too large'); chunks.push(chunk); }
+          const value = await helperJSON(response);
           if (!response.ok) throw Error('version unavailable');
-          return JSON.parse(Buffer.concat(chunks).toString());
+          return value;
         };
         const reads = { panel: Promise.resolve(backendVersion), manager: managerRequest(config, '/backend-version', undefined, 1500), files: readFileVersion() };
         if (config.mode !== 'terminal') reads.actions = managerRequest({ ...config, managerSocket: config.desktopActionsSocket }, '/backend-version', undefined, 1500);
@@ -730,7 +729,7 @@ export async function createPanel(config) {
         const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'DELETE', headers: { authorization: `Bearer ${config.agentSecret}`, 'if-match': '"' + version + '"' }, signal,
         });
-        const result = await fileControlResult(response); transfer.check(); requireWrite(req);
+        const result = await helperJSON(response); transfer.check(); requireWrite(req);
         if (response.status === 200) fileDeleteResult(result, name);
         return reply(res, response.status, result);
       } finally { transfer.finish(); }
@@ -782,7 +781,7 @@ export async function createPanel(config) {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
-        const result = await fileControlResult(response); transfer.check();
+        const result = await helperJSON(response); transfer.check();
         if (response.status === 200) uploadResult(result);
         // Older helpers omit the outcome on their explicit pre-commit errors.
         if ([400, 409, 412, 413, 429, 507].includes(response.status) && result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
@@ -793,7 +792,7 @@ export async function createPanel(config) {
       });
       transfer.check();
       if (!response.ok) {
-        const result = await fileControlResult(response);
+        const result = await helperJSON(response);
         transfer.check();
         if (response.status >= 400 && response.status < 500 && response.status !== 408 &&
             result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
