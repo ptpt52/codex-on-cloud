@@ -172,6 +172,31 @@ test('an old helper cannot silently bypass safe uploads', async t => {
   assert.equal(result.status, 503); assert.match((await result.json()).error, /更新/); assert.equal(puts, 0);
 });
 
+test('HTTPS uploads require a complete success reply from the file helper', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  let uploads = 0, complete = false;
+  const helper = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* consume the admitted upload */ }
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/files') return res.end(JSON.stringify({ files: [], uploadProtocol: 1 }));
+    uploads++;
+    res.end(JSON.stringify(complete ? { ok: true, name: 'upload (2).bin', size: 3 } : { ok: true }));
+  });
+  helper.listen(0, '127.0.0.1'); await once(helper, 'listening');
+  t.after(() => new Promise(resolve => { helper.close(resolve); helper.closeAllConnections(); }));
+  app.config.fileAgentUrl = 'http://127.0.0.1:' + helper.address().port;
+  const upload = () => app.request('/api/files/upload.bin', { method: 'PUT', raw: 'abc', headers: uploadHeaders({ mode: 'rename' }) });
+  const unknown = await upload();
+  assert.equal(unknown.status, 502);
+  assert.equal((await unknown.json()).outcome, 'unknown');
+  assert.equal(uploads, 1);
+  complete = true;
+  const saved = await upload();
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { ok: true, name: 'upload (2).bin', size: 3 });
+  assert.equal(uploads, 2);
+});
+
 test('guest rename consumes a new file quota while versioned replacement credits only its original file', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login(); await app.claim();
   assert.equal((await app.request('/api/security/temporary-account', { method: 'POST', body: { enabled: true, username: 'visitor', password: 'temporary-test-password' } })).status, 200);

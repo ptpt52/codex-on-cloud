@@ -22,7 +22,7 @@ import { attachRTCTerminal } from './rtc-terminal.mjs';
 import { createForwarding } from './forward.mjs';
 import { createForwardAgents } from './forward-agents.mjs';
 import { createForwardDownloads } from './forward-downloads.mjs';
-import { readUploadHeaders, uploadHeaders, validTransferName, validFileVersion, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './public/file-upload.js';
+import { readUploadHeaders, uploadHeaders, uploadResult, validTransferName, validFileVersion, UPLOAD_PROTOCOL, FILE_DELETE_PROTOCOL, fileDeleteOptions, fileDeleteResult } from './public/file-upload.js';
 import { createStreamSession, STREAM_ID } from './stream-session.mjs';
 import { vncUpstream, terminalUpstream } from './stream-upstream.mjs';
 import { streamRTC } from './stream-rtc.mjs';
@@ -773,6 +773,7 @@ export async function createPanel(config) {
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
         const result = await fileControlResult(response); transfer.check();
+        if (response.status === 200) uploadResult(result);
         // Older helpers omit the outcome on their explicit pre-commit errors.
         if ([400, 409, 412, 413, 429, 507].includes(response.status) && result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
         return reply(res, response.status, result);
