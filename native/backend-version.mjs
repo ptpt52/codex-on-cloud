@@ -44,9 +44,11 @@ async function bytes(root, path) {
   } finally { await file.close(); }
 }
 const ENTRIES = Object.freeze({ panel: 'panel/main.mjs', manager: 'native/manager.mjs', actions: 'native/desktop-worker.mjs', center: 'selfhost/main.mjs' });
+const PANEL_TERMINAL_HELPER = 'desktop/web-terminal.py';
 export async function readBackendRevisions(root = ROOT, components = [...Object.keys(ENTRIES), 'files']) {
   if (!Array.isArray(components) || !components.length || components.length > 5 || components.some(name => name !== 'files' && !Object.hasOwn(ENTRIES, name))) throw Error('后台组件无效');
   const paths = ['package.json', 'package-lock.json'];
+  if (components.includes('panel')) paths.push(PANEL_TERMINAL_HELPER);
   for (const directory of ['panel', 'native', 'selfhost', 'gateway', 'panel/public', 'scripts']) {
     const entries = await readdir(join(root, directory), { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
     if (entries.length > BACKEND_VERSION_LIMITS.files) throw Error('后台源码目录超过核算范围');
@@ -70,6 +72,9 @@ export async function readBackendRevisions(root = ROOT, components = [...Object.
       for (const specifier of graph[path]) if (specifier.startsWith('.')) visit(posix.normalize(posix.join(posix.dirname(path), specifier)));
     }
     visit(entry);
+    // The panel spawns a persistent PTY helper per attachment. It is a runtime
+    // dependency even though it does not appear in the JavaScript import graph.
+    if (component === 'panel') selected.add(PANEL_TERMINAL_HELPER);
     const hash = createHash('sha256').update('codex-backend-v1:' + component + '\0');
     for (const path of [...selected].sort()) { const content = sources.get(path); hash.update(path + '\0' + content.length + '\0').update(content); }
     revisions[component] = hash.digest('hex');

@@ -53,7 +53,7 @@ sudo /opt/codex-selfhost/bin/node \
 
 源码提交标识只标识本机仓库，**不证明后台进程已加载该提交**。源码未提交、界面匹配、服务 active 和后台代码生效分别报告；后台更新范围按[维护指南](operations.md)核对。
 
-`--login` 会读取实际节点的 `/api/backend-version`，中心则读取 `/admin/api/backend-version`。Node 服务按各自入口的模块依赖和锁文件计算源码摘要，文件服务使用 Python 源码摘要；每个进程在启动时固定摘要、启动时间和 PID，界面热更新不会刷新这些记录。验收将它们与本机源码比较，`deployment.backend` 分组件报告 `match`、`mismatch` 或 `unavailable`。旧服务未提供版本接口时不会记为通过；按维护指南更新对应服务后重新核验，不需要为核验重启原桌面或终端任务。
+`--login` 会读取实际节点的 `/api/backend-version`，中心则读取 `/admin/api/backend-version`。Node 服务按各自入口的模块依赖和锁文件计算源码摘要。面板摘要还涵盖网页终端的 Python 助手，文件服务使用自身的 Python 源码摘要。每个进程在启动时固定摘要、启动时间和 PID，界面热更新不会刷新这些记录。验收将它们与本机源码比较，`deployment.backend` 分组件报告 `match`、`mismatch` 或 `unavailable`。旧服务未提供版本接口时不会记为通过；按维护指南更新对应服务后重新核验，不需要为核验重启原桌面或终端任务。
 
 后台摘要不包含界面专用资源、运行配置、凭据、工作区或助手包；它验证上述服务的启动代码，不能代替真实设备输入、网络拓扑和已下载助手的验收。
 

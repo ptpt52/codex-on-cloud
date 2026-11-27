@@ -9,7 +9,7 @@ import { fixture } from './fixture.mjs';
 async function sourceTree(t) {
   const root = await mkdtemp(join(tmpdir(), 'codex-backend-version-')); t.after(() => rm(root, { recursive: true, force: true }));
   for (const path of ['panel/public', 'native', 'selfhost', 'gateway', 'desktop', 'scripts']) await mkdir(join(root, path), { recursive: true });
-  for (const path of ['package.json', 'package-lock.json', 'panel/main.mjs', 'native/manager.mjs', 'native/desktop-worker.mjs', 'selfhost/main.mjs', 'desktop/agent.py', 'panel/public/file-upload.js']) await writeFile(join(root, path), 'initial');
+  for (const path of ['package.json', 'package-lock.json', 'panel/main.mjs', 'native/manager.mjs', 'native/desktop-worker.mjs', 'selfhost/main.mjs', 'desktop/agent.py', 'desktop/web-terminal.py', 'panel/public/file-upload.js']) await writeFile(join(root, path), 'initial');
   await writeFile(join(root, 'panel/main.mjs'), "import './public/file-upload.js';");
   return root;
 }
@@ -25,6 +25,13 @@ test('backend revisions track backend/shared sources separately from UI, state a
   await writeFile(join(root, 'native/manager.mjs'), "import './new-backend.mjs';");
   const changed = await readBackendRevisions(root);
   assert.notEqual(changed.manager, helper.manager); assert.equal(changed.actions, helper.actions);
+});
+test('editing the spawned terminal helper changes the panel deployment revision', async t => {
+  const root = await sourceTree(t), before = await readBackendRevisions(root);
+  await writeFile(join(root, 'desktop/web-terminal.py'), 'updated terminal helper');
+  const after = await readBackendRevisions(root);
+  assert.notEqual(after.panel, before.panel);
+  assert.deepEqual({ ...after, panel: before.panel }, before);
 });
 test('backend source reads reject links and oversize files', async t => {
   const root = await sourceTree(t);
