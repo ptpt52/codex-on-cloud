@@ -62,7 +62,7 @@ test('old helpers reject deletion and incomplete successful deletion is unknown 
   const result = await remove(); assert.equal(result.status, 502); assert.equal((await result.json()).outcome, 'unknown'); assert.equal(deletes, 1);
 });
 
-test('HTTPS file controls reject oversized helper replies without replaying the operation', async t => {
+for (const invalid of ['oversized reply', 'unexpected success status']) test(`HTTPS file operations reject a helper's ${invalid} without replay`, async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login();
   const methods = [];
   const helper = http.createServer(async (req, res) => {
@@ -70,6 +70,14 @@ test('HTTPS file controls reject oversized helper replies without replaying the 
     res.setHeader('content-type', 'application/json');
     if (req.url === '/files') return res.end(JSON.stringify({ files: [], uploadProtocol: 1, deleteProtocol: 1 }));
     methods.push(req.method);
+    if (invalid === 'unexpected success status') {
+      if (req.method === 'GET') {
+        res.writeHead(206, { 'content-range': 'bytes 0-2/6' });
+        return res.end('abc');
+      }
+      res.statusCode = 202;
+      return res.end(JSON.stringify({ ok: true, name: 'large-reply.bin' }));
+    }
     if (req.method === 'GET') res.statusCode = 404;
     res.write('{"ok":true,"name":"large-reply.bin","padding":"');
     res.end('x'.repeat(5000) + '"}');

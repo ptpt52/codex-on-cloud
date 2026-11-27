@@ -65,6 +65,16 @@ function reply(res, status, data, headers = {}) {
   res.end(JSON.stringify(data));
 }
 
+async function fetchHelper(url, options) {
+  const response = await fetch(url, options);
+  // The helper confirms a completed operation or full download with HTTP 200.
+  if (response.status !== 200 && response.status < 400) {
+    await response.body?.cancel();
+    throw Object.assign(new HttpError(502, '本机服务响应状态异常，结果未确认'), { outcome: 'unknown' });
+  }
+  return response;
+}
+
 async function fileControlResult(response) {
   const bytes = await readResponseBytes(response, 4096, '文件操作响应超过 4 KiB');
   return JSON.parse(bytes.toString('utf8'));
@@ -259,7 +269,7 @@ export async function createPanel(config) {
     return state.stream;
   }
   async function agent(path, { method = 'GET', body, signal } = {}) {
-    const response = await fetch(`${path === '/files' ? config.fileAgentUrl || config.agentUrl : config.agentUrl}${path}`, {
+    const response = await fetchHelper(`${path === '/files' ? config.fileAgentUrl || config.agentUrl : config.agentUrl}${path}`, {
       method, signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(6000)]),
       headers: { authorization: `Bearer ${config.agentSecret}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
@@ -289,7 +299,7 @@ export async function createPanel(config) {
     if (fileHealthCache && fileHealthCache.at > Date.now() - 3000) return fileHealthCache.promise;
     const promise = (async () => {
       try {
-        const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/health`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
+        const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/health`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
         const result = await response.json();
         return response.ok && result.ready === true && result.uploadProtocol === 1 && result.quotaProtocol === 1;
       } catch { return false; }
@@ -400,7 +410,7 @@ export async function createPanel(config) {
       if (requireSession(req).role === 'temporary') throw new HttpError(403, '此操作需要管理员账号');
       if (!backendVersionCache || backendVersionCache.at < Date.now() - 3000) {
         const readFileVersion = async () => {
-          const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/backend-version`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
+          const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/backend-version`, { signal: AbortSignal.timeout(1500), headers: { authorization: `Bearer ${config.agentSecret}` } });
           const chunks = []; let size = 0;
           for await (const chunk of response.body) { size += chunk.length; if (size > 4096) throw Error('version response too large'); chunks.push(chunk); }
           if (!response.ok) throw Error('version unavailable');
@@ -717,7 +727,7 @@ export async function createPanel(config) {
         const listed = await agent('/files', { signal }); transfer.check(); requireWrite(req);
         if (listed.deleteProtocol !== FILE_DELETE_PROTOCOL) throw new HttpError(503, '文件服务需要更新后才能删除文件');
         transfer.dispatch();
-        const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
+        const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'DELETE', headers: { authorization: `Bearer ${config.agentSecret}`, 'if-match': '"' + version + '"' }, signal,
         });
         const result = await fileControlResult(response); transfer.check(); requireWrite(req);
@@ -768,7 +778,7 @@ export async function createPanel(config) {
         }
         const limiter = uploadStream = new Transform({ transform(chunk, _encoding, callback) { this.total = (this.total || 0) + chunk.length; try { if (this.total > MAX_UPLOAD) throw Error('文件过大'); transfer.advance(chunk.length); callback(null, chunk); } catch (error) { callback(error); } } });
         transfer.dispatch();
-        const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
+        const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
@@ -778,7 +788,7 @@ export async function createPanel(config) {
         if ([400, 409, 412, 413, 429, 507].includes(response.status) && result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
         return reply(res, response.status, result);
       }
-      const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
+      const response = await fetchHelper(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
         headers: { authorization: `Bearer ${config.agentSecret}`, ...(version ? { 'if-match': '"' + version + '"' } : {}) }, signal: transfer.signal,
       });
       transfer.check();
