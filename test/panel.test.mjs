@@ -76,11 +76,11 @@ test('Chinese input crosses the authenticated helper without shell interpretatio
 test('streamed uploads and downloads preserve bytes and reject traversal/oversized requests', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login();
   const bytes = Buffer.from('中文文件\0\xff');
-  const name = encodeURIComponent('项目资料.txt');
+  const name = encodeURIComponent("项目资料's (2)*.txt");
   assert.equal((await app.request(`/api/files/${name}`, { method: 'PUT', raw: bytes })).status, 200);
   const response = await app.request(`/api/files/${name}`);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
-  assert.match(response.headers.get('content-disposition'), /attachment/);
+  assert.equal(response.headers.get('content-disposition'), "attachment; filename*=UTF-8''" + encodeURIComponent('项目资料') + '%27s%20%282%29%2A.txt');
   assert.equal((await app.request('/api/files/a%2Fb', { method: 'PUT', raw: bytes })).status, 400);
   assert.equal((await app.request(`/api/files/${name}`, { method: 'PUT', raw: bytes, headers: { 'x-csrf-token': '' } })).status, 403);
   const oversized = await new Promise(resolve => {

@@ -794,7 +794,8 @@ export async function createPanel(config) {
       const length = response.headers.get('content-length');
       if (length !== null && Number(length) > MAX_UPLOAD) transfer.extendDownloadDeadline();
       transfer.downloadProgress();
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}), ...(/^"[a-f0-9]{64}"$/.test(etag || '') ? { etag } : {}) });
+      const filename = encodeURIComponent(name).replace(/['()*]/g, char => '%' + char.charCodeAt(0).toString(16).toUpperCase());
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-disposition': `attachment; filename*=UTF-8''${filename}`, ...(response.headers.has('content-length') ? { 'content-length': response.headers.get('content-length') } : {}), ...(/^"[a-f0-9]{64}"$/.test(etag || '') ? { etag } : {}) });
       await pipeline(response.body, async function* (source) {
         for await (const bytes of source) {
           transfer.downloadProgress();
