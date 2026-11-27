@@ -62,6 +62,31 @@ test('old helpers reject deletion and incomplete successful deletion is unknown 
   const result = await remove(); assert.equal(result.status, 502); assert.equal((await result.json()).outcome, 'unknown'); assert.equal(deletes, 1);
 });
 
+test('HTTPS file controls reject oversized helper replies without replaying the operation', async t => {
+  const app = await fixture(); t.after(() => app.close()); await app.login();
+  const methods = [];
+  const helper = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* consume the admitted upload */ }
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/files') return res.end(JSON.stringify({ files: [], uploadProtocol: 1, deleteProtocol: 1 }));
+    methods.push(req.method);
+    if (req.method === 'GET') res.statusCode = 404;
+    res.write('{"ok":true,"name":"large-reply.bin","padding":"');
+    res.end('x'.repeat(5000) + '"}');
+  });
+  helper.listen(0, '127.0.0.1'); await once(helper, 'listening');
+  t.after(() => new Promise(resolve => { helper.close(resolve); helper.closeAllConnections(); }));
+  app.config.fileAgentUrl = 'http://127.0.0.1:' + helper.address().port;
+  const remove = await app.request('/api/files/delete', { method: 'POST', body: { name: 'large-reply.bin', version: 'a'.repeat(64) } });
+  const upload = await app.request('/api/files/large-reply.bin', { method: 'PUT', raw: Buffer.from('abc') });
+  const download = await app.request('/api/files/large-reply.bin');
+  for (const response of [remove, upload, download]) {
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).outcome, 'unknown');
+  }
+  assert.deepEqual(methods, ['DELETE', 'PUT', 'GET']);
+});
+
 test('a caller cancellation budget cannot extend the local helper deadline before deletion', async t => {
   const app = await fixture(); t.after(() => app.close()); await app.login();
   let deletes = 0;

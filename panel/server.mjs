@@ -65,6 +65,11 @@ function reply(res, status, data, headers = {}) {
   res.end(JSON.stringify(data));
 }
 
+async function fileControlResult(response) {
+  const bytes = await readResponseBytes(response, 4096, '文件操作响应超过 4 KiB');
+  return JSON.parse(bytes.toString('utf8'));
+}
+
 // Apply the same admission bounds to TCP and private Tunnel listeners. File
 // streams keep their longer deadline independently of the JSON reader budget.
 function createHTTP(handler) {
@@ -715,7 +720,7 @@ export async function createPanel(config) {
         const response = await fetch(`${config.fileAgentUrl || config.agentUrl}/files/${encodeURIComponent(name)}`, {
           method: 'DELETE', headers: { authorization: `Bearer ${config.agentSecret}`, 'if-match': '"' + version + '"' }, signal,
         });
-        const result = await response.json(); transfer.check(); requireWrite(req);
+        const result = await fileControlResult(response); transfer.check(); requireWrite(req);
         if (response.status === 200) fileDeleteResult(result, name);
         return reply(res, response.status, result);
       } finally { transfer.finish(); }
@@ -767,7 +772,7 @@ export async function createPanel(config) {
           method: 'PUT', headers: { authorization: `Bearer ${config.agentSecret}`, 'content-length': String(length), 'content-type': 'application/octet-stream', ...uploadHeaders(upload), ...(session.role === 'temporary' ? { 'x-codex-upload-quota': 'temporary-v1' } : {}) },
           body: req.pipe(limiter), duplex: 'half', signal: transfer.signal,
         });
-        const result = await response.json(); transfer.check();
+        const result = await fileControlResult(response); transfer.check();
         // Older helpers omit the outcome on their explicit pre-commit errors.
         if ([400, 409, 412, 413, 429, 507].includes(response.status) && result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
         return reply(res, response.status, result);
@@ -777,7 +782,7 @@ export async function createPanel(config) {
       });
       transfer.check();
       if (!response.ok) {
-        const result = await response.json();
+        const result = await fileControlResult(response);
         transfer.check();
         if (response.status >= 400 && response.status < 500 && response.status !== 408 &&
             result && typeof result === 'object' && !Array.isArray(result)) result.outcome ??= 'rejected';
