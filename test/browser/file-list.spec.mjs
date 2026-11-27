@@ -77,6 +77,18 @@ test('each download link announces its file name', async ({ page }) => {
   } finally { await app.close(); }
 });
 
+test('file sizes distinguish an empty file from a nonempty file', async ({ page }) => {
+  const app = await fixture({ mode: 'terminal' });
+  try {
+    app.files.set('empty.txt', Buffer.alloc(0));
+    app.files.set('one-byte.txt', Buffer.from('a'));
+    await login(page, app);
+    await page.locator('#files-button').click();
+    await expect(page.locator('.file-row').filter({ hasText: 'empty.txt' })).toContainText('0 KiB');
+    await expect(page.locator('.file-row').filter({ hasText: 'one-byte.txt' })).toContainText('1 KiB');
+  } finally { await app.close(); }
+});
+
 test('a stalled directory read times out and can be refreshed without replaying uploads', async ({ page }) => {
   const app = await fixture({ mode: 'terminal' }); let release, stall = true;
   const gate = new Promise(resolve => { release = resolve; });

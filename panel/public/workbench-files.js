@@ -10,7 +10,7 @@ export function createWorkbenchFiles({ $, api, action, toast, state, serviceLink
   let fileTransfer, fileDeletion, deleteSupported = false, filePathCopyBusy = false, filePathGeneration = 0, disposed = false;
   const listeners = [];
   const listen = (element, type, handler) => { element.addEventListener(type, handler); listeners.push(() => element.removeEventListener(type, handler)); };
-  function sizeLabel(size) { return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(size / 1024))} KiB`; }
+  function sizeLabel(size) { return size >= 1048576 ? `${(size / 1048576).toFixed(1)} MiB` : `${Math.ceil(size / 1024)} KiB`; }
   const fileURLs = new Map();
   const fileProgress = createFileProgress({ panel: $('file-progress'), title: $('file-progress-title'), meter: $('file-progress-meter'), detail: $('file-progress-detail'), cancel: $('cancel-file-transfer') });
   function clearFileURLs() { for (const [url, timer] of fileURLs) { clearTimeout(timer); URL.revokeObjectURL(url); } fileURLs.clear(); }
