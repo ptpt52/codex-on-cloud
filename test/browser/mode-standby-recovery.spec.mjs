@@ -68,15 +68,34 @@ test('a fully warmed relay desktop can resume its fresh frame through its health
   const app = await fixture({ rfb: true, rfbSize: { width: 160, height: 100 }, seamless: true, webrtc: true, fastConnect: true,
     rfbResumeHook: () => new Promise(resolve => { release = resolve; pending.add(resolve); }) });
   await page.addInitScript(() => {
-    if (window !== parent) return;
-    localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, modeStandby: true, mode: 'terminal', networkDebug: true }));
-    window.addEventListener('message', event => {
-      if (event.origin !== location.origin || event.source !== document.querySelector('#standby-frame')?.contentWindow || event.data?.type !== 'codex-network-event') return;
-      const value = event.data.event;
-      if (value?.type === 'first-frame') window.parkedPixels = true;
-      if (value?.type === 'direct-ready') window.parkedDirect = true;
-      if (value?.type === 'path-active') window.parkedPath = value.path;
-    });
+    if (window === parent) {
+      localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, modeStandby: true, mode: 'terminal', networkDebug: true }));
+      window.addEventListener('message', event => {
+        if (event.origin !== location.origin || event.source !== document.querySelector('#standby-frame')?.contentWindow || event.data?.type !== 'codex-network-event') return;
+        const value = event.data.event;
+        if (value?.type === 'first-frame') window.parkedPixels = true;
+        if (value?.path === 'direct' && value?.type === 'probe-waiting') window.parkedDirectWait = value.reason;
+        if (value?.path === 'direct' && value?.type === 'path-lost') window.parkedDirectWait = '';
+        if (value?.type === 'path-active') window.parkedPath = value.path;
+      });
+      return;
+    }
+    if (!['/desktop/index.html', '/terminal/index.html'].includes(location.pathname)) return;
+    // An unthrottled localhost relay can win the latency comparison on CI.
+    // Delay only its health replies to make the direct candidate preferable
+    // without delaying framebuffer data or changing the handoff protocol.
+    const Native = WebSocket;
+    window.WebSocket = class extends Native {
+      constructor(...args) {
+        super(...args);
+        if (new URL(this.url).pathname !== '/session/connect') return;
+        this.addEventListener('message', event => {
+          if (!event.isTrusted || typeof event.data !== 'string' || JSON.parse(event.data).type !== 'pong') return;
+          event.stopImmediatePropagation();
+          setTimeout(() => this.dispatchEvent(new MessageEvent('message', { data: event.data })), 350);
+        });
+      }
+    };
   });
   // Establish the slow parked writer and finish the active offer first. This
   // case checks frame admission, independently of the server's offer quota.
@@ -86,7 +105,7 @@ test('a fully warmed relay desktop can resume its fresh frame through its health
     await expect(page.locator('#connection-status')).toContainText('终端在线');
     await expect.poll(() => page.evaluate(() => window.parkedPixels)).toBe(true);
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 15000 }); allowOffer();
-    await expect.poll(() => page.evaluate(() => ({ direct: !!window.parkedDirect, path: window.parkedPath })), { timeout: 10000 }).toEqual({ direct: true, path: 'relay' });
+    await expect.poll(() => page.evaluate(() => ({ waiting: window.parkedDirectWait, path: window.parkedPath })), { timeout: 10000 }).toEqual({ waiting: 'standby', path: 'relay' });
     const source = await page.locator('#standby-frame').getAttribute('src'), frame = page.frames().find(child => child.url().endsWith(source));
     await activate(page, 'desktop'); await expect.poll(() => typeof release).toBe('function');
     await expect(page.locator('#diag-transport')).toContainText('WebRTC', { timeout: 4500 });
