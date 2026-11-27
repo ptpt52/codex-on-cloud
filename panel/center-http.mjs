@@ -40,8 +40,9 @@ export function centerRequest(target, { ca, timeout = 10000, ...options } = {}) 
     });
     // Socket inactivity alone lets a slow drip extend a control operation
     // indefinitely. One absolute budget includes DNS, TLS, headers and body.
-    timer = setTimeout(() => request.destroy(Error('中心请求超时')), timeout);
-    request.on('timeout', () => request.destroy(Error('中心请求超时')));
+    const expire = () => request.destroy(Object.assign(Error('中心请求超时'), { code: 'ETIMEDOUT' }));
+    timer = setTimeout(expire, timeout);
+    request.on('timeout', expire);
     // agent:false always creates a new socket. Before TCP/TLS establishment no
     // HTTP request can have reached the center; later errors remain unknown.
     request.on('socket', socket => socket.once(url.protocol === 'https:' ? 'secureConnect' : 'connect', () => { connected = true; }));

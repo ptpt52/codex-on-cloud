@@ -21,7 +21,7 @@ test('center deadline covers a response that keeps sending bytes', async t => {
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  await assert.rejects(centerRequest(`http://127.0.0.1:${server.address().port}`, { timeout: 80, signal: AbortSignal.timeout(1500) }), /中心请求超时/);
+  await assert.rejects(centerRequest(`http://127.0.0.1:${server.address().port}`, { timeout: 80, signal: AbortSignal.timeout(1500) }), { message: '中心请求超时', code: 'ETIMEDOUT' });
 });
 
 test('loopback URL validation agrees on IPv4, localhost and bracketed IPv6 without admitting remote HTTP', () => {
