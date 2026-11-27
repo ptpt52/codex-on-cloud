@@ -176,7 +176,21 @@ func TestSerialSubprocessHasBoundedOpenAndAlwaysReaps(t *testing.T) {
 	if _, err = io.ReadFull(p, actual); err != nil || !bytes.Equal(actual, payload) {
 		t.Fatal("child bytes changed", err)
 	}
-	p.Close()
+	// The device can finish before the network reader asks for its final bytes.
+	defer p.Close()
+	if _, err = p.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	p.input.Close()
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not exit at EOF")
+	}
+	tail, err := io.ReadAll(p)
+	if err != nil || !bytes.Equal(tail, payload) {
+		t.Fatalf("serial worker tail after exit: got %x, error %v", tail, err)
+	}
 	p.Close()
 	if p.cmd.ProcessState == nil {
 		t.Fatal("device process not reaped")

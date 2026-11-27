@@ -75,7 +75,7 @@ type serialProcess struct {
 	output io.ReadCloser
 	reader *bufio.Reader
 	once   sync.Once
-	done   chan error
+	done   chan struct{}
 }
 
 func (p *serialProcess) Read(b []byte) (int, error)  { return p.reader.Read(b) }
@@ -92,23 +92,32 @@ func (p *serialProcess) Close() error {
 	return nil
 }
 func startSerialCommand(ctx context.Context, cmd *exec.Cmd, config *serialConfig) (*serialProcess, error) {
+	// Wait reaps the worker immediately. Own its stdout pipe so Wait cannot
+	// close the read end while the network consumer still has bytes to drain.
+	output, writer, err := os.Pipe()
+	if err != nil {
+		return nil, failure("serial_open_failed")
+	}
 	input, err := cmd.StdinPipe()
 	if err != nil {
+		output.Close()
+		writer.Close()
 		return nil, failure("serial_open_failed")
 	}
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		input.Close()
-		return nil, failure("serial_open_failed")
-	}
+	cmd.Stdout = writer
 	cmd.Stderr = io.Discard
-	if err = cmd.Start(); err != nil {
+	err = cmd.Start()
+	writer.Close()
+	if err != nil {
 		input.Close()
 		output.Close()
 		return nil, failure("serial_open_failed")
 	}
-	p := &serialProcess{cmd: cmd, input: input, output: output, reader: bufio.NewReaderSize(output, 2048), done: make(chan error, 1)}
-	go func() { p.done <- cmd.Wait() }()
+	p := &serialProcess{cmd: cmd, input: input, output: output, reader: bufio.NewReaderSize(output, 2048), done: make(chan struct{})}
+	go func() {
+		_ = cmd.Wait()
+		close(p.done)
+	}()
 	stop := context.AfterFunc(ctx, func() { p.Close() })
 	defer stop()
 	first := make(chan error, 1)
