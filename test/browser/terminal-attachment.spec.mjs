@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { closePanels, openTools, waitForTerminalLayout } from './ui.mjs';
 test.use({ serviceWorkers: 'block' });
-async function setup(page, { direct = false, backup = false, count = 1 } = {}) {
+async function setup(page, { direct = false, backup = false, count = 1, codexRun } = {}) {
   await page.addInitScript(({ backup }) => {
     if (window === parent) { localStorage.setItem('codex-cloud.display.v1', JSON.stringify({ layout: 2, workspaceLayout: 'top', mode: 'terminal' })); window.attachmentPaths = { peers: 0, sockets: 0 }; window.attachmentEvents = []; window.keepAttachmentRelay = backup; return; }
     if (!location.pathname.endsWith('/terminal/index.html')) return;
@@ -57,6 +57,7 @@ async function setup(page, { direct = false, backup = false, count = 1 } = {}) {
     } };
   }, { backup });
   const app = await fixture({ mode: 'terminal', seamless: true, fastConnect: true, webrtc: direct || backup });
+  app.config.terminalCodexRun = codexRun;
   for (let n = 1; n < count; n++) await app.controls.manageTerminals({ action: 'create', name: 'Attachment ' + n, view: 'terminal' });
   await page.goto(app.config.origin); await page.locator('#password').fill(app.config.password); await page.locator('#login-button').click();
   await expect(page.locator('#connection-status')).toContainText('终端在线');
@@ -145,12 +146,15 @@ for (const direct of [false, true]) {
     } finally { await app.close(); }
   });
   test(`${direct ? 'direct' : 'relay'}: closing the last terminal preserves readonly output and creates a fresh identity on the same connection`, async ({ page }) => {
-    const app = await setup(page, { direct });
+    const app = await setup(page, { direct, codexRun: '7001:102' });
     try {
       output(app, 'FINAL-ATTACHMENT-SCREEN\r\n'); const frame = page.frameLocator('#desktop-frame');
       await expect(frame.locator('.xterm-rows')).toContainText('FINAL-ATTACHMENT-SCREEN');
+      await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
       const before = await paths(page), src = await page.locator('#desktop-frame').getAttribute('src'), old = (await app.controls.listTerminals()).terminals[0];
       await closeCurrent(page); await expect(page.locator('#connection-status')).toContainText('终端已关闭'); await expect(frame.locator('#terminal-status')).toContainText('终端已结束');
+      await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'false');
+      app.config.terminalCodexRun = null;
       await expect(page.locator('#desktop-overlay')).toBeVisible(); await expect(page.locator('#choose-terminal-button')).toBeVisible(); await expect(frame.locator('.xterm-rows')).toContainText('FINAL-ATTACHMENT-SCREEN');
       await frame.locator('.xterm-helper-textarea').dispatchEvent('input', { data: 'must not send' }); expect(app.terminalInputs).toEqual([]);
       await choose(page, 'new'); await expect(page.locator('#connection-status')).toContainText('终端在线'); await expect(page.locator('#input-terminal')).toHaveValue('main');

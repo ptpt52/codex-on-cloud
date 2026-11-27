@@ -404,6 +404,7 @@ function attachSocket(current) {
     health?.close(); health = undefined; ready = false; composing = false; pressedKeys.clear(); pressedPointers.clear(); clearOutputAck();
     finish(null, { message: '终端已结束或附加中断，操作结果请核对；不会重发', outcome: 'unknown' });
     finishHistory(new Error('终端附加已结束，保留最后画面'));
+    history?.setCodexRun(null);
     message(state === 'failed' ? '终端附加失败，已保留画面；可重新选择终端重试。' : '终端已结束，画面保留；请选择其他终端或新开终端。');
     inputState(); report('connected'); controlState();
   });
