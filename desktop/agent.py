@@ -290,11 +290,16 @@ class Handler(BaseHTTPRequestHandler):
                     expected = self.headers.get('If-Match')
                     if expected is not None and not re.fullmatch(r'"[a-f0-9]{64}"', expected):
                         raise AgentError(400, '下载文件版本无效')
+                    def open_download(path, flags):
+                        return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+
                     try:
-                        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                        source = open(name, 'rb', opener=open_download)
+                    except IsADirectoryError:
+                        raise AgentError(400, '只允许下载普通文件')
                     except OSError:
                         raise AgentError(404, '文件不存在或不是普通文件')
-                    with os.fdopen(fd, 'rb') as source:
+                    with source:
                         info = os.fstat(source.fileno())
                         if not stat.S_ISREG(info.st_mode):
                             raise AgentError(400, '只允许下载普通文件')

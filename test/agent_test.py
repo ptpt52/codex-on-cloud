@@ -90,6 +90,16 @@ class AgentTests(unittest.TestCase):
                     response.read()
                 self.assertEqual(interrupted.exception.partial, b'a' * block)
 
+    def test_download_of_a_replaced_directory_releases_its_descriptor(self):
+        target = self.desktop.transfer_dir / 'report'
+        target.write_bytes(b'report')
+        version = self.version('report')
+        target.unlink()
+        target.mkdir()
+        status, _ = self.request('GET', '/files/report', headers={'If-Match': '"' + version + '"'})
+        self.assertFalse(any(os.path.realpath(fd) == str(target) for fd in Path('/proc/self/fd').iterdir()))
+        self.assertEqual(status, 400)
+
     def test_disconnected_error_responses_do_not_escape_request_dispatch(self):
         for failure in [agent.AgentError(400, '上传未完成'), OSError('storage unavailable')]:
             handler = agent.Handler.__new__(agent.Handler)
