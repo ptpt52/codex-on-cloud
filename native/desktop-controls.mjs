@@ -47,7 +47,7 @@ export function desktopEnvironment(config) {
 }
 export function createDesktopControls(config, dependencies = {}) {
   const env = desktopEnvironment(config);
-  const run = dependencies.run || (async (command, args, options = {}) => (await exec(command, args, { env, encoding: 'utf8', timeout: 2000, maxBuffer: 16 * 1024, ...options })).stdout.trim());
+  const run = dependencies.run || (async (command, args, options = {}) => (await exec(command, args, { env, encoding: 'utf8', timeout: 2000, maxBuffer: 16 * 1024, ...options })).stdout.replace(/\n$/, ''));
   const inspectSession = dependencies.sessionId || sessionId;
   const launch = dependencies.launch || (dependencies.actions ? (id = 'main') => dependencies.actions('/terminal', { id }).then(() => undefined) : (id = 'main') => {
     const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), id === 'main' ? [] : [id], { env: { ...env, CODEX_CLOUD_ATTACH_ONLY: '1' }, stdio: 'ignore' });
@@ -92,7 +92,11 @@ export function createDesktopControls(config, dependencies = {}) {
       // any altered keeper layout or command still blocks desktop recovery.
       const lines = text.split('\n').filter(line => !/^codex-host:0\.0\t[1-9]\d*\tsleep\t[^\r\n\0]+$/.test(line));
       if (lines.length !== 1) return null;
-      const [target, pidText, command, cwd] = lines[0].split('\t');
+      const fields = lines[0].split('\t');
+      // A tab in a command or path makes the tmux record ambiguous. Never
+      // restart into a directory inferred from only part of that record.
+      if (fields.length !== 4) return null;
+      const [target, pidText, command, cwd] = fields;
       const pid = Number(pidText);
       if (target !== 'codex:0.0' || !Number.isInteger(pid) || pid <= 1 || !cwd?.startsWith('/') || /[\r\n\0]/.test(cwd)) return null;
       const resumeId = /codex/i.test(command) ? await inspectSession(pid) : null;

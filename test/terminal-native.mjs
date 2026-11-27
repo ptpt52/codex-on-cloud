@@ -17,10 +17,12 @@ const root = await mkdtemp(join(tmpdir(), 'codex-display-'));
 const children = [];
 const transientUnits = [];
 const detachedReceivers = [];
-const config = { root, runtime: join(root, 'runtime'), workspace: join(root, 'workspace'), transfer: join(root, 'workspace', 'transfer'),
+const workspace = join(root, 'workspace ');
+const config = { root, runtime: join(root, 'runtime'), workspace, transfer: join(workspace, 'transfer'),
   preferencesFile: join(root, 'data', 'desktop-settings.json'), defaultPreferences: { width: 1280, height: 1280, fontSize: 15 },
   env: { ...process.env, HOME: join(root, 'home'), PATH: `${join(root, 'bin')}:${join(source, 'data/host-tools/usr/bin')}:${process.env.PATH}` } };
-for (const part of ['runtime', 'workspace/transfer', 'home', 'bin', 'desktop', 'data/desktop/config', 'data/desktop/cache', 'data/desktop/share']) await mkdir(join(root, part), { recursive: true, mode: 0o700 });
+await mkdir(config.transfer, { recursive: true, mode: 0o700 });
+for (const part of ['runtime', 'home', 'bin', 'desktop', 'data/desktop/config', 'data/desktop/cache', 'data/desktop/share']) await mkdir(join(root, part), { recursive: true, mode: 0o700 });
 for (const file of ['open-codex-terminal', 'terminal-display.py', 'codex-workbench', 'codex-session', 'terminal.bashrc', 'tmux.conf']) await copyFile(join(source, 'desktop', file), join(root, 'desktop', file));
 await writeFile(join(root, 'data/desktop/fonts.conf'), '<fontconfig><include>/etc/fonts/fonts.conf</include></fontconfig>');
 for (let number = 94; number < 200; number++) {
@@ -60,6 +62,7 @@ try {
   start(join(root, 'desktop/open-codex-terminal'), []);
   await eventually(async () => !!(await controls.get()).session);
   const first = await controls.get(), pid = first.session.pid;
+  assert.equal(first.session.cwd, workspace, 'the recovery directory retains its trailing space');
   const window = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']);
   await eventually(() => maximized(window));
   controls.terminal({ action: 'maximize' }); await finish(controls);

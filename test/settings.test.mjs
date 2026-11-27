@@ -154,7 +154,7 @@ test('unsupported foreground tasks and multiple panes cannot trigger restart; fa
     return pane;
   } });
   controls.save({ ...defaults, width: 1920, revision: (await controls.get()).revision });
-  for (const value of [pane, 'codex:0.0\t4000\tbash\t/workspace\ncodex:0.1\t4001\tbash\t/workspace']) {
+  for (const value of [pane, 'codex:0.0\t4000\tbash\t/workspace\tnotes', 'codex:0.0\t4000\tbash\t/workspace\ncodex:0.1\t4001\tbash\t/workspace']) {
     pane = value; const view = await controls.get();
     await assert.rejects(controls.apply({ revision: view.revision, panePid: view.session?.pid, resumeId: null, confirm: true }), { status: 409 });
   }
