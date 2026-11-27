@@ -1,12 +1,13 @@
 const $ = id => document.getElementById(id), prefix = '/__nodes/';
 let state = null, csrf = '', offset = 0, generation = 0, busy = false, pending = null, loading = false, lifecycle = 0, suspended = false;
-let probeController, codesController;
+let probeController, codesController, enrollmentGeneration = 0;
 const controllers = new Set();
 const current = epoch => epoch === lifecycle && !suspended;
 function stopProbes() { probeController?.abort(); probeController = undefined; }
 function update() { for (const id of ['refresh', 'previous', 'next', 'create-code']) $(id).disabled = busy || loading; for (const button of document.querySelectorAll('[data-action]')) button.disabled = busy || loading || button.dataset.current === 'true'; }
 function message(value, error = false) { $('status').textContent = value; $('status').classList.toggle('error', error); }
 function resetEnrollment() {
+  enrollmentGeneration++;
   $('enrollment').open = false;
   $('codes').replaceChildren();
   $('code-name').value = $('code-value').value = '';
@@ -139,10 +140,20 @@ async function loadCodes() {
     button.addEventListener('click', async () => { if (!current(epoch)) return; button.disabled = true; try { await api('codes/' + code.id, { method: 'DELETE', body: {} }); if (current(epoch)) await loadCodes(); } catch (error) { if (current(epoch)) { message(error.message, true); button.disabled = false; } } }); row.append(name, button); $('codes').append(row);
   }
 }
-$('enrollment').addEventListener('toggle', () => { const epoch = lifecycle; if ($('enrollment').open && state && current(epoch)) void loadCodes().catch(error => { if (current(epoch)) message(error.message, true); }); else { codesController?.abort(); $('code-value').value = ''; $('new-code').hidden = true; } });
+$('enrollment').querySelector('summary').addEventListener('click', () => {
+  if ($('enrollment').open) enrollmentGeneration++;
+});
+$('enrollment').addEventListener('toggle', () => { const epoch = lifecycle; if ($('enrollment').open && state && current(epoch)) void loadCodes().catch(error => { if (current(epoch)) message(error.message, true); }); else { enrollmentGeneration++; codesController?.abort(); $('code-value').value = ''; $('new-code').hidden = true; } });
 $('code-form').addEventListener('submit', async event => {
-  event.preventDefault(); if (busy || loading || suspended) return; const epoch = lifecycle; busy = true; update();
-  try { const value = await api('codes', { method: 'POST', body: { name: $('code-name').value } }); if (!current(epoch)) return; $('code-value').value = value.code; $('new-code').hidden = false; await loadCodes(); }
+  event.preventDefault(); if (busy || loading || suspended) return; const epoch = lifecycle, enrollment = enrollmentGeneration; busy = true; update();
+  try {
+    const value = await api('codes', { method: 'POST', body: { name: $('code-name').value } });
+    if (!current(epoch)) return;
+    if (enrollment !== enrollmentGeneration || !$('enrollment').open) {
+      message('接入码已创建，面板关闭后无法再显示该接入码；可在列表中撤销。');
+    } else { $('code-value').value = value.code; $('new-code').hidden = false; }
+    await loadCodes();
+  }
   catch (error) { if (current(epoch)) message(error.message, true); }
   finally { if (current(epoch)) { busy = false; update(); } }
 });

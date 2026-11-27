@@ -226,6 +226,25 @@ test('late enrollment lists cannot hide a newly created code', async ({ page }) 
   } finally { await h.close(); }
 });
 
+test('closing enrollment during creation does not reveal the result when reopened', async ({ page }) => {
+  const h = await gatewayHTTPFixture();
+  try {
+    await control(page, h);
+    await page.locator('#enrollment summary').click();
+    await holdGatewayResponse(page, 'codes');
+    await page.locator('#code-name').fill('异步设备');
+    await page.locator('#create-code').click();
+    await page.waitForFunction(() => window.gatewayResponseReady);
+    await page.locator('#enrollment summary').click();
+    await releaseGatewayResponse(page);
+    await expect(page.locator('#status')).toContainText('已创建');
+    await page.locator('#enrollment summary').click();
+    await expect(page.locator('#codes li').filter({ hasText: '异步设备' })).toBeVisible();
+    await expect(page.locator('#new-code')).toBeHidden();
+    await expect(page.locator('#code-value')).toHaveValue('');
+  } finally { await h.close(); }
+});
+
 test('terminal and file WebRTC remain direct through the fixed gateway without HTTP upload bodies', async ({ page }) => {
   const h = await gatewayHTTPFixture({ webrtc: true }), a = await h.add(1); await h.select(a.gatewayEntry.id); let bodies = 0;
   try {
