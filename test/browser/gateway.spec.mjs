@@ -210,6 +210,22 @@ test('cancel preserves the default node and reusable enrollment codes can be cre
   } finally { await h.close(); }
 });
 
+test('late enrollment lists cannot hide a newly created code', async ({ page }) => {
+  const h = await gatewayHTTPFixture();
+  try {
+    await control(page, h);
+    await holdGatewayResponse(page, 'codes', 'GET');
+    await page.locator('#enrollment summary').click();
+    await page.waitForFunction(() => window.gatewayResponseReady);
+    await page.locator('#code-name').fill('新接入码');
+    await page.locator('#create-code').click();
+    const row = page.locator('#codes li').filter({ hasText: '新接入码' });
+    await expect(row).toBeVisible();
+    await releaseGatewayResponse(page);
+    await expect(row).toBeVisible();
+  } finally { await h.close(); }
+});
+
 test('terminal and file WebRTC remain direct through the fixed gateway without HTTP upload bodies', async ({ page }) => {
   const h = await gatewayHTTPFixture({ webrtc: true }), a = await h.add(1); await h.select(a.gatewayEntry.id); let bodies = 0;
   try {

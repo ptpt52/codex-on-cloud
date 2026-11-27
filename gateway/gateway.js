@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id), prefix = '/__nodes/';
 let state = null, csrf = '', offset = 0, generation = 0, busy = false, pending = null, loading = false, lifecycle = 0, suspended = false;
-let probeController;
+let probeController, codesController;
 const controllers = new Set();
 const current = epoch => epoch === lifecycle && !suspended;
 function stopProbes() { probeController?.abort(); probeController = undefined; }
@@ -125,13 +125,21 @@ $('accept').addEventListener('click', async () => {
   finally { if (current(epoch)) { busy = false; update(); } }
 });
 async function loadCodes() {
-  const epoch = lifecycle, value = await api('codes'); if (!current(epoch)) return; $('codes').replaceChildren();
+  codesController?.abort();
+  if (!$('enrollment').open) return;
+  const epoch = lifecycle, controller = codesController = new AbortController();
+  let value;
+  try { value = await api('codes', { signal: controller.signal }); }
+  catch (error) { if (!controller.signal.aborted && current(epoch)) throw error; return; }
+  finally { if (codesController === controller) codesController = undefined; }
+  if (controller.signal.aborted || !current(epoch) || !$('enrollment').open) return;
+  $('codes').replaceChildren();
   for (const code of (value.codes || []).slice(0, 16)) {
     const row = document.createElement('li'), name = document.createElement('span'), button = document.createElement('button'); name.textContent = code.name; button.className = 'secondary'; button.textContent = '撤销'; button.type = 'button';
     button.addEventListener('click', async () => { if (!current(epoch)) return; button.disabled = true; try { await api('codes/' + code.id, { method: 'DELETE', body: {} }); if (current(epoch)) await loadCodes(); } catch (error) { if (current(epoch)) { message(error.message, true); button.disabled = false; } } }); row.append(name, button); $('codes').append(row);
   }
 }
-$('enrollment').addEventListener('toggle', () => { const epoch = lifecycle; if ($('enrollment').open && state && current(epoch)) void loadCodes().catch(error => { if (current(epoch)) message(error.message, true); }); else { $('code-value').value = ''; $('new-code').hidden = true; } });
+$('enrollment').addEventListener('toggle', () => { const epoch = lifecycle; if ($('enrollment').open && state && current(epoch)) void loadCodes().catch(error => { if (current(epoch)) message(error.message, true); }); else { codesController?.abort(); $('code-value').value = ''; $('new-code').hidden = true; } });
 $('code-form').addEventListener('submit', async event => {
   event.preventDefault(); if (busy || loading || suspended) return; const epoch = lifecycle; busy = true; update();
   try { const value = await api('codes', { method: 'POST', body: { name: $('code-name').value } }); if (!current(epoch)) return; $('code-value').value = value.code; $('new-code').hidden = false; await loadCodes(); }
