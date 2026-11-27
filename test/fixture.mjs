@@ -181,6 +181,7 @@ export async function fixture({ mode = 'desktop', maxTerminals = 4, port = 0, da
       return { source, text: clipboardText[source], bytes: Buffer.byteLength(clipboardText[source]) };
     },
     sessionId: async () => '11111111-1111-4111-8111-111111111111',
+    idleShell: async () => true,
     terminalParentPid: async pid => String(Number(pid) - 10000),
     launch: (id = 'main') => {
       if (id !== 'main') { const terminal = auxiliary.get(id); terminal.visible = true; return { exitCode: 0, signalCode: null }; }

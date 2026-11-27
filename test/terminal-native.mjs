@@ -63,6 +63,15 @@ try {
   await eventually(async () => !!(await controls.get()).session);
   const first = await controls.get(), pid = first.session.pid;
   assert.equal(first.session.cwd, workspace, 'the recovery directory retains its trailing space');
+  await eventually(async () => (await controls.get()).session?.recoverable);
+  const sendToPane = line => run('tmux', ['-S', env.TMUX_SOCKET, 'send-keys', '-t', '=codex:0.0', line, 'Enter']);
+  await sendToPane('sleep 120 &');
+  await eventually(async () => {
+    const session = (await controls.get()).session;
+    return session?.command === 'bash' && !session.recoverable;
+  });
+  await sendToPane('kill "$!" && wait "$!"');
+  await eventually(async () => (await controls.get()).session?.recoverable);
   const window = await run('xdotool', ['search', '--class', '^codex-on-cloud-terminal$']);
   await eventually(() => maximized(window));
   controls.terminal({ action: 'maximize' }); await finish(controls);

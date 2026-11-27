@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { open } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readPreferences, writePreferences, preferenceRevision, validatePreferences } from './preferences.mjs';
 import { validateInput, executeInput, runInputCommand, focusedInputTarget } from './input.mjs';
@@ -20,6 +20,19 @@ async function smallFile(path) {
   const fd = await open(path, 'r');
   try { const bytes = Buffer.alloc(8193); const { bytesRead } = await fd.read(bytes, 0, bytes.length, 0); if (bytesRead > 8192) throw new Error('metadata too large'); return bytes.subarray(0, bytesRead).toString(); }
   finally { await fd.close(); }
+}
+async function idleShell(pid, rcfile) {
+  try {
+    const [cmdline, children] = await Promise.all([
+      smallFile(`/proc/${pid}/cmdline`), smallFile(`/proc/${pid}/task/${pid}/children`),
+    ]);
+    if (children.trim() || !cmdline.endsWith('\0')) return false;
+    const [program, ...args] = cmdline.slice(0, -1).split('\0');
+    if (!['bash', '-bash'].includes(basename(program))) return false;
+    // A pane running a shell script can have the same tmux command as a prompt.
+    return args.every(arg => /^-[il]+$/.test(arg) || arg === '--login') ||
+      args.length === 4 && args[0] === '--noprofile' && args[1] === '--rcfile' && args[2] === rcfile && args[3] === '-i';
+  } catch { return false; }
 }
 async function sessionId(pid) {
   const queue = [pid], found = new Set();
@@ -49,6 +62,7 @@ export function createDesktopControls(config, dependencies = {}) {
   const env = desktopEnvironment(config);
   const run = dependencies.run || (async (command, args, options = {}) => (await exec(command, args, { env, encoding: 'utf8', timeout: 2000, maxBuffer: 16 * 1024, ...options })).stdout.replace(/\n$/, ''));
   const inspectSession = dependencies.sessionId || sessionId;
+  const inspectShell = dependencies.idleShell || idleShell;
   const launch = dependencies.launch || (dependencies.actions ? (id = 'main') => dependencies.actions('/terminal', { id }).then(() => undefined) : (id = 'main') => {
     const child = spawn(join(config.root, 'desktop', 'open-codex-terminal'), id === 'main' ? [] : [id], { env: { ...env, CODEX_CLOUD_ATTACH_ONLY: '1' }, stdio: 'ignore' });
     child.on('error', () => {}); child.unref(); return child;
@@ -100,7 +114,8 @@ export function createDesktopControls(config, dependencies = {}) {
       const pid = Number(pidText);
       if (target !== 'codex:0.0' || !Number.isInteger(pid) || pid <= 1 || !cwd?.startsWith('/') || /[\r\n\0]/.test(cwd)) return null;
       const resumeId = /codex/i.test(command) ? await inspectSession(pid) : null;
-      return { pid, command: command.slice(0, 64), cwd, resumeId, recoverable: command === 'bash' || !!resumeId };
+      const recoverable = !!resumeId || command === 'bash' && await inspectShell(pid, join(config.root, 'desktop', 'terminal.bashrc'));
+      return { pid, command: command.slice(0, 64), cwd, resumeId, recoverable };
     } catch { return null; }
   }
   async function windows(runner = run) {
@@ -261,7 +276,7 @@ export function createDesktopControls(config, dependencies = {}) {
       let ready = false;
       while (Date.now() < deadline) {
         const actual = await geometry(), session = await pane();
-        if (actual?.width === view.saved.width && actual?.height === view.saved.height && session?.command === 'bash' && session.pid !== view.session.pid) { ready = true; break; }
+        if (actual?.width === view.saved.width && actual?.height === view.saved.height && session?.command === 'bash' && session.recoverable && session.pid !== view.session.pid) { ready = true; break; }
         await new Promise(resolve => setTimeout(resolve, 250));
       }
       if (!ready) throw new Error('desktop startup timed out');

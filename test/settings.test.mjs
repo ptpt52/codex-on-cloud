@@ -112,7 +112,7 @@ test('apply guards the observed session, serializes jobs and keeps shell text fi
   const calls = [], cwd = "/workspace/a'b $(never) `never`", config = { root: directory, runtime: directory, env: process.env, defaultPreferences: defaults, preferencesFile: join(directory, 'settings.json') };
   let pid = 4000, command = 'codex', actual = '1600 1600', id = resumeId, release;
   const restarted = new Promise(resolve => { release = resolve; });
-  const controls = createDesktopControls(config, { sessionId: async () => id, run: async (executable, args) => {
+  const controls = createDesktopControls(config, { sessionId: async () => id, idleShell: async () => true, run: async (executable, args) => {
     calls.push({ executable, args });
     if (executable === 'xdotool') return actual;
     if (executable === 'systemctl') { await restarted; actual = '1920 1600'; pid++; command = 'bash'; return ''; }
@@ -148,7 +148,8 @@ test('unsupported foreground tasks and multiple panes cannot trigger restart; fa
   const directory = await mkdtemp(join(tmpdir(), 'desktop-controls-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const config = { root: directory, runtime: directory, env: process.env, defaultPreferences: defaults, preferencesFile: join(directory, 'settings.json') };
   let pane = 'codex:0.0\t4000\tpython\t/workspace', restarts = 0;
-  const controls = createDesktopControls(config, { run: async (command) => {
+  let idle = false;
+  const controls = createDesktopControls(config, { idleShell: async () => idle, run: async (command) => {
     if (command === 'xdotool') return '1600 1600';
     if (command === 'systemctl') { restarts++; throw new Error('unavailable'); }
     return pane;
@@ -160,6 +161,10 @@ test('unsupported foreground tasks and multiple panes cannot trigger restart; fa
   }
   assert.equal(restarts, 0);
   pane = 'codex:0.0\t4000\tbash\t/workspace';
+  const view = await controls.get();
+  await assert.rejects(controls.apply({ revision: view.revision, panePid: 4000, confirm: true }), { status: 409 });
+  assert.equal(restarts, 0);
+  idle = true;
   await controls.apply({ revision: (await controls.get()).revision, panePid: 4000, resumeId: null, confirm: true });
   assert.equal((await completed(controls)).job.status, 'failed');
   await controls.get(); await controls.get(); assert.equal(restarts, 1);
