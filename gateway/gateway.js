@@ -6,7 +6,20 @@ const current = epoch => epoch === lifecycle && !suspended;
 function stopProbes() { probeController?.abort(); probeController = undefined; }
 function update() { for (const id of ['refresh', 'previous', 'next', 'create-code']) $(id).disabled = busy || loading; for (const button of document.querySelectorAll('[data-action]')) button.disabled = busy || loading || button.dataset.current === 'true'; }
 function message(value, error = false) { $('status').textContent = value; $('status').classList.toggle('error', error); }
-function loggedOut(note = '') { lifecycle++; generation++; stopProbes(); for (const controller of controllers) controller.abort(); controllers.clear(); state = null; csrf = ''; busy = loading = false; closeConfirmation(); $('boot-status').hidden = true; $('workspace').hidden = $('logout').hidden = true; $('login').hidden = false; $('login-submit').disabled = false; $('code-value').value = ''; $('new-code').hidden = true; $('login-error').textContent = note; }
+function resetEnrollment() {
+  $('enrollment').open = false;
+  $('codes').replaceChildren();
+  $('code-name').value = $('code-value').value = '';
+  $('new-code').hidden = true;
+}
+function loggedOut(note = '') {
+  lifecycle++; generation++; stopProbes();
+  for (const controller of controllers) controller.abort();
+  controllers.clear(); state = null; csrf = ''; busy = loading = false;
+  closeConfirmation(); resetEnrollment();
+  $('boot-status').hidden = true; $('workspace').hidden = $('logout').hidden = true;
+  $('login').hidden = false; $('login-submit').disabled = false; $('login-error').textContent = note;
+}
 async function api(path, { method = 'GET', body, signal } = {}) {
   const epoch = lifecycle;
   if (!current(epoch)) throw new DOMException('页面已离开', 'AbortError');
@@ -131,8 +144,7 @@ window.addEventListener('pagehide', () => {
   stopProbes();
   for (const controller of controllers) controller.abort(); controllers.clear();
   state = null; csrf = ''; busy = false; loading = true; closeConfirmation();
-  $('login-submit').disabled = false; $('code-value').value = ''; $('password').value = ''; $('new-code').hidden = true;
-  $('enrollment').open = false; $('codes').replaceChildren();
+  $('login-submit').disabled = false; $('password').value = ''; resetEnrollment();
   $('workspace').hidden = $('logout').hidden = $('login').hidden = true; $('boot-status').hidden = false; update();
 });
 window.addEventListener('pageshow', event => {

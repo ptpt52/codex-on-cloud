@@ -199,6 +199,12 @@ test('cancel preserves the default node and reusable enrollment codes can be cre
     await page.locator('#enrollment summary').click(); await page.locator('#code-name').fill('动态设备'); await page.locator('#create-code').click();
     await expect(page.locator('#code-value')).toHaveValue(/^cog1\./);
     const row = page.locator('#codes li').filter({ hasText: '动态设备' }); await expect(row).toBeVisible();
+    await page.locator('#logout').click();
+    await expect(page.locator('#login')).toBeVisible();
+    await control(page, h);
+    await expect(page.locator('#enrollment')).toHaveJSProperty('open', false);
+    await page.locator('#enrollment summary').click();
+    await expect(row).toBeVisible();
     await row.getByRole('button', { name: '撤销' }).click(); await expect(row).toHaveCount(0);
     expect(h.storage.value.activeId).toBe(a.gatewayEntry.id); expect(a.terminalInputs).toEqual([]); expect(b.terminalInputs).toEqual([]);
   } finally { await h.close(); }
