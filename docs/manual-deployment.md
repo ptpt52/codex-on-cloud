@@ -128,7 +128,7 @@ npm run verify:deployment
 npm run verify:deployment -- --forward
 ```
 
-明确检查工作台账号时增加 `--login`。先看[当前自动验收限制](deployment-verification.md#当前实现的已知限制)，再完成报告和[人工验收表](deployment-checklist.md#4-部署结束前逐项核对)；进程 active 或打开登录页不足以证明部署完成。
+明确检查工作台账号时增加 `--login`。核对[自动检查报告](deployment-verification.md#自动检查范围)，并完成[人工验收表](deployment-checklist.md#4-部署结束前逐项核对)。
 
 后续更新按[维护指南](operations.md)，不重新照本页安装依赖或重启任务宿主。`npm run native:stop` 会停止工作台及其中任务，不用于刷新网页或加载文档。
 

@@ -129,8 +129,8 @@ export async function loadVerificationConfig(options, { root = ROOT, centerDirec
   if (!selfhost && path !== '/' || env.SHARED_ENTRY === '1' && !nodeId) throw Error('incomplete entry');
   const services = modeServices(mode);
   let tunnel = false;
-  if (!selfhost) {
-    try { await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096, true); tunnel = true; }
+  if (!selfhost && origin.protocol === 'https:') {
+    try { tunnel = (await boundedFile(join(root, 'secrets', 'tunnel_token'), 4096, true)).toString('utf8').trim() !== ''; }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   if (selfhost) services.push('codex-cloud-selfhost-node.service');

@@ -67,6 +67,24 @@ test('configuration uses the persisted mode, identity and full entry instead of 
   await rm(join(root, '.env')); await symlink('data/connection.json', join(root, '.env')); await assert.rejects(loadVerificationConfig({}, { root }));
 });
 
+test('verification recognizes a standalone Tunnel only with HTTPS and a populated token', async t => {
+  const root = await temporary(t);
+  await mkdir(join(root, 'secrets'));
+  const tokenFile = join(root, 'secrets/tunnel_token');
+  for (const [origin, token, kind] of [
+    ['http://127.0.0.1:36080', '', 'local'],
+    ['http://127.0.0.1:36080', 'old_token', 'local'],
+    ['https://desk.example.test', ' \n', 'https'],
+    ['https://desk.example.test', 'configured_token\n', 'cloudflare'],
+  ]) {
+    await writeFile(join(root, '.env'), `PUBLIC_ORIGIN=${origin}\n`, { mode: 0o600 });
+    await writeFile(tokenFile, token, { mode: 0o600 });
+    const config = await loadVerificationConfig({}, { root });
+    assert.equal(config.kind, kind);
+    assert.equal(config.services.includes('codex-cloud-tunnel.service'), kind === 'cloudflare');
+  }
+});
+
 test('default verification issues only reads, reports manual work and never equates automated health with full acceptance', async t => {
   const c = config(await temporary(t)), calls = [], commands = [];
   const report = await verifyDeployment({}, { ...dependencies(c, calls), run: async (file, args) => { commands.push({ file, args }); return goodRun(file, args); } });

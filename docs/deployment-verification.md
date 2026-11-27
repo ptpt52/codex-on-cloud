@@ -51,6 +51,8 @@ sudo /opt/codex-selfhost/bin/node \
 
 普通 HTTP 仅允许回环地址。本机配置为 HTTPS 时仍检查实际 HTTPS 入口；自建节点使用完整 `/node/<slug>/`。CF 网关检查当前全局默认节点，默认节点不是本机时会报告身份不符，不切换路由。外层 Access 或管理网段白名单阻止命令访问时，从获准环境核对，不自动绕过限制。
 
+独立节点配置 HTTPS 入口且 Tunnel token 文件有内容时，自动验收才检查该 Tunnel 服务。`setup` 创建的空占位文件适用于本机、SSH 或自管 HTTPS 部署。
+
 源码提交标识只标识本机仓库，**不证明后台进程已加载该提交**。源码未提交、界面匹配、服务 active 和后台代码生效分别报告；后台更新范围按[维护指南](operations.md)核对。
 
 `--login` 会读取实际节点的 `/api/backend-version`，中心则读取 `/admin/api/backend-version`。Node 服务按各自入口的模块依赖和锁文件计算源码摘要。面板摘要还涵盖网页终端的 Python 助手，文件服务使用自身的 Python 源码摘要。每个进程在启动时固定摘要、启动时间和 PID，界面热更新不会刷新这些记录。验收将它们与本机源码比较，`deployment.backend` 分组件报告 `match`、`mismatch` 或 `unavailable`。旧服务未提供版本接口时不会记为通过；按维护指南更新对应服务后重新核验，不需要为核验重启原桌面或终端任务。
@@ -103,11 +105,5 @@ JSON 含 `version`、`deployment`、`checks` 和 `summary`。每项状态为 `pa
 实现限制：最多 64 个检查项；配置最多 64 KiB，密码文件最多 4 KiB、密码本身 16–512 个字符，CA 最多 256 KiB；网络响应最多 512 KiB，每请求最多 6 秒，不跟随重定向；子命令最多 12 秒、输出最多 16 KiB。助手沿用每包 32 MiB、清单 4 KiB 和四平台上限，逐包校验。没有新增持久队列、后台任务或自动重试。
 
 后台版本核算最多 256 个源码文件、每文件 1 MiB、合计 8 MiB；依赖分析在不执行源码的独立解析进程中完成，期限 5 秒、响应最多 128 KiB。诊断接口每次只读固定本机服务，响应及等待时间有界，不改变服务或任务状态。
-
-## 当前实现的已知限制
-
-`setup` 会创建空的 `secrets/tunnel_token` 占位文件；当前验收脚本只按该文件是否存在识别 Tunnel。因此仅本机 / SSH 的新部署可能被标为 `cloudflare`，并误报 `service:codex-cloud-tunnel.service` 未运行。它不表示必须启用 Cloudflare，也不表示任务宿主失败。
-
-出现此情形时，先核对 `.env` 的本机入口、占位文件确实为空、所选模式的核心服务及 `/readyz`，再完成浏览器人工项。保留自动失败项并注明识别误报待修复；不要填写假 Token、启动未选择的 Tunnel 或宣称自动检查全绿。其他失败仍逐项排查，不能一并忽略。手动流程见[逐步部署](manual-deployment.md#3-检查安装和启动用户服务)。
 
 [文档目录](README.md) · [部署检查清单](deployment-checklist.md) · [日常维护](operations.md)
