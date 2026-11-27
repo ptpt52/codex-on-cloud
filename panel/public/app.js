@@ -429,8 +429,12 @@ function sendDisplayPreferences() {
   $('desktop-frame').contentWindow.postMessage({ type: 'codex-desktop-options', frame: String(views.active.epoch), standby: false, rtc: { ...rtcConfig, hints: directHints.value }, zoom: displayPreferences.zoom, pan: displayPreferences.pan, blocked: inputPaused() || !!accessUI?.blocking,
     pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget, networkDebug: displayPreferences.networkDebug,
     handoff: (views.active.paused || viewportResizing) && !maintenancePending && !controlsState.maintenance && controlsState.available,
-    csrf, desktopIme: displayPreferences.desktopIme, ...(terminalMode() ? { terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting } : {}),
+    csrf, desktopIme: displayPreferences.desktopIme, ...(terminalMode() ? terminalDisplayOptions() : {}),
     busy: views.active.activationPending || (inputBusy && !desktopTextInput) || inputComposing || terminalBusy || terminalActions.busy || $('terminals-dialog').open || $('terminal-switch-dialog').open || $('draft-leave-dialog').open || !!clipboardUI?.busy || (controlsState.inputBusy && !desktopTextInput) || controlsState.clipboardBusy || settingsBusy || !!confirmation || shortcutMenu.open || !!accessUI?.blocking, revision: displayRevision }, location.origin);
+}
+function terminalDisplayOptions() {
+  const { terminalFontSize, terminalWidthMode, terminalHistoryRows, terminalMouseReporting, terminalWheelMode } = displayPreferences;
+  return { terminalFontSize, terminalWidthMode, terminalHistoryRows, terminalMouseReporting, terminalWheelMode };
 }
 function zoomBase() { return typeof displayPreferences.zoom === 'number' ? displayPreferences.zoom : views.active.scaleRevision === displayRevision ? views.active.scale : 0; }
 function desktopPanActive() { return !terminalMode() && displayPreferences.pan; }
@@ -486,6 +490,7 @@ function renderDisplayControls() {
   $('terminal-width-mode').value = displayPreferences.terminalWidthMode;
   $('terminal-history-rows').value = String(displayPreferences.terminalHistoryRows);
   $('terminal-mouse-reporting').checked = displayPreferences.terminalMouseReporting;
+  $('terminal-wheel-mode').value = displayPreferences.terminalWheelMode;
   $('terminal-font-down').disabled = displayPreferences.terminalFontSize <= 10; $('terminal-font-up').disabled = displayPreferences.terminalFontSize >= 28;
   renderWakeStatus();
   $('auto-resolution').checked = followsViewport();
@@ -1165,7 +1170,7 @@ function sendStandbyPreferences() {
     // only after the active connection. Its initial offer keeps priority.
     rtc: { ...rtcConfig, hints: directHints.value }, ...(views.active.state === 'connected' ? { csrf } : {}), zoom: displayPreferences.zoom, pan: displayPreferences.pan, networkDebug: displayPreferences.networkDebug,
     blocked: true, busy: true, revision: displayRevision, pointerMode: displayPreferences.pointerMode, scrollTarget: displayPreferences.scrollTarget,
-    terminalFontSize: displayPreferences.terminalFontSize, terminalWidthMode: displayPreferences.terminalWidthMode, terminalHistoryRows: displayPreferences.terminalHistoryRows, terminalMouseReporting: displayPreferences.terminalMouseReporting }, location.origin);
+    ...terminalDisplayOptions() }, location.origin);
 }
 function syncModeStandby() {
   if (!standbyEnabled() || !loggedIn || !owned || accessExpired || pageLeaving || cachedResumePending || maintenancePending || controlsState.maintenance || desktopReady !== true) return discardStandby();
@@ -1759,6 +1764,7 @@ $('terminal-font-down').addEventListener('click', () => updateDisplayPreferences
 $('terminal-font-up').addEventListener('click', () => updateDisplayPreferences({ terminalFontSize: Math.min(28, displayPreferences.terminalFontSize + 1) }));
 $('terminal-width-mode').addEventListener('change', () => updateDisplayPreferences({ terminalWidthMode: $('terminal-width-mode').value }));
 $('terminal-mouse-reporting').addEventListener('change', () => updateDisplayPreferences({ terminalMouseReporting: $('terminal-mouse-reporting').checked }));
+$('terminal-wheel-mode').addEventListener('change', () => updateDisplayPreferences({ terminalWheelMode: $('terminal-wheel-mode').value }));
 $('desktop-ime').addEventListener('change', () => updateDisplayPreferences({ desktopIme: $('desktop-ime').checked }));
 $('terminal-history-rows').addEventListener('change', () => {
   const rows = Number($('terminal-history-rows').value);

@@ -109,7 +109,24 @@ try {
     await api('/api/desktop/claim', { viewer });
     const initial = (await api('/api/terminals')).terminals[0]; assert.equal(initial.id, 'main'); assert.equal(initial.command, 'bash');
     const tmux = args => exec('tmux', ['-S', join(runtime, 'tmux.sock'), ...args], { env, maxBuffer: 16384, timeout: 3000 });
+    const mouse = async () => (await tmux(['display-message', '-p', '-t', 'codex:0.0', '#{mouse}'])).stdout.trim();
+    assert.match(await mouse(), /^(1|on)$/);
     const serverIdentity = (await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim();
+    const migrationBin = join(directory, 'migration-bin');
+    await mkdir(migrationBin, { mode: 0o700 });
+    await writeFile(join(migrationBin, 'systemctl'), '#!/bin/sh\ncase "$2" in is-active|start) exit 0 ;; *) exit 1 ;; esac\n', { mode: 0o700 });
+    await writeFile(join(root, '.env'), `${configuration.trimEnd()}\nRUNTIME_DIR=${runtime}\n`);
+    const upgrade = () => exec(process.execPath, [join(root, 'scripts', 'native.mjs'), 'start'], {
+      env: { ...env, PATH: migrationBin + ':' + env.PATH }, timeout: 5000, maxBuffer: 4096,
+    });
+    await tmux(['set-option', '-g', '@codex-cloud-wheel-default', '', ';', 'set-option', '-g', 'mouse', 'off']);
+    await upgrade();
+    assert.match(await mouse(), /^(1|on)$/);
+    await tmux(['set-option', '-g', 'mouse', 'off']);
+    await upgrade();
+    assert.match(await mouse(), /^(0|off)$/);
+    await tmux(['set-option', '-g', 'mouse', 'on']);
+    assert.equal((await tmux(['display-message', '-p', '-t', 'codex-host:0.0', '#{pid}'])).stdout.trim(), serverIdentity);
     const stat = await readFile('/proc/' + serverIdentity + '/stat', 'utf8');
     tmuxOwner = { pid: Number(serverIdentity), started: stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] };
     console.log('Terminal-only: a timed-out readiness query must preserve the host and its task');

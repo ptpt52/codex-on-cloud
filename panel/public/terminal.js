@@ -13,6 +13,7 @@ import { createPanelBridge } from '/control.js';
 import { rtcHints } from '/rtc-hints.js';
 import { createRTCRecheck } from '/rtc-recheck.js';
 import { appleTouchInput, attachRetainedTerminal } from '/retained-input.js';
+import { TERMINAL_WHEEL_MODES } from '/browser-preferences.js';
 
 const query = new URLSearchParams(location.search), frame = query.get('frame'), viewer = query.get('viewer');
 const fastConnect = query.get('fast') === '1', routes = routePolicy();
@@ -36,7 +37,7 @@ let term, fit, socket, csrf = '', ready = false, stopped = false, retry, sequenc
 let blocked = true, busy = false, standby = false, sentStandby, fontSize = 15, lastSize = '', lastReport = '', epoch = 0;
 let widthMode = 'viewport', columnLimit = 500, columnAlignment = 1, layoutKey = '', fittedSize;
 let health, connectingTimer, history;
-let terminalSelection, mouseReporting = false;
+let terminalSelection, mouseReporting = false, wheelMode = 'auto', paneWheel;
 let retainedTerminal;
 let historyPending, historySequence = 0, historyFetchAt = -Infinity;
 let historyStyles = false;
@@ -163,7 +164,10 @@ function raw(data) {
   if (!ready || switching || !data) return;
   // Defence in depth for SGR, legacy and urxvt mouse encodings. Ordinary
   // keyboard input and terminal query replies keep their existing path.
-  if (!mouseReporting && /^\x1b\[(?:<\d+;\d+;\d+[Mm]|M[\s\S]{3}|\d+;\d+;\d+M)$/.test(data)) return;
+  const sgr = /^\x1b\[<(\d+);\d+;\d+([Mm])$/.exec(data);
+  const code = sgr?.[2] === 'M' ? Number(sgr[1]) & ~28 : -1;
+  const wheel = code === 64 || code === 65;
+  if (wheel ? !history?.acceptsNativeWheel() : !mouseReporting && (sgr || /^\x1b\[(?:M[\s\S]{3}|\d+;\d+;\d+M)$/.test(data))) return;
   // Keep query replies alive during standby, handoffs and review, without edits.
   if ((standby || streamPaused || history?.reviewing) && !/^\x1b(?:\[[?>=]?\d*(?:;\d*)*[cRn]|\]\d+;[^\x00-\x1f]{0,256}(?:\x07|\x1b\\)|P[^\x00-\x1f]{0,256}\x1b\\)$/.test(data)) return;
   lastInteraction = performance.now();
@@ -303,7 +307,8 @@ function createTerminal() {
   // Applications never write or read the browser clipboard through OSC 52.
   current.parser.registerOscHandler(52, () => true);
   history = createTerminalHistory(term, host, { allowed: () => ready && !blocked && !busy && !switching && !streamPaused && !pending && !document.hidden && navigator.onLine,
-    nativeWheel: () => mouseReporting && sgrMouse && !['none', 'x10'].includes(current.modes.mouseTrackingMode),
+    wheelMode,
+    nativeWheel: () => paneWheel !== false && sgrMouse && !['none', 'x10'].includes(current.modes.mouseTrackingMode),
     read: readHistory,
     navigate: key => {
       const data = { PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Ctrl+End': '\x1b[1;5F' }[key];
@@ -413,7 +418,7 @@ function attachSocket(current) {
   });
   current.addEventListener('target', event => {
     if (socket !== current || currentEpoch !== epoch) return;
-    terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; firstPainted = false; firstFrameAt = performance.now();
+    terminalId = event.data.terminalId; terminalToken = event.data.terminalToken; paneWheel = undefined; firstPainted = false; firstFrameAt = performance.now();
     health?.close(); health = undefined;
     ready = false; sequence = historySequence = 0; lastSize = lastReport = layoutKey = ''; fittedSize = undefined; clearOutputAck();
     finishHistory(new Error('已切换终端，历史读取已取消')); history?.dispose(); history = undefined; terminalSelection?.dispose(); terminalSelection = undefined; retainedTerminal?.dispose(); retainedTerminal = undefined; term?.dispose(); term = undefined;
@@ -435,6 +440,7 @@ function attachSocket(current) {
         catch { return retire(current); }
       }
       clearTimeout(connectingTimer); connectingTimer = undefined;
+      paneWheel = value.paneWheel;
       history?.setCodexRun(value.codexRun ?? null);
       ready = true; historyStyles = value.historyStyles === true; retryDelay = 1000; status.hidden = true; inputState(); report('connected'); controlState(); size();
       if (current.direct) directIssue = '';
@@ -447,7 +453,10 @@ function attachSocket(current) {
       return;
     }
     if (value.type === 'health' && ready) { health?.receive(value.nonce); reportNetwork(); void refreshNetwork(); return; }
-    if (value.type === 'foreground' && ready) { history?.setCodexRun(value.codexRun); return; }
+    if (value.type === 'foreground' && ready) {
+      if (typeof value.paneWheel === 'boolean' && paneWheel !== value.paneWheel) { paneWheel = value.paneWheel; history?.update(); }
+      history?.setCodexRun(value.codexRun); return;
+    }
     if (value.type === 'geometry' && ready) {
       if (!Number.isInteger(value.maxCols) || value.maxCols < 2 || value.maxCols > 500) return retire(current);
       if (columnLimit !== value.maxCols) { columnLimit = value.maxCols; size(); }
@@ -619,6 +628,7 @@ window.addEventListener('message', event => {
     if (typeof value.terminalMouseReporting === 'boolean' && mouseReporting !== value.terminalMouseReporting) {
       mouseReporting = value.terminalMouseReporting; terminalSelection?.updateMousePolicy();
     }
+    if (TERMINAL_WHEEL_MODES.includes(value.terminalWheelMode)) { wheelMode = value.terminalWheelMode; history?.setWheelMode(wheelMode); }
     if (['viewport', 'scale', 'manual'].includes(value.terminalWidthMode)) widthMode = value.terminalWidthMode;
     if (HISTORY_ROWS.includes(value.terminalHistoryRows)) {
       historyRows = value.terminalHistoryRows;

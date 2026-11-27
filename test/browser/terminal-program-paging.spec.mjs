@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { fixture } from '../fixture.mjs';
 import { readFile } from 'node:fs/promises';
+import { openTools, closePanels } from './ui.mjs';
 
 async function login(page, app, mouseReporting = false) {
   await page.addInitScript(mouseReporting => {
@@ -77,9 +78,20 @@ test('program wheels use fine native mouse reports without the page-key throttle
     await expect(page.locator('#history-tools')).toBeVisible(); await expect(frame.locator('#history-archive')).toBeHidden();
     await expect(page.locator('#history-query')).toHaveValue('NATIVE');
     await expect(frame.locator('#history-program')).toHaveAttribute('aria-pressed', 'true');
-    output(app, '\x1b[?1006l'); await expect(frame.locator('#history-state')).toContainText('PageUp');
+    output(app, '\x1b[?1006l'); await expect(frame.locator('#history-state')).toContainText('未启用可用的鼠标滚轮，使用 PageUp');
     await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
     await expect.poll(() => app.terminalInputs.at(-1)?.text).toBe('\x1b[5~');
+    await page.locator('#history-tools-close').click();
+    await openTools(page); await page.locator('#terminal-wheel-mode').selectOption('native'); await closePanels(page);
+    await expect(frame.locator('#history-state')).toContainText('滚轮暂停');
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+    await frame.locator('.xterm-helper-textarea').press('x');
+    await expect.poll(() => app.terminalInputs.slice(3).map(value => value.text)).toEqual(['\x1b[5~', 'x']);
+    await openTools(page); await page.locator('#terminal-wheel-mode').selectOption('page-keys'); await closePanels(page);
+    output(app, '\x1b[?1006h\x1b[2J\x1b[HKEYS'); await expect.poll(() => firstLine(frame)).toBe('KEYS');
+    await expect(frame.locator('#history-state')).toContainText('滚轮发送 PageUp / PageDown');
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true });
+    await expect.poll(() => app.terminalInputs.at(-1)?.text).toBe('\x1b[6~');
     const before = app.terminalInputs.length;
     await frame.evaluate(() => window.dispatchEvent(new Event('offline')));
     await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });

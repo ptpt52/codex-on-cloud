@@ -1,5 +1,5 @@
 // One in-memory xterm buffer: at most 20,000 history rows and 500 columns.
-// Local scrolling never sends input. Program paging sends keys on user gestures.
+// Local scrolling never sends input. Program paging handles explicit gestures.
 import { parseHistoryStyles, renderHistoryRuns, renderHistoryRunsAsync, highlightHistoryRuns, findHistoryMatches, captureHistoryBuffer, createHistoryGrid, historyText, historyMatchRanges, wrapHistoryRows, HISTORY_TEXT_LIMIT } from './terminal-history-style.js';
 
 // Keep the fixed controls across reconnects even while their toolbar belongs
@@ -7,7 +7,7 @@ import { parseHistoryStyles, renderHistoryRuns, renderHistoryRunsAsync, highligh
 const historyControls = new Map([...document.getElementById('terminal-tools').querySelectorAll('[id]')].map(element => [element.id, element]));
 const historyControl = id => historyControls.get(id);
 
-export function createTerminalHistory(term, host, { allowed, navigate, read, changed, nativeWheel = () => false }) {
+export function createTerminalHistory(term, host, { allowed, navigate, read, changed, nativeWheel, wheelMode }) {
   const mode = historyControl('history-program'), up = historyControl('history-up');
   const down = historyControl('history-down'), latest = historyControl('history-latest'), state = historyControl('history-state');
   const toggle = historyControl('history-tools-toggle'), tools = historyControl('history-tools'), query = historyControl('history-query');
@@ -25,6 +25,14 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   // Remote program scrolling is independent of the local buffer and toggle.
   // Keep a flag, never a queue or an automatically replayed return key.
   let programScrolled = false;
+  const acceptsNativeWheel = () => program && !reviewing && allowed() && wheelMode !== 'page-keys' && nativeWheel();
+
+  function wheelStatus() {
+    if (wheelMode === 'page-keys') return '滚轮发送 PageUp / PageDown';
+    if (nativeWheel()) return '滚轮按程序原生方式滚动';
+    const unavailable = `${codexRun ? 'Codex' : '当前程序'}未启用可用的鼠标滚轮`;
+    return wheelMode === 'native' ? `${unavailable}，滚轮暂停` : `${unavailable}，使用 PageUp / PageDown`;
+  }
 
   function setCodexRun(run) {
     if (run === codexRun) return;
@@ -81,7 +89,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     setPagingDisabled(up, !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop === 0 && (!archiveLocal || !allowed()) : buffer.viewportY === 0 && !allowed()));
     setPagingDisabled(down, !!loading || (paging ? !allowed() : archiveOpen ? archive.scrollTop >= archive.scrollHeight - archive.clientHeight : !reviewing));
     latest.disabled = !reviewing && !program && !programScrolled;
-    let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? nativeWheel() ? '程序翻页：滚轮按程序原生方式滚动；按钮整页翻动' : '程序翻页：滚动发送 PageUp / PageDown' : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
+    let label = loading ? '正在按需补取历史，最多 1 MiB…' : archiveOpen ? archiveAlternate ? '当前画面快照，不含程序会话历史；可开启程序翻页' : `历史快照，输入暂停${archiveTruncated ? '（已截取最近 1 MiB）' : ''}` : notice || (reviewing ? '本地回看中，输入暂停' : program ? wheelStatus() : buffer.type === 'alternate' ? '上翻按需读取历史；重绘画面不混入历史' : '本地回看；滚到顶部可按需补取历史');
     if (!loading && !archiveOpen && !notice && !reviewing && !program && programScrolled) label = '程序历史位置保留；点“回到实时”发送 Ctrl+End';
     if (archiveOpen && !loading) {
       if (archiveLocal) label = `本地已加载快照，输入暂停${archiveTruncated ? '（最多 1 MiB）' : ''}`;
@@ -443,19 +451,20 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
     if (text && event.clipboardData) { event.preventDefault(); event.clipboardData.setData('text/plain', text); }
   });
   listen(host, 'wheel', event => {
-    if (event.ctrlKey || event.metaKey || !event.deltaY) return;
+    if (event.ctrlKey || event.metaKey || !event.deltaY) { event.stopImmediatePropagation(); return; }
     if (archiveOpen) {
       if (archiveLocal && archive.scrollTop === 0 && event.deltaY < 0) { event.preventDefault(); event.stopImmediatePropagation(); void fetchHistory(); }
       return;
     }
-    if (program && !reviewing && allowed() && nativeWheel() && term.element.contains(event.target)) {
+    if (acceptsNativeWheel() && term.element.contains(event.target)) {
       // Let xterm normalize fine wheel deltas and send the program its native
       // mouse scroll. PageUp per 40px made small gestures jump entire screens.
       if (view || loading || searchTimer !== undefined || notice || downloadURL) resetLocalView();
       if (!programScrolled) { programScrolled = true; update(); }
       return;
     }
-    event.preventDefault(); event.stopImmediatePropagation(); scroll(event.deltaY, event.deltaMode);
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (!program || reviewing || wheelMode !== 'native') scroll(event.deltaY, event.deltaMode);
   }, { capture: true, passive: false });
   listen(host, 'touchstart', event => {
     if (archiveOpen && (!archiveLocal || archive.scrollTop > 0 || !archive.contains(event.target))) return;
@@ -499,6 +508,7 @@ export function createTerminalHistory(term, host, { allowed, navigate, read, cha
   listen(archive, 'scroll', update);
   subscriptions.push(term.onScroll(update), term.onSelectionChange(updateTools), term.onResize(updateTools), term.onWriteParsed(() => { if (reviewing) unseen = true; update(); }));
   update();
-  return { update, setCodexRun, resize() { if (grid.update() && view) { cancelRender(); search(current >= 0 && toolsOpen); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
+  return { update, setCodexRun, acceptsNativeWheel, setWheelMode(value) { if (wheelMode !== value) { wheelMode = value; pixels = 0; } },
+    resize() { if (grid.update() && view) { cancelRender(); search(current >= 0 && toolsOpen); } }, get reviewing() { return inputPaused; }, suspend() { gesture = undefined; pixels = 0; queryComposing = false; clearCopy(); clearDownload(); if (searchTimer !== undefined || query.value !== appliedQuery) findCurrent(); cancelRead(); update(); placeTools(); },
     dispose() { toolsOpen = false; queryComposing = false; placeTools(); disposed = true; clearTimeout(searchTimer); cancelRender(); clearCopy(); clearDownload(); view = undefined; matches = groups = []; cancelRead(); archive.remove(); newer.remove(); for (const remove of listeners) remove(); for (const subscription of subscriptions) subscription.dispose(); } };
 }

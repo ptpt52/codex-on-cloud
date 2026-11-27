@@ -6,6 +6,7 @@ import { validTerminalWidths } from './public/terminal-unicode.js';
 const helper = fileURLToPath(new URL('../desktop/web-terminal.py', import.meta.url));
 const widthCache = new Map(); // At most eight node tables, each below 16 KiB.
 const validCodexRun = value => value === null || (typeof value === 'string' && /^[1-9]\d{0,9}:[1-9]\d{0,19}$/.test(value));
+const validPaneWheel = value => value === undefined || typeof value === 'boolean';
 export const TERMINAL_KEYS = Object.freeze({ Enter: '\r', Tab: '\t', Escape: '\x1b', Backspace: '\x7f', Delete: '\x1b[3~',
   ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowLeft: '\x1b[D', ArrowRight: '\x1b[C', Home: '\x1b[H', End: '\x1b[F',
   PageUp: '\x1b[5~', PageDown: '\x1b[6~', 'Shift+Tab': '\x1b[Z', 'Ctrl+ArrowLeft': '\x1b[1;5D', 'Ctrl+ArrowRight': '\x1b[1;5C',
@@ -26,7 +27,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
   let rawWindow = Date.now(), rawBytes = 0;
   let lastHealthNonce = 0, healthWindow = Date.now(), healthCount = 0;
   let historyBusy = false, historyAt = 0;
-  let codexRun, foregroundEnabled = false;
+  let codexRun, paneWheel, foregroundEnabled = false;
   let geometryEnabled = false, geometryMaxCols;
   let outputFlow = false;
   let pressureTimer, escapeTimer;
@@ -76,13 +77,13 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
           if (widthCache.size >= 8) widthCache.delete(widthCache.keys().next().value);
           widthCache.set(socketPath, JSON.stringify(value.widths));
         }
-        if (value.codexRun !== undefined && !validCodexRun(value.codexRun)) return close();
-        codexRun = value.codexRun;
-        ready = true; clearTimeout(startTimer); onReady(); send({ type: 'ready', historyStyles: true, columnAlignment, codexRun, ...(value.widths ? { widths: value.widths } : {}) });
+        if ((value.codexRun !== undefined && !validCodexRun(value.codexRun)) || !validPaneWheel(value.paneWheel)) return close();
+        codexRun = value.codexRun; paneWheel = value.paneWheel;
+        ready = true; clearTimeout(startTimer); onReady(); send({ type: 'ready', historyStyles: true, columnAlignment, codexRun, paneWheel, ...(value.widths ? { widths: value.widths } : {}) });
       }
-      else if (value.type === 'foreground' && ready && codexRun !== undefined && validCodexRun(value.codexRun)) {
-        codexRun = value.codexRun;
-        if (foregroundEnabled) send({ type: 'foreground', codexRun });
+      else if (value.type === 'foreground' && ready && codexRun !== undefined && validCodexRun(value.codexRun) && validPaneWheel(value.paneWheel)) {
+        codexRun = value.codexRun; paneWheel = value.paneWheel;
+        if (foregroundEnabled) send({ type: 'foreground', codexRun, paneWheel });
       }
       else if (value.type === 'geometry' && ready && Number.isInteger(value.maxCols) && value.maxCols >= 2 && value.maxCols <= 500) {
         geometryMaxCols = value.maxCols;
@@ -159,7 +160,7 @@ export function attachTerminal(ws, { socketPath, terminalId, terminalToken, env,
         }
         if (value.foreground === true && !foregroundEnabled && codexRun !== undefined) {
           foregroundEnabled = true;
-          send({ type: 'foreground', codexRun });
+          send({ type: 'foreground', codexRun, paneWheel });
         }
         command('resize', { cols: value.cols, rows: value.rows, viewport: value.viewport === true }); return;
       }

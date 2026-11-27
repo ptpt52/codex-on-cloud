@@ -51,7 +51,7 @@ for (const [tracking, platform] of [[9], [1000], [1002], [1003], [1003, 'MacInte
   } finally { await app.close(); }
 });
 
-test('the program mouse switch restores native clicks and wheels without replacing the terminal or replaying input', async ({ page }) => {
+test('program mouse gates clicks while automatic wheels stay native without reattaching', async ({ page }) => {
   const app = await fixture();
   try {
     const frame = await login(page, app, { mouseReporting: false });
@@ -60,6 +60,8 @@ test('the program mouse switch restores native clicks and wheels without replaci
     await frame.evaluate(() => window.originalTerminal = window.selectionTerminal);
     const children = app.terminalChildren.length;
     await openTools(page); await expect(page.locator('#terminal-mouse-reporting')).not.toBeChecked();
+    await expect(page.locator('#terminal-wheel-mode')).toHaveValue('page-keys');
+    await page.locator('#terminal-wheel-mode').selectOption('auto');
     await page.locator('#terminal-mouse-reporting').check(); await closePanels(page);
     expect(app.terminalInputs).toEqual([]);
     await frame.locator('#history-program').click(); await expect(frame.locator('#history-state')).toContainText('原生方式');
@@ -68,10 +70,11 @@ test('the program mouse switch restores native clicks and wheels without replaci
     await expect.poll(() => app.terminalInputs.some(value => /^\x1b\[<0;/.test(value.text))).toBe(true);
     await expect.poll(() => app.terminalInputs.some(value => /^\x1b\[<64;/.test(value.text))).toBe(true);
     await openTools(page); await page.locator('#terminal-mouse-reporting').uncheck(); await closePanels(page);
-    await expect(frame.locator('#history-state')).toContainText('PageUp');
-    const before = app.terminalInputs.map(value => value.text);
-    await page.mouse.move(click.x, click.y); await page.mouse.click(click.x, click.y); await page.waitForTimeout(100);
-    expect(app.terminalInputs.map(value => value.text)).toEqual(before);
+    await expect(frame.locator('#history-state')).toContainText('原生方式');
+    const before = app.terminalInputs.length;
+    await page.mouse.move(click.x, click.y); await page.mouse.click(click.x, click.y);
+    await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
+    await expect.poll(() => app.terminalInputs.slice(before).map(value => /^\x1b\[<65;/.test(value.text))).toEqual([true]);
     expect(await frame.evaluate(() => window.originalTerminal === window.selectionTerminal)).toBe(true);
     expect(app.terminalChildren.length).toBe(children); expect(app.managementStats.restarts).toBe(0); expect(app.inputCalls).toEqual([]);
   } finally { await app.close(); }
@@ -208,8 +211,13 @@ while time.monotonic() < deadline:
     chunk = os.read(0, 4096)
     if not chunk:
         break
+    if chunk == b'l':
+        os.write(1, b'\\x1b[?1006l\\x1b[HLEGACY-MOUSE')
+    elif chunk == b'!':
+        os.write(1, b'\\x1b[?1002l\\x1b[?1006l')
     pending = (pending + chunk)[-8192:]
     state['pages'] = min(128, state['pages'] + chunk.count(b'\\x1b[5~') + chunk.count(b'\\x1b[6~'))
+    state['wheels'] = min(128, state['wheels'] + len(re.findall(rb'\\x1b\\[M[\\x60\\x61]..', chunk)))
     while (match := re.search(rb'\\x1b\\[<(\\d+);\\d+;\\d+([Mm])', pending)):
         code, action = int(match[1]), match[2]
         pending = pending[match.end():]
@@ -221,10 +229,11 @@ while time.monotonic() < deadline:
 `);
     const quoted = value => "'" + value.replaceAll("'", "'\\''") + "'";
     await exec('tmux', ['-f', resolve('desktop/tmux.conf'), '-S', socket, 'new-session', '-d', '-s', 'codex', '-x', '80', '-y', '24', ['python3', script, socket, proof].map(quoted).join(' ')], { env, timeout: 3000 });
+    await run(['set-option', '-g', 'mouse', 'on']);
     const token = (await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim();
-    app = await fixture();
+    app = await fixture({ mode: 'terminal' });
     app.config.terminalLaunch = () => {
-      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token, '--geometry'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
+      const child = spawn('python3', [resolve('desktop/web-terminal.py'), socket, 'main', token, '--geometry', '--foreground'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
       children.push(child); return child;
     };
     const frame = await login(page, app, { mouseReporting });
@@ -247,6 +256,20 @@ while time.monotonic() < deadline:
       for (const deltaY of [-120, -120, 120]) el.dispatchEvent(new WheelEvent('wheel', { deltaY, clientX: box.x + 10, clientY: box.y + 10, bubbles: true, cancelable: true }));
     });
     await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 0, wheels: mouseReporting ? 3 : 0, pages: mouseReporting ? 0 : 1 });
+    if (mouseReporting) {
+      await frame.locator('.xterm-helper-textarea').press('l');
+      await expect.poll(() => frame.evaluate(() => window.selectionTerminal.buffer.active.getLine(0)?.translateToString(true))).toContain('LEGACY-MOUSE');
+      await frame.locator('.xterm-screen').evaluate(el => {
+        const box = el.getBoundingClientRect();
+        el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, clientX: box.x + 10, clientY: box.y + 10, bubbles: true, cancelable: true }));
+      });
+      await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 0, wheels: 4, pages: 0 });
+      await frame.locator('.xterm-helper-textarea').press('!');
+      await expect(frame.locator('#history-state')).toContainText('未启用可用的鼠标滚轮，使用 PageUp');
+      await expect.poll(() => frame.evaluate(() => window.selectionTerminal.modes.mouseTrackingMode)).toMatch(/^(vt200|drag|any)$/);
+      await frame.locator('.xterm-screen').dispatchEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+      await expect.poll(async () => JSON.parse(await readFile(proof, 'utf8'))).toEqual({ copies: 0, wheels: 4, pages: 1 });
+    }
     expect((await run(['display-message', '-p', '-t', 'codex', '#{pane_id}:#{pane_pid}'])).stdout.trim()).toBe(token);
     expect(app.inputCalls).toEqual([]);
   } finally {

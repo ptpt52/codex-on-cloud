@@ -55,10 +55,10 @@ class OutputCredit:
             self.remaining -= count
 
 
-def width_query(socket, args):
+def width_query(socket, args, timeout=1):
     child = subprocess.Popen(['tmux', '-S', socket] + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     data = bytearray()
-    deadline = time.monotonic() + 1
+    deadline = time.monotonic() + timeout
     try:
         os.set_blocking(child.stdout.fileno(), False)
         while True:
@@ -426,6 +426,19 @@ def foreground_codex(pane_pid, previous=None):
     return None
 
 
+def pane_wheel_available(socket, token):
+    """Check the pane because tmux also requests mouse reports for its own UI."""
+    pane, pid = token.split(':', 1)
+    template = '#{pane_pid} #{mouse_standard_flag}#{mouse_button_flag}#{mouse_all_flag} #{pane_in_mode}'
+    try:
+        fields = width_query(socket, ['display-message', '-p', '-t', pane, template], timeout=0.2).split()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    # tmux can translate reports for the pane. The browser checks the outer encoding.
+    return (len(fields) == 3 and fields[0] == pid.encode() and
+            fields[1] in (b'100', b'010', b'001') and fields[2] == b'0')
+
+
 def detached_reader(pid, tty):
     """Identify a same-user service which inherited this pane's terminal fds.
 
@@ -717,9 +730,10 @@ def main():
             time.sleep(0.03)
         pane_pid = int(token.split(':')[1])
         codex_run = foreground_codex(pane_pid) if foreground_enabled else None
+        pane_wheel = pane_wheel_available(socket, token) if foreground_enabled else False
         foreground_at = time.monotonic() + 0.5
         emit({'type': 'ready', 'columnAlignment': alignment, 'widths': widths,
-              **({'codexRun': codex_run} if foreground_enabled else {}),
+              **({'codexRun': codex_run, 'paneWheel': pane_wheel} if foreground_enabled else {}),
               **({'outputWindow': output_credit.window} if output_credit.enabled else {})})
         last_id = 0
         last_width = None
@@ -728,11 +742,12 @@ def main():
             resize_notice.poll()
             if foreground_enabled and time.monotonic() >= foreground_at:
                 observed = foreground_codex(pane_pid, codex_run)
-                if observed != codex_run:
+                wheel = pane_wheel if standby else pane_wheel_available(socket, token)
+                if (observed, wheel) != (codex_run, pane_wheel):
                     if not verify():
                         return
-                    codex_run = observed
-                    emit({'type': 'foreground', 'codexRun': codex_run})
+                    codex_run, pane_wheel = observed, wheel
+                    emit({'type': 'foreground', 'codexRun': codex_run, 'paneWheel': pane_wheel})
                 foreground_at = time.monotonic() + 0.5
             if geometry_enabled and time.monotonic() >= width_at:
                 if not verify():
@@ -778,6 +793,8 @@ def main():
                         if type(value.get('standby')) is not bool:
                             raise ValueError('invalid view state')
                         standby = value['standby']
+                        if not standby:
+                            foreground_at = 0
                         resize_notice.cancel()
                         if standby:
                             viewport_layout = False

@@ -94,6 +94,7 @@ try {
   // even when all eight user terminals have exited. It accepts no browser input.
   const started = await exec('tmux', ['-f', join(config.root, 'desktop', 'tmux.conf'), '-S', socket,
     'start-server', ';', 'set-environment', '-gu', 'DBUS_SESSION_BUS_ADDRESS', ';',
+    'set-option', '-g', 'mouse', 'on', ';', 'set-option', '-g', '@codex-cloud-wheel-default', '1', ';',
     'new-session', '-d', '-s', 'codex-host', '-c', config.workspace, 'sleep', 'infinity', ';',
     'display-message', '-p', '-t', '=codex-host:0.0', '#{pid}'], { env: serverEnv, timeout: 5000, maxBuffer: 16384 });
   serverOwned = true; await chmod(socket, 0o600);

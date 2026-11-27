@@ -29,6 +29,10 @@ npm run deploy -- --mode terminal --install-deps --enable-linger
 
 登录直接进入终端，不读取旧浏览器的桌面模式选择。原终端 shell 由私有 tmux 持有，网页和面板只提供观看、输入及管理。
 
+### 验证 Codex 滚轮
+
+纯终端的私有 tmux 默认开启鼠标，`npm run deploy` 也会将这一默认值应用到已有私有 tmux。既有 Codex 进程可能已经读取旧设置。当前任务结束后，可以用 `/tui` 选择 Fullscreen，退出 CLI 后用 `codex resume` 进入同一会话。工具中将“程序翻页时的滚轮”设为“自动”，打开一段可滚动的对话并滚动终端正文。工具栏应显示“滚轮按程序原生方式滚动”，对话随滚轮移动。前台程序未启用可用鼠标模式时，自动策略会提示使用 PageUp / PageDown。
+
 ## 生命周期
 
 关闭网页、重连或更新 panel／manager 不主动结束原 shell。明确结束终端、停止／重启 terminal 宿主或重启主机会影响任务。所有用户终端关闭后，宿主仍保留；只有明确新开才创建新 shell，不自动重新提交旧工作。

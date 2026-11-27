@@ -2,15 +2,16 @@ import { HISTORY_ROWS, DEFAULT_HISTORY_ROWS } from './terminal-history-limits.js
 
 export const BROWSER_PREFERENCES_KEY = 'codex-cloud.display.v1';
 export const BROWSER_PREFERENCES_LIMIT = 512;
+export const TERMINAL_WHEEL_MODES = Object.freeze(['auto', 'native', 'page-keys']);
 const defaults = Object.freeze({ layout: 2, workspaceLayout: 'sidebar', zoom: 'width', pan: false, collapsed: true, controlsCollapsed: true,
   autoResolution: false, keepAwake: false, modeStandby: false, networkDebug: false, desktopIme: true, mode: 'desktop', terminalFontSize: 15, terminalWidthMode: 'viewport',
-  terminalHistoryRows: DEFAULT_HISTORY_ROWS, terminalMouseReporting: false, terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' });
+  terminalHistoryRows: DEFAULT_HISTORY_ROWS, terminalMouseReporting: false, terminalWheelMode: 'auto', terminalInputCollapsed: true, pointerMode: 'touch', scrollTarget: 'viewport' });
 const oneOf = values => value => values.includes(value);
 const boolean = value => typeof value === 'boolean';
 const fields = Object.freeze({ workspaceLayout: oneOf(['sidebar', 'top']), zoom: value => ['fit', 'width'].includes(value) || typeof value === 'number' && Number.isFinite(value) && value >= .1 && value <= 2,
   pan: boolean, collapsed: boolean, controlsCollapsed: boolean, autoResolution: boolean, keepAwake: boolean, modeStandby: boolean, networkDebug: boolean, desktopIme: boolean,
   mode: oneOf(['desktop', 'terminal']), terminalFontSize: value => Number.isInteger(value) && value >= 10 && value <= 28,
-  terminalWidthMode: oneOf(['viewport', 'scale', 'manual']), terminalHistoryRows: oneOf(HISTORY_ROWS), terminalMouseReporting: boolean,
+  terminalWidthMode: oneOf(['viewport', 'scale', 'manual']), terminalHistoryRows: oneOf(HISTORY_ROWS), terminalMouseReporting: boolean, terminalWheelMode: oneOf(TERMINAL_WHEEL_MODES),
   terminalInputCollapsed: boolean, pointerMode: oneOf(['touch', 'trackpad']), scrollTarget: oneOf(['viewport', 'remote']) });
 function pick(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -23,6 +24,8 @@ export function decodeBrowserPreferences(text, { compact = false } = {}) {
     const stored = JSON.parse(text), valid = pick(stored);
     // Older layouts deliberately migrate to width fit and a fixed desktop.
     if (stored?.layout !== 2) for (const key of Object.keys(valid)) if (!['pan', 'collapsed', 'controlsCollapsed'].includes(key)) delete valid[key];
+    // A saved mouse-off preference previously selected page keys as well.
+    if (stored?.layout === 2 && !Object.hasOwn(stored, 'terminalWheelMode') && valid.terminalMouseReporting === false) valid.terminalWheelMode = 'page-keys';
     return Object.assign(value, valid);
   } catch { return value; }
 }

@@ -88,6 +88,18 @@ test('program mouse is opt-in, strictly boolean and fits the bounded shared brow
   preferences.update({ terminalMouseReporting: false }); assert.equal(createBrowserPreferences(source).value.terminalMouseReporting, false);
 });
 
+test('wheel preference migrates an earlier mouse-off choice and then changes independently', () => {
+  assert.equal(decodeBrowserPreferences(null).terminalWheelMode, 'auto');
+  assert.equal(decodeBrowserPreferences('{"layout":2,"terminalMouseReporting":false}').terminalWheelMode, 'page-keys');
+  assert.equal(decodeBrowserPreferences('{"layout":2,"terminalMouseReporting":true}').terminalWheelMode, 'auto');
+  assert.equal(decodeBrowserPreferences('{"layout":2,"terminalWheelMode":"unsupported"}').terminalWheelMode, 'auto');
+  const source = storage(), preferences = createBrowserPreferences(source), stale = createBrowserPreferences(source);
+  preferences.update({ terminalWheelMode: 'native' }); stale.update({ terminalMouseReporting: true });
+  const { terminalWheelMode, terminalMouseReporting } = createBrowserPreferences(source).value;
+  assert.equal(terminalWheelMode, 'native'); assert.equal(terminalMouseReporting, true);
+  assert.ok(source.text.length <= BROWSER_PREFERENCES_LIMIT);
+});
+
 test('desktop IME defaults on, accepts only booleans and stays within the browser preference bound', () => {
   assert.equal(decodeBrowserPreferences(null).desktopIme, true);
   assert.equal(decodeBrowserPreferences(JSON.stringify({ layout: 2, desktopIme: 0 })).desktopIme, true);

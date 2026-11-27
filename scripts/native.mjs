@@ -45,6 +45,18 @@ function systemctl(args, check = true) {
   if (check && result.status !== 0) throw new Error(`systemctl --user ${args.join(' ')} 失败`);
   return result;
 }
+function updateTerminalMouseDefault() {
+  // Reload only this managed default on a live terminal host. Session-level
+  // settings continue to override it, and a later start preserves user changes.
+  const tmux = args => spawnSync('tmux', ['-S', join(config.runtime, 'tmux.sock'), ...args], {
+    env: { ...process.env, PATH: path }, encoding: 'utf8', timeout: 2000, maxBuffer: 1024,
+  });
+  const current = tmux(['display-message', '-p', '-t', '=codex-host:0.0', '#{session_name}:#{@codex-cloud-wheel-default}']);
+  if (current.status !== 0 || !['codex-host:', 'codex-host:1'].includes(current.stdout.trim())) throw Error('无法确认纯终端的私有 tmux 服务');
+  if (current.stdout.trim() === 'codex-host:1') return;
+  const updated = tmux(['set-option', '-g', 'mouse', 'on', ';', 'set-option', '-g', '@codex-cloud-wheel-default', '1']);
+  if (updated.status !== 0) throw Error('纯终端鼠标默认值未能更新');
+}
 async function doctor() {
   const missing = [];
   for (const [name, pkg] of dependencies) {
@@ -109,7 +121,11 @@ try {
       systemctl(['enable', ...selectedUnits.filter(name => !preserved.has(name))]);
       console.log('用户服务已安装，尚未启动。运行 npm run native:start。\n如需退出本机登录后及开机继续运行，请执行一次：sudo loginctl enable-linger ' + process.env.USER);
     }
-  } else if (command === 'start') systemctl(['start', ...selectedUnits]);
+  } else if (command === 'start') {
+    const terminalRunning = config.mode === 'terminal' && spawnSync('systemctl', ['--user', 'is-active', '--quiet', 'codex-cloud-terminal.service'], { stdio: 'ignore' }).status === 0;
+    systemctl(['start', ...selectedUnits]);
+    if (terminalRunning) updateTerminalMouseDefault();
+  }
   else if (command === 'status') {
     process.exitCode = systemctl(['status', ...selectedUnits, '--no-pager'], false).status || 0;
     console.log('面板异常退出后间隔 5 秒重启，60 秒内最多启动 3 次；手动停止不恢复。达到上限后请先检查日志，再执行 systemctl --user reset-failed codex-cloud-panel.service 和 npm run native:start。桌面不会自动重建。');
